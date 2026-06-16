@@ -1,0 +1,23 @@
+# Секреты — НИКОГДА не коммитить
+.env
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Данные и артефакты (тестовая БД, выгрузки, excel)
+axiom/data/*.db
+axiom/data/agentstva_sochi.csv
+axiom/data/sample_2gis.csv
+axiom/*.xlsx
+
+# Тяжёлые исходные материалы (референс, не код)
+Доки Верняка/
+
+# OS
+Thumbs.db
+.DS_Store

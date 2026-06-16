@@ -1,0 +1,15 @@
+# --- Ядро пилота (нужно сейчас, дни 1-2) ---
+anthropic>=0.92.0        # ИИ-агент (Claude)
+pydantic>=2.0            # схемы структурированного вывода
+python-dotenv>=1.0       # загрузка .env
+openpyxl>=3.1            # выгрузка чекера в Excel с подсветкой
+
+# --- Telegram + планировщик (дни 3+, нужны живые доступы) ---
+telethon>=1.36           # userbot / MTProto
+APScheduler>=3.10         # напоминания, дожим
+
+# --- Интеграции (дни 5-6) ---
+google-api-python-client>=2.0
+google-auth-oauthlib>=1.0
+# Zoom — через requests (REST), отдельной либы не нужно
+requests>=2.31

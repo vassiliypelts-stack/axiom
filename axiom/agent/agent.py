@@ -16,7 +16,12 @@ from agent.prompts import build_system
 class Reply(BaseModel):
     """Структурированный ответ агента (валидируется Claude через structured outputs)."""
 
-    reply: str = Field(description="Текст сообщения, который отправим человеку")
+    reply_parts: list[str] = Field(
+        description="1-3 КОРОТКИХ сообщения, как в живой личке. Отправляются по очереди с паузами. "
+        "Дроби мысли: приветствие отдельно, суть отдельно, вопрос отдельно. НЕ одна простыня.",
+        min_length=1,
+        max_length=4,
+    )
     intent: str = Field(
         description="Намерение собеседника по последней реплике",
         json_schema_extra={"enum": ["positive", "objection", "later", "not_interested", "question", "agreed"]},
@@ -36,14 +41,25 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
-def generate_reply(history: list[dict], slots: list[str], contact: dict | None = None) -> Reply:
+def generate_reply(
+    history: list[dict],
+    slots: list[str],
+    contact: dict | None = None,
+    opener: str | None = None,
+) -> Reply:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     'user' = входящее от риелтора, 'assistant' = наши прошлые сообщения.
+
+    history ДОЛЖНА начинаться с реплики 'user' (требование Claude API). В реальном
+    канале диалог начинает наше исходящее сообщение — его передавай через `opener`,
+    а в history клади только то, что идёт начиная с ответа собеседника.
     """
     system = build_system(slots)
     if contact:
         who = ", ".join(f"{k}: {v}" for k, v in contact.items() if v)
         system += f"\n\nЧТО ИЗВЕСТНО О СОБЕСЕДНИКЕ: {who}"
+    if opener:
+        system += f"\n\nТЫ УЖЕ НАПИСАЛ ЕМУ ПЕРВЫМ (контекст, не повторяйся дословно): {opener}"
 
     response = _get_client().messages.parse(
         model=config.MODEL,
@@ -59,17 +75,18 @@ def generate_reply(history: list[dict], slots: list[str], contact: dict | None =
 def _demo() -> None:
     """Офлайн-симуляция диалога до согласия на Zoom."""
     slots = ["завтра 11:00", "завтра 16:00", "послезавтра 10:00"]
-    contact = {"name": "Иван", "city": "Сочи", "agency": "Этажи"}
-    history: list[dict] = [{"role": "user", "content": "Привет! Да, я риелтор. Что хотел?"}]
+    contact = {"name": "Серёга", "city": "Москва"}
+    history: list[dict] = [{"role": "user", "content": "о, привет) сто лет не виделись, чем занимаешься?"}]
 
     for _ in range(5):
         r = generate_reply(history, slots, contact)
-        print(f"\nAXIOM -> {r.reply}")
+        for part in r.reply_parts:
+            print(f"\nAXIOM -> {part}")
         print(f"   [intent={r.intent} | agreed={r.meeting_agreed} | slot={r.proposed_datetime}]")
         if r.meeting_agreed:
             print("\n[OK] Встреча согласована - дальше создаём Zoom + событие в календаре.")
             break
-        history.append({"role": "assistant", "content": r.reply})
+        history.append({"role": "assistant", "content": " ".join(r.reply_parts)})
         human = input("Риелтор -> ")
         history.append({"role": "user", "content": human})
 

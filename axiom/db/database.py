@@ -71,6 +71,56 @@ def set_status(conn: sqlite3.Connection, contact_id: int, status: str) -> None:
     )
 
 
+def find_contact_by_tg(
+    conn: sqlite3.Connection, tg_user_id: int | None = None, username: str | None = None
+) -> sqlite3.Row | None:
+    """Ищет контакт по tg_user_id (приоритет), затем по username. Для входящих сообщений."""
+    if tg_user_id:
+        row = conn.execute("SELECT * FROM contacts WHERE tg_user_id = ?", (tg_user_id,)).fetchone()
+        if row:
+            return row
+    if username:
+        u = username.lstrip("@")
+        return conn.execute("SELECT * FROM contacts WHERE username = ? OR username = ?", (u, "@" + u)).fetchone()
+    return None
+
+
+def set_tg_user_id(conn: sqlite3.Connection, contact_id: int, tg_user_id: int) -> None:
+    conn.execute(
+        "UPDATE contacts SET tg_user_id = ?, updated_at = datetime('now') WHERE id = ?",
+        (tg_user_id, contact_id),
+    )
+
+
+def record_meeting(
+    conn: sqlite3.Connection,
+    contact_id: int,
+    meeting_at: str | None,
+    notes: str | None = None,
+    zoom_link: str | None = None,
+    calendar_event_id: str | None = None,
+) -> None:
+    """Фиксирует договорённость о встрече: создаёт/обновляет deal и двигает статус контакта.
+    zoom_link / calendar_event_id подставляет integrations/ (если доступы есть)."""
+    row = conn.execute(
+        "SELECT id FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE deals SET stage = 'meeting_set', meeting_at = COALESCE(?, meeting_at), "
+            "notes = ?, zoom_link = COALESCE(?, zoom_link), "
+            "calendar_event_id = COALESCE(?, calendar_event_id) WHERE id = ?",
+            (meeting_at, notes, zoom_link, calendar_event_id, row["id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO deals (contact_id, stage, meeting_at, notes, zoom_link, calendar_event_id) "
+            "VALUES (?, 'meeting_set', ?, ?, ?, ?)",
+            (contact_id, meeting_at, notes, zoom_link, calendar_event_id),
+        )
+    set_status(conn, contact_id, "meeting_set")
+
+
 if __name__ == "__main__":
     init_db()
     print(f"БД готова: {config.DB_PATH}")

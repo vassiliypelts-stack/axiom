@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+-- Воронки (как в Битрикс): несколько воронок, каждая = продукт. У воронки свои стадии.
+CREATE TABLE IF NOT EXISTS pipelines (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT,
+    product     TEXT,
+    project_id  INTEGER,
+    stages      TEXT,                       -- JSON: [{"key":"new","label":"Новые"}, ...]
+    is_default  INTEGER DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 -- Команда кампании: какие агенты (аккаунты) работают эту кампанию.
 CREATE TABLE IF NOT EXISTS campaign_accounts (
     campaign_id INTEGER NOT NULL,

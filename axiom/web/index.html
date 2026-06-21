@@ -328,11 +328,18 @@ async function viewAgents(v){
 
 async function loadContacts(){STATE.contacts=await api("/api/contacts");return STATE.contacts;}
 
+let PIPELINES=[], PIPELINE_SEL=null;
 async function viewCrm(v){
   await loadContacts();
+  PIPELINES=await api("/api/pipelines");
+  if(!PIPELINE_SEL||!PIPELINES.find(p=>p.id===PIPELINE_SEL))PIPELINE_SEL=(PIPELINES[0]||{}).id||null;
+  const pOpts=PIPELINES.map(p=>`<option value="${p.id}" ${p.id===PIPELINE_SEL?"selected":""}>${esc(p.name)}${p.product&&p.product!==p.name?" · "+esc(p.product):""} (${p.count})</option>`).join("");
   v.innerHTML=`<div class="ttoolbar">
       <button id="tab-tbl" class="primary">Таблица</button>
       <button id="tab-kan">Воронка</button>
+      <select id="crm-pipe" title="воронка / продукт" style="max-width:260px">${pOpts}</select>
+      <button id="pipe-new" title="создать воронку">➕ воронка</button>
+      <button id="pipe-del" title="удалить выбранную воронку">🗑</button>
       <span class="grow"></span>
       <button id="tab-enr">✨ Обогатить пачку</button>
       <button id="tab-imp">⬆ Импорт 2ГИС</button>
@@ -348,9 +355,18 @@ async function viewCrm(v){
     </div>
     <div id="crm-body"></div>`;
   const body=$("#crm-body");
-  const showTbl=()=>{body.innerHTML="";crmTable(body);$("#tab-tbl").classList.add("primary");$("#tab-kan").classList.remove("primary");};
-  const showKan=()=>{body.innerHTML="";renderCrmKanban(body,false);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
+  let kanOn=false;
+  const showTbl=()=>{kanOn=false;body.innerHTML="";crmTable(body);$("#tab-tbl").classList.add("primary");$("#tab-kan").classList.remove("primary");};
+  const showKan=()=>{kanOn=true;body.innerHTML="";renderCrmKanban(body,false);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
   $("#tab-tbl").onclick=showTbl;$("#tab-kan").onclick=showKan;
+  $("#crm-pipe").onchange=()=>{PIPELINE_SEL=+$("#crm-pipe").value;if(kanOn)showKan();};
+  $("#pipe-new").onclick=async()=>{const name=prompt("Название воронки (продукт), напр. «Фонд доступного жилья»:");if(!name)return;
+    const r=await api("/api/pipelines",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,product:name})});
+    if(r.error){alert(r.error);return;}PIPELINE_SEL=r.id;route();};
+  $("#pipe-del").onclick=async()=>{const p=PIPELINES.find(x=>x.id===PIPELINE_SEL);if(!p)return;
+    if(p.is_default){alert("Основную воронку удалить нельзя");return;}
+    if(!confirm(`Удалить воронку «${p.name}»? Лиды останутся и перейдут в Основную.`))return;
+    await api(`/api/pipeline/${p.id}/delete`,{method:"POST"});PIPELINE_SEL=null;route();};
   $("#tab-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
   $("#tab-enr").onclick=async()=>{
     const n=prompt("Сколько НЕобогащённых контактов обогатить за раз? (агент читает сайт + Claude, ~5-15 сек на контакт)","10");
@@ -390,11 +406,16 @@ function crmTable(mount){
     emptyText:"Контактов нет. Импортируй базу — появятся здесь.",
   });
 }
-function renderCrmKanban(mount,readonly){
-  const by={};STAGES.forEach(s=>by[s]=[]);STATE.contacts.forEach(c=>{(by[c.status]||(by[c.status]=[])).push(c);});
+function renderCrmKanban(mount,readonly,pipeline){
+  pipeline=pipeline||(PIPELINES&&PIPELINES.find(p=>p.id===PIPELINE_SEL))||null;
+  const stages=(pipeline&&pipeline.stages&&pipeline.stages.length)?pipeline.stages:STAGES.map(k=>({key:k,label:STATUS_RU[k]||k}));
+  const isDef=pipeline?!!pipeline.is_default:true, pid=pipeline?pipeline.id:null;
+  const rows=STATE.contacts.filter(c=> pid==null ? true : (c.pipeline_id===pid||(c.pipeline_id==null&&isDef)));
+  const by={};stages.forEach(s=>by[s.key]=[]);
+  rows.forEach(c=>{const k=by[c.status]?c.status:(stages[0]&&stages[0].key);if(by[k])by[k].push(c);});
   const kan=document.createElement("div");kan.className="kanban";
-  kan.innerHTML=STAGES.map(s=>`<div class="kcol"><h3>${STATUS_RU[s]||s}<span class="n">${by[s].length}</span></h3>
-    <div class="kbody" data-s="${s}">${by[s].map(c=>`<div class="kcard" draggable="${!readonly}" data-id="${c.id}">
+  kan.innerHTML=stages.map(s=>`<div class="kcol"><h3>${esc(s.label)}<span class="n">${(by[s.key]||[]).length}</span></h3>
+    <div class="kbody" data-s="${s.key}">${(by[s.key]||[]).map(c=>`<div class="kcard" draggable="${!readonly}" data-id="${c.id}">
       <div class="nm">${esc(c.name)||"без имени"}</div><div class="mt">${esc(c.agency||c.city||"")}${c.username?" · @"+esc(c.username):""}</div></div>`).join("")}</div></div>`).join("");
   mount.appendChild(kan);
   kan.querySelectorAll(".kcard").forEach(card=>card.onclick=()=>openDossier(+card.dataset.id));
@@ -409,7 +430,7 @@ function renderCrmKanban(mount,readonly){
     col.ondragleave=()=>col.classList.remove("over");
     col.ondrop=async e=>{e.preventDefault();col.classList.remove("over");
       const s=col.dataset.s;if(drag==null)return;
-      await api(`/api/contact/${drag}/status`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:s})});
+      await api(`/api/contact/${drag}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stage:s})});
       const c=STATE.contacts.find(x=>x.id===drag);if(c)c.status=s;drag=null;route();};
   });
 }
@@ -583,6 +604,7 @@ async function openThread(id){
 // ----------------------------------------------------------------- drawer (досье)
 async function openDossier(id){
   const c=await api(`/api/contact/${id}`);
+  if(!PIPELINES.length){try{PIPELINES=await api("/api/pipelines");}catch(e){}}
   $("#dr-title").textContent=c.name||("@"+(c.username||id));
   const tgLink=c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">@${esc(c.username)} ↗</a>`:'<span class="no">—</span>';
   const waLink=c.wa_phone||c.phone?`<a class="ext" href="https://wa.me/${esc((c.wa_phone||c.phone||'').replace(/[^0-9]/g,''))}" target="_blank">WhatsApp ↗</a>`:'<span class="no">—</span>';
@@ -606,6 +628,8 @@ async function openDossier(id){
     ${enrichBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
       <div class="field"><label>Агентство</label><div class="v">${esc(c.agency)||"—"}</div></div></div>
+    <div class="field"><label>🗂 Воронка / продукт</label>
+      <select id="dr-pipe">${PIPELINES.map(p=>`<option value="${p.id}" ${(c.pipeline_id===p.id||(c.pipeline_id==null&&p.is_default))?"selected":""}>${esc(p.name)}</option>`).join("")}</select></div>
     <div class="row2"><div class="field"><label>Telegram</label><div class="v">${tgLink}</div></div>
       <div class="field"><label>Телефон</label><div class="v mono">${esc(c.phone)||"—"}</div></div></div>
     <div class="field"><label>WhatsApp</label><div class="v">${waLink}</div></div>
@@ -621,6 +645,9 @@ async function openDossier(id){
   if(cb)cb.onclick=async()=>{cb.textContent="…";
     await api(`/api/contact/${id}/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_context:$("#dr-context").value})});
     cb.textContent="✓ сохранено";setTimeout(()=>cb.textContent="💾 Сохранить контекст",1500);};
+  const dp=$("#dr-pipe");
+  if(dp)dp.onchange=async()=>{await api(`/api/contact/${id}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pipeline_id:+dp.value})});
+    const c2=STATE.contacts.find(x=>x.id===id);if(c2)c2.pipeline_id=+dp.value;};
   const eb=$("#dr-enrich");
   if(eb)eb.onclick=async()=>{eb.textContent="обогащаю…";eb.disabled=true;
     await api(`/api/contact/${id}/enrich`,{method:"POST"});

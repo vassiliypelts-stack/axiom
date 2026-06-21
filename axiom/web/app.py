@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, Body, UploadFile, File, Form
@@ -159,7 +160,7 @@ def contacts() -> JSONResponse:
         rows = conn.execute(
             """
             SELECT c.id, c.name, c.username, c.phone, c.wa_phone, c.city, c.agency, c.tags, c.notes,
-                   c.status, c.has_tg, c.has_wa, c.preferred_channel, c.updated_at,
+                   c.status, c.has_tg, c.has_wa, c.preferred_channel, c.pipeline_id, c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts
             FROM contacts c
@@ -204,6 +205,75 @@ def set_status(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
     with database.get_conn() as conn:
         database.set_status(conn, contact_id, status)
     return JSONResponse({"ok": True, "status": status})
+
+
+# ---- Воронки (как в Битрикс) ---------------------------------------------- #
+@app.get("/api/pipelines")
+def pipelines_list() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM pipelines ORDER BY is_default DESC, id").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["stages"] = json.loads(d.get("stages") or "[]")
+            except (TypeError, ValueError):
+                d["stages"] = []
+            d["count"] = conn.execute(
+                "SELECT COUNT(*) c FROM contacts WHERE pipeline_id=? OR (pipeline_id IS NULL AND ?=1)",
+                (r["id"], 1 if r["is_default"] else 0),
+            ).fetchone()["c"]
+            out.append(d)
+    return JSONResponse(out)
+
+
+@app.post("/api/pipelines")
+def pipelines_create(payload: dict = Body(...)) -> JSONResponse:
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "нужно название воронки"}, status_code=400)
+    stages = payload.get("stages")
+    if not stages:
+        # дефолтный набор стадий продаж
+        stages = [
+            {"key": "new", "label": "Новые"}, {"key": "messaged", "label": "Написано"},
+            {"key": "in_dialog", "label": "В диалоге"}, {"key": "meeting_set", "label": "Встреча назначена"},
+            {"key": "won", "label": "Сделка"}, {"key": "lost", "label": "Отказ"},
+        ]
+    with database.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO pipelines (name, product, project_id, stages) VALUES (?,?,?,?)",
+            (name, payload.get("product") or None, payload.get("project_id") or None,
+             json.dumps(stages, ensure_ascii=False)),
+        )
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/pipeline/{pid}/delete")
+def pipelines_delete(pid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT is_default FROM pipelines WHERE id=?", (pid,)).fetchone()
+        if row and row["is_default"]:
+            return JSONResponse({"error": "нельзя удалить основную воронку"}, status_code=400)
+        conn.execute("DELETE FROM pipelines WHERE id=?", (pid,))
+        conn.execute("UPDATE contacts SET pipeline_id=NULL WHERE pipeline_id=?", (pid,))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/contact/{contact_id}/move")
+def contact_move(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
+    """Перемещение лида: смена стадии и/или воронки (продукта)."""
+    stage = payload.get("stage")
+    pid = payload.get("pipeline_id", "keep")
+    with database.get_conn() as conn:
+        if pid != "keep":
+            conn.execute("UPDATE contacts SET pipeline_id=?, updated_at=datetime('now') WHERE id=?",
+                         (pid or None, contact_id))
+        if stage:
+            conn.execute("UPDATE contacts SET status=?, updated_at=datetime('now') WHERE id=?",
+                         (stage, contact_id))
+    return JSONResponse({"ok": True})
 
 
 def _spawn(*args: str) -> None:

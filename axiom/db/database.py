@@ -29,7 +29,16 @@ _EXTRA_CONTACT_COLS = {
     "has_wa": "TEXT",           # есть ли WhatsApp ('yes'/'no'/'unknown')
     "wa_jid": "TEXT",           # WhatsApp JID собеседника (например 79991234567@s.whatsapp.net)
     "agent_context": "TEXT",    # ручной контекст для агента (история/нюансы общения с этим лидом)
+    "pipeline_id": "INTEGER",   # в какой воронке лид (NULL = дефолтная)
 }
+
+
+# Стадии дефолтной воронки (совпадают со старой единой воронкой — данные не ломаются).
+DEFAULT_STAGES = [
+    ("new", "Новые"), ("messaged", "Написано"), ("in_dialog", "В диалоге"),
+    ("meeting_set", "Встреча назначена"), ("met", "Встреча прошла"), ("won", "Сделка"),
+    ("nurture", "Прогрев"), ("lost", "Потеряны"), ("stop", "Стоп"),
+]
 
 
 # Поля кампаний, добавляемые миграцией (промпт ИИ-агента и т.п.).
@@ -86,11 +95,24 @@ def get_contact_campaign(conn: sqlite3.Connection, contact_id: int) -> sqlite3.R
     ).fetchone()
 
 
+def _seed_default_pipeline(conn: sqlite3.Connection) -> None:
+    """Если воронок нет — заводим дефолтную со старыми стадиями (данные сохраняются)."""
+    import json
+    n = conn.execute("SELECT COUNT(*) c FROM pipelines").fetchone()["c"]
+    if n == 0:
+        stages = [{"key": k, "label": l} for k, l in DEFAULT_STAGES]
+        conn.execute(
+            "INSERT INTO pipelines (name, product, stages, is_default) VALUES (?,?,?,1)",
+            ("Основная", "Общая", json.dumps(stages, ensure_ascii=False)),
+        )
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
         conn.executescript(schema)
         _ensure_columns(conn)
+        _seed_default_pipeline(conn)
 
 
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:

@@ -187,18 +187,24 @@ function fmt(ts){if(!ts)return"";const d=new Date(ts.replace(" ","T")+"Z");retur
 function statusBadge(s){return `<span class="badge b-${s}">${STATUS_RU[s]||s}</span>`;}
 function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</span>`;if(c.phone)return `<span class="sub mono">${esc(c.phone)}</span>`;return '<span class="no">—</span>';}
 
-const NAV=[
-  {id:"dashboard",ic:"📊",label:"Дашборд"},
-  {id:"projects",ic:"📁",label:"Проекты"},
-  {id:"agents",ic:"🤖",label:"Команда"},
-  {id:"calendar",ic:"📅",label:"Календарь"},
-  {id:"crm",ic:"📇",label:"CRM · База + Лиды"},
-  {id:"dossier",ic:"🗂️",label:"Досье на людей"},
-  {id:"campaigns",ic:"🎯",label:"Кампании"},
-  {id:"parser",ic:"🛰️",label:"Парсинг TG"},
-  {id:"proxy",ic:"🛡️",label:"Прокси"},
-  {id:"chats",ic:"💬",label:"Чаты"},
+const NAV_GROUPS=[
+  {title:"",items:[{id:"dashboard",ic:"📊",label:"Дашборд"}]},
+  {title:"Продажи",items:[
+    {id:"projects",ic:"📁",label:"Проекты"},
+    {id:"crm",ic:"📇",label:"CRM · База + Лиды"},
+    {id:"campaigns",ic:"🎯",label:"Кампании"},
+  ]},
+  {title:"Команда",items:[
+    {id:"agents",ic:"🤖",label:"Аккаунты"},
+    {id:"proxy",ic:"🛡️",label:"Прокси"},
+    {id:"calendar",ic:"📅",label:"Календарь"},
+  ]},
+  {title:"Лидген",items:[
+    {id:"parser",ic:"🛰️",label:"Парсинг"},
+    {id:"chats",ic:"💬",label:"Диалоги"},
+  ]},
 ];
+const NAV=NAV_GROUPS.flatMap(g=>g.items);
 let STATE={contacts:[],stats:null};
 let PROJECT_SEL=null; // выбранный проект (фильтрует кампании)
 
@@ -820,32 +826,12 @@ async function viewCalendar(v){
 // ----------------------------------------------------------------- router
 const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,crm:viewCrm,dossier:viewDossier,campaigns:viewCampaigns,parser:viewParser,proxy:viewProxy,chats:viewChats};
 
-const NAV_ORDER_KEY="axiom_nav_order";
-function applyNavOrder(){
-  try{
-    const saved=JSON.parse(localStorage.getItem(NAV_ORDER_KEY)||"[]");
-    if(saved.length)NAV.sort((a,b)=>{const ia=saved.indexOf(a.id),ib=saved.indexOf(b.id);return (ia<0?999:ia)-(ib<0?999:ib);});
-  }catch(e){}
-}
-function saveNavOrder(){try{localStorage.setItem(NAV_ORDER_KEY,JSON.stringify(NAV.map(n=>n.id)));}catch(e){}}
 function renderNav(active){
-  $("#nav").innerHTML=NAV.map(n=>`<a draggable="true" data-id="${n.id}" class="${n.id===active?"active":""}">
-    <span class="ic">${n.ic}</span>${n.label}${n.cnt!=null?`<span class="cnt">${n.cnt}</span>`:""}</a>`).join("");
-  $("#nav").querySelectorAll("a").forEach(a=>{
-    a.onclick=()=>{location.hash=a.dataset.id;};
-    a.ondragstart=e=>{e.dataTransfer.setData("id",a.dataset.id);a.style.opacity=".4";};
-    a.ondragend=()=>{a.style.opacity="";};
-    a.ondragover=e=>{e.preventDefault();a.style.borderTop="2px solid var(--accent)";};
-    a.ondragleave=()=>{a.style.borderTop="";};
-    a.ondrop=e=>{e.preventDefault();a.style.borderTop="";
-      const from=e.dataTransfer.getData("id"),to=a.dataset.id;
-      if(!from||from===to)return;
-      const fi=NAV.findIndex(n=>n.id===from),ti=NAV.findIndex(n=>n.id===to);
-      if(fi<0||ti<0)return;
-      const [mv]=NAV.splice(fi,1);NAV.splice(ti,0,mv);
-      saveNavOrder();renderNav(active);
-    };
-  });
+  $("#nav").innerHTML=NAV_GROUPS.map(g=>
+    (g.title?`<div style="padding:14px 16px 5px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);font-weight:700;">${g.title}</div>`:"")+
+    g.items.map(n=>`<a data-id="${n.id}" class="${n.id===active?"active":""}"><span class="ic">${n.ic}</span>${n.label}${n.cnt!=null?`<span class="cnt">${n.cnt}</span>`:""}</a>`).join("")
+  ).join("");
+  $("#nav").querySelectorAll("a").forEach(a=>a.onclick=()=>{location.hash=a.dataset.id;});
 }
 async function route(){
   const id=(location.hash||"#dashboard").slice(1);
@@ -857,7 +843,6 @@ async function route(){
 }
 window.addEventListener("hashchange",route);
 $("#refresh").onclick=route;
-applyNavOrder();
 route();
 </script>
 </body>

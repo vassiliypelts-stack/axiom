@@ -30,6 +30,18 @@ _EXTRA_CONTACT_COLS = {
     "wa_jid": "TEXT",           # WhatsApp JID собеседника (например 79991234567@s.whatsapp.net)
     "agent_context": "TEXT",    # ручной контекст для агента (история/нюансы общения с этим лидом)
     "pipeline_id": "INTEGER",   # в какой воронке лид (NULL = дефолтная)
+    "company_id": "INTEGER",    # юрлицо, к которому привязан контакт (companies.id)
+}
+
+
+# Поля сделок (deals как воронка Битрикс, а не только встречи).
+_EXTRA_DEAL_COLS = {
+    "title": "TEXT",            # название сделки
+    "pipeline_id": "INTEGER",   # воронка (NULL = дефолтная)
+    "company_id": "INTEGER",    # юрлицо сделки
+    "product": "TEXT",          # продукт/услуга
+    "amount": "REAL",           # сумма сделки
+    "updated_at": "TEXT",
 }
 
 
@@ -85,6 +97,36 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     for col, typ in _EXTRA_CAMPAIGN_CONTACT_COLS.items():
         if col not in cc:
             conn.execute(f"ALTER TABLE campaign_contacts ADD COLUMN {col} {typ}")
+    deal = {r["name"] for r in conn.execute("PRAGMA table_info(deals)")}
+    for col, typ in _EXTRA_DEAL_COLS.items():
+        if col not in deal:
+            conn.execute(f"ALTER TABLE deals ADD COLUMN {col} {typ}")
+    _relax_deals_contact_notnull(conn)
+
+
+def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
+    """Снимает NOT NULL с deals.contact_id (сделка может быть только на компанию).
+    SQLite не умеет ALTER COLUMN — пересобираем таблицу, сохраняя все данные."""
+    info = list(conn.execute("PRAGMA table_info(deals)"))
+    cn = next((r for r in info if r["name"] == "contact_id"), None)
+    if not cn or not cn["notnull"]:
+        return
+    coldefs = []
+    for r in info:
+        if r["name"] == "id":
+            coldefs.append('"id" INTEGER PRIMARY KEY AUTOINCREMENT')
+            continue
+        d = f'"{r["name"]}" {r["type"] or ""}'.rstrip()
+        if r["name"] != "contact_id" and r["notnull"]:
+            d += " NOT NULL"
+        if r["dflt_value"] is not None:
+            d += f' DEFAULT ({r["dflt_value"]})'
+        coldefs.append(d)
+    names = ", ".join(f'"{r["name"]}"' for r in info)
+    conn.execute(f"CREATE TABLE deals_new ({', '.join(coldefs)})")
+    conn.execute(f"INSERT INTO deals_new ({names}) SELECT {names} FROM deals")
+    conn.execute("DROP TABLE deals")
+    conn.execute("ALTER TABLE deals_new RENAME TO deals")
 
 
 def get_contact_campaign(conn: sqlite3.Connection, contact_id: int) -> sqlite3.Row | None:
@@ -108,12 +150,78 @@ def _seed_default_pipeline(conn: sqlite3.Connection) -> None:
         )
 
 
+def get_default_pipeline_id(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM pipelines ORDER BY is_default DESC, id LIMIT 1"
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def _extract(pattern: str, text: str | None) -> str | None:
+    import re
+    if not text:
+        return None
+    m = re.search(pattern, text)
+    return m.group(0) if m else None
+
+
+def _migrate_companies(conn: sqlite3.Connection) -> None:
+    """Одноразово: из каждого контакта (агентства) создаём Компанию (юрлицо) и
+    связываем contacts.company_id. Запускается, только если companies пуста."""
+    have = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
+    if have:
+        return
+    rows = conn.execute(
+        "SELECT id, name, agency, city, phone, inn, ogrn, founders, tags, notes FROM contacts"
+    ).fetchall()
+    for r in rows:
+        cname = (r["agency"] or r["name"] or "").strip() or "Без названия"
+        ctype = "ИП" if "ИП " in (" " + cname) or cname.startswith("ИП") else "ООО"
+        notes = r["notes"] or ""
+        email = _extract(r"[\w.+-]+@[\w-]+\.[\w.-]+", notes)
+        vk = _extract(r"https?://[^\s|]*vk\.com[^\s|]*", notes)
+        site = None
+        import re
+        for u in re.findall(r"https?://[^\s|]+", notes):
+            if "vk.com" not in u:
+                site = u
+                break
+        cur = conn.execute(
+            "INSERT INTO companies (name, company_type, city, phone, site, email, vk, "
+            "inn, ogrn, founders, tags, notes, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'active')",
+            (cname, ctype, r["city"], r["phone"], site, email, vk,
+             r["inn"], r["ogrn"], r["founders"], r["tags"], notes or None),
+        )
+        conn.execute("UPDATE contacts SET company_id=? WHERE id=?", (cur.lastrowid, r["id"]))
+
+
+def _migrate_deals(conn: sqlite3.Connection) -> None:
+    """Одноразово: для «лидов с интересом» (статус не new) создаём Сделку в воронке.
+    Холодная база (new) остаётся справочником — сделка появляется при работе."""
+    pid = get_default_pipeline_id(conn)
+    rows = conn.execute(
+        "SELECT c.id, c.status, c.company_id, COALESCE(co.name, c.agency, c.name) AS title, "
+        "co.company_type FROM contacts c LEFT JOIN companies co ON co.id=c.company_id "
+        "WHERE c.status IS NOT NULL AND c.status NOT IN ('new') "
+        "AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.contact_id=c.id)"
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO deals (contact_id, company_id, pipeline_id, stage, title, "
+            "product, created_at, updated_at) VALUES (?,?,?,?,?, 'Фонд доступного жилья', "
+            "datetime('now'), datetime('now'))",
+            (r["id"], r["company_id"], pid, r["status"], r["title"]),
+        )
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
         conn.executescript(schema)
         _ensure_columns(conn)
         _seed_default_pipeline(conn)
+        _migrate_companies(conn)
+        _migrate_deals(conn)
 
 
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:

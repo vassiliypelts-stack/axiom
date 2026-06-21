@@ -1,5 +1,26 @@
 -- AXIOM — схема книжки (пилот). SQLite.
 
+-- Компании (юрлица) — как в Битрикс. Агентство/организация. Контакты (физлица)
+-- ссылаются на компанию через contacts.company_id; сделки — через deals.company_id.
+CREATE TABLE IF NOT EXISTS companies (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT,
+    company_type TEXT DEFAULT 'ООО',   -- ООО | ИП | АО | Физлицо | Самозанятый
+    city         TEXT,
+    phone        TEXT,
+    site         TEXT,
+    email        TEXT,
+    vk           TEXT,
+    address      TEXT,
+    inn          TEXT,
+    ogrn         TEXT,
+    founders     TEXT,
+    tags         TEXT,
+    notes        TEXT,
+    status       TEXT DEFAULT 'active',
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
 -- Риелтор из твоей базы
 CREATE TABLE IF NOT EXISTS contacts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,7 +128,7 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
 -- Воронка / встречи
 CREATE TABLE IF NOT EXISTS deals (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    contact_id        INTEGER NOT NULL REFERENCES contacts(id),
+    contact_id        INTEGER REFERENCES contacts(id),  -- может быть NULL (сделка только на компанию)
     stage             TEXT DEFAULT 'new',  -- new|meeting_set|met|won|lost
     zoom_link         TEXT,
     meeting_at        TEXT,

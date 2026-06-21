@@ -161,11 +161,14 @@ def contacts() -> JSONResponse:
     with database.get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT c.id, c.name, c.username, c.phone, c.wa_phone, c.city, c.agency, c.tags, c.notes,
-                   c.status, c.has_tg, c.has_wa, c.preferred_channel, c.pipeline_id, c.updated_at,
+            SELECT c.id, c.name, c.person_name, c.person_role, c.username, c.phone, c.wa_phone,
+                   c.city, c.agency, c.tags, c.notes, c.status, c.has_tg, c.has_wa,
+                   c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
+                   co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts
             FROM contacts c
+            LEFT JOIN companies co ON co.id = c.company_id
             ORDER BY (last_ts IS NULL), last_ts DESC, c.id DESC
             """
         ).fetchall()
@@ -275,6 +278,216 @@ def contact_move(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
         if stage:
             conn.execute("UPDATE contacts SET status=?, updated_at=datetime('now') WHERE id=?",
                          (stage, contact_id))
+    return JSONResponse({"ok": True})
+
+
+# ---- Компании (юрлица) ---------------------------------------------------- #
+_COMPANY_FIELDS = ("name", "company_type", "city", "phone", "site", "email", "vk",
+                   "address", "inn", "ogrn", "founders", "tags", "notes", "status")
+
+
+@app.get("/api/companies")
+def companies_list(q: str | None = None, city: str | None = None) -> JSONResponse:
+    database.init_db()
+    where, params = "1=1", []
+    if q:
+        where += " AND (co.name LIKE ? OR co.inn LIKE ? OR co.phone LIKE ?)"
+        params += [f"%{q}%", f"%{q}%", f"%{q}%"]
+    if city:
+        where += " AND co.city = ?"
+        params.append(city)
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT co.*,
+                   (SELECT COUNT(*) FROM contacts c WHERE c.company_id=co.id) AS contacts_count,
+                   (SELECT COUNT(*) FROM deals d WHERE d.company_id=co.id) AS deals_count
+                FROM companies co WHERE {where} ORDER BY co.name""",
+            params,
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r); d["tags"] = _split_tags(d.get("tags")); out.append(d)
+    return JSONResponse(out)
+
+
+@app.get("/api/company/{cid}")
+def company_detail(cid: int) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM companies WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        contacts = conn.execute(
+            "SELECT id, name, person_name, person_role, phone, username, status, has_tg, has_wa "
+            "FROM contacts WHERE company_id=? ORDER BY id", (cid,)
+        ).fetchall()
+        deals = conn.execute(
+            "SELECT id, title, stage, product, amount, pipeline_id FROM deals WHERE company_id=? ORDER BY id DESC",
+            (cid,)
+        ).fetchall()
+    d = dict(row); d["tags"] = _split_tags(d.get("tags"))
+    d["contacts"] = [dict(c) for c in contacts]
+    d["deals"] = [dict(x) for x in deals]
+    return JSONResponse(d)
+
+
+@app.post("/api/companies")
+def company_create(payload: dict = Body(...)) -> JSONResponse:
+    f = {k: (payload.get(k) or None) for k in _COMPANY_FIELDS}
+    if not f["name"]:
+        return JSONResponse({"error": "нужно название компании"}, status_code=400)
+    f["company_type"] = f["company_type"] or "ООО"
+    f["status"] = f["status"] or "active"
+    cols = ",".join(_COMPANY_FIELDS)
+    ph = ",".join("?" for _ in _COMPANY_FIELDS)
+    with database.get_conn() as conn:
+        cur = conn.execute(f"INSERT INTO companies ({cols}) VALUES ({ph})",
+                           [f[k] for k in _COMPANY_FIELDS])
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/company/{cid}/update")
+def company_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in _COMPANY_FIELDS:
+        if k in payload:
+            sets.append(f"{k}=?"); vals.append(payload.get(k) or None)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(cid)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE companies SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/company/{cid}/delete")
+def company_delete(cid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("UPDATE contacts SET company_id=NULL WHERE company_id=?", (cid,))
+        conn.execute("UPDATE deals SET company_id=NULL WHERE company_id=?", (cid,))
+        conn.execute("DELETE FROM companies WHERE id=?", (cid,))
+    return JSONResponse({"ok": True})
+
+
+# ---- Контакты (физлица): создание/правка ---------------------------------- #
+_CONTACT_EDIT_FIELDS = ("name", "person_name", "person_role", "phone", "username",
+                        "wa_phone", "city", "company_id", "specialization", "tags",
+                        "notes", "agent_context", "preferred_channel")
+
+
+@app.post("/api/contacts/create")
+def contact_create(payload: dict = Body(...)) -> JSONResponse:
+    name = (payload.get("person_name") or payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "нужно имя контакта"}, status_code=400)
+    f = {k: (payload.get(k) or None) for k in _CONTACT_EDIT_FIELDS}
+    f["name"] = f["name"] or name
+    cols = ["source", *(_CONTACT_EDIT_FIELDS)]
+    ph = ",".join("?" for _ in cols)
+    with database.get_conn() as conn:
+        cur = conn.execute(f"INSERT INTO contacts ({','.join(cols)}) VALUES ({ph})",
+                           ["manual", *[f[k] for k in _CONTACT_EDIT_FIELDS]])
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/contact/{contact_id}/update")
+def contact_update(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in _CONTACT_EDIT_FIELDS:
+        if k in payload:
+            v = payload.get(k)
+            if k == "company_id":
+                v = v or None
+            else:
+                v = v if (v is not None and v != "") else None
+            sets.append(f"{k}=?"); vals.append(v)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(contact_id)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE contacts SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+# ---- Сделки (воронка Битрикс) --------------------------------------------- #
+@app.get("/api/deals")
+def deals_list(pipeline_id: int | None = None) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        pid = pipeline_id or database.get_default_pipeline_id(conn)
+        rows = conn.execute(
+            """SELECT d.*, co.name AS company_name, c.person_name, c.name AS contact_name,
+                      c.username, c.phone
+               FROM deals d
+               LEFT JOIN companies co ON co.id=d.company_id
+               LEFT JOIN contacts c ON c.id=d.contact_id
+               WHERE (d.pipeline_id=? OR (d.pipeline_id IS NULL AND ?=?))
+               ORDER BY d.updated_at DESC, d.id DESC""",
+            (pid, pid, database.get_default_pipeline_id(conn)),
+        ).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/deals")
+def deal_create(payload: dict = Body(...)) -> JSONResponse:
+    title = (payload.get("title") or "").strip()
+    contact_id = payload.get("contact_id") or None
+    company_id = payload.get("company_id") or None
+    with database.get_conn() as conn:
+        if not title:
+            if company_id:
+                r = conn.execute("SELECT name FROM companies WHERE id=?", (company_id,)).fetchone()
+                title = (r["name"] if r else None) or "Новая сделка"
+            else:
+                title = "Новая сделка"
+        pid = payload.get("pipeline_id") or database.get_default_pipeline_id(conn)
+        cur = conn.execute(
+            "INSERT INTO deals (contact_id, company_id, pipeline_id, stage, title, product, amount, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?, datetime('now'), datetime('now'))",
+            (contact_id, company_id, pid, payload.get("stage") or "new", title,
+             payload.get("product") or None, payload.get("amount") or None),
+        )
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/deal/{did}/move")
+def deal_move(did: int, payload: dict = Body(...)) -> JSONResponse:
+    stage = payload.get("stage")
+    pid = payload.get("pipeline_id", "keep")
+    with database.get_conn() as conn:
+        if pid != "keep":
+            conn.execute("UPDATE deals SET pipeline_id=?, updated_at=datetime('now') WHERE id=?",
+                         (pid or None, did))
+        if stage:
+            conn.execute("UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?", (stage, did))
+            # синхронизируем статус привязанного контакта (для дашборда/прогресса)
+            row = conn.execute("SELECT contact_id FROM deals WHERE id=?", (did,)).fetchone()
+            if row and row["contact_id"]:
+                conn.execute("UPDATE contacts SET status=?, updated_at=datetime('now') WHERE id=?",
+                             (stage, row["contact_id"]))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/deal/{did}/update")
+def deal_update(did: int, payload: dict = Body(...)) -> JSONResponse:
+    fields = ("title", "product", "amount", "stage", "company_id", "contact_id", "pipeline_id", "notes")
+    sets, vals = [], []
+    for k in fields:
+        if k in payload:
+            sets.append(f"{k}=?"); vals.append(payload.get(k) or None)
+    if not sets:
+        return JSONResponse({"ok": True})
+    sets.append("updated_at=datetime('now')")
+    vals.append(did)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE deals SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/deal/{did}/delete")
+def deal_delete(did: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM deals WHERE id=?", (did,))
     return JSONResponse({"ok": True})
 
 

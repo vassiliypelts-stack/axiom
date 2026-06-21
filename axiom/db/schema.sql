@@ -26,6 +26,20 @@ CREATE TABLE IF NOT EXISTS contacts (
     UNIQUE(username)
 );
 
+-- Мои аккаунты (нейрокоманда / пул отправителей). «Кто есть кто».
+CREATE TABLE IF NOT EXISTS accounts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    label       TEXT,                      -- ярлык: «Вася SDR», «Аккаунт #2»
+    phone       TEXT,                      -- номер телефона аккаунта
+    username    TEXT,                      -- @username
+    role        TEXT,                      -- роль в команде: sdr|qualifier|closer|scheduler
+    status      TEXT DEFAULT 'active',     -- active|warming|paused|banned
+    daily_limit INTEGER DEFAULT 15,        -- лимит первых сообщений в день
+    notes       TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(phone)
+);
+
 -- Реплики диалога (входящие/исходящие)
 CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,6 +49,48 @@ CREATE TABLE IF NOT EXISTS messages (
     text        TEXT NOT NULL,
     intent      TEXT,                      -- positive|objection|later|not_interested|question|agreed
     ts          TEXT DEFAULT (datetime('now'))
+);
+
+-- Проекты: верхний уровень. В одном проекте несколько маркетинговых кампаний.
+CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT,
+    entity      TEXT,                       -- юр. сущность / бренд проекта
+    description TEXT,
+    status      TEXT DEFAULT 'active',      -- active|paused|done
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Команда кампании: какие агенты (аккаунты) работают эту кампанию.
+CREATE TABLE IF NOT EXISTS campaign_accounts (
+    campaign_id INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    daily_limit INTEGER,                    -- персональный лимит агента (пусто = лимит кампании)
+    UNIQUE(campaign_id, account_id)
+);
+
+-- Кампании (задания на обзвон/рассылку)
+CREATE TABLE IF NOT EXISTS campaigns (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT,
+    product      TEXT,                       -- что продаём
+    audience_tag TEXT,                       -- фильтр аудитории по тегу (пусто = вся база)
+    channel      TEXT DEFAULT 'telegram',    -- telegram | whatsapp
+    account_id   INTEGER,                    -- с какого аккаунта слать (accounts.id)
+    daily_limit  INTEGER DEFAULT 15,
+    message_template TEXT,                    -- первое сообщение; каждая строка = отдельное сообщение; {name} подставляется
+    agent_prompt TEXT,                         -- промпт общения ИИ-агента в диалоге (как ведёт, отрабатывает возражения)
+    kp_text      TEXT,                        -- коммерческое предложение
+    status       TEXT DEFAULT 'draft',        -- draft|running|paused|done
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
+-- Связь кампания ↔ контакт (кому в рамках кампании уже отправлено)
+CREATE TABLE IF NOT EXISTS campaign_contacts (
+    campaign_id INTEGER NOT NULL,
+    contact_id  INTEGER NOT NULL,
+    sent_at     TEXT DEFAULT (datetime('now')),
+    UNIQUE(campaign_id, contact_id)
 );
 
 -- Воронка / встречи

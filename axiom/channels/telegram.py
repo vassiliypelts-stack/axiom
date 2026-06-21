@@ -60,9 +60,9 @@ def _default_slots() -> list[str]:
     return [f"{d1:%d.%m} в 11:00", f"{d1:%d.%m} в 16:00", f"{d2:%d.%m} в 12:00"]
 
 
-def _parse_proxy() -> dict | None:
-    """TG_PROXY вида socks5://user:pass@host:port → dict для python-socks. Пусто → None."""
-    raw = (config.TG_PROXY or "").strip()
+def parse_proxy_str(raw: str | None) -> dict | None:
+    """socks5://user:pass@host:port → dict для python-socks. Пусто → None."""
+    raw = (raw or "").strip()
     if not raw:
         return None
     from urllib.parse import urlparse
@@ -74,6 +74,11 @@ def _parse_proxy() -> dict | None:
     if p.password:
         proxy["password"] = p.password
     return proxy
+
+
+def _parse_proxy() -> dict | None:
+    """Прокси основного аккаунта из TG_PROXY (.env)."""
+    return parse_proxy_str(config.TG_PROXY)
 
 
 def _build_client() -> TelegramClient:
@@ -207,12 +212,15 @@ async def _handle_incoming(event) -> None:
         contact_id = contact["id"]
         opener, messages = _history_for_agent(database.get_history(conn, contact_id))
         contact_info = _contact_dict(contact)
+        camp = database.get_contact_campaign(conn, contact_id)
+        campaign_prompt = camp["agent_prompt"] if camp else None
+        extra_context = contact["agent_context"] if "agent_context" in contact.keys() else None
 
     messages.append({"role": "user", "content": text_in})
 
     try:
         reply = await asyncio.to_thread(
-            generate_reply, messages, _default_slots(), contact_info, opener
+            generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt, extra_context
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")

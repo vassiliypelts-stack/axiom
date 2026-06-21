@@ -46,6 +46,8 @@ def generate_reply(
     slots: list[str],
     contact: dict | None = None,
     opener: str | None = None,
+    campaign_prompt: str | None = None,
+    extra_context: str | None = None,
 ) -> Reply:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     'user' = входящее от риелтора, 'assistant' = наши прошлые сообщения.
@@ -54,20 +56,32 @@ def generate_reply(
     канале диалог начинает наше исходящее сообщение — его передавай через `opener`,
     а в history клади только то, что идёт начиная с ответа собеседника.
     """
-    system = build_system(slots)
+    system = build_system(slots, campaign_prompt)
     if contact:
         who = ", ".join(f"{k}: {v}" for k, v in contact.items() if v)
         system += f"\n\nЧТО ИЗВЕСТНО О СОБЕСЕДНИКЕ: {who}"
     if opener:
         system += f"\n\nТЫ УЖЕ НАПИСАЛ ЕМУ ПЕРВЫМ (контекст, не повторяйся дословно): {opener}"
+    if extra_context and extra_context.strip():
+        system += (
+            "\n\nКОНТЕКСТ ОБЩЕНИЯ С ЭТИМ ЧЕЛОВЕКОМ (важно, обязательно учитывай — "
+            "вы уже знакомы/общались, опирайся на это, не пиши как в холодную):\n"
+            + extra_context.strip()
+        )
+
+    # adaptive thinking есть только у 4.6+/Opus. На Haiku 4.5 параметр не передаём
+    # (он бы дал ошибку и лишний расход). Короткие реплики SDR в нём не нуждаются.
+    kwargs: dict = {}
+    if "haiku" not in config.AGENT_MODEL:
+        kwargs["thinking"] = {"type": "adaptive"}
 
     response = _get_client().messages.parse(
-        model=config.MODEL,
-        max_tokens=2000,
-        thinking={"type": "adaptive"},
+        model=config.AGENT_MODEL,
+        max_tokens=1000,
         system=system,
         messages=history,
         output_format=Reply,
+        **kwargs,
     )
     return response.parsed_output
 

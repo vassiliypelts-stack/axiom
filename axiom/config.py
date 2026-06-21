@@ -10,8 +10,14 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 # --- Claude ---
+# Runtime AXIOM по умолчанию на Haiku 4.5 (в 5 раз дешевле Opus). Opus оставляем
+# для разработки приложения, не для боевой работы агентов.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = os.getenv("AXIOM_MODEL", "claude-opus-4-8")
+# Обогащение (массово, дёшево) — Haiku.
+MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
+# Диалоги агента (где делаются деньги) — можно умнее/дороже: claude-opus-4-8 или
+# claude-sonnet-4-6. По умолчанию = MODEL (Haiku). Переключить через .env: AXIOM_AGENT_MODEL.
+AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
 
 # --- БД ---
 DB_PATH = BASE_DIR / "data" / "axiom.db"
@@ -28,6 +34,10 @@ TG_PROXY = os.getenv("TG_PROXY", "")
 
 # --- Антибан ---
 DAILY_FIRST_MESSAGES = int(os.getenv("DAILY_FIRST_MESSAGES", "15"))
+
+# --- Обогащение (DaData: ИНН/ОГРН/ФИО руководителя из ЕГРЮЛ) ---
+# Бесплатный токен на dadata.ru → API → ключ доступа. Пусто = шаг ЕГРЮЛ пропускается.
+DADATA_API_KEY = os.getenv("DADATA_API_KEY", "")
 
 # --- Встречи (Calendar + Zoom) ---
 MEETING_TZ = os.getenv("MEETING_TZ", "Europe/Moscow")

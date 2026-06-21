@@ -9,6 +9,10 @@ telethon>=1.36           # userbot / MTProto
 python-socks[asyncio]>=2.4  # прокси (socks5) для Telethon
 APScheduler>=3.10         # напоминания, дожим
 
+# --- Веб-морда (дашборд + контакты) ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
 # --- Интеграции (дни 5-6) ---
 google-api-python-client>=2.0
 google-auth-oauthlib>=1.0

@@ -15,10 +15,82 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+# Поля обогащения добавляем миграцией (ALTER), чтобы не ломать существующую БД.
+_EXTRA_CONTACT_COLS = {
+    "person_name": "TEXT",      # контактное лицо (для {name} в рассылке)
+    "person_role": "TEXT",      # должность
+    "specialization": "TEXT",   # на чём специализируется
+    "hook": "TEXT",             # персональная зацепка для первого сообщения
+    "bio": "TEXT",              # bio из Telegram-профиля (если доставали)
+    "inn": "TEXT",              # ИНН юрлица/ИП (из ЕГРЮЛ через DaData)
+    "ogrn": "TEXT",             # ОГРН/ОГРНИП
+    "founders": "TEXT",         # учредители (ФИО через «; »; на free-тарифе DaData пусто)
+    "enriched_at": "TEXT",      # когда обогащён
+    "has_wa": "TEXT",           # есть ли WhatsApp ('yes'/'no'/'unknown')
+    "wa_jid": "TEXT",           # WhatsApp JID собеседника (например 79991234567@s.whatsapp.net)
+    "agent_context": "TEXT",    # ручной контекст для агента (история/нюансы общения с этим лидом)
+}
+
+
+# Поля кампаний, добавляемые миграцией (промпт ИИ-агента и т.п.).
+_EXTRA_CAMPAIGN_COLS = {
+    "agent_prompt": "TEXT",
+    "project_id": "INTEGER",   # к какому проекту относится кампания
+}
+
+
+# Поля аккаунтов (для прогрева и многоаккаунтной рассылки).
+_EXTRA_ACCOUNT_COLS = {
+    "tg_session": "TEXT",                 # StringSession аккаунта (Telegram)
+    "wa_authed": "TEXT",                  # авторизован ли в WhatsApp ('yes'/'no')
+    "proxy": "TEXT",                      # персональный прокси (socks5://user:pass@host:port)
+    "warm_stage": "INTEGER DEFAULT 0",    # стадия/день прогрева
+    "warm_started_at": "TEXT",
+    "last_warm_at": "TEXT",
+    "spam_status": "TEXT",                # вердикт @SpamBot: ok|limited|banned|unknown
+    "spam_checked_at": "TEXT",
+}
+
+
+# Связь кампания↔контакт: с какого аккаунта отправлено (для прогресса по номерам).
+_EXTRA_CAMPAIGN_CONTACT_COLS = {
+    "account_id": "INTEGER",
+}
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
+    for col, typ in _EXTRA_CONTACT_COLS.items():
+        if col not in have:
+            conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {typ}")
+    camp = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    for col, typ in _EXTRA_CAMPAIGN_COLS.items():
+        if col not in camp:
+            conn.execute(f"ALTER TABLE campaigns ADD COLUMN {col} {typ}")
+    acc = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}
+    for col, typ in _EXTRA_ACCOUNT_COLS.items():
+        if col not in acc:
+            conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} {typ}")
+    cc = {r["name"] for r in conn.execute("PRAGMA table_info(campaign_contacts)")}
+    for col, typ in _EXTRA_CAMPAIGN_CONTACT_COLS.items():
+        if col not in cc:
+            conn.execute(f"ALTER TABLE campaign_contacts ADD COLUMN {col} {typ}")
+
+
+def get_contact_campaign(conn: sqlite3.Connection, contact_id: int) -> sqlite3.Row | None:
+    """Кампания, к которой привязан контакт (последняя по отправке). Для промпта агента."""
+    return conn.execute(
+        "SELECT c.* FROM campaigns c JOIN campaign_contacts cc ON cc.campaign_id = c.id "
+        "WHERE cc.contact_id = ? ORDER BY cc.sent_at DESC LIMIT 1",
+        (contact_id,),
+    ).fetchone()
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
         conn.executescript(schema)
+        _ensure_columns(conn)
 
 
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
@@ -90,6 +162,73 @@ def set_tg_user_id(conn: sqlite3.Connection, contact_id: int, tg_user_id: int) -
         "UPDATE contacts SET tg_user_id = ?, updated_at = datetime('now') WHERE id = ?",
         (tg_user_id, contact_id),
     )
+
+
+def find_contact_by_wa(
+    conn: sqlite3.Connection, jid: str | None = None, phone: str | None = None
+) -> sqlite3.Row | None:
+    """Ищет контакт по wa_jid (приоритет), затем по последним 10 цифрам телефона.
+    Телефон в книжке хранится по-разному (+7…, 8…, с пробелами) — матчим хвост."""
+    if jid:
+        row = conn.execute("SELECT * FROM contacts WHERE wa_jid = ?", (jid,)).fetchone()
+        if row:
+            return row
+    digits = "".join(ch for ch in (phone or jid or "") if ch.isdigit())
+    if len(digits) >= 10:
+        tail = digits[-10:]
+        return conn.execute(
+            "SELECT * FROM contacts WHERE phone IS NOT NULL AND "
+            "replace(replace(replace(replace(phone,'+',''),' ',''),'-',''),'(','') LIKE ?",
+            ("%" + tail,),
+        ).fetchone()
+    return None
+
+
+def set_wa_jid(conn: sqlite3.Connection, contact_id: int, jid: str) -> None:
+    conn.execute(
+        "UPDATE contacts SET wa_jid = ?, has_wa = 'yes', updated_at = datetime('now') WHERE id = ?",
+        (jid, contact_id),
+    )
+
+
+def get_account(conn: sqlite3.Connection, acc_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+
+
+def save_account_session(conn: sqlite3.Connection, acc_id: int, session: str, username: str | None = None) -> None:
+    conn.execute(
+        "UPDATE accounts SET tg_session=?, username=COALESCE(?,username) WHERE id=?",
+        (session, username, acc_id),
+    )
+
+
+def warming_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Аккаунты в прогреве, у которых есть авторизованная TG-сессия."""
+    return conn.execute(
+        "SELECT * FROM accounts WHERE status='warming' AND tg_session IS NOT NULL AND tg_session<>''"
+    ).fetchall()
+
+
+def warm_anchors(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """«Якоря» — активные аккаунты (твои основные номера), которым шлёт прогрев,
+    чтобы ты видел активность. Плюс к взаимному прогреву между аккаунтами."""
+    return conn.execute(
+        "SELECT * FROM accounts WHERE status='active' AND (username IS NOT NULL OR phone IS NOT NULL)"
+    ).fetchall()
+
+
+def bump_warm(conn: sqlite3.Connection, acc_id: int, new_stage: int, activate: bool = False) -> None:
+    if activate:
+        conn.execute(
+            "UPDATE accounts SET warm_stage=?, last_warm_at=datetime('now'), status='active' WHERE id=?",
+            (new_stage, acc_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE accounts SET warm_stage=?, last_warm_at=datetime('now'), "
+            "warm_started_at=COALESCE(warm_started_at, datetime('now')) WHERE id=?",
+            (new_stage, acc_id),
+        )
 
 
 def record_meeting(

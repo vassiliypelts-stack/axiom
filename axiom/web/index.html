@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXIOM — пульт</title>
+<style>
+  :root{
+    --bg:#F3F1EA; --panel:#FFFFFF; --panel2:#F7F5EE; --border:#E7E2D6;
+    --text:#1C1B17; --muted:#8A8475; --accent:#C2860F; --accent-soft:#F7EBCF;
+    --ink:#1C1B17; --green:#1E9E5A; --green-soft:#E4F4EA;
+    --blue:#2563D6; --red:#D14B43; --purple:#7A5AF0; --radius:14px;
+    --shadow:0 1px 2px rgba(28,24,12,.05), 0 8px 24px rgba(28,24,12,.06);
+    --shadow-sm:0 1px 2px rgba(28,24,12,.06);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;color:var(--text);-webkit-font-smoothing:antialiased;
+    background:var(--bg);
+    background-image:radial-gradient(120% 80% at 85% -10%, #FBF6EA 0%, rgba(251,246,234,0) 55%),
+                     radial-gradient(90% 70% at 0% 0%, #F7F4EC 0%, rgba(247,244,236,0) 50%);
+    font:14px/1.55 "Segoe UI",-apple-system,system-ui,Roboto,Helvetica,Arial,sans-serif;}
+  .app{display:flex;min-height:100vh;}
+
+  /* ---- Sidebar ---- */
+  .side{width:236px;flex:0 0 236px;background:var(--panel);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;position:sticky;top:0;height:100vh;}
+  .side .brand{padding:22px 22px 18px;border-bottom:1px solid var(--border);}
+  .side .brand h1{margin:0;font-size:23px;font-weight:800;letter-spacing:.32em;color:var(--ink);}
+  .side .brand .ac{color:var(--accent);}
+  .side .brand small{display:block;color:var(--muted);font-size:10px;letter-spacing:.22em;text-transform:uppercase;margin-top:4px;}
+  nav{padding:12px 12px;flex:1;}
+  nav a{display:flex;align-items:center;gap:12px;padding:10px 13px;border-radius:10px;color:#5E594D;
+    text-decoration:none;font-size:14px;font-weight:500;margin-bottom:2px;cursor:pointer;
+    transition:background .12s,color .12s;position:relative;}
+  nav a:hover{background:var(--panel2);color:var(--text);}
+  nav a.active{background:var(--accent-soft);color:#7A530A;font-weight:600;}
+  nav a.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--accent);}
+  nav a .ic{width:20px;text-align:center;font-size:16px;filter:grayscale(.2);}
+  nav a .cnt{margin-left:auto;background:var(--panel2);border:1px solid var(--border);border-radius:20px;
+    font-size:11px;padding:1px 8px;color:var(--muted);}
+  .side .foot{padding:14px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:7px;
+    box-shadow:0 0 0 3px var(--green-soft);}
+
+  /* ---- Content ---- */
+  .content{flex:1;min-width:0;display:flex;flex-direction:column;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 30px;
+    border-bottom:1px solid var(--border);background:rgba(255,255,255,.78);backdrop-filter:blur(10px);position:sticky;top:0;z-index:4;}
+  .topbar h2{margin:0;font-size:19px;font-weight:700;letter-spacing:-.01em;}
+  .topbar .right{display:flex;align-items:center;gap:12px;}
+  .upd{color:var(--muted);font-size:12px;}
+  main{padding:26px 30px;flex:1;max-width:1320px;width:100%;}
+
+  button,.btn{background:var(--panel);color:var(--text);border:1px solid var(--border);
+    padding:8px 14px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:500;
+    box-shadow:var(--shadow-sm);transition:border-color .12s,background .12s,color .12s;}
+  button:hover,.btn:hover{border-color:#CFC7B5;background:var(--panel2);}
+  button.primary{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:600;}
+  button.primary:hover{background:#34322B;border-color:#34322B;color:#fff;}
+  button:disabled{opacity:.55;cursor:default;}
+  input,select,textarea{background:var(--panel);color:var(--text);border:1px solid var(--border);
+    padding:8px 11px;border-radius:9px;font-size:13px;outline:none;font-family:inherit;transition:border-color .12s,box-shadow .12s;}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  textarea{resize:vertical;width:100%;line-height:1.5;}
+
+  /* ---- Cards / stats ---- */
+  .funnel{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px;margin-bottom:20px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    padding:16px 18px;position:relative;overflow:hidden;box-shadow:var(--shadow);}
+  .card .num{font-size:30px;font-weight:800;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
+  .card .lbl{color:var(--muted);font-size:12px;margin-top:7px;font-weight:500;}
+  .card::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--border);}
+  .card.k-new::after{background:var(--blue);}
+  .card.k-messaged::after,.card.k-in_dialog::after{background:var(--accent);}
+  .card.k-meeting_set::after,.card.k-met::after,.card.k-won::after{background:var(--green);}
+  .card.k-lost::after,.card.k-stop::after{background:var(--red);}
+  .strip{display:flex;gap:12px;margin-bottom:26px;flex-wrap:wrap;}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:11px 17px;box-shadow:var(--shadow-sm);}
+  .stat b{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;} .stat span{color:var(--muted);font-size:12px;margin-left:6px;}
+
+  /* ---- Smart table ---- */
+  .ttoolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+  .ttoolbar .grow{flex:1;}
+  .ttoolbar .hint{color:var(--muted);font-size:12px;}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);}
+  th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;white-space:nowrap;background:var(--panel2);}
+  th:hover{color:var(--text);}
+  tr:last-child td{border-bottom:none;}
+  tbody tr:hover td{background:#FBFAF5;}
+  tbody tr.clk{cursor:pointer;}
+  .grouphdr td{background:var(--accent-soft);color:#7A530A;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
+  .name{font-weight:600;}
+  .sub{color:var(--muted);font-size:12px;}
+  .mono{font-variant-numeric:tabular-nums;}
+  .tg{color:var(--blue);} .no{color:#B6B0A0;}
+
+  .badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;border:1px solid;white-space:nowrap;background:var(--panel);}
+  .b-new{color:var(--blue);border-color:#BBD0F4;background:#EEF4FE;}
+  .b-messaged,.b-in_dialog{color:#9A6A07;border-color:#EAD6A6;background:var(--accent-soft);}
+  .b-meeting_set,.b-met,.b-won{color:#157A43;border-color:#B7E2C7;background:var(--green-soft);}
+  .b-lost,.b-stop{color:var(--red);border-color:#EDC3C0;background:#FBEEED;}
+  .b-nurture{color:var(--muted);border-color:var(--border);background:var(--panel2);}
+  .b-active{color:#157A43;border-color:#B7E2C7;background:var(--green-soft);}
+
+  .tags{display:flex;gap:5px;flex-wrap:wrap;align-items:center;}
+  .tag{background:var(--accent-soft);color:#8A5E08;border:1px solid #EAD6A6;border-radius:7px;padding:1px 8px;font-size:11px;display:inline-flex;gap:5px;align-items:center;}
+  .tag x{cursor:pointer;color:#B89A55;font-style:normal;}
+  .tag x:hover{color:var(--red);}
+  .tag-add{cursor:pointer;color:var(--muted);border:1px dashed var(--border);border-radius:7px;padding:0 8px;font-size:12px;}
+  .tag-add:hover{color:var(--accent);border-color:var(--accent);}
+
+  /* ---- Kanban ---- */
+  .kanban{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;}
+  .kcol{flex:0 0 230px;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);display:flex;flex-direction:column;max-height:72vh;}
+  .kcol h3{margin:0;padding:12px 14px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-weight:700;}
+  .kcol h3 .n{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;color:var(--text);}
+  .kbody{padding:10px;overflow-y:auto;flex:1;min-height:60px;}
+  .kbody.over{background:var(--accent-soft);outline:1px dashed var(--accent);outline-offset:-4px;}
+  .kcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px;margin-bottom:9px;cursor:grab;box-shadow:var(--shadow-sm);transition:border-color .12s,box-shadow .12s;}
+  .kcard:hover{border-color:var(--accent);box-shadow:var(--shadow);}
+  .kcard .nm{font-weight:600;font-size:13px;}
+  .kcard .mt{color:var(--muted);font-size:11px;margin-top:3px;}
+
+  /* ---- Chats ---- */
+  .chat-wrap{display:flex;gap:16px;height:74vh;}
+  .chat-list{flex:0 0 310px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;box-shadow:var(--shadow);}
+  .chat-item{padding:13px 15px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;}
+  .chat-item:hover,.chat-item.sel{background:var(--panel2);}
+  .chat-item.sel{box-shadow:inset 3px 0 0 var(--accent);}
+  .chat-item .nm{font-weight:600;}
+  .chat-item .pv{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .thread{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);display:flex;flex-direction:column;box-shadow:var(--shadow);}
+  .thread .th-hd{padding:15px 17px;border-bottom:1px solid var(--border);font-weight:600;}
+  .th-body{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:9px;background:var(--panel2);}
+  .bubble{max-width:70%;padding:10px 14px;border-radius:16px;font-size:13px;white-space:pre-wrap;box-shadow:var(--shadow-sm);}
+  .bubble.in{background:var(--panel);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:5px;}
+  .bubble.out{background:#FBEFD2;border:1px solid #EAD6A6;align-self:flex-end;border-bottom-right-radius:5px;}
+  .bubble .t{font-size:10px;color:var(--muted);margin-top:5px;}
+
+  /* ---- Detail drawer (досье) ---- */
+  .drawer{position:fixed;top:0;right:0;width:430px;max-width:92vw;height:100vh;background:var(--panel);
+    border-left:1px solid var(--border);box-shadow:-18px 0 50px rgba(28,24,12,.14);z-index:20;
+    transform:translateX(100%);transition:transform .24s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;}
+  .drawer.open{transform:translateX(0);}
+  .drawer .dh{display:flex;justify-content:space-between;align-items:center;padding:20px 22px;border-bottom:1px solid var(--border);}
+  .drawer .dh b{font-size:16px;}
+  .drawer .db{padding:22px;overflow-y:auto;flex:1;}
+  .field{margin-bottom:15px;} .field label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;font-weight:600;}
+  .field .v{font-size:14px;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:15px;}
+  a.ext{color:var(--blue);text-decoration:none;font-weight:500;} a.ext:hover{text-decoration:underline;}
+  .empty{text-align:center;color:var(--muted);padding:50px;}
+  .stub{text-align:center;color:var(--muted);padding:60px 20px;}
+  .stub .big{font-size:40px;margin-bottom:14px;}
+  hr{border:none;border-top:1px solid var(--border);margin:18px 0;}
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-thumb{background:#DBD5C7;border-radius:6px;border:2px solid var(--bg);}
+  ::-webkit-scrollbar-thumb:hover{background:#C9C2B0;}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><h1>AX<span class="ac">I</span>OM</h1><small>пульт оператора</small></div>
+    <nav id="nav"></nav>
+    <div class="foot"><span class="dot"></span>@iivairf · онлайн</div>
+  </aside>
+  <div class="content">
+    <div class="topbar">
+      <h2 id="title">Дашборд</h2>
+      <div class="right"><span class="upd" id="upd">—</span><button id="refresh">⟳ Обновить</button></div>
+    </div>
+    <main id="view"></main>
+  </div>
+</div>
+<div class="drawer" id="drawer"><div class="dh"><b id="dr-title">Досье</b><button id="dr-close">✕</button></div><div class="db" id="dr-body"></div></div>
+
+<script>
+// ----------------------------------------------------------------- helpers
+const STATUS_RU={new:"Новый",messaged:"Написано",in_dialog:"В диалоге",meeting_set:"Встреча",met:"Встреча прошла",won:"Сделка",lost:"Потерян",nurture:"Прогрев",stop:"Стоп"};
+const STAGES=["new","messaged","in_dialog","meeting_set","met","won","nurture","lost","stop"];
+const $=s=>document.querySelector(s);
+const api=(u,o)=>fetch(u,o).then(r=>r.json());
+const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function fmt(ts){if(!ts)return"";const d=new Date(ts.replace(" ","T")+"Z");return isNaN(d)?ts:d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});}
+function statusBadge(s){return `<span class="badge b-${s}">${STATUS_RU[s]||s}</span>`;}
+function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</span>`;if(c.phone)return `<span class="sub mono">${esc(c.phone)}</span>`;return '<span class="no">—</span>';}
+
+const NAV=[
+  {id:"dashboard",ic:"📊",label:"Дашборд"},
+  {id:"projects",ic:"📁",label:"Проекты"},
+  {id:"agents",ic:"🤖",label:"Команда"},
+  {id:"calendar",ic:"📅",label:"Календарь"},
+  {id:"crm",ic:"📇",label:"CRM · База + Лиды"},
+  {id:"dossier",ic:"🗂️",label:"Досье на людей"},
+  {id:"campaigns",ic:"🎯",label:"Кампании"},
+  {id:"parser",ic:"🛰️",label:"Парсинг TG"},
+  {id:"proxy",ic:"🛡️",label:"Прокси"},
+  {id:"chats",ic:"💬",label:"Чаты"},
+];
+let STATE={contacts:[],stats:null};
+let PROJECT_SEL=null; // выбранный проект (фильтрует кампании)
+
+// ----------------------------------------------------------------- smart table
+// cfg: {columns:[{key,label,render?,cls?}], rows, searchKeys, groupOptions:[{key,label}], onRowClick, tagsCfg}
+function smartTable(mount,cfg){
+  const st={q:"",group:"",sortKey:null,sortDir:1};
+  const wrap=document.createElement("div");
+  const groupOpts=`<option value="">без группировки</option>`+(cfg.groupOptions||[]).map(g=>`<option value="${g.key}">группа: ${g.label}</option>`).join("");
+  wrap.innerHTML=`<div class="ttoolbar">
+      <input class="grow" id="st-q" placeholder="🔍 фильтр по таблице…">
+      ${cfg.groupOptions?`<select id="st-g">${groupOpts}</select>`:""}
+      <span class="hint" id="st-cnt"></span>
+    </div><div id="st-tbl"></div>`;
+  mount.appendChild(wrap);
+  const draw=()=>{
+    let rows=cfg.rows.slice();
+    if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
+    if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
+    wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
+    const head=`<tr>${cfg.columns.map(c=>`<th data-k="${c.key}">${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}</th>`).join("")}</tr>`;
+    const cell=(r,c)=>`<td class="${c.cls||""}">${c.render?c.render(r):esc(r[c.key])}</td>`;
+    const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""}" data-id="${r.id}">${cfg.columns.map(c=>cell(r,c)).join("")}</tr>`;
+    let body="";
+    if(st.group){
+      const groups={};rows.forEach(r=>{const g=r[st.group]||"—";(groups[g]=groups[g]||[]).push(r);});
+      Object.keys(groups).sort().forEach(g=>{
+        const label=cfg.groupFmt?cfg.groupFmt(st.group,g):g;
+        body+=`<tr class="grouphdr"><td colspan="${cfg.columns.length}">${label} · ${groups[g].length}</td></tr>`;
+        body+=groups[g].map(rowHtml).join("");
+      });
+    } else body=rows.map(rowHtml).join("");
+    if(!rows.length)body=`<tr><td colspan="${cfg.columns.length}" class="empty">${cfg.emptyText||"Ничего не найдено"}</td></tr>`;
+    wrap.querySelector("#st-tbl").innerHTML=`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    wrap.querySelectorAll("th").forEach(th=>th.onclick=()=>{const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
+    if(cfg.onRowClick)wrap.querySelectorAll("tbody tr.clk").forEach(tr=>tr.onclick=e=>{if(e.target.closest(".tag,.tag-add,.tag x"))return;cfg.onRowClick(+tr.dataset.id);});
+    bindTags(wrap);
+  };
+  wrap.querySelector("#st-q").oninput=e=>{st.q=e.target.value;draw();};
+  if(cfg.groupOptions)wrap.querySelector("#st-g").onchange=e=>{st.group=e.target.value;draw();};
+  draw();
+}
+function tagsCell(r){
+  const chips=(r.tags||[]).map(t=>`<span class="tag">${esc(t)} <x data-id="${r.id}" data-t="${esc(t)}">✕</x></span>`).join("");
+  return `<span class="tags">${chips}<span class="tag-add" data-id="${r.id}">+ тег</span></span>`;
+}
+function bindTags(scope){
+  scope.querySelectorAll(".tag-add").forEach(b=>b.onclick=async e=>{e.stopPropagation();
+    const id=+b.dataset.id,t=prompt("Новый тег:");if(!t)return;
+    const c=STATE.contacts.find(x=>x.id===id);const tags=[...(c.tags||[]),t.trim()];
+    await api(`/api/contact/${id}/tags`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tags})});
+    c.tags=tags;route();});
+  scope.querySelectorAll(".tag x").forEach(x=>x.onclick=async e=>{e.stopPropagation();
+    const id=+x.dataset.id,t=x.dataset.t;const c=STATE.contacts.find(v=>v.id===id);
+    const tags=(c.tags||[]).filter(v=>v!==t);
+    await api(`/api/contact/${id}/tags`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tags})});
+    c.tags=tags;route();});
+}
+
+// ----------------------------------------------------------------- views
+async function viewDashboard(v){
+  const s=STATE.stats=await api("/api/stats");
+  v.innerHTML=`<div class="funnel">${s.funnel.map(f=>`<div class="card k-${f.key}"><div class="num">${f.count}</div><div class="lbl">${f.label}</div></div>`).join("")}</div>
+   <div class="strip">
+     <div class="stat"><b>${s.total}</b><span>контактов</span></div>
+     <div class="stat"><b>${s.messages.out}</b><span>исходящих</span></div>
+     <div class="stat"><b>${s.messages.in}</b><span>входящих</span></div>
+     <div class="stat"><b>${s.meetings}</b><span>встреч</span></div>
+     <div class="stat"><b>${s.agents}</b><span>агентов активно</span></div>
+   </div>`;
+}
+
+const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
+const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
+async function viewAgents(v){
+  const a=await api("/api/accounts");
+  v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
+    <div class="card" style="margin-bottom:16px">
+      <div class="ttoolbar" style="margin:0">
+        <input id="a-label" placeholder="Ярлык (напр. Вася SDR)">
+        <input id="a-phone" placeholder="+7..." style="max-width:150px">
+        <input id="a-user" placeholder="@username" style="max-width:150px">
+        <select id="a-role"><option value="sdr">SDR</option><option value="qualifier">Квалификатор</option><option value="closer">Переговорщик</option><option value="scheduler">Ассистент встреч</option></select>
+        <select id="a-status"><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
+        <input id="a-limit" type="number" value="15" title="лимит/день" style="max-width:90px">
+        <button class="primary" id="a-add">➕ Добавить аккаунт</button>
+      </div></div>
+    <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">🛡 Проверить аккаунты (@SpamBot)</button>
+      <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
+    <div id="acc-tbl"></div>`;
+  $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
+    await api("/api/health",{method:"POST"});
+    setTimeout(()=>{b.disabled=false;b.textContent="🛡 Проверить аккаунты (@SpamBot)";route();},15000);};
+  $("#a-add").onclick=async()=>{
+    const body={label:$("#a-label").value,phone:$("#a-phone").value,username:$("#a-user").value.replace(/^@/,""),
+      role:$("#a-role").value,status:$("#a-status").value,daily_limit:$("#a-limit").value};
+    const r=await api("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.error){alert(r.error);return;}route();
+  };
+  smartTable($("#acc-tbl"),{
+    rows:a,searchKeys:["label","phone","username","role"],
+    groupOptions:[{key:"role",label:"роль"},{key:"status",label:"статус"}],
+    groupFmt:(k,val)=>k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
+    columns:[
+      {key:"label",label:"Ярлык",cls:"name",render:r=>esc(r.label)||'<span class="no">—</span>'},
+      {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||'<span class="no">—</span>'},
+      {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
+      {key:"conn",label:"Подключение",render:r=>{
+        const tg=r.tg_connected?'<span class="badge b-active">TG ✓</span>':'<span class="badge b-nurture">TG —</span>';
+        const wa=r.wa_authed==='yes'?'<span class="badge b-active">WA ✓</span>':'<span class="badge b-nurture">WA —</span>';
+        const spam=r.spam_status==='ok'?' <span class="badge b-active" title="@SpamBot: чисто">SB✓</span>'
+          :(r.spam_status&&r.spam_status!=='unknown'?` <span class="badge b-stop" title="@SpamBot: ${esc(r.spam_status)}">SB⚠</span>`:'');
+        return tg+" "+wa+spam;}},
+      {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
+      {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`},
+      {key:"warm_stage",label:"Прогрев",cls:"sub",render:r=>r.status==='warming'?`${r.warm_stage||0}/7`:'—'},
+      {key:"proxy",label:"Прокси",cls:"sub",render:r=>r.proxy?'<span class="badge b-active">есть</span>':'<span class="no">нет</span>'},
+      {key:"daily_limit",label:"Лимит/день",cls:"mono"},
+      {key:"id",label:"",render:r=>`<button class="acc-del" data-id="${r.id}">✕</button>`},
+    ],
+    emptyText:"Аккаунтов нет — добавь первый формой выше",
+  });
+  $("#acc-tbl").querySelectorAll(".acc-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Удалить аккаунт?"))return;
+    await api(`/api/accounts/${b.dataset.id}/delete`,{method:"POST"});route();});
+}
+
+async function loadContacts(){STATE.contacts=await api("/api/contacts");return STATE.contacts;}
+
+async function viewCrm(v){
+  await loadContacts();
+  v.innerHTML=`<div class="ttoolbar">
+      <button id="tab-tbl" class="primary">Таблица</button>
+      <button id="tab-kan">Воронка</button>
+      <span class="grow"></span>
+      <button id="tab-enr">✨ Обогатить пачку</button>
+      <button id="tab-imp">⬆ Импорт 2ГИС</button>
+    </div>
+    <div id="imp-panel" style="display:none" class="card">
+      <div class="ttoolbar" style="margin:0">
+        <input type="file" id="imp-file" accept=".csv">
+        <input id="imp-tag" value="Агентства недвижимости" title="тег для всей пачки" class="grow">
+        <button class="primary" id="imp-go">Загрузить</button>
+        <span class="hint" id="imp-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">CSV из 2ГИС (кодировка определится сама). Дубли по телефону/username обновятся, не задвоятся.</div>
+    </div>
+    <div id="crm-body"></div>`;
+  const body=$("#crm-body");
+  const showTbl=()=>{body.innerHTML="";crmTable(body);$("#tab-tbl").classList.add("primary");$("#tab-kan").classList.remove("primary");};
+  const showKan=()=>{body.innerHTML="";renderCrmKanban(body,false);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
+  $("#tab-tbl").onclick=showTbl;$("#tab-kan").onclick=showKan;
+  $("#tab-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  $("#tab-enr").onclick=async()=>{
+    const n=prompt("Сколько НЕобогащённых контактов обогатить за раз? (агент читает сайт + Claude, ~5-15 сек на контакт)","10");
+    if(!n)return;
+    const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
+    alert(`Запущено обогащение до ${r.limit} контактов в фоне. Через минуту-две обнови — в досье появятся контактное лицо, специализация и зацепки.`);
+  };
+  $("#imp-go").onclick=async()=>{
+    const f=$("#imp-file").files[0];const msg=$("#imp-msg");
+    if(!f){msg.textContent="выбери файл";return;}
+    msg.textContent="загружаю…";
+    const fd=new FormData();fd.append("file",f);fd.append("tag",$("#imp-tag").value);
+    try{
+      const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
+      if(r.error){msg.textContent="ошибка: "+r.error;return;}
+      msg.textContent=`✅ импортировано ${r.imported}, пропущено ${r.skipped}, всего в базе ${r.total}`;
+      await loadContacts();showTbl();
+    }catch(e){msg.textContent="ошибка: "+e.message;}
+  };
+  showTbl();
+}
+function crmTable(mount){
+  smartTable(mount,{
+    rows:STATE.contacts,searchKeys:["name","username","phone","city","agency","status"],
+    groupOptions:[{key:"status",label:"статус"},{key:"city",label:"город"},{key:"agency",label:"агентство"}],
+    groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
+    onRowClick:openDossier,
+    columns:[
+      {key:"name",label:"Имя",cls:"name",render:r=>esc(r.name)||'<span class="no">без имени</span>'},
+      {key:"username",label:"Канал",render:chCell},
+      {key:"city",label:"Город / агентство",cls:"sub",render:r=>esc([r.city,r.agency].filter(Boolean).join(" · "))||"—"},
+      {key:"tags",label:"Теги",render:tagsCell},
+      {key:"status",label:"Статус",render:r=>statusBadge(r.status)},
+      {key:"msg_count",label:"Сообщ.",cls:"mono"},
+      {key:"last_ts",label:"Активность",cls:"sub mono",render:r=>fmt(r.last_ts)||"—"},
+    ],
+    emptyText:"Контактов нет. Импортируй базу — появятся здесь.",
+  });
+}
+function renderCrmKanban(mount,readonly){
+  const by={};STAGES.forEach(s=>by[s]=[]);STATE.contacts.forEach(c=>{(by[c.status]||(by[c.status]=[])).push(c);});
+  const kan=document.createElement("div");kan.className="kanban";
+  kan.innerHTML=STAGES.map(s=>`<div class="kcol"><h3>${STATUS_RU[s]||s}<span class="n">${by[s].length}</span></h3>
+    <div class="kbody" data-s="${s}">${by[s].map(c=>`<div class="kcard" draggable="${!readonly}" data-id="${c.id}">
+      <div class="nm">${esc(c.name)||"без имени"}</div><div class="mt">${esc(c.agency||c.city||"")}${c.username?" · @"+esc(c.username):""}</div></div>`).join("")}</div></div>`).join("");
+  mount.appendChild(kan);
+  kan.querySelectorAll(".kcard").forEach(card=>card.onclick=()=>openDossier(+card.dataset.id));
+  if(readonly)return;
+  let drag=null;
+  kan.querySelectorAll(".kcard").forEach(card=>{
+    card.ondragstart=()=>{drag=+card.dataset.id;card.style.opacity=".4";};
+    card.ondragend=()=>{card.style.opacity="1";};
+  });
+  kan.querySelectorAll(".kbody").forEach(col=>{
+    col.ondragover=e=>{e.preventDefault();col.classList.add("over");};
+    col.ondragleave=()=>col.classList.remove("over");
+    col.ondrop=async e=>{e.preventDefault();col.classList.remove("over");
+      const s=col.dataset.s;if(drag==null)return;
+      await api(`/api/contact/${drag}/status`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:s})});
+      const c=STATE.contacts.find(x=>x.id===drag);if(c)c.status=s;drag=null;route();};
+  });
+}
+
+async function viewDossier(v){
+  await loadContacts();
+  v.innerHTML=`<p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p><div id="dz"></div>`;
+  smartTable($("#dz"),{
+    rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
+    groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"status",label:"статус"}],
+    groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
+    onRowClick:openDossier,
+    columns:[
+      {key:"name",label:"Человек",cls:"name",render:r=>esc(r.name)||'<span class="no">без имени</span>'},
+      {key:"agency",label:"Агентство",cls:"sub",render:r=>esc(r.agency)||"—"},
+      {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
+      {key:"username",label:"Telegram",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
+      {key:"phone",label:"Телефон",cls:"sub mono",render:r=>esc(r.phone)||"—"},
+      {key:"tags",label:"Теги",render:tagsCell},
+    ],
+    emptyText:"Людей нет",
+  });
+}
+
+const CH_RU={telegram:"Telegram",whatsapp:"WhatsApp"};
+const CST={draft:"черновик",running:"идёт",paused:"пауза",done:"готово"};
+const PROMPT_PH="Ты пишешь от лица Василия из Фонда доступного жилья директорам агентств недвижимости в личке. Цель диалога — договориться о созвоне на 10-15 минут (НЕ продать в переписке).\n\nПродукт: дополнительный финансовый маршрут для клиентов агентства, которым банк отказал или не хватает первоначального взноса. Агентству +3% с каждой сделки (1% руководителю, 2% риелтору), обучение и сопровождение берём на себя. Работу агентства не меняем — добавляется одно действие: передать короткую анкету.\n\nОтрабатывай возражения: «нет таких клиентов» → у каждого агентства есть сорванные из-за банка сделки; «это развод» → объясни структуру (объект сразу на клиента, всё по договору); «нет времени» → созвон всего 10-15 минут.\n\nНЕЛЬЗЯ: обещать «одобрение всем», выдавать Фонд за банк, скрывать платежи. Говори «дополнительный финансовый маршрут».";
+async function viewCampaigns(v){
+  const url=PROJECT_SEL?`/api/campaigns?project_id=${PROJECT_SEL.id}`:"/api/campaigns";
+  const [camps,accounts,projects]=await Promise.all([api(url),api("/api/accounts"),api("/api/projects")]);
+  const accOpts=accounts.map(a=>`<option value="${a.id}">${esc(a.label||a.phone||a.username||("#"+a.id))}</option>`).join("")||`<option value="">нет аккаунтов</option>`;
+  const projOpts=`<option value="">— без проекта —</option>`+projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  const accChecks=accounts.map(a=>`<label style="display:inline-flex;gap:6px;align-items:center;margin:2px 12px 2px 0"><input type="checkbox" class="c-acc-chk" value="${a.id}"> ${esc(a.label||a.phone||("#"+a.id))}</label>`).join("")||'<span class="no">нет аккаунтов — заведи в «Мои агенты»</span>';
+  v.innerHTML=`
+    <div class="ttoolbar"><button class="primary" id="c-new-btn">➕ Новая кампания</button>
+      ${PROJECT_SEL?`<span class="badge b-active">проект: ${esc(PROJECT_SEL.name)}</span> <button id="c-allproj">показать все</button>`:""}
+      <span class="hint">Антибан: 2-3 аккаунта на мессенджер · 10-15 контактов/день на аккаунт · постепенный прогрев до КЭВ.</span></div>
+    <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
+      <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="c-form-title">Новая кампания</div>
+      <div class="row2"><div class="field"><label>Название</label><input id="c-name" placeholder="Агентства Сочи — Фонд доступного жилья"></div>
+        <div class="field"><label>Продукт</label><input id="c-product" placeholder="Фонд доступного жилья"></div></div>
+      <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
+        <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
+      <div class="row2"><div class="field"><label>Канал</label><select id="c-chan"><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option></select></div>
+        <div class="field"><label>Основной аккаунт-отправитель</label><select id="c-acc">${accOpts}</select></div></div>
+      <div class="field"><label>👥 Команда агентов — кто работает кампанию (можно несколько)</label><div style="padding:4px 0">${accChecks}</div></div>
+      <div class="field"><label>Лимит контактов в день (на аккаунт)</label><input id="c-limit" type="number" value="15" style="max-width:160px"></div>
+      <div class="field"><label>📨 Первое сообщение — каждая строка = отдельное сообщение, {name} = имя контакта</label>
+        <textarea id="c-msg" rows="5" placeholder="Здравствуйте, {name}!&#10;Меня зовут Василий, я из Фонда доступного жилья.&#10;Бывает, что клиент выбрал объект, но срывается — банк отказал или не хватает взноса?"></textarea></div>
+      <div class="field"><label>🤖 Промпт общения ИИ-агента — как агент ведёт диалог, отрабатывает возражения, ведёт на созвон</label>
+        <textarea id="c-prompt" rows="9" placeholder="${esc(PROMPT_PH)}"></textarea>
+        <div class="hint" style="margin-top:5px">Это «характер» агента в переписке. Формат ответа (дробление, без впаривания, слоты встреч) добавляется автоматически.</div></div>
+      <div class="field"><label>📄 Коммерческое предложение (КП) — агент пришлёт по ходу диалога</label>
+        <textarea id="c-kp" rows="4" placeholder="Вставь сюда готовый текст КП для этой аудитории"></textarea></div>
+      <div class="ttoolbar" style="margin:0"><button class="primary" id="c-save">Сохранить</button><button id="c-cancel">Отмена</button>
+        <button id="c-prompt-ex" title="вставить пример промпта">↳ пример промпта</button></div>
+    </div>
+    <div id="c-list"></div>`;
+  const form=$("#c-form");
+  const fill=(c)=>{
+    $("#c-name").value=c.name||"";$("#c-product").value=c.product||"";
+    $("#c-tag").value=c.audience_tag!=null?c.audience_tag:"Агентства недвижимости";
+    $("#c-chan").value=c.channel||"telegram";$("#c-acc").value=c.account_id||"";
+    $("#c-project").value=c.project_id||(PROJECT_SEL?PROJECT_SEL.id:"");
+    $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
+    $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
+    const team=new Set(c.accounts||[]);
+    document.querySelectorAll(".c-acc-chk").forEach(ch=>{ch.checked=team.has(+ch.value);});
+  };
+  const openNew=()=>{form.dataset.edit="";$("#c-form-title").textContent="Новая кампания";
+    fill({});$("#c-save").textContent="Создать кампанию";form.style.display="block";form.scrollIntoView({behavior:"smooth"});};
+  $("#c-new-btn").onclick=()=>{ if(form.style.display==="block"&&!form.dataset.edit){form.style.display="none";} else {openNew();} };
+  $("#c-cancel").onclick=()=>{form.style.display="none";};
+  $("#c-prompt-ex").onclick=()=>{$("#c-prompt").value=PROMPT_PH;};
+  const allproj=$("#c-allproj");if(allproj)allproj.onclick=()=>{PROJECT_SEL=null;route();};
+  $("#c-save").onclick=async()=>{
+    const team=[...document.querySelectorAll(".c-acc-chk:checked")].map(ch=>+ch.value);
+    const body={name:$("#c-name").value,product:$("#c-product").value,audience_tag:$("#c-tag").value,
+      channel:$("#c-chan").value,account_id:$("#c-acc").value,project_id:$("#c-project").value||null,
+      account_ids:team,daily_limit:$("#c-limit").value,
+      message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
+    const eid=form.dataset.edit;
+    const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.error){alert(r.error);return;}route();
+  };
+  window.__campEdit=async(id)=>{
+    const c=await api(`/api/campaign/${id}`);
+    form.dataset.edit=id;$("#c-form-title").textContent="Настройка кампании: "+esc(c.name||("#"+id));
+    fill(c);$("#c-save").textContent="Сохранить изменения";form.style.display="block";form.scrollIntoView({behavior:"smooth"});
+  };
+  renderCampList($("#c-list"),camps);
+}
+function renderCampList(mount,camps){
+  if(!camps.length){mount.innerHTML='<div class="empty">Кампаний нет — создай первую кнопкой выше</div>';return;}
+  mount.innerHTML=camps.map(c=>{
+    const left=c.audience, done=c.sent;
+    const pct=(done+left)?Math.round(done/(done+left)*100):0;
+    const stCls=c.status==='running'?'b-active':c.status==='done'?'b-won':'b-nurture';
+    const hasPrompt=c.agent_prompt?'<span class="badge b-active">🤖 промпт задан</span>':'<span class="badge b-nurture">промпт не задан</span>';
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt}
+          <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${CH_RU[c.channel]||c.channel}</div>
+          <div class="sub mono">отправлено ${done} · в очереди ${left}</div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;margin-top:6px;overflow:hidden;max-width:340px">
+            <div style="height:100%;width:${pct}%;background:var(--green)"></div></div>
+        </div>
+        <div class="ttoolbar" style="margin:0">
+          <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
+          <button class="cl-prog" data-id="${c.id}">📋 Прогресс</button>
+          <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
+          <button class="primary cl-go" data-id="${c.id}">▶ Запустить</button>
+          <button class="cl-del" data-id="${c.id}">✕</button>
+        </div></div>
+        <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div></div>`;
+  }).join("");
+  mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
+  mount.querySelectorAll(".cl-prog").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,box=document.getElementById("prog-"+id);
+    if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
+    box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    const p=await api(`/api/campaign/${id}/progress`);
+    if(p.error){box.innerHTML=`<div class="empty">${esc(p.error)}</div>`;return;}
+    if(!p.rows.length){box.innerHTML='<div class="sub">Аудитория пуста — некому слать (проверь тег/канал/статусы).</div>';return;}
+    const rowsHtml=p.rows.map(r=>`<tr>
+      <td style="text-align:center">${r.sent?'<span style="color:var(--green);font-weight:700">✓</span>':'<span class="no">○</span>'}</td>
+      <td>${esc(r.name)||("#"+r.id)}</td>
+      <td class="mono">${esc(r.handle)}</td>
+      <td>${esc(r.account)}</td>
+      <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`).join("");
+    box.innerHTML=`<div class="sub" style="margin-bottom:6px">Отправлено <b>${p.sent_count}</b> из ${p.total} · аккаунт: <b>${esc(p.account_name)}</b></div>
+      <div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse">
+          <tr><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>С аккаунта</th><th>Когда</th></tr>
+          ${rowsHtml}</table></div>`;
+  });
+  mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;
+    if(!confirm(`Отправить первое сообщение ${n} контактам?\nЭто РЕАЛЬНАЯ отправка живым людям с аккаунта.`))return;
+    b.textContent="…";
+    const r=await api(`/api/campaign/${id}/launch`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
+    if(r.error){alert(r.error);b.textContent="▶ Запустить";return;}
+    alert(`Запущено: до ${r.launched} контактов. Отправка идёт в фоне с паузами — следи в разделах Чаты и CRM, прогресс подтянется.`);
+    setTimeout(route,2000);
+  });
+  mount.querySelectorAll(".cl-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Удалить кампанию?"))return;
+    await api(`/api/campaign/${b.dataset.id}/delete`,{method:"POST"});route();});
+}
+
+let CHAT_SEL=null;
+async function viewChats(v){
+  const chats=await api("/api/chats");
+  v.innerHTML=`<div class="chat-wrap">
+    <div class="chat-list" id="clist">${chats.length?chats.map(c=>`<div class="chat-item" data-id="${c.id}">
+      <div class="nm">${esc(c.name)||(c.username?"@"+esc(c.username):"#"+c.id)}</div>
+      <div class="pv">${esc(c.last_text)||""}</div></div>`).join(""):'<div class="empty">Переписок пока нет</div>'}</div>
+    <div class="thread" id="thread"><div class="empty" style="margin:auto">Выбери диалог слева</div></div></div>`;
+  v.querySelectorAll(".chat-item").forEach(it=>it.onclick=()=>{CHAT_SEL=+it.dataset.id;
+    v.querySelectorAll(".chat-item").forEach(x=>x.classList.remove("sel"));it.classList.add("sel");openThread(CHAT_SEL);});
+}
+async function openThread(id){
+  const c=await api(`/api/contact/${id}`);const th=$("#thread");
+  th.innerHTML=`<div class="th-hd">${esc(c.name)||"@"+esc(c.username||id)} · ${statusBadge(c.status)}</div>
+    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>`;
+  const b=th.querySelector(".th-body");b.scrollTop=b.scrollHeight;
+}
+
+// ----------------------------------------------------------------- drawer (досье)
+async function openDossier(id){
+  const c=await api(`/api/contact/${id}`);
+  $("#dr-title").textContent=c.name||("@"+(c.username||id));
+  const tgLink=c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">@${esc(c.username)} ↗</a>`:'<span class="no">—</span>';
+  const waLink=c.wa_phone||c.phone?`<a class="ext" href="https://wa.me/${esc((c.wa_phone||c.phone||'').replace(/[^0-9]/g,''))}" target="_blank">WhatsApp ↗</a>`:'<span class="no">—</span>';
+  const enriched=c.enriched_at;
+  const enrichBlock=`<div class="card" style="margin-bottom:14px;background:var(--panel2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b style="font-size:13px">✨ Обогащение</b>
+        <button id="dr-enrich" data-id="${c.id}">${enriched?"↻ Обновить":"Обогатить"}</button></div>
+      ${enriched?`
+        <div class="field"><label>Контактное лицо</label><div class="v">${esc(c.person_name)||'<span class="no">не найдено</span>'}${c.person_role?` <span class="sub">· ${esc(c.person_role)}</span>`:""}</div></div>
+        <div class="field"><label>Специализация</label><div class="v">${esc(c.specialization)||"—"}</div></div>
+        <div class="field"><label>Зацепка для первого сообщения</label><div class="v">${esc(c.hook)||"—"}</div></div>
+        ${(c.inn||c.ogrn)?`<div class="row2"><div class="field"><label>ИНН</label><div class="v mono">${esc(c.inn)||"—"}</div></div><div class="field"><label>ОГРН</label><div class="v mono">${esc(c.ogrn)||"—"}</div></div></div>`:""}
+        <div class="field"><label>Учредители</label><div class="v">${esc(c.founders)||'<span class="no">— (нужен платный тариф DaData)</span>'}</div></div>
+        <div class="sub">обогащён ${fmt(c.enriched_at)}</div>`
+      :`<div class="sub">Ещё не обогащён. Нажми «Обогатить» — агент прочитает сайт и достроит карточку (5-15 сек), потом обнови.</div>`}
+    </div>`;
+  $("#dr-body").innerHTML=`
+    <div class="row2"><div class="field"><label>Статус</label><div class="v">${statusBadge(c.status)}</div></div>
+      <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
+    ${enrichBlock}
+    <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
+      <div class="field"><label>Агентство</label><div class="v">${esc(c.agency)||"—"}</div></div></div>
+    <div class="row2"><div class="field"><label>Telegram</label><div class="v">${tgLink}</div></div>
+      <div class="field"><label>Телефон</label><div class="v mono">${esc(c.phone)||"—"}</div></div></div>
+    <div class="field"><label>WhatsApp</label><div class="v">${waLink}</div></div>
+    <div class="field"><label>Теги</label><div class="v">${tagsCell(c)}</div></div>
+    <div class="field"><label>Заметки</label><div class="v">${esc(c.notes)||'<span class="no">нет</span>'}</div></div>
+    <div class="field"><label>🧠 Контекст для агента — история/нюансы общения (агент учтёт в диалоге)</label>
+      <textarea id="dr-context" rows="3" style="width:100%" placeholder="напр.: общались на конференции, обещал перезвонить; интересовался загородной недвижимостью">${esc(c.agent_context||"")}</textarea>
+      <button id="dr-ctx-save" data-id="${c.id}" style="margin-top:6px">💾 Сохранить контекст</button></div>
+    <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;">История переписки</label>
+    <div class="th-body" style="max-height:none;padding:12px 0">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}</div></div>`).join("")||'<div class="no">Сообщений нет</div>'}</div>`;
+  bindTags($("#dr-body"));
+  const cb=$("#dr-ctx-save");
+  if(cb)cb.onclick=async()=>{cb.textContent="…";
+    await api(`/api/contact/${id}/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_context:$("#dr-context").value})});
+    cb.textContent="✓ сохранено";setTimeout(()=>cb.textContent="💾 Сохранить контекст",1500);};
+  const eb=$("#dr-enrich");
+  if(eb)eb.onclick=async()=>{eb.textContent="обогащаю…";eb.disabled=true;
+    await api(`/api/contact/${id}/enrich`,{method:"POST"});
+    setTimeout(()=>openDossier(id),9000);};
+  $("#drawer").classList.add("open");
+}
+$("#dr-close").onclick=()=>$("#drawer").classList.remove("open");
+
+// ----------------------------------------------------------------- parser (TG)
+async function viewParser(v){
+  const POUT="white-space:pre-wrap;background:#1C1B17;color:#E7E2D6;padding:12px;border-radius:8px;margin-top:12px;max-height:440px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;";
+  v.innerHTML=`
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">🛰️ Поиск и парсинг Telegram</b>
+    <div class="sub" style="margin:6px 0 12px">Поиск публичных групп по теме → парсинг (админы / активные комментаторы / участники) → лиды в книжку. Аккаунт подключается по сессии из .env.</div>
+    <div class="row2">
+      <div class="field"><label>Цель: @чат / ссылка / поисковый запрос</label><input id="p-target" placeholder="напр.: недвижимость сочи   или   @somechat"></div>
+      <div class="field"><label>Режим</label><select id="p-mode">
+        <option value="search">🔍 поиск групп по теме</option>
+        <option value="admins">админы канала/чата</option>
+        <option value="active">активные комментаторы</option>
+        <option value="all">админы + активные</option>
+        <option value="members">участники группы</option>
+      </select></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Глубина scan (для «активных»)</label><input id="p-scan" type="number" value="2000"></div>
+      <div class="field"><label>Топ авторов / лимит выдачи</label><input id="p-top" type="number" value="50"></div>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="p-save"> записать найденных в книжку (без галочки — только показать)</label>
+    <button id="p-run">Запустить</button>
+    <pre id="p-out" style="${POUT}display:none"></pre>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">🔗 Инвайты закрытых групп</b>
+    <div class="sub" style="margin:6px 0 12px">Соберёт ссылки t.me/+… из сообщений и покажет, что за группой (название, участники) — без вступления. Вступаешь вручную, потом парсишь.</div>
+    <div class="row2">
+      <div class="field"><label>Сканировать чат (@/ссылка)</label><input id="i-target" placeholder="@chat — необязательно"></div>
+      <div class="field"><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="i-dialogs"> по всем моим группам</label></div>
+    </div>
+    <button id="i-run">Собрать инвайты</button>
+    <pre id="i-out" style="${POUT}display:none"></pre>
+  </div>
+  <div class="card" style="background:var(--panel2)">
+    <b style="font-size:13px">👂 Слушатель по ключам</b>
+    <div class="sub" style="margin:6px 0">Мониторинг чатов в реальном времени работает как фоновый процесс (long-running), поэтому запускается из консоли:</div>
+    <pre style="${POUT}margin-top:6px">python -m channels.tg_listener --keywords "ищу риелтора, куплю квартиру в сочи, нужен ипотечный"</pre>
+  </div>`;
+
+  const run=async(btn,outSel,url,body)=>{
+    const out=$(outSel);const t=btn.textContent;btn.disabled=true;btn.textContent="выполняю… (до минуты)";
+    out.style.display="block";out.textContent="⏳ подключаюсь к Telegram и собираю…";
+    try{
+      const r=await api(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      out.textContent=r.error?("Ошибка: "+r.error):(r.output||"(пусто)");
+    }catch(e){out.textContent="Ошибка сети: "+e.message;}
+    btn.disabled=false;btn.textContent=t;
+  };
+  $("#p-run").onclick=()=>run($("#p-run"),"#p-out","/api/parse/run",{
+    target:$("#p-target").value.trim(),mode:$("#p-mode").value,save:$("#p-save").checked,
+    scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30});
+  $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
+    target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});
+}
+
+// ----------------------------------------------------------------- projects
+async function viewProjects(v){
+  const projects=await api("/api/projects");
+  v.innerHTML=`
+    <div class="ttoolbar"><button class="primary" id="p-new-btn">➕ Новый проект</button>
+      <span class="hint">Проект = направление бизнеса. Внутри проекта — несколько маркетинговых кампаний.</span></div>
+    <div id="p-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
+      <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="p-form-title">Новый проект</div>
+      <div class="row2"><div class="field"><label>Название</label><input id="p-name" placeholder="напр. Фонд доступного жилья"></div>
+        <div class="field"><label>Сущность / бренд</label><input id="p-entity" placeholder="юр. лицо или бренд"></div></div>
+      <div class="field"><label>Описание</label><textarea id="p-desc" rows="3" placeholder="что за проект, цель"></textarea></div>
+      <div class="ttoolbar" style="margin:0"><button class="primary" id="p-save">Создать</button><button id="p-cancel">Отмена</button></div>
+    </div>
+    <div id="p-list"></div>`;
+  const form=$("#p-form");
+  const openNew=()=>{form.dataset.edit="";$("#p-form-title").textContent="Новый проект";
+    $("#p-name").value="";$("#p-entity").value="";$("#p-desc").value="";$("#p-save").textContent="Создать";
+    form.style.display="block";};
+  $("#p-new-btn").onclick=()=>{form.style.display=form.style.display==="block"?"none":"block";if(form.style.display==="block"&&!form.dataset.edit)openNew();};
+  $("#p-cancel").onclick=()=>{form.style.display="none";};
+  $("#p-save").onclick=async()=>{
+    const body={name:$("#p-name").value,entity:$("#p-entity").value,description:$("#p-desc").value};
+    const eid=form.dataset.edit;
+    const r=await api(eid?`/api/project/${eid}/update`:"/api/projects",
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.error){alert(r.error);return;}route();
+  };
+  const list=$("#p-list");
+  if(!projects.length){list.innerHTML='<div class="empty">Проектов нет — создай первый кнопкой выше</div>';}
+  else{
+    list.innerHTML=projects.map(p=>`<div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+      <div style="flex:1;min-width:240px">
+        <b>${esc(p.name)}</b> ${p.entity?`<span class="sub">· ${esc(p.entity)}</span>`:""}
+        <div class="sub" style="margin:4px 0">${esc(p.description||"")}</div>
+        <div class="sub mono">кампаний: ${p.campaigns}</div>
+      </div>
+      <div class="ttoolbar" style="margin:0">
+        <button class="primary pr-camp" data-id="${p.id}" data-name="${esc(p.name)}">🎯 Кампании</button>
+        <button class="pr-edit" data-id="${p.id}" data-name="${esc(p.name)}" data-entity="${esc(p.entity||'')}" data-desc="${esc(p.description||'')}">⚙</button>
+        <button class="pr-del" data-id="${p.id}">✕</button>
+      </div></div>`).join("");
+    list.querySelectorAll(".pr-camp").forEach(b=>b.onclick=()=>{PROJECT_SEL={id:+b.dataset.id,name:b.dataset.name};location.hash="campaigns";});
+    list.querySelectorAll(".pr-edit").forEach(b=>b.onclick=()=>{form.dataset.edit=b.dataset.id;$("#p-form-title").textContent="Проект: "+b.dataset.name;
+      $("#p-name").value=b.dataset.name;$("#p-entity").value=b.dataset.entity;$("#p-desc").value=b.dataset.desc;$("#p-save").textContent="Сохранить";form.style.display="block";});
+    list.querySelectorAll(".pr-del").forEach(b=>b.onclick=async()=>{if(!confirm("Удалить проект? Кампании останутся, но без проекта."))return;
+      await api(`/api/project/${b.dataset.id}/delete`,{method:"POST"});route();});
+  }
+}
+
+// ----------------------------------------------------------------- proxy
+async function viewProxy(v){
+  const a=await api("/api/accounts");
+  v.innerHTML=`
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">🛡️ Прокси для аккаунтов</b>
+    <div class="sub" style="margin:6px 0 12px">Каждому номеру — свой IP. Иначе Telegram/WhatsApp видят пачку аккаунтов с одного адреса и банят. Формат: <span class="mono">socks5://user:pass@host:port</span> или <span class="mono">http://host:port</span>. Подойдёт любой прокси-сервис (под рассылку лучше всего мобильные прокси РФ).</div>
+    <div class="ttoolbar" style="margin:0">
+      <input id="px-all" class="grow" placeholder="socks5://user:pass@host:port — применить сразу ко всем">
+      <button id="px-all-btn">Применить ко всем</button>
+    </div>
+  </div>
+  <div id="px-tbl"></div>`;
+  const tbl=$("#px-tbl");
+  tbl.innerHTML=`<div style="border:1px solid var(--border);border-radius:8px;overflow:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <tr><th>Аккаунт</th><th>Телефон</th><th>Статус</th><th>Прокси (socks5/http)</th><th></th></tr>
+      ${a.map(x=>`<tr>
+        <td>${esc(x.label)||("#"+x.id)}</td>
+        <td class="mono">${esc(x.phone)||"—"}</td>
+        <td><span class="badge b-${x.status==='active'?'active':x.status==='banned'?'stop':'nurture'}">${ACC_ST[x.status]||x.status}</span></td>
+        <td><input class="px-in" data-id="${x.id}" value="${esc(x.proxy||'')}" placeholder="socks5://..." style="width:100%;min-width:240px"></td>
+        <td><button class="px-save" data-id="${x.id}">💾</button></td></tr>`).join("")}
+    </table></div>`;
+  tbl.querySelectorAll(".px-save").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,val=tbl.querySelector(`.px-in[data-id="${id}"]`).value.trim();
+    b.textContent="…";
+    const r=await api(`/api/accounts/${id}/proxy`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proxy:val})});
+    b.textContent=r.ok?"✓":"!";setTimeout(()=>b.textContent="💾",1400);
+  });
+  $("#px-all-btn").onclick=async()=>{
+    const val=$("#px-all").value.trim();
+    if(!val){alert("введи адрес прокси");return;}
+    if(!confirm("Применить этот прокси ко ВСЕМ аккаунтам?"))return;
+    await api("/api/accounts/proxy_all",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proxy:val})});
+    route();
+  };
+}
+
+// ----------------------------------------------------------------- calendar
+async function viewCalendar(v){
+  const m=await api("/api/meetings");
+  if(!m.length){v.innerHTML='<div class="empty">Встреч пока нет. Появятся, когда агент договорится о созвоне (КЭВ).</div>';return;}
+  v.innerHTML=`<p class="sub" style="margin-top:0">Назначенные встречи (КЭВ). Синхронизация с Google/Яндекс Календарём — в планах.</p>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:auto"><table style="width:100%;border-collapse:collapse">
+      <tr><th>Когда</th><th>Кто</th><th>Контакт</th><th>Zoom</th><th>Заметка</th></tr>
+      ${m.map(x=>`<tr>
+        <td class="mono">${fmt(x.meeting_at)||esc(x.meeting_at)||"—"}</td>
+        <td>${esc(x.name)||("#"+x.cid)}</td>
+        <td class="mono">${x.username?"@"+esc(x.username):(esc(x.phone)||"—")}</td>
+        <td>${x.zoom_link?`<a class="ext" href="${esc(x.zoom_link)}" target="_blank">ссылка ↗</a>`:'<span class="no">—</span>'}</td>
+        <td class="sub">${esc(x.notes)||""}</td></tr>`).join("")}
+    </table></div>`;
+}
+
+// ----------------------------------------------------------------- router
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,crm:viewCrm,dossier:viewDossier,campaigns:viewCampaigns,parser:viewParser,proxy:viewProxy,chats:viewChats};
+
+const NAV_ORDER_KEY="axiom_nav_order";
+function applyNavOrder(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(NAV_ORDER_KEY)||"[]");
+    if(saved.length)NAV.sort((a,b)=>{const ia=saved.indexOf(a.id),ib=saved.indexOf(b.id);return (ia<0?999:ia)-(ib<0?999:ib);});
+  }catch(e){}
+}
+function saveNavOrder(){try{localStorage.setItem(NAV_ORDER_KEY,JSON.stringify(NAV.map(n=>n.id)));}catch(e){}}
+function renderNav(active){
+  $("#nav").innerHTML=NAV.map(n=>`<a draggable="true" data-id="${n.id}" class="${n.id===active?"active":""}">
+    <span class="ic">${n.ic}</span>${n.label}${n.cnt!=null?`<span class="cnt">${n.cnt}</span>`:""}</a>`).join("");
+  $("#nav").querySelectorAll("a").forEach(a=>{
+    a.onclick=()=>{location.hash=a.dataset.id;};
+    a.ondragstart=e=>{e.dataTransfer.setData("id",a.dataset.id);a.style.opacity=".4";};
+    a.ondragend=()=>{a.style.opacity="";};
+    a.ondragover=e=>{e.preventDefault();a.style.borderTop="2px solid var(--accent)";};
+    a.ondragleave=()=>{a.style.borderTop="";};
+    a.ondrop=e=>{e.preventDefault();a.style.borderTop="";
+      const from=e.dataTransfer.getData("id"),to=a.dataset.id;
+      if(!from||from===to)return;
+      const fi=NAV.findIndex(n=>n.id===from),ti=NAV.findIndex(n=>n.id===to);
+      if(fi<0||ti<0)return;
+      const [mv]=NAV.splice(fi,1);NAV.splice(ti,0,mv);
+      saveNavOrder();renderNav(active);
+    };
+  });
+}
+async function route(){
+  const id=(location.hash||"#dashboard").slice(1);
+  const nav=NAV.find(n=>n.id===id)||NAV[0];
+  renderNav(nav.id);$("#title").textContent=nav.label;
+  const v=$("#view");v.innerHTML='<div class="sub">Загрузка…</div>';
+  try{await (VIEWS[nav.id]||viewDashboard)(v);}catch(e){v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`;}
+  $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
+}
+window.addEventListener("hashchange",route);
+$("#refresh").onclick=route;
+applyNavOrder();
+route();
+</script>
+</body>
+</html>

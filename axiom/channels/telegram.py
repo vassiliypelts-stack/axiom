@@ -31,6 +31,17 @@ from agent.agent import generate_reply
 from db import database
 from integrations import meetings
 
+# Папка с файлами КП (коммерческих предложений), прикреплёнными к кампаниям.
+KP_DIR = config.DB_PATH.parent / "kp"
+
+
+def _kp_path(kp_file: str | None):
+    """Путь к существующему файлу КП кампании или None."""
+    if not kp_file:
+        return None
+    p = KP_DIR / kp_file
+    return p if p.exists() else None
+
 # ⚠️ ПРАВЬ ПОД СЕБЯ. Первое сообщение знакомому (тема: разработка ИИ / автоматизация).
 # Уходит несколькими сообщениями по очереди (как живая личка). Цель — мягко вывести на созвон.
 def _first_message_parts(row) -> list[str]:
@@ -214,13 +225,16 @@ async def _handle_incoming(event) -> None:
         contact_info = _contact_dict(contact)
         camp = database.get_contact_campaign(conn, contact_id)
         campaign_prompt = camp["agent_prompt"] if camp else None
+        kp_file = (camp["kp_file"] if camp and "kp_file" in camp.keys() else None)
         extra_context = contact["agent_context"] if "agent_context" in contact.keys() else None
 
+    kp_path = _kp_path(kp_file)
     messages.append({"role": "user", "content": text_in})
 
     try:
         reply = await asyncio.to_thread(
-            generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt, extra_context
+            generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,
+            extra_context, bool(kp_path),
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")
@@ -230,6 +244,16 @@ async def _handle_incoming(event) -> None:
     await asyncio.sleep(random.uniform(*REPLY_DELAY))  # пауза перед началом ответа
     await _send_parts(event.client, peer, reply.reply_parts)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
+
+    # КП файлом — если агент решил, что уместно, и файл реально приложен к кампании
+    if reply.send_kp and kp_path is not None:
+        try:
+            await asyncio.sleep(random.uniform(*REPLY_DELAY))
+            await event.client.send_file(peer, str(kp_path))
+            reply_text += f"\n[отправлен файл КП: {kp_path.name}]"
+            print(f"[KP -> {contact_info.get('name', contact_id)}] {kp_path.name}")
+        except Exception as e:
+            print(f"[KP send error] contact {contact_id}: {e}")
 
     # Согласие на встречу → создаём Zoom + событие (сетевые вызовы вне БД-блока)
     meeting = None

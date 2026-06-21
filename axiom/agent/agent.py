@@ -28,6 +28,12 @@ class Reply(BaseModel):
     )
     meeting_agreed: bool = Field(description="True, если человек явно согласился на конкретное время")
     proposed_datetime: str | None = Field(description="Согласованный слот (ISO или как в диалоге), иначе null")
+    send_kp: bool = Field(
+        default=False,
+        description="True ТОЛЬКО если уместно отправить коммерческое предложение (КП) файлом — "
+        "например человек просит подробности/презентацию/«скиньте инфо». Если КП не приложено к "
+        "кампании — всегда False. Не навязывай файл в холодную.",
+    )
     notes: str = Field(description="Короткая заметка для книжки/CRM")
 
 
@@ -48,6 +54,7 @@ def generate_reply(
     opener: str | None = None,
     campaign_prompt: str | None = None,
     extra_context: str | None = None,
+    kp_available: bool = False,
 ) -> Reply:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     'user' = входящее от риелтора, 'assistant' = наши прошлые сообщения.
@@ -68,6 +75,14 @@ def generate_reply(
             "вы уже знакомы/общались, опирайся на это, не пиши как в холодную):\n"
             + extra_context.strip()
         )
+    if kp_available:
+        system += (
+            "\n\nК ЭТОЙ КАМПАНИИ ПРИЛОЖЕНО КП (файл). Если человек просит подробности/презентацию/"
+            "материалы или это уместно по ходу — выстави send_kp=true, файл уйдёт отдельным сообщением. "
+            "Не отправляй файл в первое же касание и не навязывай его."
+        )
+    else:
+        system += "\n\nКП файлом НЕ приложено — send_kp всегда оставляй false."
 
     # adaptive thinking есть только у 4.6+/Opus. На Haiku 4.5 параметр не передаём
     # (он бы дал ошибку и лишний расход). Короткие реплики SDR в нём не нуждаются.

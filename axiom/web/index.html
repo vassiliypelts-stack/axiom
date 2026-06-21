@@ -491,6 +491,8 @@ async function viewCampaigns(v){
         <div class="hint" style="margin-top:5px">Это «характер» агента в переписке. Формат ответа (дробление, без впаривания, слоты встреч) добавляется автоматически.</div></div>
       <div class="field"><label>📄 Коммерческое предложение (КП) — агент пришлёт по ходу диалога</label>
         <textarea id="c-kp" rows="4" placeholder="Вставь сюда готовый текст КП для этой аудитории"></textarea></div>
+      <div class="field"><label>📎 Файл КП (PDF/презентация) — агент отправит файлом, когда уместно</label>
+        <div id="c-kpfile-box"></div></div>
       <div class="ttoolbar" style="margin:0"><button class="primary" id="c-save">Сохранить</button><button id="c-cancel">Отмена</button>
         <button id="c-prompt-ex" title="вставить пример промпта">↳ пример промпта</button></div>
     </div>
@@ -505,6 +507,36 @@ async function viewCampaigns(v){
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
     const team=new Set(c.accounts||[]);
     document.querySelectorAll(".c-acc-chk").forEach(ch=>{ch.checked=team.has(+ch.value);});
+    renderKpBox(c);
+  };
+  const renderKpBox=(c)=>{
+    const box=$("#c-kpfile-box");if(!box)return;
+    const eid=form.dataset.edit;
+    if(!eid){box.innerHTML='<span class="hint">Сначала создайте кампанию, затем откройте её — и прикрепите файл КП.</span>';return;}
+    if(c.kp_file){
+      box.innerHTML=`<span class="badge b-active">📎 ${esc(c.kp_file)}</span>
+        <a href="/api/campaign/${eid}/kp" target="_blank" style="margin:0 10px">скачать</a>
+        <button id="c-kp-del">удалить</button>
+        <span style="margin-left:10px">заменить: <input type="file" id="c-kp-file"></span>`;
+      $("#c-kp-del").onclick=async()=>{
+        if(!confirm("Удалить файл КП из кампании?"))return;
+        await fetch(`/api/campaign/${eid}/kp/delete`,{method:"POST"});
+        c.kp_file=null;renderKpBox(c);
+      };
+    } else {
+      box.innerHTML=`<input type="file" id="c-kp-file"> <button id="c-kp-up">Прикрепить</button>
+        <span class="hint" style="margin-left:8px">до 20 МБ</span>`;
+    }
+    const fileInp=$("#c-kp-file");
+    const doUpload=async()=>{
+      if(!fileInp||!fileInp.files.length){alert("выбери файл");return;}
+      const fd=new FormData();fd.append("file",fileInp.files[0]);
+      const r=await fetch(`/api/campaign/${eid}/kp`,{method:"POST",body:fd}).then(x=>x.json());
+      if(r.error){alert(r.error);return;}
+      c.kp_file=r.kp_file;renderKpBox(c);
+    };
+    const upBtn=$("#c-kp-up");if(upBtn)upBtn.onclick=doUpload;
+    if(fileInp)fileInp.onchange=()=>{if(c.kp_file)doUpload();};
   };
   const openNew=()=>{form.dataset.edit="";$("#c-form-title").textContent="Новая кампания";
     fill({});$("#c-save").textContent="Создать кампанию";form.style.display="block";form.scrollIntoView({behavior:"smooth"});};
@@ -537,10 +569,11 @@ function renderCampList(mount,camps){
     const pct=(done+left)?Math.round(done/(done+left)*100):0;
     const stCls=c.status==='running'?'b-active':c.status==='done'?'b-won':'b-nurture';
     const hasPrompt=c.agent_prompt?'<span class="badge b-active">🤖 промпт задан</span>':'<span class="badge b-nurture">промпт не задан</span>';
+    const hasKp=c.kp_file?'<span class="badge b-active">📎 КП-файл</span>':'';
     return `<div class="card" style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
-          <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt}
+          <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
           <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${CH_RU[c.channel]||c.channel}</div>
           <div class="sub mono">отправлено ${done} · в очереди ${left}</div>
           <div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;margin-top:6px;overflow:hidden;max-width:340px">

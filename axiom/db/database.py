@@ -45,6 +45,7 @@ DEFAULT_STAGES = [
 _EXTRA_CAMPAIGN_COLS = {
     "agent_prompt": "TEXT",
     "project_id": "INTEGER",   # к какому проекту относится кампания
+    "kp_file": "TEXT",         # имя прикреплённого файла КП (data/kp/...), агент шлёт файлом
 }
 
 

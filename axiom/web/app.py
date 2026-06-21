@@ -19,11 +19,13 @@ from pathlib import Path
 from fastapi import FastAPI, Body, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 
+import config
 from db import database
 from importer.import_2gis import norm_phone, phone_from_link, tg_username
 
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_HTML = BASE_DIR / "index.html"
+KP_DIR = config.DB_PATH.parent / "kp"   # файлы КП кампаний (data/kp/)
 
 FUNNEL = [
     ("new", "Новые"), ("messaged", "Написано"), ("in_dialog", "В диалоге"),
@@ -625,6 +627,67 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
         if account_ids is not None:
             _sync_campaign_accounts(conn, cid, account_ids)
     return JSONResponse({"ok": True, "id": cid})
+
+
+def _safe_kp_name(cid: int, filename: str) -> str:
+    """Имя файла КП: c{cid}_<очищенное имя>. Без путей и спецсимволов."""
+    base = Path(filename or "kp").name
+    base = "".join(ch for ch in base if ch.isalnum() or ch in "._- ").strip() or "kp.pdf"
+    return f"c{cid}_{base}"
+
+
+@app.post("/api/campaign/{cid}/kp")
+async def campaign_kp_upload(cid: int, file: UploadFile = File(...)) -> JSONResponse:
+    """Прикрепить файл КП к кампании. Агент будет отправлять его файлом в диалоге."""
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT id, kp_file FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        old = row["kp_file"] if "kp_file" in row.keys() else None
+    raw = await file.read()
+    if not raw:
+        return JSONResponse({"error": "пустой файл"}, status_code=400)
+    if len(raw) > 20 * 1024 * 1024:
+        return JSONResponse({"error": "файл больше 20 МБ"}, status_code=400)
+    KP_DIR.mkdir(parents=True, exist_ok=True)
+    name = _safe_kp_name(cid, file.filename)
+    (KP_DIR / name).write_bytes(raw)
+    if old and old != name:
+        try:
+            (KP_DIR / old).unlink(missing_ok=True)
+        except OSError:
+            pass
+    with database.get_conn() as conn:
+        conn.execute("UPDATE campaigns SET kp_file=? WHERE id=?", (name, cid))
+    return JSONResponse({"ok": True, "kp_file": name, "size": len(raw)})
+
+
+@app.get("/api/campaign/{cid}/kp")
+def campaign_kp_download(cid: int):
+    """Скачать/посмотреть прикреплённое КП (для проверки оператором)."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT kp_file FROM campaigns WHERE id=?", (cid,)).fetchone()
+    name = row["kp_file"] if row and "kp_file" in row.keys() else None
+    if not name or not (KP_DIR / name).exists():
+        return JSONResponse({"error": "КП не приложено"}, status_code=404)
+    return FileResponse(KP_DIR / name, filename=name)
+
+
+@app.post("/api/campaign/{cid}/kp/delete")
+def campaign_kp_delete(cid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT kp_file FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        name = row["kp_file"] if "kp_file" in row.keys() else None
+        conn.execute("UPDATE campaigns SET kp_file=NULL WHERE id=?", (cid,))
+    if name:
+        try:
+            (KP_DIR / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/campaign/{cid}")

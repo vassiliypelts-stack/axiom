@@ -228,6 +228,56 @@ def proxies_refresh() -> JSONResponse:
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
+@app.get("/api/proxies/auto")
+def proxies_auto_get() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "auto": database.get_setting(conn, "proxy_auto", "off") == "on",
+            "interval_h": int(database.get_setting(conn, "proxy_interval_min", "360")) // 60,
+            "last_run": database.get_setting(conn, "proxy_last_run", None),
+        })
+
+
+@app.post("/api/proxies/auto")
+def proxies_auto_set(payload: dict = Body(...)) -> JSONResponse:
+    auto = "on" if payload.get("auto") else "off"
+    interval_h = max(1, int(payload.get("interval_h") or 6))
+    with database.get_conn() as conn:
+        database.set_setting(conn, "proxy_auto", auto)
+        database.set_setting(conn, "proxy_interval_min", str(interval_h * 60))
+    return JSONResponse({"ok": True, "auto": auto == "on", "interval_h": interval_h})
+
+
+def _proxy_scheduler() -> None:
+    """Фоновый планировщик: периодически обновляет пул прокси, если включено."""
+    import subprocess
+    import sys
+    import time
+    while True:
+        try:
+            with database.get_conn() as conn:
+                auto = database.get_setting(conn, "proxy_auto", "off")
+                interval_min = int(database.get_setting(conn, "proxy_interval_min", "360"))
+                last = database.get_setting(conn, "proxy_last_run_ts", "0")
+            if auto == "on" and (time.time() - float(last or 0)) >= interval_min * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "proxy_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "proxy_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                subprocess.run([sys.executable, "-m", "channels.proxy_pool", "--refresh"],
+                               cwd=str(BASE_DIR.parent), timeout=300)
+        except Exception as e:  # noqa: BLE001
+            print(f"[proxy scheduler] {e}")
+        time.sleep(60)
+
+
+@app.on_event("startup")
+def _start_scheduler() -> None:
+    import threading
+    database.init_db()
+    threading.Thread(target=_proxy_scheduler, daemon=True).start()
+
+
 @app.post("/api/health")
 def accounts_health() -> JSONResponse:
     """Проверка всех аккаунтов через @SpamBot (фоном). Результат — в spam_status карточек."""

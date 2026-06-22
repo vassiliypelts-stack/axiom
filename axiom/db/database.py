@@ -145,6 +145,19 @@ def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE deals_new RENAME TO deals")
 
 
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
 def get_contact_campaign(conn: sqlite3.Connection, contact_id: int) -> sqlite3.Row | None:
     """Кампания, к которой привязан контакт (последняя по отправке). Для промпта агента."""
     return conn.execute(

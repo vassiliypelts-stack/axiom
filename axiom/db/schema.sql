@@ -173,6 +173,12 @@ CREATE TABLE IF NOT EXISTS chat_admins (
     UNIQUE(chat_id, tg_user_id)
 );
 
+-- Простые настройки приложения (ключ-значение): расписание прокси и т.п.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Пул бесплатных MTProto-прокси (собираются из TG-каналов, авто-замена дохлых).
 CREATE TABLE IF NOT EXISTS proxies (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

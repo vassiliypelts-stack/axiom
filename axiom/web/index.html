@@ -1127,6 +1127,9 @@ async function viewProxy(v){
     <b style="font-size:14px">📡 Бесплатный пул MTProto-прокси (времянка)</b>
     <div class="sub" style="margin:6px 0 10px">Собирает свежие прокси из каналов @TProxyRU и @ProxyMTProto, пингует и раздаёт аккаунтам с минимальным пингом. Дохлые выкидываются, при <2 живых добираются свежие. <b>Только Telegram</b> (WhatsApp нужен SOCKS5). Бесплатные нестабильны — на боевую лучше платные.</div>
     <div class="ttoolbar" style="margin:0"><button class="primary" id="pool-refresh">🔄 Обновить пул и раздать</button>
+      <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="pool-auto"> авто каждые</label>
+      <input id="pool-int" type="number" min="1" value="6" style="max-width:64px"> ч
+      <button id="pool-auto-save">сохранить</button>
       <span class="hint" id="pool-msg"></span></div>
     <div id="pool-tbl" style="margin-top:10px"></div>
   </div>
@@ -1152,6 +1155,11 @@ async function viewProxy(v){
         <td class="sub">${esc(p.acc_label||"")}</td></tr>`).join("")}</table></div>`;
   };
   drawPool();
+  api("/api/proxies/auto").then(au=>{$("#pool-auto").checked=!!au.auto;$("#pool-int").value=au.interval_h||6;
+    if(au.last_run)$("#pool-msg").textContent="последнее авто-обновление: "+au.last_run;});
+  $("#pool-auto-save").onclick=async()=>{
+    const r=await api("/api/proxies/auto",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:$("#pool-auto").checked,interval_h:+$("#pool-int").value})});
+    $("#pool-msg").textContent=r.auto?`авто-обновление включено: каждые ${r.interval_h} ч`:"авто-обновление выключено";};
   $("#pool-refresh").onclick=async()=>{const b=$("#pool-refresh"),m=$("#pool-msg");b.disabled=true;b.textContent="собираю и пингую… (до ~2 мин)";m.textContent="читаю каналы, проверяю пинги, раздаю аккаунтам…";
     const r=await api("/api/proxies/refresh",{method:"POST"});
     b.disabled=false;b.textContent="🔄 Обновить пул и раздать";

@@ -140,5 +140,35 @@ CREATE TABLE IF NOT EXISTS deals (
     created_at        TEXT DEFAULT (datetime('now'))
 );
 
+-- Каталог чатов/каналов (отдельная база для лидгена, не мешается с CRM).
+CREATE TABLE IF NOT EXISTS chats (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    title          TEXT,
+    username       TEXT,                      -- @username (если публичный)
+    link           TEXT,                      -- ссылка/инвайт
+    kind           TEXT,                      -- группа|супергруппа|канал
+    members_count  INTEGER,
+    activity       TEXT,                      -- оценка активности (сообщений/день и т.п.)
+    status         TEXT DEFAULT 'new',        -- new|analyzed|queued|joined|skip
+    joined_by      INTEGER,                   -- accounts.id, кто вступил
+    topic          TEXT,                      -- тема/ниша (для группировки)
+    notes          TEXT,
+    last_scanned_at TEXT,
+    created_at     TEXT DEFAULT (datetime('now')),
+    UNIQUE(username)
+);
+
+-- Админы чата (часто это ЛПР). Несколько на чат.
+CREATE TABLE IF NOT EXISTS chat_admins (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,
+    tg_user_id  INTEGER,
+    username    TEXT,
+    name        TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(chat_id, tg_user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
+CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);

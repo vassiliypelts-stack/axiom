@@ -222,6 +222,7 @@ const NAV_GROUPS=[
   ]},
   {title:"Лидген",items:[
     {id:"parser",ic:"🛰️",label:"Парсинг"},
+    {id:"chatcat",ic:"📡",label:"Чаты"},
     {id:"chats",ic:"💬",label:"Диалоги"},
   ]},
 ];
@@ -676,6 +677,73 @@ async function openAgent(id){
   $("#drawer").classList.add("open");
 }
 
+// ===== ЧАТЫ (каталог + анализ, Волна C фаза 1) =====
+const CHAT_ST={new:"новый",analyzed:"проанализирован",queued:"в очереди",joined:"вступил",skip:"пропуск"};
+let CHATCAT=[];
+async function viewChatCatalog(v){
+  CHATCAT=await api("/api/chatcat");
+  v.innerHTML=`<div class="ttoolbar">
+      <input id="cc-target" class="grow" placeholder="@username или ссылка чата">
+      <button class="primary" id="cc-add">➕ Добавить чат</button>
+      <span class="hint">Каталог чатов отдельно от CRM. «Анализ» только читает (участники, активность, админы), без вступления.</span>
+    </div><div id="cc-body"></div>`;
+  $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
+    const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});
+    if(r.error){alert(r.error);return;}route();setTimeout(()=>openChat(r.id),200);};
+  smartTable($("#cc-body"),{
+    tableKey:"chatcat",
+    rows:CHATCAT,searchKeys:["title","username","topic","kind"],
+    groupOptions:[{key:"topic",label:"тема"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
+    groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):val,
+    onRowClick:openChat,
+    columns:[
+      {key:"title",label:"Чат",cls:"name",render:r=>esc(r.title||r.username||"—")},
+      {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
+      {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
+      {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—"},
+      {key:"activity",label:"Активность",cls:"sub",render:r=>esc(r.activity)||"—"},
+      {key:"admins_count",label:"Админы",cls:"mono",render:r=>r.admins_count||0},
+      {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='analyzed'?'active':r.status==='joined'?'won':'nurture'}">${esc(CHAT_ST[r.status]||r.status)}</span>`},
+    ],
+    emptyText:"Чатов нет. Добавь @username/ссылку выше, затем «Анализ» в карточке.",
+  });
+}
+function renderChatAdmins(admins){
+  if(!admins||!admins.length)return '<div class="no">пока нет — нажми «📊 Анализ»</div>';
+  return `<table style="margin:0"><thead><tr><th>Имя</th><th>Аккаунт</th></tr></thead><tbody>`+
+    admins.map(a=>`<tr><td>${esc(a.name||"—")}</td><td>${a.username?`<a class="ext" href="https://t.me/${esc(a.username)}" target="_blank">@${esc(a.username)} ↗</a>`:'<span class="no">скрыт</span>'}</td></tr>`).join("")+
+    `</tbody></table>`;
+}
+async function openChat(id){
+  const c=await api(`/api/chatcat/${id}`);
+  $("#dr-title").textContent=c.title||c.username||("Чат #"+id);
+  const STO=[["new","новый"],["analyzed","проанализирован"],["queued","в очереди (вступить)"],["joined","вступил"],["skip","пропуск"]];
+  $("#dr-body").innerHTML=`
+    <div class="ttoolbar" style="margin:0 0 10px"><button class="primary" id="cc-scan">📊 Анализ (чтение)</button>
+      ${c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">открыть в TG ↗</a>`:""}</div>
+    <div id="cc-scan-msg" class="hint"></div>
+    <div class="row2"><div class="field"><label>Участники</label><div class="v mono">${c.members_count!=null?Number(c.members_count).toLocaleString("ru-RU"):"—"}</div></div>
+      <div class="field"><label>Активность</label><div class="v">${esc(c.activity)||"—"}</div></div></div>
+    <div class="row2"><div class="field"><label>Тип</label><div class="v">${esc(c.kind)||"—"}</div></div>
+      <div class="field"><label>Статус</label><select data-k="status">${STO.map(([k,l])=>`<option value="${k}" ${k===c.status?"selected":""}>${l}</option>`).join("")}</select></div></div>
+    <div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
+    <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
+    <div class="ttoolbar" style="margin:4px 0"><button class="primary" id="cc-save">💾 Сохранить</button><button id="cc-del">🗑 Удалить</button></div>
+    <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Админы (${(c.admins||[]).length}) — часто это ЛПР</label>
+    <div id="cc-admins" style="margin-top:6px">${renderChatAdmins(c.admins)}</div>
+    ${c.last_scanned_at?`<div class="sub" style="margin-top:8px">проанализирован ${fmt(c.last_scanned_at)}</div>`:""}`;
+  $("#cc-scan").onclick=async()=>{const b=$("#cc-scan"),m=$("#cc-scan-msg");b.disabled=true;b.textContent="анализирую… (до ~1 мин)";m.textContent="аккаунт читает чат: участники, активность, админы…";
+    const r=await api(`/api/chatcat/${id}/scan`,{method:"POST"});
+    if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка анализа — проверь @username и что аккаунт авторизован. Лог: '+esc((r.output||"").slice(-300))+'</span>';b.disabled=false;b.textContent="📊 Анализ (чтение)";return;}
+    openChat(id);};
+  $("#cc-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.value);
+    await api(`/api/chatcat/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    $("#cc-save").textContent="✓ сохранено";setTimeout(route,500);};
+  $("#cc-del").onclick=async()=>{if(!confirm("Удалить чат из каталога?"))return;
+    await api(`/api/chatcat/${id}/delete`,{method:"POST"});$("#drawer").classList.remove("open");route();};
+  $("#drawer").classList.add("open");
+}
+
 async function viewDossier(v){
   await loadContacts();
   v.innerHTML=`<p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p><div id="dz"></div>`;
@@ -1094,7 +1162,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,proxy:viewProxy,chats:viewChats};
 
 function renderNav(active){
   $("#nav").innerHTML=NAV_GROUPS.map(g=>

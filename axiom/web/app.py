@@ -687,6 +687,88 @@ def parse_invites(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse(_run_capture(args, timeout=300))
 
 
+# ---- Каталог чатов (Волна C, фаза 1: анализ + админы) --------------------- #
+@app.get("/api/chatcat")
+def chatcat_list() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.*, (SELECT COUNT(*) FROM chat_admins a WHERE a.chat_id=c.id) AS admins_count "
+            "FROM chats c ORDER BY c.members_count DESC, c.id DESC"
+        ).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/chatcat/{chat_id}")
+def chatcat_detail(chat_id: int) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        admins = conn.execute(
+            "SELECT id, tg_user_id, username, name FROM chat_admins WHERE chat_id=? ORDER BY id",
+            (chat_id,),
+        ).fetchall()
+    d = dict(row); d["admins"] = [dict(a) for a in admins]
+    return JSONResponse(d)
+
+
+@app.post("/api/chatcat")
+def chatcat_create(payload: dict = Body(...)) -> JSONResponse:
+    target = (payload.get("target") or payload.get("username") or "").strip()
+    if not target:
+        return JSONResponse({"error": "укажи @username или ссылку чата"}, status_code=400)
+    username = target.lstrip("@") if not target.startswith("http") and "t.me/" not in target else None
+    link = target if (target.startswith("http") or "t.me/" in target) else None
+    with database.get_conn() as conn:
+        if username:
+            ex = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
+            if ex:
+                return JSONResponse({"ok": True, "id": ex["id"], "existing": True})
+        cur = conn.execute(
+            "INSERT INTO chats (title, username, link, topic, status) VALUES (?,?,?,?, 'new')",
+            (payload.get("title") or username or link, username, link, payload.get("topic") or None),
+        )
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/chatcat/{chat_id}/update")
+def chatcat_update(chat_id: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in ("title", "topic", "notes", "status", "link"):
+        if k in payload:
+            sets.append(f"{k}=?"); vals.append(payload.get(k) or None)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(chat_id)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE chats SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/chatcat/{chat_id}/delete")
+def chatcat_delete(chat_id: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (chat_id,))
+        conn.execute("DELETE FROM chats WHERE id=?", (chat_id,))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/chatcat/{chat_id}/scan")
+def chatcat_scan(chat_id: int) -> JSONResponse:
+    """Анализ чата (чтение): участники + активность + админы. Без вступления."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT username, link FROM chats WHERE id=?", (chat_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "чат не найден"}, status_code=404)
+    target = ("@" + row["username"]) if row["username"] else (row["link"] or "")
+    if not target:
+        return JSONResponse({"error": "у чата нет @username/ссылки для анализа"}, status_code=400)
+    res = _run_capture(["channels.chat_scan", "--target", target, "--id", str(chat_id)], timeout=180)
+    return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
 # ---- Импорт 2ГИС (по заголовкам — ловит любую выгрузку) ------------------- #
 def _find_cols(header: list[str]) -> dict:
     """Сопоставляет колонки по названию заголовка. Возвращает {role: [индексы]}."""

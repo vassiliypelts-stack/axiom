@@ -223,6 +223,7 @@ const NAV_GROUPS=[
   {title:"Лидген",items:[
     {id:"parser",ic:"🛰️",label:"Парсинг"},
     {id:"chatcat",ic:"📡",label:"Чаты"},
+    {id:"hits",ic:"🔎",label:"Запросы"},
     {id:"chats",ic:"💬",label:"Диалоги"},
   ]},
 ];
@@ -757,6 +758,76 @@ async function openChat(id){
   $("#drawer").classList.add("open");
 }
 
+// ===== ЗАПРОСЫ (ниши + прослушка чатов по ключам) =====
+let HIT_TAB="new";
+async function viewLeadHits(v){
+  const niches=await api("/api/niches");
+  v.innerHTML=`
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <b style="font-size:14px">🎯 Ниши (наборы ключевых слов)</b>
+      <button class="primary" id="ni-run">🔄 Прослушать чаты сейчас</button></div>
+    <div class="sub" style="margin-bottom:10px">Слушатель проходит по чатам из каталога «📡 Чаты» и ищет ключи активных ниш. Находки — в очередь ниже на твой обзор (в лиды заносишь сам). <span id="ni-msg"></span></div>
+    <div id="ni-list"></div>
+    <div class="ttoolbar" style="margin:10px 0 0"><input id="ni-name" placeholder="Название ниши (напр. Загородная)" style="max-width:240px">
+      <input id="ni-kw" class="grow" placeholder="ключи через запятую: куплю дом, ищу участок, ...">
+      <button id="ni-add">➕ Ниша</button></div>
+  </div>
+  <div class="ttoolbar"><b>Очередь находок:</b>
+    <button id="ht-new" class="primary">Новые</button><button id="ht-lead">В лидах</button><button id="ht-ign">Игнор</button>
+    <span class="grow"></span><span class="hint" id="ht-cnt"></span></div>
+  <div id="ht-body"></div>`;
+  const nl=$("#ni-list");
+  nl.innerHTML=niches.map(n=>`<div class="card" style="padding:10px;margin-bottom:8px;background:var(--panel2)">
+    <div class="ttoolbar" style="margin:0"><input data-k="name" data-id="${n.id}" value="${esc(n.name||"")}" style="max-width:220px">
+      <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" class="ni-act" data-id="${n.id}" ${n.active?"checked":""}> активна</label>
+      <button class="ni-save" data-id="${n.id}">💾</button><button class="ni-del" data-id="${n.id}">🗑</button></div>
+    <textarea data-kw="${n.id}" rows="2" style="width:100%;margin-top:6px" placeholder="ключи через запятую">${esc(n.keywords||"")}</textarea></div>`).join("")||'<div class="no">ниш нет</div>';
+  $("#ni-add").onclick=async()=>{const name=$("#ni-name").value.trim();if(!name){alert("название ниши");return;}
+    await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:$("#ni-kw").value})});route();};
+  nl.querySelectorAll(".ni-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
+    const name=nl.querySelector(`input[data-k="name"][data-id="${id}"]`).value;
+    const kw=nl.querySelector(`textarea[data-kw="${id}"]`).value;
+    const act=nl.querySelector(`.ni-act[data-id="${id}"]`).checked;
+    await api(`/api/niche/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:kw,active:act})});
+    b.textContent="✓";setTimeout(()=>b.textContent="💾",1200);});
+  nl.querySelectorAll(".ni-del").forEach(b=>b.onclick=async()=>{if(!confirm("Удалить нишу?"))return;
+    await api(`/api/niche/${b.dataset.id}/delete`,{method:"POST"});route();});
+  $("#ni-run").onclick=async()=>{const b=$("#ni-run"),m=$("#ni-msg");b.disabled=true;b.textContent="слушаю чаты… (до ~5 мин)";m.textContent="аккаунт проходит по чатам каталога и ищет ключи…";
+    const r=await api("/api/keywords/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+    b.disabled=false;b.textContent="🔄 Прослушать чаты сейчас";
+    if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';}
+    else{m.textContent="готово: "+esc((r.output||"").slice(-200));renderHits();}};
+  $("#ht-new").onclick=()=>{HIT_TAB="new";setHitTab();renderHits();};
+  $("#ht-lead").onclick=()=>{HIT_TAB="lead";setHitTab();renderHits();};
+  $("#ht-ign").onclick=()=>{HIT_TAB="ignored";setHitTab();renderHits();};
+  setHitTab();renderHits();
+}
+function setHitTab(){["new","lead","ignored"].forEach(t=>{const b=$("#ht-"+(t==="ignored"?"ign":t));if(b)b.classList.toggle("primary",HIT_TAB===t);});}
+async function renderHits(){
+  const body=$("#ht-body");if(!body)return;
+  const d=await api(`/api/hits?status=${HIT_TAB}`);
+  const cnt=$("#ht-cnt");if(cnt)cnt.textContent=`новых: ${d.counts.new||0} · в лидах: ${d.counts.lead||0} · игнор: ${d.counts.ignored||0}`;
+  if(!d.items.length){body.innerHTML='<div class="empty">Пусто. Добавь чаты в «📡 Чаты», задай ниши и нажми «Прослушать чаты сейчас».</div>';return;}
+  body.innerHTML=d.items.map(h=>`<div class="card" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:240px">
+        <b>${esc(h.name||"—")}</b> ${h.username?`<a class="ext" href="https://t.me/${esc(h.username)}" target="_blank">@${esc(h.username)} ↗</a>`:""}
+        <span class="badge b-active" style="margin-left:6px">${esc(h.niche_name||"")}</span>
+        <div class="sub" style="margin:4px 0">в «${esc(h.chat_title||"")}» · ключ «${esc(h.keyword)}» · ${fmt(h.ts)}</div>
+        <div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px">${esc(h.text)}</div>
+      </div>
+      <div class="ttoolbar" style="margin:0;flex-direction:column">
+        ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в лиды</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
+          :h.status==="lead"?`<span class="badge b-won">в CRM${h.contact_id?" #"+h.contact_id:""}</span>`:`<span class="badge b-stop">игнор</span>`}
+      </div></div></div>`).join("");
+  body.querySelectorAll(".ht-lead").forEach(b=>b.onclick=async()=>{b.textContent="…";
+    const r=await api(`/api/hit/${b.dataset.id}/lead`,{method:"POST"});
+    if(r.error){alert(r.error);return;}renderHits();});
+  body.querySelectorAll(".ht-ign").forEach(b=>b.onclick=async()=>{
+    await api(`/api/hit/${b.dataset.id}/ignore`,{method:"POST"});renderHits();});
+}
+
 async function viewDossier(v){
   await loadContacts();
   v.innerHTML=`<p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p><div id="dz"></div>`;
@@ -1209,7 +1280,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
 
 function renderNav(active){
   $("#nav").innerHTML=NAV_GROUPS.map(g=>

@@ -173,6 +173,34 @@ CREATE TABLE IF NOT EXISTS chat_admins (
     UNIQUE(chat_id, tg_user_id)
 );
 
+-- Ниши лидгена: наборы ключевых слов для прослушки чатов (запросы людей).
+CREATE TABLE IF NOT EXISTS niches (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT,
+    keywords  TEXT,                          -- ключи через запятую
+    active    INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Очередь находок прослушки (на обзор оператору перед заносом в лиды).
+CREATE TABLE IF NOT EXISTS chat_hits (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    niche_id      INTEGER,
+    chat_id       INTEGER,
+    chat_title    TEXT,
+    tg_user_id    INTEGER,
+    username      TEXT,
+    name          TEXT,
+    text          TEXT,
+    keyword       TEXT,
+    source_msg_id INTEGER,
+    status        TEXT DEFAULT 'new',         -- new | lead | ignored
+    contact_id    INTEGER,
+    ts            TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(chat_id, source_msg_id)
+);
+
 -- Простые настройки приложения (ключ-значение): расписание прокси и т.п.
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,

@@ -847,6 +847,96 @@ def chatcat_scan(chat_id: int) -> JSONResponse:
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
+# ---- Ниши и прослушка чатов по ключам (лиды по нишам) --------------------- #
+@app.get("/api/niches")
+def niches_list() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM niches ORDER BY id").fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/niches")
+def niche_create(payload: dict = Body(...)) -> JSONResponse:
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "нужно название ниши"}, status_code=400)
+    with database.get_conn() as conn:
+        cur = conn.execute("INSERT INTO niches (name, keywords, active) VALUES (?,?,1)",
+                           (name, payload.get("keywords") or ""))
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/niche/{nid}/update")
+def niche_update(nid: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in ("name", "keywords", "active"):
+        if k in payload:
+            v = int(bool(payload[k])) if k == "active" else (payload.get(k) or "")
+            sets.append(f"{k}=?"); vals.append(v)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(nid)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE niches SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/niche/{nid}/delete")
+def niche_delete(nid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM niches WHERE id=?", (nid,))
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/hits")
+def hits_list(status: str = "new") -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT h.*, n.name AS niche_name FROM chat_hits h "
+            "LEFT JOIN niches n ON n.id=h.niche_id "
+            "WHERE h.status=? ORDER BY h.id DESC LIMIT 500", (status,)
+        ).fetchall()
+        counts = {r["status"]: r["c"] for r in conn.execute(
+            "SELECT status, COUNT(*) c FROM chat_hits GROUP BY status")}
+    return JSONResponse({"items": [dict(r) for r in rows], "counts": counts})
+
+
+@app.post("/api/hit/{hid}/lead")
+def hit_to_lead(hid: int) -> JSONResponse:
+    """Занести находку в CRM как контакт (лид). Помечает hit как lead."""
+    with database.get_conn() as conn:
+        h = conn.execute("SELECT * FROM chat_hits WHERE id=?", (hid,)).fetchone()
+        if not h:
+            return JSONResponse({"error": "не найдено"}, status_code=404)
+        niche = conn.execute("SELECT name FROM niches WHERE id=?", (h["niche_id"],)).fetchone()
+        tag = f"Ниша: {niche['name']}" if niche else (f"Ключ: {h['keyword']}")
+        note = f"[{h['chat_title']}] «{h['keyword']}»: {h['text']}"
+        cid = database.upsert_contact(
+            conn, source="tg_keyword", username=h["username"], tg_user_id=h["tg_user_id"],
+            name=h["name"], tags=tag, notes=note,
+        )
+        conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
+        conn.execute("UPDATE chat_hits SET status='lead', contact_id=? WHERE id=?", (cid, hid))
+    return JSONResponse({"ok": True, "contact_id": cid})
+
+
+@app.post("/api/hit/{hid}/ignore")
+def hit_ignore(hid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("UPDATE chat_hits SET status='ignored' WHERE id=?", (hid,))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/keywords/run")
+def keywords_run(payload: dict = Body(default={})) -> JSONResponse:
+    """Прослушать чаты каталога по ключам активных ниш (поллинг, на обзор)."""
+    limit = int((payload or {}).get("limit") or 300)
+    res = _run_capture(["channels.chat_keywords", "--limit", str(limit)], timeout=300)
+    return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
 # ---- Импорт 2ГИС (по заголовкам — ловит любую выгрузку) ------------------- #
 def _find_cols(header: list[str]) -> dict:
     """Сопоставляет колонки по названию заголовка. Возвращает {role: [индексы]}."""

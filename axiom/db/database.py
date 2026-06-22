@@ -88,6 +88,7 @@ _EXTRA_CHAT_COLS = {
     "members_visible": "TEXT",   # да|нет
     "in_account": "TEXT",        # yes = чат уже в личном аккаунте
     "city": "TEXT",
+    "kw_last_id": "INTEGER",     # watermark: до какого msg_id уже сканировали по ключам
 }
 
 
@@ -243,12 +244,24 @@ def _migrate_deals(conn: sqlite3.Connection) -> None:
         )
 
 
+def _seed_default_niche(conn: sqlite3.Connection) -> None:
+    """Если ниш нет — заводим дефолтную (недвижимость/ипотека)."""
+    n = conn.execute("SELECT COUNT(*) c FROM niches").fetchone()["c"]
+    if n == 0:
+        kws = ("ищу риелтора, нужен риелтор, посоветуйте риелтора, куплю квартиру, "
+               "продаю квартиру, сниму квартиру, сдаю квартиру, нужен ипотечный, "
+               "ищу ипотеку, помогите с ипотекой, новостройк, вторичк, переуступк")
+        conn.execute("INSERT INTO niches (name, keywords, active) VALUES (?,?,1)",
+                     ("Недвижимость / ипотека", kws))
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
         conn.executescript(schema)
         _ensure_columns(conn)
         _seed_default_pipeline(conn)
+        _seed_default_niche(conn)
         _migrate_companies(conn)
         _migrate_deals(conn)
 

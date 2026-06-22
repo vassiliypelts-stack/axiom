@@ -17,7 +17,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 import config
-from channels.telegram import parse_proxy_str
+from channels.telegram import build_client
 from db import database
 
 
@@ -37,8 +37,7 @@ async def _login(acc_id: int) -> None:
         return
     print(f"Логиню #{acc_id} «{acc['label'] or ''}» {phone}.")
     print("Telegram пришлёт код — введи его здесь (и пароль 2FA, если включён).")
-    proxy = parse_proxy_str(acc["proxy"])
-    client = TelegramClient(StringSession(), int(config.TG_API_ID), config.TG_API_HASH, proxy=proxy)
+    client = build_client(StringSession(), acc["proxy"])
     await client.start(phone=phone)
     me = await client.get_me()
     with database.get_conn() as conn:

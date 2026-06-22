@@ -1124,14 +1124,40 @@ async function viewProxy(v){
   const a=await api("/api/accounts");
   v.innerHTML=`
   <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">📡 Бесплатный пул MTProto-прокси (времянка)</b>
+    <div class="sub" style="margin:6px 0 10px">Собирает свежие прокси из каналов @TProxyRU и @ProxyMTProto, пингует и раздаёт аккаунтам с минимальным пингом. Дохлые выкидываются, при <2 живых добираются свежие. <b>Только Telegram</b> (WhatsApp нужен SOCKS5). Бесплатные нестабильны — на боевую лучше платные.</div>
+    <div class="ttoolbar" style="margin:0"><button class="primary" id="pool-refresh">🔄 Обновить пул и раздать</button>
+      <span class="hint" id="pool-msg"></span></div>
+    <div id="pool-tbl" style="margin-top:10px"></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
     <b style="font-size:14px">🛡️ Прокси для аккаунтов</b>
-    <div class="sub" style="margin:6px 0 12px">Каждому номеру — свой IP. Иначе Telegram/WhatsApp видят пачку аккаунтов с одного адреса и банят. Формат: <span class="mono">socks5://user:pass@host:port</span> или <span class="mono">http://host:port</span>. Подойдёт любой прокси-сервис (под рассылку лучше всего мобильные прокси РФ).</div>
+    <div class="sub" style="margin:6px 0 12px">Каждому номеру — свой IP. Иначе Telegram/WhatsApp видят пачку аккаунтов с одного адреса и банят. Формат: <span class="mono">socks5://user:pass@host:port</span>, <span class="mono">http://host:port</span> или <span class="mono">tg://proxy?server=...</span> (MTProto, только TG).</div>
     <div class="ttoolbar" style="margin:0">
       <input id="px-all" class="grow" placeholder="socks5://user:pass@host:port — применить сразу ко всем">
       <button id="px-all-btn">Применить ко всем</button>
     </div>
   </div>
   <div id="px-tbl"></div>`;
+  const drawPool=async()=>{
+    const pt=$("#pool-tbl");const d=await api("/api/proxies");
+    if(!d.items||!d.items.length){pt.innerHTML='<div class="sub">Пул пуст — нажми «Обновить пул».</div>';return;}
+    pt.innerHTML=`<div class="sub" style="margin-bottom:6px">Живых: <b>${d.alive}</b> из ${d.items.length}</div>
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:300px">
+      <table style="width:100%;border-collapse:collapse"><tr><th>Сервер:порт</th><th>Пинг</th><th>Статус</th><th>Источник</th><th>Выдан</th></tr>
+      ${d.items.map(p=>`<tr><td class="mono">${esc(p.server)}:${p.port}</td>
+        <td class="mono">${p.ping_ms!=null?p.ping_ms+" мс":"—"}</td>
+        <td><span class="badge b-${p.status==='alive'?'active':p.status==='dead'?'stop':'nurture'}">${p.status==='alive'?'жив':p.status==='dead'?'мёртв':'новый'}</span></td>
+        <td class="sub">${esc(p.source||"—")}</td>
+        <td class="sub">${esc(p.acc_label||"")}</td></tr>`).join("")}</table></div>`;
+  };
+  drawPool();
+  $("#pool-refresh").onclick=async()=>{const b=$("#pool-refresh"),m=$("#pool-msg");b.disabled=true;b.textContent="собираю и пингую… (до ~2 мин)";m.textContent="читаю каналы, проверяю пинги, раздаю аккаунтам…";
+    const r=await api("/api/proxies/refresh",{method:"POST"});
+    b.disabled=false;b.textContent="🔄 Обновить пул и раздать";
+    if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';}
+    else{m.textContent="готово";drawPool();route();}
+  };
   const tbl=$("#px-tbl");
   tbl.innerHTML=`<div style="border:1px solid var(--border);border-radius:8px;overflow:auto">
     <table style="width:100%;border-collapse:collapse">

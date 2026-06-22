@@ -92,6 +92,38 @@ def _parse_proxy() -> dict | None:
     return parse_proxy_str(config.TG_PROXY)
 
 
+def parse_mtproxy(raw: str | None):
+    """tg://proxy?server=&port=&secret= → (server, port, secret) для Telethon MTProxy. Иначе None."""
+    raw = (raw or "").strip()
+    if "proxy?" not in raw or "secret=" not in raw:
+        return None
+    from urllib.parse import parse_qs, urlparse
+    q = parse_qs(urlparse(raw).query)
+    server = (q.get("server") or [None])[0]
+    port = (q.get("port") or [None])[0]
+    secret = (q.get("secret") or [None])[0]
+    if server and port and secret:
+        try:
+            return (server, int(port), secret)
+        except ValueError:
+            return None
+    return None
+
+
+def build_client(session, proxy_raw: str | None = None) -> TelegramClient:
+    """Единая сборка клиента: MTProto-прокси (tg://proxy) или SOCKS5. proxy_raw
+    пуст → прокси основного аккаунта из .env. Используется аккаунтами команды."""
+    mt = parse_mtproxy(proxy_raw)
+    kwargs: dict = {}
+    if mt:
+        from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
+        kwargs["connection"] = ConnectionTcpMTProxyRandomizedIntermediate
+        kwargs["proxy"] = mt
+    else:
+        kwargs["proxy"] = parse_proxy_str(proxy_raw) or _parse_proxy()
+    return TelegramClient(session, int(config.TG_API_ID), config.TG_API_HASH, **kwargs)
+
+
 def _build_client() -> TelegramClient:
     if not config.TG_API_ID or not config.TG_API_HASH:
         raise RuntimeError("Заполни TG_API_ID и TG_API_HASH в .env (получить на my.telegram.org)")

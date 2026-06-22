@@ -207,6 +207,27 @@ def accounts_proxy_all(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# ---- Пул бесплатных MTProto-прокси --------------------------------------- #
+@app.get("/api/proxies")
+def proxies_list() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT p.*, a.label AS acc_label FROM proxies p "
+            "LEFT JOIN accounts a ON a.id=p.assigned_to "
+            "ORDER BY (p.status='alive') DESC, p.ping_ms IS NULL, p.ping_ms"
+        ).fetchall()
+        alive = conn.execute("SELECT COUNT(*) c FROM proxies WHERE status='alive'").fetchone()["c"]
+    return JSONResponse({"alive": alive, "items": [dict(r) for r in rows]})
+
+
+@app.post("/api/proxies/refresh")
+def proxies_refresh() -> JSONResponse:
+    """Собрать свежие прокси из каналов, проверить пингом, раздать аккаунтам."""
+    res = _run_capture(["channels.proxy_pool", "--refresh"], timeout=240)
+    return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
 @app.post("/api/health")
 def accounts_health() -> JSONResponse:
     """Проверка всех аккаунтов через @SpamBot (фоном). Результат — в spam_status карточек."""

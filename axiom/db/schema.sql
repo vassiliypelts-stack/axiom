@@ -173,6 +173,22 @@ CREATE TABLE IF NOT EXISTS chat_admins (
     UNIQUE(chat_id, tg_user_id)
 );
 
+-- Пул бесплатных MTProto-прокси (собираются из TG-каналов, авто-замена дохлых).
+CREATE TABLE IF NOT EXISTS proxies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT DEFAULT 'mtproto',     -- mtproto | socks5
+    server      TEXT,
+    port        INTEGER,
+    secret      TEXT,
+    ping_ms     INTEGER,                    -- TCP-пинг до сервера (мс), NULL = не проверен/мёртв
+    status      TEXT DEFAULT 'new',         -- new | alive | dead
+    source      TEXT,                       -- откуда (@канал)
+    assigned_to INTEGER,                    -- accounts.id, если выдан аккаунту
+    checked_at  TEXT,
+    added_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(server, port, secret)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);

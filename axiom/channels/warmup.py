@@ -29,7 +29,7 @@ from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact
 
 import config
-from channels.telegram import _build_client, parse_proxy_str
+from channels.telegram import _build_client, build_client
 from db import database
 
 # Живые короткие фразы для имитации переписки (между своими аккаунтами).
@@ -106,8 +106,7 @@ async def ping(targets: list[str], n: int) -> None:
 #  RUN — полный прогрев аккаунтов в статусе 'warming'                          #
 # --------------------------------------------------------------------------- #
 async def _warm_one(acc, anchors, peers) -> None:
-    proxy = parse_proxy_str(acc["proxy"])
-    client = TelegramClient(StringSession(acc["tg_session"]), int(config.TG_API_ID), config.TG_API_HASH, proxy=proxy)
+    client = build_client(StringSession(acc["tg_session"]), acc["proxy"])
     await client.connect()
     if not await client.is_user_authorized():
         print(f"[skip #{acc['id']}] сессия не авторизована — перелогинь: python -m channels.account_login --id {acc['id']}")

@@ -19,7 +19,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 import config
-from channels.telegram import _build_client, parse_proxy_str
+from channels.telegram import _build_client, build_client
 from db import database
 
 # Маркеры «всё чисто» в ответе @SpamBot (он отвечает на языке аккаунта).
@@ -57,8 +57,7 @@ def _save(acc_id: int, status: str) -> None:
 
 
 async def _check_account(acc: dict) -> None:
-    proxy = parse_proxy_str(acc.get("proxy"))
-    client = TelegramClient(StringSession(acc["tg_session"]), int(config.TG_API_ID), config.TG_API_HASH, proxy=proxy)
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"))
     await client.connect()
     if not await client.is_user_authorized():
         _save(acc["id"], "unknown")

@@ -736,7 +736,7 @@ def chatcat_create(payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/chatcat/{chat_id}/update")
 def chatcat_update(chat_id: int, payload: dict = Body(...)) -> JSONResponse:
     sets, vals = [], []
-    for k in ("title", "topic", "notes", "status", "link"):
+    for k in ("title", "topic", "city", "notes", "status", "link", "can_write"):
         if k in payload:
             sets.append(f"{k}=?"); vals.append(payload.get(k) or None)
     if not sets:
@@ -745,6 +745,13 @@ def chatcat_update(chat_id: int, payload: dict = Body(...)) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute(f"UPDATE chats SET {', '.join(sets)} WHERE id=?", vals)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/chatcat/inventory")
+def chatcat_inventory() -> JSONResponse:
+    """Инвентаризация: занести чаты личного аккаунта в каталог (только чтение)."""
+    res = _run_capture(["channels.chat_inventory"], timeout=240)
+    return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
 @app.post("/api/chatcat/{chat_id}/delete")

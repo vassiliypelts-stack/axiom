@@ -685,27 +685,37 @@ async function viewChatCatalog(v){
   v.innerHTML=`<div class="ttoolbar">
       <input id="cc-target" class="grow" placeholder="@username или ссылка чата">
       <button class="primary" id="cc-add">➕ Добавить чат</button>
-      <span class="hint">Каталог чатов отдельно от CRM. «Анализ» только читает (участники, активность, админы), без вступления.</span>
+      <button id="cc-inv">🔄 Инвентаризация моих чатов</button>
+      <span class="hint" id="cc-inv-msg">Каталог отдельно от CRM. «Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
     </div><div id="cc-body"></div>`;
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openChat(r.id),200);};
+  $("#cc-inv").onclick=async()=>{const b=$("#cc-inv"),m=$("#cc-inv-msg");b.disabled=true;b.textContent="сканирую диалоги…";m.textContent="аккаунт читает свои чаты и заносит в каталог (до ~1-2 мин)…";
+    const r=await api("/api/chatcat/inventory",{method:"POST"});
+    b.disabled=false;b.textContent="🔄 Инвентаризация моих чатов";
+    if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';return;}
+    route();};
   smartTable($("#cc-body"),{
     tableKey:"chatcat",
-    rows:CHATCAT,searchKeys:["title","username","topic","kind"],
-    groupOptions:[{key:"topic",label:"тема"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
+    rows:CHATCAT,searchKeys:["title","username","topic","city","kind","can_write"],
+    groupOptions:[{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
     groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):val,
     onRowClick:openChat,
     columns:[
-      {key:"title",label:"Чат",cls:"name",render:r=>esc(r.title||r.username||"—")},
+      {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
       {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
+      {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
+      {key:"topic",label:"Тема",cls:"sub",render:r=>esc(r.topic)||"—"},
       {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—"},
+      {key:"can_write",label:"Могу писать",render:r=>r.can_write?`<span class="badge b-${r.can_write==='да'?'active':(r.can_write==='заблокирован'||r.can_write==='только админы'||r.can_write==='ограничено')?'stop':'nurture'}">${esc(r.can_write)}</span>`:"—"},
+      {key:"members_visible",label:"Участники видны",cls:"sub",render:r=>esc(r.members_visible)||"—"},
       {key:"activity",label:"Активность",cls:"sub",render:r=>esc(r.activity)||"—"},
       {key:"admins_count",label:"Админы",cls:"mono",render:r=>r.admins_count||0},
       {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='analyzed'?'active':r.status==='joined'?'won':'nurture'}">${esc(CHAT_ST[r.status]||r.status)}</span>`},
     ],
-    emptyText:"Чатов нет. Добавь @username/ссылку выше, затем «Анализ» в карточке.",
+    emptyText:"Чатов нет. «Инвентаризация» подтянет твои чаты, или добавь @username вручную → «Анализ».",
   });
 }
 function renderChatAdmins(admins){
@@ -724,9 +734,12 @@ async function openChat(id){
     <div id="cc-scan-msg" class="hint"></div>
     <div class="row2"><div class="field"><label>Участники</label><div class="v mono">${c.members_count!=null?Number(c.members_count).toLocaleString("ru-RU"):"—"}</div></div>
       <div class="field"><label>Активность</label><div class="v">${esc(c.activity)||"—"}</div></div></div>
-    <div class="row2"><div class="field"><label>Тип</label><div class="v">${esc(c.kind)||"—"}</div></div>
+    <div class="row2"><div class="field"><label>Могу писать</label><div class="v">${c.can_write?`<span class="badge b-${c.can_write==='да'?'active':(c.can_write==='заблокирован'||c.can_write==='только админы'||c.can_write==='ограничено')?'stop':'nurture'}">${esc(c.can_write)}</span>`:"—"}</div></div>
+      <div class="field"><label>Участники видны</label><div class="v">${esc(c.members_visible)||"—"}</div></div></div>
+    <div class="row2"><div class="field"><label>Тип</label><div class="v">${esc(c.kind)||"—"}${c.in_account==='yes'?' · <span class="badge b-active">в моём аккаунте</span>':""}</div></div>
       <div class="field"><label>Статус</label><select data-k="status">${STO.map(([k,l])=>`<option value="${k}" ${k===c.status?"selected":""}>${l}</option>`).join("")}</select></div></div>
-    <div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
+    <div class="row2"><div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
+      <div class="field"><label>Город</label><input data-k="city" value="${esc(c.city||"")}"></div></div>
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
     <div class="ttoolbar" style="margin:4px 0"><button class="primary" id="cc-save">💾 Сохранить</button><button id="cc-del">🗑 Удалить</button></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Админы (${(c.admins||[]).length}) — часто это ЛПР</label>

@@ -82,6 +82,15 @@ _EXTRA_CAMPAIGN_CONTACT_COLS = {
 }
 
 
+# Поля каталога чатов (добавляются миграцией к уже созданной таблице chats).
+_EXTRA_CHAT_COLS = {
+    "can_write": "TEXT",         # да|только админы|ограничено|заблокирован|не вступил
+    "members_visible": "TEXT",   # да|нет
+    "in_account": "TEXT",        # yes = чат уже в личном аккаунте
+    "city": "TEXT",
+}
+
+
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
     for col, typ in _EXTRA_CONTACT_COLS.items():
@@ -104,6 +113,11 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         if col not in deal:
             conn.execute(f"ALTER TABLE deals ADD COLUMN {col} {typ}")
     _relax_deals_contact_notnull(conn)
+    chat = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
+    if chat:  # таблица существует
+        for col, typ in _EXTRA_CHAT_COLS.items():
+            if col not in chat:
+                conn.execute(f"ALTER TABLE chats ADD COLUMN {col} {typ}")
 
 
 def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:

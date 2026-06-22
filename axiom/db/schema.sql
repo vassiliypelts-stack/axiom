@@ -151,6 +151,10 @@ CREATE TABLE IF NOT EXISTS chats (
     activity       TEXT,                      -- оценка активности (сообщений/день и т.п.)
     status         TEXT DEFAULT 'new',        -- new|analyzed|queued|joined|skip
     joined_by      INTEGER,                   -- accounts.id, кто вступил
+    can_write      TEXT,                      -- да|только админы|ограничено|заблокирован|не вступил|неизвестно
+    members_visible TEXT,                     -- да|нет (виден ли список участников)
+    in_account     TEXT,                      -- yes = чат уже есть в личном аккаунте (инвентаризация)
+    city           TEXT,                      -- город (для фильтра)
     topic          TEXT,                      -- тема/ниша (для группировки)
     notes          TEXT,
     last_scanned_at TEXT,

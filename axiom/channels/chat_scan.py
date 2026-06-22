@@ -20,8 +20,9 @@ import argparse
 import asyncio
 import json
 
+from telethon.errors import ChatAdminRequiredError
 from telethon.tl.functions.channels import GetFullChannelRequest
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, Chat
 
 from channels.telegram import _build_client
 from channels.tg_parser import _display_name, _resolve_scan_chat, collect_admins
@@ -35,6 +36,33 @@ def _kind(entity) -> str:
         if entity.broadcast:
             return "канал"
     return "группа"
+
+
+def can_write(entity) -> str:
+    """Могу ли я писать в чат (эвристика по правам entity)."""
+    if isinstance(entity, Channel):
+        if getattr(entity, "left", False):
+            return "не вступил"
+        if getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+            return "да" if (getattr(entity, "creator", False) or getattr(entity, "admin_rights", None)) else "только админы"
+        dbr = getattr(entity, "default_banned_rights", None)
+        if dbr and getattr(dbr, "send_messages", False):
+            return "ограничено"
+        return "да"
+    if isinstance(entity, Chat):
+        return "да"
+    return "неизвестно"
+
+
+async def members_visible(client, entity) -> str:
+    """Виден ли список участников (можно ли парсить аудиторию)."""
+    try:
+        await client.get_participants(entity, limit=1)
+        return "да"
+    except ChatAdminRequiredError:
+        return "нет"
+    except Exception:  # noqa: BLE001
+        return "нет"
 
 
 async def _activity(client, entity) -> str | None:
@@ -75,35 +103,31 @@ async def run(target: str, chat_id: int | None) -> None:
 
     admins = await collect_admins(client, entity)
     activity = await _activity(client, entity)
+    cw = can_write(entity)
+    mv = await members_visible(client, entity)
     await client.disconnect()
 
     link = target if (target.startswith("http") or target.startswith("t.me")) else None
     with database.get_conn() as conn:
         cid = chat_id
+        if not cid and username:
+            row = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
+            cid = row["id"] if row else None
         if cid:
             conn.execute(
                 "UPDATE chats SET title=?, username=COALESCE(?,username), kind=?, members_count=?, "
-                "activity=?, status='analyzed', last_scanned_at=datetime('now') WHERE id=?",
-                (title, username, kind, members, activity, cid),
+                "activity=?, can_write=?, members_visible=?, status='analyzed', "
+                "last_scanned_at=datetime('now') WHERE id=?",
+                (title, username, kind, members, activity, cw, mv, cid),
             )
         else:
-            row = None
-            if username:
-                row = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
-            if row:
-                cid = row["id"]
-                conn.execute(
-                    "UPDATE chats SET title=?, kind=?, members_count=?, activity=?, "
-                    "status='analyzed', last_scanned_at=datetime('now') WHERE id=?",
-                    (title, kind, members, activity, cid),
-                )
-            else:
-                cur = conn.execute(
-                    "INSERT INTO chats (title, username, link, kind, members_count, activity, "
-                    "status, last_scanned_at) VALUES (?,?,?,?,?,?, 'analyzed', datetime('now'))",
-                    (title, username, link, kind, members, activity),
-                )
-                cid = cur.lastrowid
+            cur = conn.execute(
+                "INSERT INTO chats (title, username, link, kind, members_count, activity, "
+                "can_write, members_visible, status, last_scanned_at) "
+                "VALUES (?,?,?,?,?,?,?,?, 'analyzed', datetime('now'))",
+                (title, username, link, kind, members, activity, cw, mv),
+            )
+            cid = cur.lastrowid
         conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (cid,))
         for u in admins:
             conn.execute(
@@ -114,6 +138,7 @@ async def run(target: str, chat_id: int | None) -> None:
     print(json.dumps({
         "ok": True, "chat_id": cid, "title": title, "username": username,
         "kind": kind, "members": members, "activity": activity,
+        "can_write": cw, "members_visible": mv,
         "admins": [{"username": u.username, "name": _display_name(u)} for u in admins],
     }, ensure_ascii=False))
 

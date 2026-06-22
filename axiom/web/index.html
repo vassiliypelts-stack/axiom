@@ -84,8 +84,12 @@
   .ttoolbar .hint{color:var(--muted);font-size:12px;}
   table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);}
   th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--border);vertical-align:middle;}
-  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;white-space:nowrap;background:var(--panel2);}
+  th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;white-space:nowrap;background:var(--panel2);position:relative;}
   th:hover{color:var(--text);}
+  .rsz{position:absolute;right:0;top:0;height:100%;width:7px;cursor:col-resize;}
+  .rsz:hover{background:var(--accent);opacity:.45;}
+  tr.filtrow th{background:var(--panel);padding:4px 8px;text-transform:none;}
+  .colrow:hover{border-color:var(--accent)!important;}
   tr:last-child td{border-bottom:none;}
   tbody tr:hover td{background:#FBFAF5;}
   tbody tr.clk{cursor:pointer;}
@@ -213,41 +217,90 @@ let PROJECT_SEL=null; // выбранный проект (фильтрует к�
 // ----------------------------------------------------------------- smart table
 // cfg: {columns:[{key,label,render?,cls?}], rows, searchKeys, groupOptions:[{key,label}], onRowClick, tagsCfg}
 function smartTable(mount,cfg){
-  const st={q:"",group:"",sortKey:null,sortDir:1};
+  const KEY="axiom_tbl_"+(cfg.tableKey||"def");
+  const allCols=cfg.columns;
+  let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
+  const st={q:"",group:"",sortKey:null,sortDir:1,showPicker:false,
+    hidden:new Set(saved.hidden||[]),
+    order:(saved.order&&saved.order.length?saved.order.slice():allCols.map(c=>c.key)),
+    widths:saved.widths||{},colFilters:saved.colFilters||{},
+    showFilters:!!(saved.colFilters&&Object.values(saved.colFilters).some(Boolean))};
+  allCols.forEach(c=>{if(!st.order.includes(c.key))st.order.push(c.key);});
+  const colByKey=k=>allCols.find(c=>c.key===k);
+  const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
+  const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters}));
   const wrap=document.createElement("div");
   const groupOpts=`<option value="">без группировки</option>`+(cfg.groupOptions||[]).map(g=>`<option value="${g.key}">группа: ${g.label}</option>`).join("");
   wrap.innerHTML=`<div class="ttoolbar">
       <input class="grow" id="st-q" placeholder="🔍 фильтр по таблице…">
       ${cfg.groupOptions?`<select id="st-g">${groupOpts}</select>`:""}
+      <button id="st-filt" title="фильтры по колонкам">🔽 фильтры</button>
+      <button id="st-cols" title="настроить колонки (показать/скрыть, порядок, ширина)">⚙ колонки</button>
       <span class="hint" id="st-cnt"></span>
-    </div><div id="st-tbl"></div>`;
+    </div>
+    <div id="st-pick" class="card" style="display:none;margin-bottom:10px"></div>
+    <div id="st-tbl"></div>`;
   mount.appendChild(wrap);
+  const drawPicker=()=>{
+    const p=wrap.querySelector("#st-pick");p.style.display=st.showPicker?"block":"none";
+    if(!st.showPicker)return;
+    p.innerHTML=`<div style="font-weight:600;margin-bottom:8px">Колонки — перетащи ⠿ для порядка, галочка = показывать, край заголовка тяни для ширины</div>`+
+      st.order.map(k=>{const c=colByKey(k);if(!c)return"";
+        return `<div class="colrow" draggable="true" data-k="${k}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;background:var(--panel);cursor:grab">
+          <span style="color:var(--muted)">⠿</span>
+          <label style="display:flex;align-items:center;gap:6px;flex:1;cursor:pointer"><input type="checkbox" ${st.hidden.has(k)?"":"checked"} data-k="${k}" class="colchk"> ${esc(c.label||k)}</label></div>`;}).join("")+
+      `<button id="st-reset" style="margin-top:6px">↺ сбросить вид</button>`;
+    p.querySelectorAll(".colchk").forEach(ch=>ch.onchange=()=>{const k=ch.dataset.k;ch.checked?st.hidden.delete(k):st.hidden.add(k);persist();draw();});
+    let dk=null;
+    p.querySelectorAll(".colrow").forEach(row=>{
+      row.ondragstart=()=>{dk=row.dataset.k;row.style.opacity=".4";};
+      row.ondragend=()=>row.style.opacity="1";
+      row.ondragover=e=>e.preventDefault();
+      row.ondrop=e=>{e.preventDefault();const tk=row.dataset.k;if(!dk||dk===tk)return;
+        const f=st.order.indexOf(dk);st.order.splice(f,1);st.order.splice(st.order.indexOf(tk),0,dk);persist();drawPicker();draw();};
+    });
+    p.querySelector("#st-reset").onclick=()=>{st.hidden=new Set();st.order=allCols.map(c=>c.key);st.widths={};st.colFilters={};st.showFilters=false;persist();drawPicker();draw();};
+  };
   const draw=()=>{
+    const cols=visCols();
     let rows=cfg.rows.slice();
     if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
+    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(fv)rows=rows.filter(r=>String(r[k]??"").toLowerCase().includes(fv));});
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
-    const head=`<tr>${cfg.columns.map(c=>`<th data-k="${c.key}">${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}</th>`).join("")}</tr>`;
-    const cell=(r,c)=>`<td class="${c.cls||""}">${c.render?c.render(r):esc(r[c.key])}</td>`;
-    const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""}" data-id="${r.id}">${cfg.columns.map(c=>cell(r,c)).join("")}</tr>`;
+    const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
+    const head=`<tr>${cols.map(c=>`<th data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
+    const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
+    const cell=(r,c)=>`<td class="${c.cls||""}"${w(c.key)}>${c.render?c.render(r):esc(r[c.key])}</td>`;
+    const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""}" data-id="${r.id}">${cols.map(c=>cell(r,c)).join("")}</tr>`;
     let body="";
     if(st.group){
       const groups={};rows.forEach(r=>{const g=r[st.group]||"—";(groups[g]=groups[g]||[]).push(r);});
       Object.keys(groups).sort().forEach(g=>{
         const label=cfg.groupFmt?cfg.groupFmt(st.group,g):g;
-        body+=`<tr class="grouphdr"><td colspan="${cfg.columns.length}">${label} · ${groups[g].length}</td></tr>`;
+        body+=`<tr class="grouphdr"><td colspan="${cols.length}">${label} · ${groups[g].length}</td></tr>`;
         body+=groups[g].map(rowHtml).join("");
       });
     } else body=rows.map(rowHtml).join("");
-    if(!rows.length)body=`<tr><td colspan="${cfg.columns.length}" class="empty">${cfg.emptyText||"Ничего не найдено"}</td></tr>`;
-    wrap.querySelector("#st-tbl").innerHTML=`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-    wrap.querySelectorAll("th").forEach(th=>th.onclick=()=>{const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
-    if(cfg.onRowClick)wrap.querySelectorAll("tbody tr.clk").forEach(tr=>tr.onclick=e=>{if(e.target.closest(".tag,.tag-add,.tag x"))return;cfg.onRowClick(+tr.dataset.id);});
+    if(!rows.length)body=`<tr><td colspan="${cols.length}" class="empty">${cfg.emptyText||"Ничего не найдено"}</td></tr>`;
+    wrap.querySelector("#st-tbl").innerHTML=`<table><thead>${head}${filtRow}</thead><tbody>${body}</tbody></table>`;
+    wrap.querySelectorAll("thead tr:first-child th").forEach(th=>th.onclick=e=>{if(e.target.classList.contains("rsz"))return;const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
+    wrap.querySelectorAll(".cf").forEach(inp=>{inp.onclick=e=>e.stopPropagation();
+      inp.oninput=()=>{const k=inp.dataset.k,pos=inp.selectionStart;st.colFilters[k]=inp.value;persist();draw();
+        const ni=wrap.querySelector(`.cf[data-k="${k}"]`);if(ni){ni.focus();try{ni.setSelectionRange(pos,pos);}catch(e){}}};});
+    wrap.querySelectorAll(".rsz").forEach(h=>{h.onmousedown=e=>{e.preventDefault();e.stopPropagation();
+      const k=h.dataset.k,th=h.closest("th"),sx=e.pageX,sw=th.offsetWidth;
+      const mv=ev=>{const nw=Math.max(50,sw+ev.pageX-sx);st.widths[k]=nw;th.style.width=nw+"px";th.style.minWidth=nw+"px";};
+      const up=()=>{document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);persist();};
+      document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);};});
+    if(cfg.onRowClick)wrap.querySelectorAll("tbody tr.clk").forEach(tr=>tr.onclick=e=>{if(e.target.closest(".tag,.tag-add,.tag x,a,input,select,button"))return;cfg.onRowClick(+tr.dataset.id);});
     bindTags(wrap);
   };
   wrap.querySelector("#st-q").oninput=e=>{st.q=e.target.value;draw();};
   if(cfg.groupOptions)wrap.querySelector("#st-g").onchange=e=>{st.group=e.target.value;draw();};
-  draw();
+  wrap.querySelector("#st-cols").onclick=()=>{st.showPicker=!st.showPicker;drawPicker();};
+  wrap.querySelector("#st-filt").onclick=()=>{st.showFilters=!st.showFilters;draw();};
+  drawPicker();draw();
 }
 function tagsCell(r){
   const chips=(r.tags||[]).map(t=>`<span class="tag">${esc(t)} <x data-id="${r.id}" data-t="${esc(t)}">✕</x></span>`).join("");
@@ -307,6 +360,7 @@ async function viewAgents(v){
     if(r.error){alert(r.error);return;}route();
   };
   smartTable($("#acc-tbl"),{
+    tableKey:"agents",
     rows:a,searchKeys:["label","phone","username","role"],
     groupOptions:[{key:"role",label:"роль"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
@@ -407,6 +461,7 @@ function renderDealsKanban(mount){
 }
 function dealsTable(mount){
   smartTable(mount,{
+    tableKey:"deals",
     rows:DEALS,searchKeys:["title","company_name","person_name","contact_name","product","stage"],
     groupOptions:[{key:"stage",label:"стадия"},{key:"product",label:"продукт"}],
     groupFmt:(k,val)=>k==="stage"?(STATUS_RU[val]||val):val,
@@ -462,6 +517,7 @@ async function viewCompanies(v){
       msg.textContent=`✅ импортировано ${r.imported}, всего ${r.total}`;route();
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   smartTable($("#co-body"),{
+    tableKey:"companies",
     rows:COMPANIES,searchKeys:["name","city","phone","inn","company_type"],
     groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"}],
     onRowClick:openCompany,
@@ -490,6 +546,7 @@ async function viewContacts(v){
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
   smartTable($("#ct-body"),{
+    tableKey:"contacts",
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
     groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
@@ -571,6 +628,7 @@ async function viewDossier(v){
   await loadContacts();
   v.innerHTML=`<p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p><div id="dz"></div>`;
   smartTable($("#dz"),{
+    tableKey:"dossier",
     rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
     groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,

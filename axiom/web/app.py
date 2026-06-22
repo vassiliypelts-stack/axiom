@@ -187,7 +187,11 @@ def contact_detail(contact_id: int) -> JSONResponse:
             return JSONResponse({"error": "not found"}, status_code=404)
         history = [dict(m) for m in database.get_history(conn, contact_id)]
         deal = conn.execute("SELECT * FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+        comp = None
+        if row["company_id"]:
+            comp = conn.execute("SELECT id, name FROM companies WHERE id=?", (row["company_id"],)).fetchone()
     d = dict(row); d["tags"] = _split_tags(d.get("tags"))
+    d["company_name"] = comp["name"] if comp else None
     d["history"] = history; d["deal"] = dict(deal) if deal else None
     return JSONResponse(d)
 
@@ -426,6 +430,21 @@ def deals_list(pipeline_id: int | None = None) -> JSONResponse:
             (pid, pid, database.get_default_pipeline_id(conn)),
         ).fetchall()
     return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/deal/{did}")
+def deal_detail(did: int) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute(
+            """SELECT d.*, co.name AS company_name, c.person_name, c.name AS contact_name
+               FROM deals d LEFT JOIN companies co ON co.id=d.company_id
+               LEFT JOIN contacts c ON c.id=d.contact_id WHERE d.id=?""",
+            (did,),
+        ).fetchone()
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(dict(row))
 
 
 @app.post("/api/deals")

@@ -191,7 +191,9 @@ const NAV_GROUPS=[
   {title:"",items:[{id:"dashboard",ic:"📊",label:"Дашборд"}]},
   {title:"Продажи",items:[
     {id:"projects",ic:"📁",label:"Проекты"},
-    {id:"crm",ic:"📇",label:"CRM · База + Лиды"},
+    {id:"deals",ic:"💼",label:"Сделки"},
+    {id:"companies",ic:"🏢",label:"Компании"},
+    {id:"contacts",ic:"👤",label:"Контакты"},
     {id:"campaigns",ic:"🎯",label:"Кампании"},
   ]},
   {title:"Команда",items:[
@@ -335,97 +337,60 @@ async function viewAgents(v){
 async function loadContacts(){STATE.contacts=await api("/api/contacts");return STATE.contacts;}
 
 let PIPELINES=[], PIPELINE_SEL=null;
-async function viewCrm(v){
-  await loadContacts();
+async function loadPipelines(){
   PIPELINES=await api("/api/pipelines");
   if(!PIPELINE_SEL||!PIPELINES.find(p=>p.id===PIPELINE_SEL))PIPELINE_SEL=(PIPELINES[0]||{}).id||null;
-  const pOpts=PIPELINES.map(p=>`<option value="${p.id}" ${p.id===PIPELINE_SEL?"selected":""}>${esc(p.name)}${p.product&&p.product!==p.name?" · "+esc(p.product):""} (${p.count})</option>`).join("");
+  return PIPELINES;
+}
+function dealStagesFor(pid){
+  const p=PIPELINES.find(x=>x.id===pid)||PIPELINES.find(x=>x.is_default)||PIPELINES[0];
+  return (p&&p.stages&&p.stages.length)?p.stages:STAGES.map(k=>({key:k,label:STATUS_RU[k]||k}));
+}
+
+// ===== СДЕЛКИ (воронка Битрикс) =====
+let DEALS=[];
+async function viewDeals(v){
+  await loadPipelines();
+  DEALS=await api(`/api/deals?pipeline_id=${PIPELINE_SEL||""}`);
+  const pOpts=PIPELINES.map(p=>`<option value="${p.id}" ${p.id===PIPELINE_SEL?"selected":""}>${esc(p.name)}${p.product&&p.product!==p.name?" · "+esc(p.product):""}</option>`).join("");
   v.innerHTML=`<div class="ttoolbar">
-      <button id="tab-tbl" class="primary">Таблица</button>
-      <button id="tab-kan">Воронка</button>
-      <select id="crm-pipe" title="воронка / продукт" style="max-width:260px">${pOpts}</select>
+      <button id="tab-kan" class="primary">Воронка</button>
+      <button id="tab-tbl">Таблица</button>
+      <select id="deal-pipe" title="воронка / продукт" style="max-width:260px">${pOpts}</select>
       <button id="pipe-new" title="создать воронку">➕ воронка</button>
       <button id="pipe-del" title="удалить выбранную воронку">🗑</button>
       <span class="grow"></span>
-      <button id="tab-enr">✨ Обогатить пачку</button>
-      <button id="tab-imp">⬆ Импорт 2ГИС</button>
-    </div>
-    <div id="imp-panel" style="display:none" class="card">
-      <div class="ttoolbar" style="margin:0">
-        <input type="file" id="imp-file" accept=".csv">
-        <input id="imp-tag" value="Агентства недвижимости" title="тег для всей пачки" class="grow">
-        <button class="primary" id="imp-go">Загрузить</button>
-        <span class="hint" id="imp-msg"></span>
-      </div>
-      <div class="hint" style="margin-top:8px">CSV из 2ГИС (кодировка определится сама). Дубли по телефону/username обновятся, не задвоятся.</div>
-    </div>
-    <div id="crm-body"></div>`;
-  const body=$("#crm-body");
-  let kanOn=false;
-  const showTbl=()=>{kanOn=false;body.innerHTML="";crmTable(body);$("#tab-tbl").classList.add("primary");$("#tab-kan").classList.remove("primary");};
-  const showKan=()=>{kanOn=true;body.innerHTML="";renderCrmKanban(body,false);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
-  $("#tab-tbl").onclick=showTbl;$("#tab-kan").onclick=showKan;
-  $("#crm-pipe").onchange=()=>{PIPELINE_SEL=+$("#crm-pipe").value;if(kanOn)showKan();};
+      <button class="primary" id="deal-new">➕ Сделка</button>
+    </div><div id="deal-body"></div>`;
+  const body=$("#deal-body");
+  const showKan=()=>{body.innerHTML="";renderDealsKanban(body);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
+  const showTbl=()=>{body.innerHTML="";dealsTable(body);$("#tab-tbl").classList.add("primary");$("#tab-kan").classList.remove("primary");};
+  $("#tab-kan").onclick=showKan;$("#tab-tbl").onclick=showTbl;
+  $("#deal-pipe").onchange=()=>{PIPELINE_SEL=+$("#deal-pipe").value;route();};
   $("#pipe-new").onclick=async()=>{const name=prompt("Название воронки (продукт), напр. «Фонд доступного жилья»:");if(!name)return;
     const r=await api("/api/pipelines",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,product:name})});
     if(r.error){alert(r.error);return;}PIPELINE_SEL=r.id;route();};
   $("#pipe-del").onclick=async()=>{const p=PIPELINES.find(x=>x.id===PIPELINE_SEL);if(!p)return;
     if(p.is_default){alert("Основную воронку удалить нельзя");return;}
-    if(!confirm(`Удалить воронку «${p.name}»? Лиды останутся и перейдут в Основную.`))return;
+    if(!confirm(`Удалить воронку «${p.name}»?`))return;
     await api(`/api/pipeline/${p.id}/delete`,{method:"POST"});PIPELINE_SEL=null;route();};
-  $("#tab-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
-  $("#tab-enr").onclick=async()=>{
-    const n=prompt("Сколько НЕобогащённых контактов обогатить за раз? (агент читает сайт + Claude, ~5-15 сек на контакт)","10");
-    if(!n)return;
-    const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
-    alert(`Запущено обогащение до ${r.limit} контактов в фоне. Через минуту-две обнови — в досье появятся контактное лицо, специализация и зацепки.`);
-  };
-  $("#imp-go").onclick=async()=>{
-    const f=$("#imp-file").files[0];const msg=$("#imp-msg");
-    if(!f){msg.textContent="выбери файл";return;}
-    msg.textContent="загружаю…";
-    const fd=new FormData();fd.append("file",f);fd.append("tag",$("#imp-tag").value);
-    try{
-      const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
-      if(r.error){msg.textContent="ошибка: "+r.error;return;}
-      msg.textContent=`✅ импортировано ${r.imported}, пропущено ${r.skipped}, всего в базе ${r.total}`;
-      await loadContacts();showTbl();
-    }catch(e){msg.textContent="ошибка: "+e.message;}
-  };
-  showTbl();
+  $("#deal-new").onclick=async()=>{const title=prompt("Название сделки:");if(!title)return;
+    const r=await api("/api/deals",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,pipeline_id:PIPELINE_SEL,stage:"new"})});
+    if(r.error){alert(r.error);return;}route();};
+  showKan();
 }
-function crmTable(mount){
-  smartTable(mount,{
-    rows:STATE.contacts,searchKeys:["name","username","phone","city","agency","status"],
-    groupOptions:[{key:"status",label:"статус"},{key:"city",label:"город"},{key:"agency",label:"агентство"}],
-    groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
-    onRowClick:openDossier,
-    columns:[
-      {key:"name",label:"Имя",cls:"name",render:r=>esc(r.name)||'<span class="no">без имени</span>'},
-      {key:"username",label:"Канал",render:chCell},
-      {key:"city",label:"Город / агентство",cls:"sub",render:r=>esc([r.city,r.agency].filter(Boolean).join(" · "))||"—"},
-      {key:"tags",label:"Теги",render:tagsCell},
-      {key:"status",label:"Статус",render:r=>statusBadge(r.status)},
-      {key:"msg_count",label:"Сообщ.",cls:"mono"},
-      {key:"last_ts",label:"Активность",cls:"sub mono",render:r=>fmt(r.last_ts)||"—"},
-    ],
-    emptyText:"Контактов нет. Импортируй базу — появятся здесь.",
-  });
-}
-function renderCrmKanban(mount,readonly,pipeline){
-  pipeline=pipeline||(PIPELINES&&PIPELINES.find(p=>p.id===PIPELINE_SEL))||null;
-  const stages=(pipeline&&pipeline.stages&&pipeline.stages.length)?pipeline.stages:STAGES.map(k=>({key:k,label:STATUS_RU[k]||k}));
-  const isDef=pipeline?!!pipeline.is_default:true, pid=pipeline?pipeline.id:null;
-  const rows=STATE.contacts.filter(c=> pid==null ? true : (c.pipeline_id===pid||(c.pipeline_id==null&&isDef)));
+function dealTitle(d){return esc(d.title||d.company_name||"сделка");}
+function dealSub(d){return esc([d.person_name||d.contact_name,d.amount?(Number(d.amount).toLocaleString("ru-RU")+" ₽"):""].filter(Boolean).join(" · "));}
+function renderDealsKanban(mount){
+  const stages=dealStagesFor(PIPELINE_SEL);
   const by={};stages.forEach(s=>by[s.key]=[]);
-  rows.forEach(c=>{const k=by[c.status]?c.status:(stages[0]&&stages[0].key);if(by[k])by[k].push(c);});
+  DEALS.forEach(d=>{const k=by[d.stage]?d.stage:(stages[0]&&stages[0].key);if(by[k])by[k].push(d);});
   const kan=document.createElement("div");kan.className="kanban";
   kan.innerHTML=stages.map(s=>`<div class="kcol"><h3>${esc(s.label)}<span class="n">${(by[s.key]||[]).length}</span></h3>
-    <div class="kbody" data-s="${s.key}">${(by[s.key]||[]).map(c=>`<div class="kcard" draggable="${!readonly}" data-id="${c.id}">
-      <div class="nm">${esc(c.name)||"без имени"}</div><div class="mt">${esc(c.agency||c.city||"")}${c.username?" · @"+esc(c.username):""}</div></div>`).join("")}</div></div>`).join("");
+    <div class="kbody" data-s="${s.key}">${(by[s.key]||[]).map(d=>`<div class="kcard" draggable="true" data-id="${d.id}">
+      <div class="nm">${dealTitle(d)}</div><div class="mt">${dealSub(d)||esc(d.company_name||"")}</div></div>`).join("")}</div></div>`).join("");
   mount.appendChild(kan);
-  kan.querySelectorAll(".kcard").forEach(card=>card.onclick=()=>openDossier(+card.dataset.id));
-  if(readonly)return;
+  kan.querySelectorAll(".kcard").forEach(card=>card.onclick=()=>openDeal(+card.dataset.id));
   let drag=null;
   kan.querySelectorAll(".kcard").forEach(card=>{
     card.ondragstart=()=>{drag=+card.dataset.id;card.style.opacity=".4";};
@@ -436,9 +401,170 @@ function renderCrmKanban(mount,readonly,pipeline){
     col.ondragleave=()=>col.classList.remove("over");
     col.ondrop=async e=>{e.preventDefault();col.classList.remove("over");
       const s=col.dataset.s;if(drag==null)return;
-      await api(`/api/contact/${drag}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stage:s})});
-      const c=STATE.contacts.find(x=>x.id===drag);if(c)c.status=s;drag=null;route();};
+      await api(`/api/deal/${drag}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stage:s})});
+      const d=DEALS.find(x=>x.id===drag);if(d)d.stage=s;drag=null;route();};
   });
+}
+function dealsTable(mount){
+  smartTable(mount,{
+    rows:DEALS,searchKeys:["title","company_name","person_name","contact_name","product","stage"],
+    groupOptions:[{key:"stage",label:"стадия"},{key:"product",label:"продукт"}],
+    groupFmt:(k,val)=>k==="stage"?(STATUS_RU[val]||val):val,
+    onRowClick:openDeal,
+    columns:[
+      {key:"title",label:"Сделка",cls:"name",render:d=>dealTitle(d)},
+      {key:"company_name",label:"Компания",cls:"sub",render:d=>esc(d.company_name)||"—"},
+      {key:"person_name",label:"Контакт",cls:"sub",render:d=>esc(d.person_name||d.contact_name)||"—"},
+      {key:"stage",label:"Стадия",render:d=>statusBadge(d.stage)},
+      {key:"product",label:"Продукт",cls:"sub",render:d=>esc(d.product)||"—"},
+      {key:"amount",label:"Сумма",cls:"mono",render:d=>d.amount?Number(d.amount).toLocaleString("ru-RU")+" ₽":"—"},
+      {key:"updated_at",label:"Обновлено",cls:"sub mono",render:d=>fmt(d.updated_at)||"—"},
+    ],
+    emptyText:"Сделок нет. Создай «➕ Сделка» или из карточки компании.",
+  });
+}
+
+// ===== КОМПАНИИ (юрлица) =====
+let COMPANIES=[];
+async function viewCompanies(v){
+  COMPANIES=await api("/api/companies");
+  v.innerHTML=`<div class="ttoolbar">
+      <button class="primary" id="co-new">➕ Компания</button>
+      <button id="co-imp">⬆ Импорт 2ГИС</button>
+      <button id="co-enr">✨ Обогатить пачку</button>
+      <span class="grow"></span>
+      <span class="hint">Юрлица/агентства. Клик по строке — карточка со связанными контактами и сделками.</span>
+    </div>
+    <div id="imp-panel" style="display:none" class="card">
+      <div class="ttoolbar" style="margin:0">
+        <input type="file" id="imp-file" accept=".csv">
+        <input id="imp-tag" value="Агентства недвижимости" title="тег для всей пачки" class="grow">
+        <button class="primary" id="imp-go">Загрузить</button>
+        <span class="hint" id="imp-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">CSV из 2ГИС (кодировка определится сама). Дубли по телефону/username обновятся.</div>
+    </div>
+    <div id="co-body"></div>`;
+  $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  $("#co-enr").onclick=async()=>{const n=prompt("Сколько НЕобогащённых обогатить за раз?","10");if(!n)return;
+    const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
+    alert(`Запущено обогащение до ${r.limit} в фоне. Обнови через минуту-две.`);};
+  $("#co-new").onclick=async()=>{const name=prompt("Название компании:");if(!name)return;
+    const r=await api("/api/companies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    if(r.error){alert(r.error);return;}route();setTimeout(()=>openCompany(r.id),200);};
+  $("#imp-go").onclick=async()=>{
+    const f=$("#imp-file").files[0];const msg=$("#imp-msg");
+    if(!f){msg.textContent="выбери файл";return;}
+    msg.textContent="загружаю…";
+    const fd=new FormData();fd.append("file",f);fd.append("tag",$("#imp-tag").value);
+    try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
+      if(r.error){msg.textContent="ошибка: "+r.error;return;}
+      msg.textContent=`✅ импортировано ${r.imported}, всего ${r.total}`;route();
+    }catch(e){msg.textContent="ошибка: "+e.message;}};
+  smartTable($("#co-body"),{
+    rows:COMPANIES,searchKeys:["name","city","phone","inn","company_type"],
+    groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"}],
+    onRowClick:openCompany,
+    columns:[
+      {key:"name",label:"Компания",cls:"name",render:r=>esc(r.name)||"—"},
+      {key:"company_type",label:"Тип",cls:"sub",render:r=>esc(r.company_type)||"—"},
+      {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
+      {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||"—"},
+      {key:"contacts_count",label:"Контакты",cls:"mono",render:r=>r.contacts_count||0},
+      {key:"deals_count",label:"Сделки",cls:"mono",render:r=>r.deals_count||0},
+      {key:"site",label:"Сайт",cls:"sub",render:r=>r.site?`<a class="ext" href="${esc(r.site)}" target="_blank" onclick="event.stopPropagation()">сайт ↗</a>`:"—"},
+    ],
+    emptyText:"Компаний нет. Импортируй 2ГИС или добавь вручную.",
+  });
+}
+
+// ===== КОНТАКТЫ (физлица) =====
+async function viewContacts(v){
+  await loadContacts();
+  v.innerHTML=`<div class="ttoolbar">
+      <button class="primary" id="ct-new">➕ Контакт</button>
+      <span class="grow"></span>
+      <span class="hint">Физлица (директора/риелторы). Клик — карточка с историей и контекстом для агента.</span>
+    </div><div id="ct-body"></div>`;
+  $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
+    const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
+    if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
+  smartTable($("#ct-body"),{
+    rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
+    groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"}],
+    groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
+    onRowClick:openDossier,
+    columns:[
+      {key:"person_name",label:"Контакт",cls:"name",render:r=>esc(r.person_name||r.name)||'<span class="no">без имени</span>'},
+      {key:"company_name",label:"Компания",cls:"sub",render:r=>esc(r.company_name)||"—"},
+      {key:"username",label:"Канал",render:chCell},
+      {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||"—"},
+      {key:"tags",label:"Теги",render:tagsCell},
+      {key:"status",label:"Статус",render:r=>statusBadge(r.status)},
+      {key:"last_ts",label:"Активность",cls:"sub mono",render:r=>fmt(r.last_ts)||"—"},
+    ],
+    emptyText:"Контактов нет.",
+  });
+}
+
+// ===== Карточка КОМПАНИИ (drawer) =====
+async function openCompany(id){
+  const c=await api(`/api/company/${id}`);
+  if(!PIPELINES.length){try{await loadPipelines();}catch(e){}}
+  $("#dr-title").textContent=c.name||("Компания #"+id);
+  const TYPES=["ООО","ИП","АО","Физлицо","Самозанятый"];
+  const fld=(k,label,val,mono)=>`<div class="field"><label>${label}</label><input data-k="${k}" value="${esc(val||"")}"${mono?' class="mono"':''}></div>`;
+  $("#dr-body").innerHTML=`
+    <div class="row2"><div class="field"><label>Название</label><input data-k="name" value="${esc(c.name||"")}"></div>
+      <div class="field"><label>Тип</label><select data-k="company_type">${TYPES.map(t=>`<option ${t===c.company_type?"selected":""}>${t}</option>`).join("")}</select></div></div>
+    <div class="row2">${fld("city","Город",c.city)}${fld("phone","Телефон",c.phone,1)}</div>
+    <div class="row2">${fld("inn","ИНН",c.inn,1)}${fld("ogrn","ОГРН",c.ogrn,1)}</div>
+    <div class="row2">${fld("site","Сайт",c.site)}${fld("email","Email",c.email)}</div>
+    ${fld("address","Адрес",c.address)}
+    <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">💾 Сохранить</button><button id="co-del">🗑 Удалить</button></div>
+    <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Контакты (${(c.contacts||[]).length})</label>
+    <div style="margin:6px 0">${(c.contacts||[]).map(p=>`<div class="lnk" data-cid="${p.id}" style="padding:6px 0;cursor:pointer">👤 ${esc(p.person_name||p.name||"без имени")}${p.person_role?` · <span class="sub">${esc(p.person_role)}</span>`:""}${p.phone?` · <span class="sub mono">${esc(p.phone)}</span>`:""}</div>`).join("")||'<div class="no">нет — добавь в разделе «Контакты»</div>'}</div>
+    <hr><div style="display:flex;justify-content:space-between;align-items:center"><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Сделки (${(c.deals||[]).length})</label><button id="co-deal-new">➕ сделка</button></div>
+    <div style="margin:6px 0">${(c.deals||[]).map(d=>`<div class="lnk" data-did="${d.id}" style="padding:6px 0;cursor:pointer">💼 ${esc(d.title||"сделка")} · ${statusBadge(d.stage)}${d.amount?` · <span class="mono">${Number(d.amount).toLocaleString("ru-RU")} ₽</span>`:""}</div>`).join("")||'<div class="no">нет</div>'}</div>`;
+  $("#co-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.value);
+    await api(`/api/company/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    $("#co-save").textContent="✓ сохранено";setTimeout(route,500);};
+  $("#co-del").onclick=async()=>{if(!confirm("Удалить компанию? Контакты и сделки останутся, но отвяжутся."))return;
+    await api(`/api/company/${id}/delete`,{method:"POST"});$("#drawer").classList.remove("open");route();};
+  $("#co-deal-new").onclick=async()=>{const t=prompt("Название сделки:",c.name);if(!t)return;
+    await api("/api/deals",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:t,company_id:id,stage:"new",pipeline_id:PIPELINE_SEL})});openCompany(id);};
+  $("#dr-body").querySelectorAll(".lnk[data-cid]").forEach(el=>el.onclick=()=>openDossier(+el.dataset.cid));
+  $("#dr-body").querySelectorAll(".lnk[data-did]").forEach(el=>el.onclick=()=>openDeal(+el.dataset.did));
+  $("#drawer").classList.add("open");
+}
+
+// ===== Карточка СДЕЛКИ (drawer) =====
+async function openDeal(id){
+  const d=await api(`/api/deal/${id}`);
+  if(d.error){alert("Сделка не найдена");return;}
+  if(!PIPELINES.length){try{await loadPipelines();}catch(e){}}
+  $("#dr-title").textContent=d.title||("Сделка #"+id);
+  const stages=dealStagesFor(d.pipeline_id);
+  const pOpts=PIPELINES.map(p=>`<option value="${p.id}" ${p.id===d.pipeline_id?"selected":""}>${esc(p.name)}</option>`).join("");
+  $("#dr-body").innerHTML=`
+    <div class="field"><label>Название</label><input data-k="title" value="${esc(d.title||"")}"></div>
+    <div class="row2"><div class="field"><label>Стадия</label><select data-k="stage">${stages.map(s=>`<option value="${s.key}" ${s.key===d.stage?"selected":""}>${esc(s.label)}</option>`).join("")}</select></div>
+      <div class="field"><label>Сумма ₽</label><input data-k="amount" class="mono" value="${esc(d.amount||"")}"></div></div>
+    <div class="row2"><div class="field"><label>Воронка</label><select data-k="pipeline_id">${pOpts}</select></div>
+      <div class="field"><label>Продукт</label><input data-k="product" value="${esc(d.product||"")}"></div></div>
+    <div class="field"><label>Компания</label><div class="v">${d.company_name?`<span class="lnk" data-cid="${d.company_id}" style="cursor:pointer">🏢 ${esc(d.company_name)}</span>`:'<span class="no">—</span>'}</div></div>
+    <div class="field"><label>Контакт</label><div class="v">${(d.person_name||d.contact_name)?`<span class="lnk" data-pid="${d.contact_id}" style="cursor:pointer">👤 ${esc(d.person_name||d.contact_name)}</span>`:'<span class="no">—</span>'}</div></div>
+    <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(d.notes||"")}</textarea></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="dl-save">💾 Сохранить</button><button id="dl-del">🗑 Удалить</button></div>`;
+  $("#dl-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.dataset.k==="pipeline_id"?(+el.value||null):el.value);
+    await api(`/api/deal/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    $("#dl-save").textContent="✓ сохранено";setTimeout(route,500);};
+  $("#dl-del").onclick=async()=>{if(!confirm("Удалить сделку?"))return;
+    await api(`/api/deal/${id}/delete`,{method:"POST"});$("#drawer").classList.remove("open");route();};
+  $("#dr-body").querySelectorAll(".lnk[data-cid]").forEach(el=>el.onclick=()=>openCompany(+el.dataset.cid));
+  $("#dr-body").querySelectorAll(".lnk[data-pid]").forEach(el=>el.onclick=()=>openDossier(+el.dataset.pid));
+  $("#drawer").classList.add("open");
 }
 
 async function viewDossier(v){
@@ -666,7 +792,7 @@ async function openDossier(id){
       <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
     ${enrichBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
-      <div class="field"><label>Агентство</label><div class="v">${esc(c.agency)||"—"}</div></div></div>
+      <div class="field"><label>🏢 Компания</label><div class="v">${c.company_id?`<span class="lnk" data-coid="${c.company_id}" style="cursor:pointer;color:var(--accent)">${esc(c.company_name||c.agency||"компания")} ↗</span>`:(esc(c.agency)||"—")}</div></div></div>
     <div class="field"><label>🗂 Воронка / продукт</label>
       <select id="dr-pipe">${PIPELINES.map(p=>`<option value="${p.id}" ${(c.pipeline_id===p.id||(c.pipeline_id==null&&p.is_default))?"selected":""}>${esc(p.name)}</option>`).join("")}</select></div>
     <div class="row2"><div class="field"><label>Telegram</label><div class="v">${tgLink}</div></div>
@@ -680,6 +806,7 @@ async function openDossier(id){
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;">История переписки</label>
     <div class="th-body" style="max-height:none;padding:12px 0">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}</div></div>`).join("")||'<div class="no">Сообщений нет</div>'}</div>`;
   bindTags($("#dr-body"));
+  $("#dr-body").querySelectorAll(".lnk[data-coid]").forEach(el=>el.onclick=()=>openCompany(+el.dataset.coid));
   const cb=$("#dr-ctx-save");
   if(cb)cb.onclick=async()=>{cb.textContent="…";
     await api(`/api/contact/${id}/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_context:$("#dr-context").value})});
@@ -857,7 +984,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,crm:viewCrm,dossier:viewDossier,campaigns:viewCampaigns,parser:viewParser,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,calendar:viewCalendar,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,proxy:viewProxy,chats:viewChats};
 
 function renderNav(active){
   $("#nav").innerHTML=NAV_GROUPS.map(g=>

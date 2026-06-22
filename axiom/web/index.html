@@ -158,6 +158,18 @@
   .stub{text-align:center;color:var(--muted);padding:60px 20px;}
   .stub .big{font-size:40px;margin-bottom:14px;}
   hr{border:none;border-top:1px solid var(--border);margin:18px 0;}
+  .bellwrap{position:relative;display:inline-block;}
+  .bell-badge{position:absolute;top:-6px;right:-6px;background:#E0492F;color:#fff;border-radius:20px;
+    font-size:10px;font-weight:700;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 4px;}
+  .notif{position:absolute;right:0;top:42px;width:360px;max-height:60vh;overflow:auto;background:var(--panel);
+    border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:50;padding:6px;}
+  .notif .ni{padding:9px 11px;border-radius:8px;cursor:pointer;display:flex;gap:9px;align-items:flex-start;}
+  .notif .ni:hover{background:var(--panel2);}
+  .notif .ni .ic{font-size:15px;}
+  .notif .ni .tx{flex:1;min-width:0;}
+  .notif .ni .who{font-weight:600;font-size:13px;}
+  .notif .ni .msg{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .notif .ni .tm{color:var(--muted);font-size:11px;white-space:nowrap;}
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:#DBD5C7;border-radius:6px;border:2px solid var(--bg);}
   ::-webkit-scrollbar-thumb:hover{background:#C9C2B0;}
@@ -173,7 +185,10 @@
   <div class="content">
     <div class="topbar">
       <h2 id="title">Дашборд</h2>
-      <div class="right"><span class="upd" id="upd">—</span><button id="refresh">⟳ Обновить</button></div>
+      <div class="right"><span class="upd" id="upd">—</span>
+        <div class="bellwrap"><button id="bell" title="Уведомления">🔔<span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
+          <div class="notif" id="notif" style="display:none"></div></div>
+        <button id="refresh">⟳ Обновить</button></div>
     </div>
     <main id="view"></main>
   </div>
@@ -364,8 +379,9 @@ async function viewAgents(v){
     rows:a,searchKeys:["label","phone","username","role"],
     groupOptions:[{key:"role",label:"роль"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
+    onRowClick:openAgent,
     columns:[
-      {key:"label",label:"Ярлык",cls:"name",render:r=>esc(r.label)||'<span class="no">—</span>'},
+      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}</span>`},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||'<span class="no">—</span>'},
       {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
       {key:"conn",label:"Подключение",render:r=>{
@@ -621,6 +637,42 @@ async function openDeal(id){
     await api(`/api/deal/${id}/delete`,{method:"POST"});$("#drawer").classList.remove("open");route();};
   $("#dr-body").querySelectorAll(".lnk[data-cid]").forEach(el=>el.onclick=()=>openCompany(+el.dataset.cid));
   $("#dr-body").querySelectorAll(".lnk[data-pid]").forEach(el=>el.onclick=()=>openDossier(+el.dataset.pid));
+  $("#drawer").classList.add("open");
+}
+
+// ===== Карточка АГЕНТА (drawer) — фото + описание профиля =====
+async function openAgent(id){
+  const a=await api(`/api/account/${id}`);
+  if(a.error){alert("Аккаунт не найден");return;}
+  $("#dr-title").textContent=a.label||a.phone||("Агент #"+id);
+  const ava=a.avatar?`<img id="ag-ava" src="/api/account/${id}/avatar?t=${Date.now()}" style="width:84px;height:84px;border-radius:50%;object-fit:cover;border:2px solid var(--border)">`
+    :`<div id="ag-ava" style="width:84px;height:84px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700">${esc((a.label||a.phone||"?").slice(0,1).toUpperCase())}</div>`;
+  const roleOpts=Object.entries(ROLE_RU).filter(([k])=>k).map(([k,v])=>`<option value="${k}" ${k===a.role?"selected":""}>${esc(v)}</option>`).join("");
+  const stOpts=Object.entries(ACC_ST).map(([k,v])=>`<option value="${k}" ${k===a.status?"selected":""}>${esc(v)}</option>`).join("");
+  $("#dr-body").innerHTML=`
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px">
+      ${ava}
+      <div><button id="ag-ava-btn">📷 Загрузить фото</button><input type="file" id="ag-ava-file" accept="image/*" style="display:none">
+        <div class="hint" style="margin-top:6px">до 5 МБ, png/jpg</div></div>
+    </div>
+    <div class="row2"><div class="field"><label>Ярлык</label><input data-k="label" value="${esc(a.label||"")}"></div>
+      <div class="field"><label>Телефон</label><input data-k="phone" class="mono" value="${esc(a.phone||"")}"></div></div>
+    <div class="row2"><div class="field"><label>Ник TG</label><input data-k="username" value="${esc(a.username||"")}"></div>
+      <div class="field"><label>Лимит/день</label><input data-k="daily_limit" type="number" class="mono" value="${a.daily_limit||15}"></div></div>
+    <div class="row2"><div class="field"><label>Роль</label><select data-k="role">${roleOpts}</select></div>
+      <div class="field"><label>Статус</label><select data-k="status">${stOpts}</select></div></div>
+    <div class="field"><label>📝 Описание профиля (для команды)</label>
+      <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">💾 Сохранить</button></div>`;
+  const fileInp=$("#ag-ava-file");
+  $("#ag-ava-btn").onclick=()=>fileInp.click();
+  fileInp.onchange=async()=>{if(!fileInp.files.length)return;
+    const fd=new FormData();fd.append("file",fileInp.files[0]);
+    const r=await fetch(`/api/account/${id}/avatar`,{method:"POST",body:fd}).then(x=>x.json());
+    if(r.error){alert(r.error);return;}openAgent(id);};
+  $("#ag-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.value);
+    await api(`/api/account/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    $("#ag-save").textContent="✓ сохранено";setTimeout(route,500);};
   $("#drawer").classList.add("open");
 }
 
@@ -1051,6 +1103,33 @@ function renderNav(active){
   ).join("");
   $("#nav").querySelectorAll("a").forEach(a=>a.onclick=()=>{location.hash=a.dataset.id;});
 }
+// ----------------------------------------------------------------- notifications
+let NOTIF=[];
+function notifSeenTs(){return localStorage.getItem("axiom_notif_seen")||"";}
+async function refreshNotif(){
+  try{const r=await api("/api/notifications");NOTIF=r.items||[];}catch(e){NOTIF=[];}
+  const seen=notifSeenTs();
+  const unseen=NOTIF.filter(n=>n.type==="msg"&&(n.ts||"")>seen).length;
+  const b=$("#bell-badge");
+  if(unseen>0){b.textContent=unseen>99?"99+":unseen;b.style.display="";}else b.style.display="none";
+}
+function renderNotif(){
+  const box=$("#notif");
+  if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}
+  box.innerHTML=NOTIF.map(n=>`<div class="ni" data-cid="${n.contact_id}">
+      <span class="ic">${n.type==="meeting"?"📅":"💬"}</span>
+      <div class="tx"><div class="who">${esc(n.who||"—")}</div>
+        <div class="msg">${n.type==="meeting"?"назначена встреча":esc(n.text)}</div></div>
+      <span class="tm">${fmt(n.ts)}</span></div>`).join("");
+  box.querySelectorAll(".ni").forEach(el=>el.onclick=()=>{$("#notif").style.display="none";openDossier(+el.dataset.cid);});
+}
+$("#bell").onclick=()=>{const box=$("#notif");const open=box.style.display==="none";
+  if(open){renderNotif();box.style.display="block";
+    if(NOTIF.length)localStorage.setItem("axiom_notif_seen",NOTIF.reduce((a,n)=>n.ts>a?n.ts:a,""));
+    $("#bell-badge").style.display="none";
+  }else box.style.display="none";};
+document.addEventListener("click",e=>{if(!e.target.closest(".bellwrap"))$("#notif").style.display="none";});
+
 async function route(){
   const id=(location.hash||"#dashboard").slice(1);
   const nav=NAV.find(n=>n.id===id)||NAV[0];
@@ -1058,10 +1137,12 @@ async function route(){
   const v=$("#view");v.innerHTML='<div class="sub">Загрузка…</div>';
   try{await (VIEWS[nav.id]||viewDashboard)(v);}catch(e){v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`;}
   $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
+  refreshNotif();
 }
 window.addEventListener("hashchange",route);
 $("#refresh").onclick=route;
 route();
+setInterval(refreshNotif,60000);
 </script>
 </body>
 </html>

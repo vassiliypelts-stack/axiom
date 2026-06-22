@@ -14,6 +14,7 @@ axiom/data/*.db
 axiom/data/agentstva_sochi.csv
 axiom/data/sample_2gis.csv
 axiom/data/kp/
+axiom/data/avatars/
 axiom/*.xlsx
 
 # Тяжёлые исходные материалы (референс, не код)

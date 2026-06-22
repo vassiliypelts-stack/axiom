@@ -26,6 +26,7 @@ from importer.import_2gis import norm_phone, phone_from_link, tg_username
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_HTML = BASE_DIR / "index.html"
 KP_DIR = config.DB_PATH.parent / "kp"   # файлы КП кампаний (data/kp/)
+AVATAR_DIR = config.DB_PATH.parent / "avatars"   # аватары агентов
 
 FUNNEL = [
     ("new", "Новые"), ("messaged", "Написано"), ("in_dialog", "В диалоге"),
@@ -117,6 +118,79 @@ def accounts_delete(acc_id: int) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/account/{acc_id}")
+def account_detail(acc_id: int) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    d = dict(row)
+    d["tg_connected"] = bool(d.pop("tg_session", None))   # секрет наружу не отдаём
+    return JSONResponse(d)
+
+
+_ACCOUNT_EDIT_FIELDS = ("label", "phone", "username", "role", "status", "daily_limit", "description")
+
+
+@app.post("/api/account/{acc_id}/update")
+def account_update(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in _ACCOUNT_EDIT_FIELDS:
+        if k in payload:
+            v = payload.get(k)
+            if k == "daily_limit":
+                v = int(v or 15)
+            else:
+                v = (v or None)
+            sets.append(f"{k}=?"); vals.append(v)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(acc_id)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/account/{acc_id}/avatar")
+async def account_avatar_upload(acc_id: int, file: UploadFile = File(...)) -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT avatar FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+        old = row["avatar"] if "avatar" in row.keys() else None
+    raw = await file.read()
+    if not raw:
+        return JSONResponse({"error": "пустой файл"}, status_code=400)
+    if len(raw) > 5 * 1024 * 1024:
+        return JSONResponse({"error": "картинка больше 5 МБ"}, status_code=400)
+    ext = Path(file.filename or "img.png").suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        ext = ".png"
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"a{acc_id}{ext}"
+    (AVATAR_DIR / name).write_bytes(raw)
+    if old and old != name:
+        try:
+            (AVATAR_DIR / old).unlink(missing_ok=True)
+        except OSError:
+            pass
+    with database.get_conn() as conn:
+        conn.execute("UPDATE accounts SET avatar=? WHERE id=?", (name, acc_id))
+    return JSONResponse({"ok": True, "avatar": name})
+
+
+@app.get("/api/account/{acc_id}/avatar")
+def account_avatar(acc_id: int):
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT avatar FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    name = row["avatar"] if row and "avatar" in row.keys() else None
+    if not name or not (AVATAR_DIR / name).exists():
+        return JSONResponse({"error": "нет аватара"}, status_code=404)
+    return FileResponse(AVATAR_DIR / name)
+
+
 @app.post("/api/accounts/{acc_id}/proxy")
 def accounts_set_proxy(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
     proxy = (payload.get("proxy") or "").strip() or None
@@ -152,6 +226,31 @@ def meetings_list() -> JSONResponse:
             "WHERE d.meeting_at IS NOT NULL ORDER BY d.meeting_at"
         ).fetchall()
     return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/notifications")
+def notifications() -> JSONResponse:
+    """Лента событий для колокольчика: входящие ответы + ближайшие встречи."""
+    database.init_db()
+    with database.get_conn() as conn:
+        msgs = conn.execute(
+            "SELECT m.id, m.text, m.ts, m.contact_id, "
+            "COALESCE(c.person_name, c.name) AS who "
+            "FROM messages m JOIN contacts c ON c.id = m.contact_id "
+            "WHERE m.direction='in' ORDER BY m.id DESC LIMIT 25"
+        ).fetchall()
+        meets = conn.execute(
+            "SELECT d.id, d.meeting_at, d.contact_id, COALESCE(c.person_name, c.name) AS who "
+            "FROM deals d JOIN contacts c ON c.id = d.contact_id "
+            "WHERE d.meeting_at IS NOT NULL AND d.meeting_at >= datetime('now','-1 day') "
+            "ORDER BY d.meeting_at LIMIT 25"
+        ).fetchall()
+    items = [{"type": "msg", "text": m["text"], "who": m["who"], "ts": m["ts"],
+              "contact_id": m["contact_id"]} for m in msgs]
+    items += [{"type": "meeting", "text": "назначена встреча", "who": m["who"],
+               "ts": m["meeting_at"], "contact_id": m["contact_id"]} for m in meets]
+    items.sort(key=lambda x: x["ts"] or "", reverse=True)
+    return JSONResponse({"items": items})
 
 
 # ---- CRM / Контакты ------------------------------------------------------- #

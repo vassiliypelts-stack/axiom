@@ -71,6 +71,8 @@ _EXTRA_ACCOUNT_COLS = {
     "last_warm_at": "TEXT",
     "spam_status": "TEXT",                # вердикт @SpamBot: ok|limited|banned|unknown
     "spam_checked_at": "TEXT",
+    "avatar": "TEXT",                     # имя файла аватара (data/avatars/...)
+    "description": "TEXT",                # описание профиля агента (для команды)
 }
 
 

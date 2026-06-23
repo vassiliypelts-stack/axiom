@@ -937,6 +937,45 @@ def keywords_run(payload: dict = Body(default={})) -> JSONResponse:
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
+# ---- Визард запуска кампании: копайлот + загрузка телефонов ЦА ------------- #
+@app.post("/api/copilot")
+def copilot(payload: dict = Body(...)) -> JSONResponse:
+    """Подсказка от Claude по шагу визарда (Haiku, дёшево)."""
+    if not config.ANTHROPIC_API_KEY:
+        return JSONResponse({"error": "нет ANTHROPIC_API_KEY в .env"}, status_code=400)
+    step = (payload.get("step") or "").strip()
+    context = payload.get("context") or ""
+    try:
+        from agent.copilot import suggest
+        text = suggest(step, context)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "text": text})
+
+
+@app.post("/api/import/phones")
+def import_phones(payload: dict = Body(...)) -> JSONResponse:
+    """Загрузка списка телефонов ЦА (вставка текстом). Создаёт контакты для проверки мессенджеров."""
+    raw = payload.get("text") or ""
+    tag = (payload.get("tag") or "Телефоны ЦА").strip()
+    import re as _re
+    nums = set()
+    # выдёргиваем телефоноподобные последовательности (с пробелами/скобками/дефисами внутри)
+    for cand in _re.findall(r"\+?[\d][\d\s\-()]{8,}\d", raw):
+        p = norm_phone(cand)
+        if p:
+            nums.add(p)
+    if not nums:
+        return JSONResponse({"error": "не нашёл валидных номеров"}, status_code=400)
+    added = 0
+    with database.get_conn() as conn:
+        for p in nums:
+            database.upsert_contact(conn, source="phones", phone=p, name=p, tags=tag)
+            added += 1
+        total = conn.execute("SELECT COUNT(*) c FROM contacts").fetchone()["c"]
+    return JSONResponse({"ok": True, "imported": added, "total": total})
+
+
 # ---- Импорт 2ГИС (по заголовкам — ловит любую выгрузку) ------------------- #
 def _find_cols(header: list[str]) -> dict:
     """Сопоставляет колонки по названию заголовка. Возвращает {role: [индексы]}."""

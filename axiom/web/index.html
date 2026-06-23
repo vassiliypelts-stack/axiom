@@ -859,7 +859,8 @@ async function viewCampaigns(v){
   const projOpts=`<option value="">— без проекта —</option>`+projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   const accChecks=accounts.map(a=>`<label style="display:inline-flex;gap:6px;align-items:center;margin:2px 12px 2px 0"><input type="checkbox" class="c-acc-chk" value="${a.id}"> ${esc(a.label||a.phone||("#"+a.id))}</label>`).join("")||'<span class="no">нет аккаунтов — заведи в «Мои агенты»</span>';
   v.innerHTML=`
-    <div class="ttoolbar"><button class="primary" id="c-new-btn">➕ Новая кампания</button>
+    <div class="ttoolbar"><button class="primary" id="c-wizard-btn">🚀 Мастер запуска (визард)</button>
+      <button id="c-new-btn">➕ Новая кампания</button>
       ${PROJECT_SEL?`<span class="badge b-active">проект: ${esc(PROJECT_SEL.name)}</span> <button id="c-allproj">показать все</button>`:""}
       <span class="hint">Антибан: 2-3 аккаунта на мессенджер · 10-15 контактов/день на аккаунт · постепенный прогрев до КЭВ.</span></div>
     <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
@@ -929,6 +930,7 @@ async function viewCampaigns(v){
   const openNew=()=>{form.dataset.edit="";$("#c-form-title").textContent="Новая кампания";
     fill({});$("#c-save").textContent="Создать кампанию";form.style.display="block";form.scrollIntoView({behavior:"smooth"});};
   $("#c-new-btn").onclick=()=>{ if(form.style.display==="block"&&!form.dataset.edit){form.style.display="none";} else {openNew();} };
+  const wb=$("#c-wizard-btn");if(wb)wb.onclick=()=>startWizard();
   $("#c-cancel").onclick=()=>{form.style.display="none";};
   $("#c-prompt-ex").onclick=()=>{$("#c-prompt").value=PROMPT_PH;};
   const allproj=$("#c-allproj");if(allproj)allproj.onclick=()=>{PROJECT_SEL=null;route();};
@@ -1289,6 +1291,108 @@ function renderNav(active){
   ).join("");
   $("#nav").querySelectorAll("a").forEach(a=>a.onclick=()=>{location.hash=a.dataset.id;});
 }
+// ----------------------------------------------------------------- Мастер запуска кампании (визард)
+let WZ=null;
+const WZ_STEPS=[
+  {k:"base",t:"Проект и клиент"},
+  {k:"goal",t:"1 · Цель"},
+  {k:"audience",t:"2 · Аудитория (ЦА)"},
+  {k:"funnel",t:"3 · Воронка и КЭВ"},
+  {k:"offer",t:"4 · Оффер"},
+  {k:"prompt",t:"5 · Промпт ИИ-агента"},
+  {k:"launch",t:"6 · Запуск"},
+];
+function startWizard(){WZ={i:0,data:{name:"",client:"",goal:"",channel:"telegram",audience_tag:"Агентства недвижимости",keywords:"",funnel:"",kev:"",offer:"",prompt:""}};renderWizard();}
+function wzCtx(){const d=WZ.data;return `Проект: ${d.name}\nКлиент/продукт: ${d.client}\nКанал: ${d.channel}\nЦель: ${d.goal}\nЦА (тег): ${d.audience_tag}\nКлючи: ${d.keywords}\nВоронка: ${d.funnel}\nКЭВ: ${d.kev}\nОффер: ${d.offer}`;}
+function wzField(id,label,val,ph,rows){return `<div class="field"><label>${label}</label>${rows?`<textarea id="${id}" rows="${rows}" placeholder="${ph||''}">${esc(val||"")}</textarea>`:`<input id="${id}" value="${esc(val||"")}" placeholder="${ph||''}">`}</div>`;}
+function wzCopilotBlock(step){return `<div class="ttoolbar" style="margin:6px 0"><button id="wz-cop" data-step="${step}">💡 Подсказка от Claude</button><span class="hint" id="wz-cop-msg"></span></div><div id="wz-cop-out"></div>`;}
+function renderWizard(){
+  const v=$("#view");const d=WZ.data;const step=WZ_STEPS[WZ.i];
+  const dots=WZ_STEPS.map((s,i)=>`<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;margin-right:6px;font-size:12px;font-weight:700;${i===WZ.i?'background:var(--accent);color:#fff':i<WZ.i?'background:var(--green-soft);color:var(--green)':'background:var(--panel2);color:var(--muted)'}">${i+1}</span>`).join("");
+  let body="";
+  if(step.k==="base"){
+    body=`<div class="row2">${wzField("wz-name","Название проекта/кампании",d.name,"Агентства Сочи — Фонд")}${wzField("wz-client","Клиент / продукт",d.client,"Фонд доступного жилья")}</div>
+      <div class="field"><label>Канал</label><select id="wz-channel"><option value="telegram" ${d.channel==='telegram'?'selected':''}>Telegram</option><option value="whatsapp" ${d.channel==='whatsapp'?'selected':''}>WhatsApp</option></select></div>`;
+  }else if(step.k==="goal"){
+    body=wzField("wz-goal","Цель кампании (измеримая)",d.goal,"напр.: 20 КЭВ/созвонов в месяц с агентствами",4)+wzCopilotBlock("goal");
+  }else if(step.k==="audience"){
+    body=`${wzField("wz-audience_tag","ЦА — тег аудитории в базе",d.audience_tag,"Агентства недвижимости")}
+      ${wzField("wz-keywords","Ключевые слова (для поиска/прослушки чатов)",d.keywords,"куплю квартиру, ищу риелтора, ипотека",2)}
+      <div class="card" style="background:var(--panel2);padding:10px;margin:8px 0">
+        <b style="font-size:13px">Откуда взять ЦА:</b>
+        <div class="ttoolbar" style="margin:8px 0 0"><button id="wz-go-parser">🛰️ Парсинг TG</button><button id="wz-go-2gis">⬆ Импорт 2ГИС</button></div>
+        <div class="field" style="margin-top:10px"><label>📱 Или вставь телефоны ЦА (проверим мессенджеры при обогащении)</label>
+          <textarea id="wz-phones" rows="3" placeholder="+79991234567, +79997654321 ..."></textarea>
+          <button id="wz-phones-go" style="margin-top:6px">Загрузить телефоны</button> <span class="hint" id="wz-phones-msg"></span></div>
+      </div>${wzCopilotBlock("audience")}`;
+  }else if(step.k==="funnel"){
+    body=wzField("wz-funnel","Воронка (стадии)",d.funnel,"Новые → Написано → В диалоге → Встреча → Сделка",3)
+      +wzField("wz-kev","КЭВ — ключевой этап (созвон): что это и цель",d.kev,"Zoom 20 мин: показать как Фонд возвращает сорвавшиеся сделки",2)+wzCopilotBlock("funnel");
+  }else if(step.k==="offer"){
+    body=wzField("wz-offer","Сильный оффер (первое касание)",d.offer,"боль → решение → выгода в цифрах → почему сейчас",5)+wzCopilotBlock("offer");
+  }else if(step.k==="prompt"){
+    body=wzField("wz-prompt","Промпт ИИ-агента (характер, ведение диалога, КЭВ)",d.prompt,"как агент общается, отрабатывает возражения, ведёт на созвон",7)
+      +`<div class="hint" style="margin:6px 0">Данные о компаниях/ЦА (сайт, ИНН, досье) собираются на шаге «Обогатить пачку» в разделе Компании — агент учтёт их в диалоге.</div>`+wzCopilotBlock("prompt");
+  }else if(step.k==="launch"){
+    body=`<div class="card" style="background:var(--panel2);padding:14px">
+      <b>Сводка кампании</b>
+      <div class="sub" style="margin-top:8px;white-space:pre-wrap">${esc(wzCtx())}\nПромпт: ${esc((d.prompt||"").slice(0,160))}${d.prompt&&d.prompt.length>160?"…":""}</div></div>
+      <div class="hint" style="margin:10px 0">При запуске создам: проект, воронку, кампанию (оффер → первое сообщение, промпт → агент), и нишу из ключей. Дальше назначишь аккаунты-отправители и жмёшь ▶ — агенты пойдут в работу.</div>
+      <button class="primary" id="wz-launch" style="font-size:15px;padding:12px 20px">💰 Запустить (клиенты на автомате)</button>
+      <div id="wz-launch-msg" style="margin-top:10px"></div>`;
+  }
+  v.innerHTML=`<div class="card" style="max-width:760px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div>${dots}</div><button id="wz-exit">✕ выйти</button></div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:12px">${esc(step.t)}</div>
+    ${body}
+    <div class="ttoolbar" style="margin-top:16px">
+      ${WZ.i>0?'<button id="wz-prev">← Назад</button>':''}
+      <span class="grow"></span>
+      ${WZ.i<WZ_STEPS.length-1?'<button class="primary" id="wz-next">Далее →</button>':''}
+    </div></div>`;
+  const save=()=>{const g=id=>{const el=document.getElementById(id);return el?el.value:undefined;};
+    const map={"wz-name":"name","wz-client":"client","wz-channel":"channel","wz-goal":"goal","wz-audience_tag":"audience_tag","wz-keywords":"keywords","wz-funnel":"funnel","wz-kev":"kev","wz-offer":"offer","wz-prompt":"prompt"};
+    for(const[id,k]of Object.entries(map)){const val=g(id);if(val!==undefined)d[k]=val;}};
+  $("#wz-exit").onclick=()=>{WZ=null;route();};
+  const pv=$("#wz-prev");if(pv)pv.onclick=()=>{save();WZ.i--;renderWizard();};
+  const nx=$("#wz-next");if(nx)nx.onclick=()=>{save();WZ.i++;renderWizard();};
+  const cop=$("#wz-cop");if(cop)cop.onclick=async()=>{save();const b=cop,m=$("#wz-cop-msg");b.disabled=true;b.textContent="думаю…";m.textContent="";
+    const r=await api("/api/copilot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({step:b.dataset.step,context:wzCtx()})});
+    b.disabled=false;b.textContent="💡 Подсказка от Claude";
+    if(r.error){m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    $("#wz-cop-out").innerHTML=`<div class="card" style="background:var(--accent-soft);padding:10px;white-space:pre-wrap">${esc(r.text)}<div style="margin-top:8px"><button id="wz-cop-ins">↳ вставить в поле</button></div></div>`;
+    const ins=$("#wz-cop-ins");if(ins)ins.onclick=()=>{const map={goal:"wz-goal",audience:"wz-keywords",funnel:"wz-funnel",offer:"wz-offer",prompt:"wz-prompt"};const t=document.getElementById(map[b.dataset.step]);if(t){t.value=(t.value?t.value+"\n":"")+r.text;save();}};
+  };
+  const gp=$("#wz-go-parser");if(gp)gp.onclick=()=>{save();WZ=null;location.hash="parser";};
+  const g2=$("#wz-go-2gis");if(g2)g2.onclick=()=>{save();WZ=null;location.hash="companies";};
+  const pg=$("#wz-phones-go");if(pg)pg.onclick=async()=>{const t=$("#wz-phones").value;if(!t.trim())return;pg.disabled=true;pg.textContent="…";
+    const r=await api("/api/import/phones",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:t,tag:d.audience_tag})});
+    pg.disabled=false;pg.textContent="Загрузить телефоны";
+    $("#wz-phones-msg").textContent=r.error?("ошибка: "+r.error):`✅ загружено ${r.imported}, всего в базе ${r.total}`;};
+  const lb=$("#wz-launch");if(lb)lb.onclick=()=>wzLaunch();
+}
+async function wzLaunch(){
+  const d=WZ.data;const msg=$("#wz-launch-msg");const lb=$("#wz-launch");
+  if(!d.name.trim()){msg.innerHTML='<span style="color:#c0392b">укажи название (шаг 1)</span>';return;}
+  lb.disabled=true;lb.textContent="запускаю…";
+  try{
+    let project_id=null;
+    const pr=await api("/api/projects",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:d.name,entity:d.client,description:d.goal})});
+    project_id=pr.id||null;
+    const pl=await api("/api/pipelines",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:d.client||d.name,product:d.client||d.name,project_id})});
+    const camp=await api("/api/campaigns",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      name:d.name,product:d.client,audience_tag:d.audience_tag,channel:d.channel,
+      message_template:d.offer,agent_prompt:d.prompt,project_id})});
+    if(camp.error){msg.innerHTML='<span style="color:#c0392b">'+esc(camp.error)+'</span>';lb.disabled=false;lb.textContent="💰 Запустить (клиенты на автомате)";return;}
+    if(d.keywords.trim())await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:d.name,keywords:d.keywords})});
+    msg.innerHTML=`<div class="card" style="background:var(--green-soft);padding:12px">✅ Создано: проект, воронка, кампания${d.keywords.trim()?", ниша для прослушки":""}.<br>
+      Дальше: открой кампанию → назначь аккаунты-отправители (команда) → жми ▶ «Запустить». Агенты начнут писать и вести к КЭВ.
+      <div style="margin-top:8px"><button class="primary" id="wz-done">К кампаниям →</button></div></div>`;
+    const done=$("#wz-done");if(done)done.onclick=()=>{WZ=null;location.hash="campaigns";route();};
+  }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка: '+esc(e.message)+'</span>';lb.disabled=false;lb.textContent="💰 Запустить (клиенты на автомате)";}
+}
+
 // ----------------------------------------------------------------- notifications
 let NOTIF=[];
 function notifSeenTs(){return localStorage.getItem("axiom_notif_seen")||"";}

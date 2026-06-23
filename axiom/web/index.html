@@ -665,7 +665,16 @@ async function openAgent(id){
       <div class="field"><label>Статус</label><select data-k="status">${stOpts}</select></div></div>
     <div class="field"><label>📝 Описание профиля (для команды)</label>
       <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea></div>
+    <div class="field"><label>🛡️ Прокси (IP)</label>
+      <div class="v mono" id="ag-proxy-cur" style="word-break:break-all">${a.proxy?esc(a.proxy):'<span class="no">нет</span>'}</div>
+      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-proxy-auto">📡 Авто MTProto из пула</button>
+        <span class="hint">бесплатно, как альтернатива платному (пул в разделе «Прокси»)</span></div></div>
     <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">💾 Сохранить</button></div>`;
+  const pa=$("#ag-proxy-auto");if(pa)pa.onclick=async()=>{pa.disabled=true;pa.textContent="…";
+    const r=await api(`/api/account/${id}/proxy_auto`,{method:"POST"});
+    pa.disabled=false;pa.textContent="📡 Авто MTProto из пула";
+    if(r.error){alert(r.error);return;}
+    $("#ag-proxy-cur").textContent=r.proxy;};
   const fileInp=$("#ag-ava-file");
   $("#ag-ava-btn").onclick=()=>fileInp.click();
   fileInp.onchange=async()=>{if(!fileInp.files.length)return;
@@ -1406,6 +1415,8 @@ function renderWizard(){
     body=`<div class="card" style="background:var(--panel2);padding:14px">
       <b>Сводка кампании</b>
       <div class="sub" style="margin-top:8px;white-space:pre-wrap">${esc(wzCtx())}\nПромпт: ${esc((d.prompt||"").slice(0,160))}${d.prompt&&d.prompt.length>160?"…":""}</div></div>
+      <div class="field" style="margin:10px 0"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="wz-autoproxy"> 📡 Включить бесплатный авто-пул MTProto-прокси (если нет платных)</label>
+        <div class="hint">Соберёт прокси из каналов и раздаст аккаунтам автоматически. Только Telegram, времянка — на боевую лучше платные.</div></div>
       <div class="hint" style="margin:10px 0">При запуске создам: проект, воронку, кампанию (оффер → первое сообщение, промпт → агент), и нишу из ключей. Дальше назначишь аккаунты-отправители и жмёшь ▶ — агенты пойдут в работу.</div>
       <button class="primary" id="wz-launch" style="font-size:15px;padding:12px 20px">💰 Запустить (клиенты на автомате)</button>
       <div id="wz-launch-msg" style="margin-top:10px"></div>`;
@@ -1455,7 +1466,10 @@ async function wzLaunch(){
       message_template:d.offer,agent_prompt:d.prompt,project_id})});
     if(camp.error){msg.innerHTML='<span style="color:#c0392b">'+esc(camp.error)+'</span>';lb.disabled=false;lb.textContent="💰 Запустить (клиенты на автомате)";return;}
     if(d.keywords.trim())await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:d.name,keywords:d.keywords})});
-    msg.innerHTML=`<div class="card" style="background:var(--green-soft);padding:12px">✅ Создано: проект, воронка, кампания${d.keywords.trim()?", ниша для прослушки":""}.<br>
+    let proxyNote="";
+    const ap=document.getElementById("wz-autoproxy");
+    if(ap&&ap.checked){await api("/api/proxies/auto",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:true,interval_h:6})});proxyNote="<br>📡 Бесплатный авто-пул MTProto включён — прокси соберутся и раздадутся в фоне (минуту).";}
+    msg.innerHTML=`<div class="card" style="background:var(--green-soft);padding:12px">✅ Создано: проект, воронка, кампания${d.keywords.trim()?", ниша для прослушки":""}.${proxyNote}<br>
       Дальше: открой кампанию → назначь аккаунты-отправители (команда) → жми ▶ «Запустить». Агенты начнут писать и вести к КЭВ.
       <div style="margin-top:8px"><button class="primary" id="wz-done">К кампаниям →</button></div></div>`;
     const done=$("#wz-done");if(done)done.onclick=()=>{WZ=null;location.hash="campaigns";route();};

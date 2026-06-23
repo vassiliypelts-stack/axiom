@@ -181,6 +181,26 @@ async def account_avatar_upload(acc_id: int, file: UploadFile = File(...)) -> JS
     return JSONResponse({"ok": True, "avatar": name})
 
 
+@app.post("/api/account/{acc_id}/proxy_auto")
+def account_proxy_auto(acc_id: int) -> JSONResponse:
+    """Выдать аккаунту бесплатный MTProto-прокси из пула (альтернатива платному)."""
+    with database.get_conn() as conn:
+        acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc:
+            return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+        p = conn.execute(
+            "SELECT server, port, secret FROM proxies WHERE status='alive' "
+            "ORDER BY (assigned_to IS NOT NULL), ping_ms LIMIT 1"
+        ).fetchone()
+        if not p:
+            return JSONResponse({"error": "в пуле нет живых прокси — обнови пул в разделе «Прокси»"}, status_code=400)
+        link = f"tg://proxy?server={p['server']}&port={p['port']}&secret={p['secret']}"
+        conn.execute("UPDATE accounts SET proxy=? WHERE id=?", (link, acc_id))
+        conn.execute("UPDATE proxies SET assigned_to=? WHERE server=? AND port=? AND secret=?",
+                     (acc_id, p["server"], p["port"], p["secret"]))
+    return JSONResponse({"ok": True, "proxy": link})
+
+
 @app.get("/api/account/{acc_id}/avatar")
 def account_avatar(acc_id: int):
     with database.get_conn() as conn:

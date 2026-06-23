@@ -1,0 +1,18 @@
+[Unit]
+Description=AXIOM web pult (FastAPI) + scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ПОПРАВЬ под себя: User и пути (рабочая папка = клон/axiom)
+User=axiom
+WorkingDirectory=/home/axiom/axiom-repo/axiom
+Environment=PYTHONUNBUFFERED=1
+# Слушаем ТОЛЬКО localhost — доступ через SSH-туннель (см. DEPLOY.md). Наружу не торчит.
+ExecStart=/home/axiom/axiom-repo/axiom/.venv/bin/python -m web.app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

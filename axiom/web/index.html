@@ -394,7 +394,7 @@ async function viewAgents(v){
         return tg+" "+wa+spam;}},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
       {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`},
-      {key:"warm_stage",label:"Прогрев",cls:"sub",render:r=>r.status==='warming'?`${r.warm_stage||0}/7`:'—'},
+      {key:"warm_stage",label:"Прогрев",cls:"sub",render:r=>r.status==='warming'?`${r.warm_stage||0}/14`:'—'},
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>r.proxy?'<span class="badge b-active">есть</span>':'<span class="no">нет</span>'},
       {key:"daily_limit",label:"Лимит/день",cls:"mono"},
       {key:"id",label:"",render:r=>`<button class="acc-del" data-id="${r.id}">✕</button>`},

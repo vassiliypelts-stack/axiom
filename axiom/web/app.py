@@ -1472,7 +1472,7 @@ def campaign_team(cid: int) -> JSONResponse:
         ).fetchall()
     out = []
     for r in rows:
-        d = dict(r); d["ready_stage"] = 7; d["tg_connected"] = bool(d["tg_connected"]); out.append(d)
+        d = dict(r); d["ready_stage"] = 14; d["tg_connected"] = bool(d["tg_connected"]); out.append(d)
     return JSONResponse({"team": out})
 
 

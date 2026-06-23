@@ -1389,6 +1389,76 @@ def campaign_progress(cid: int) -> JSONResponse:
                          "sent_count": len(sent_ids), "total": len(rows), "rows": rows})
 
 
+_ECON_FIELDS = ("goal_start", "result_note", "cost_proxy", "cost_accounts", "cost_ai",
+                "cost_other", "revenue_per_deal", "manager_salary", "manager_leads")
+_ENGAGED = ("in_dialog", "meeting_set", "met", "won")
+
+
+@app.get("/api/campaign/{cid}/econ")
+def campaign_econ(cid: int) -> JSONResponse:
+    """Экономика кампании: цели, расходы, стоимость лида, ROI, робот vs человек."""
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        row = dict(row)
+        reached = conn.execute("SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchone()["c"]
+        qmarks = ",".join("?" for _ in _ENGAGED)
+        leads = conn.execute(
+            f"SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
+            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status IN ({qmarks})",
+            (cid, *_ENGAGED),
+        ).fetchone()["c"]
+        deals = conn.execute(
+            "SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
+            "JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status='won'",
+            (cid,),
+        ).fetchone()["c"]
+
+    def num(k):
+        v = row.get(k)
+        return float(v) if v not in (None, "") else 0.0
+
+    total_cost = num("cost_proxy") + num("cost_accounts") + num("cost_ai") + num("cost_other")
+    rev = deals * num("revenue_per_deal")
+    cost_per_lead = round(total_cost / leads) if leads else None
+    cost_per_deal = round(total_cost / deals) if deals else None
+    roi = round((rev - total_cost) / total_cost * 100) if total_cost else None
+    # робот vs человек
+    human_cpl = round(num("manager_salary") / num("manager_leads")) if num("manager_leads") else None
+    econ = {k: row.get(k) for k in _ECON_FIELDS}
+    return JSONResponse({
+        "econ": econ,
+        "metrics": {
+            "reached": reached, "leads": leads, "deals": deals,
+            "total_cost": round(total_cost), "revenue": round(rev),
+            "cost_per_lead": cost_per_lead, "cost_per_deal": cost_per_deal, "roi": roi,
+            "human_cost_per_lead": human_cpl,
+            "saving_vs_human": (round((human_cpl - cost_per_lead)) if (human_cpl and cost_per_lead) else None),
+        },
+    })
+
+
+@app.post("/api/campaign/{cid}/econ")
+def campaign_econ_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    sets, vals = [], []
+    for k in _ECON_FIELDS:
+        if k in payload:
+            v = payload.get(k)
+            if k not in ("goal_start", "result_note"):
+                v = float(v) if v not in (None, "") else None
+            else:
+                v = v or None
+            sets.append(f"{k}=?"); vals.append(v)
+    if not sets:
+        return JSONResponse({"ok": True})
+    vals.append(cid)
+    with database.get_conn() as conn:
+        conn.execute(f"UPDATE campaigns SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/campaign/{cid}/launch")
 def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
     import subprocess

@@ -972,11 +972,13 @@ function renderCampList(mount,camps){
         <div class="ttoolbar" style="margin:0">
           <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
           <button class="cl-prog" data-id="${c.id}">📋 Прогресс</button>
+          <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go" data-id="${c.id}">▶ Запустить</button>
           <button class="cl-del" data-id="${c.id}">✕</button>
         </div></div>
-        <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div></div>`;
+        <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div>
+        <div class="cprog" id="econ-${c.id}" style="margin-top:12px"></div></div>`;
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
   mount.querySelectorAll(".cl-prog").forEach(b=>b.onclick=async()=>{
@@ -997,6 +999,46 @@ function renderCampList(mount,camps){
         <table style="width:100%;border-collapse:collapse">
           <tr><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>С аккаунта</th><th>Когда</th></tr>
           ${rowsHtml}</table></div>`;
+  });
+  mount.querySelectorAll(".cl-econ").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,box=document.getElementById("econ-"+id);
+    if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
+    box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    const renderEcon=async()=>{
+      const d=await api(`/api/campaign/${id}/econ`);if(d.error){box.innerHTML=`<div class="empty">${esc(d.error)}</div>`;return;}
+      const e=d.econ,m=d.metrics;
+      const rub=v=>v==null?"—":Number(v).toLocaleString("ru-RU")+" ₽";
+      const inp=(k,ph)=>`<input data-ek="${k}" value="${e[k]!=null?esc(e[k]):''}" placeholder="${ph||''}" style="max-width:130px">`;
+      box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
+        <div class="field"><label>🎯 Цель на старте</label><textarea data-ek="goal_start" rows="2">${esc(e.goal_start||"")}</textarea></div>
+        <div class="field"><label>📈 Результат (факт)</label><textarea data-ek="result_note" rows="2">${esc(e.result_note||"")}</textarea></div>
+        <b style="font-size:13px">Расходы, ₽/мес</b>
+        <div class="ttoolbar" style="margin:6px 0;flex-wrap:wrap">
+          <label>прокси ${inp("cost_proxy")}</label><label>аккаунты ${inp("cost_accounts")}</label>
+          <label>ИИ/Claude ${inp("cost_ai")}</label><label>прочее ${inp("cost_other")}</label></div>
+        <div class="ttoolbar" style="margin:6px 0;flex-wrap:wrap">
+          <label>доход со сделки ${inp("revenue_per_deal")}</label>
+          <label>ЗП менеджера/мес ${inp("manager_salary")}</label><label>лидов у менеджера/мес ${inp("manager_leads")}</label></div>
+        <button class="primary" id="econ-save-${id}">💾 Сохранить и пересчитать</button>
+        <hr>
+        <div class="row2">
+          <div><div class="sub">Охвачено / Лидов / Сделок</div><div style="font-size:18px;font-weight:700">${m.reached} / ${m.leads} / ${m.deals}</div></div>
+          <div><div class="sub">Расходы всего</div><div style="font-size:18px;font-weight:700">${rub(m.total_cost)}</div></div>
+        </div>
+        <div class="row2" style="margin-top:8px">
+          <div><div class="sub">Стоимость лида</div><div style="font-size:18px;font-weight:700;color:var(--accent)">${rub(m.cost_per_lead)}</div></div>
+          <div><div class="sub">Стоимость сделки</div><div style="font-size:18px;font-weight:700">${rub(m.cost_per_deal)}</div></div>
+        </div>
+        <div class="row2" style="margin-top:8px">
+          <div><div class="sub">Доход / ROI</div><div style="font-size:18px;font-weight:700;color:${m.roi!=null&&m.roi>=0?'var(--green)':'#c0392b'}">${rub(m.revenue)} · ${m.roi!=null?m.roi+"%":"—"}</div></div>
+          <div><div class="sub">🤖 vs 🧑 лид (робот / человек)</div><div style="font-size:16px;font-weight:700">${rub(m.cost_per_lead)} / ${rub(m.human_cost_per_lead)}${m.saving_vs_human!=null?` <span style="color:var(--green)">(экономия ${rub(m.saving_vs_human)}/лид)</span>`:""}</div></div>
+        </div></div>`;
+      box.querySelector(`#econ-save-${id}`).onclick=async()=>{
+        const body={};box.querySelectorAll("[data-ek]").forEach(el=>body[el.dataset.ek]=el.value);
+        await api(`/api/campaign/${id}/econ`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+        renderEcon();};
+    };
+    renderEcon();
   });
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;

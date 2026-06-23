@@ -58,6 +58,16 @@ _EXTRA_CAMPAIGN_COLS = {
     "agent_prompt": "TEXT",
     "project_id": "INTEGER",   # к какому проекту относится кампания
     "kp_file": "TEXT",         # имя прикреплённого файла КП (data/kp/...), агент шлёт файлом
+    # --- экономика/ROI кампании ---
+    "goal_start": "TEXT",          # цель на старте
+    "result_note": "TEXT",         # факт/результат (заметка)
+    "cost_proxy": "REAL",          # прокси, ₽/мес
+    "cost_accounts": "REAL",       # аккаунты/SIM, ₽/мес
+    "cost_ai": "REAL",             # ИИ/Claude, ₽/мес
+    "cost_other": "REAL",          # прочее (сервер и т.п.), ₽/мес
+    "revenue_per_deal": "REAL",    # доход со сделки, ₽
+    "manager_salary": "REAL",      # ЗП живого менеджера, ₽/мес (для сравнения)
+    "manager_leads": "REAL",       # сколько лидов даёт живой менеджер, шт/мес
 }
 
 

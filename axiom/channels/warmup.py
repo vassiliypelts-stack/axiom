@@ -132,6 +132,65 @@ async def _react_feed(client, n: int) -> int:
     return done
 
 
+async def _setup_profile(client, acc: dict) -> None:
+    """Стартовое оформление профиля (на стадии 0): био и аватар, ТОЛЬКО если пусто
+    (не перезатираем существующее). Заполненный профиль реже флагают как спам."""
+    # био из описания агента
+    try:
+        about = (acc.get("description") or "").strip()[:70]
+        if about:
+            full = await client(functions.users.GetFullUserRequest("me"))
+            if not getattr(full.full_user, "about", None):
+                from telethon.tl.functions.account import UpdateProfileRequest
+                await client(UpdateProfileRequest(about=about))
+                print("  профиль: заполнил bio")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [bio] {e}")
+    # аватар из загруженного в карточке агента файла
+    try:
+        if acc.get("avatar"):
+            from pathlib import Path
+            p = Path(config.DB_PATH).parent / "avatars" / acc["avatar"]
+            if p.exists():
+                existing = await client.get_profile_photos("me", limit=1)
+                if not existing:
+                    from telethon.tl.functions.photos import UploadProfilePhotoRequest
+                    f = await client.upload_file(str(p))
+                    await client(UploadProfilePhotoRequest(file=f))
+                    print("  профиль: поставил аватар")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [avatar] {e}")
+
+
+async def _view_stories(client, n: int) -> int:
+    """Посмотреть и «прочитать» сторис из ленты (ещё живее). Best-effort —
+    если версия Telethon без stories API, тихо пропускаем."""
+    if n <= 0:
+        return 0
+    try:
+        from telethon.tl.functions.stories import GetPeerStoriesRequest, ReadStoriesRequest
+    except Exception:  # noqa: BLE001
+        return 0
+    done = 0
+    try:
+        async for d in client.iter_dialogs(limit=25):
+            if done >= n:
+                break
+            try:
+                res = await client(GetPeerStoriesRequest(peer=d.entity))
+                items = getattr(getattr(res, "stories", None), "stories", None) or []
+                if items:
+                    await client(ReadStoriesRequest(peer=d.entity, max_id=max(s.id for s in items)))
+                    done += 1
+                    print(f"  смотрю сторис «{getattr(d.entity, 'title', getattr(d, 'name', '?'))}»")
+                    await asyncio.sleep(random.uniform(2.0, 6.0))
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return done
+
+
 async def _send_chatter(client, ent, n: int, label: str = "") -> int:
     sent = 0
     for _ in range(n):
@@ -173,7 +232,54 @@ async def ping(targets: list[str], n: int) -> None:
 # --------------------------------------------------------------------------- #
 #  RUN — полный прогрев аккаунтов в статусе 'warming'                          #
 # --------------------------------------------------------------------------- #
-async def _warm_one(acc, anchors, peers) -> None:
+async def _ca_mix(client, acc: dict, stage: int) -> int:
+    """АНТИ-БАН ОПЦИЯ (выкл по умолчанию): на поздних стадиях вплести немного
+    реальных первых касаний ЦА по кампании аккаунта. Ramping: стадия5→1, 6→2, 7+→3.
+    Шлёт от ПРОГРЕВАЕМОГО аккаунта (не с основного). Реальные люди — осознанно."""
+    cap = min(max(stage - 4, 0), 3)
+    if cap <= 0:
+        return 0
+    from channels.campaign_send import _add_tag, _audience, _greeting, _parts
+    from channels.telegram import _resolve_entity, _send_parts
+    with database.get_conn() as conn:
+        camp = conn.execute(
+            "SELECT c.* FROM campaigns c JOIN campaign_accounts ca ON ca.campaign_id=c.id "
+            "WHERE ca.account_id=? AND c.channel='telegram' AND IFNULL(c.message_template,'')<>'' "
+            "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
+        ).fetchone()
+    if not camp:
+        return 0
+    camp = dict(camp)
+    rows = _audience(camp["audience_tag"], "telegram", cap)
+    sent = 0
+    for row in rows:
+        if sent >= cap:
+            break
+        name = _greeting(row)
+        parts = _parts(camp["message_template"], name, row["agency"] or row["name"])
+        if not parts:
+            break
+        try:
+            ent = await _resolve_entity(client, row)
+            await _send_parts(client, ent, parts)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [ca-mix skip {row['id']}] {e}")
+            continue
+        with database.get_conn() as conn:
+            database.set_tg_user_id(conn, row["id"], int(ent.id))
+            database.add_message(conn, row["id"], "out", "\n".join(parts), intent=None)
+            database.set_status(conn, row["id"], "messaged")
+            conn.execute("UPDATE contacts SET tags=? WHERE id=?",
+                         (_add_tag(row["tags"], f"кампания #{camp['id']}"), row["id"]))
+            conn.execute("INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) "
+                         "VALUES (?,?,?)", (camp["id"], row["id"], acc["id"]))
+        sent += 1
+        print(f"  [ca-mix {sent}/{cap}] -> {name or row['username']}")
+        await asyncio.sleep(random.uniform(20, 60))
+    return sent
+
+
+async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
     client = build_client(StringSession(acc["tg_session"]), acc["proxy"])
     await client.connect()
     if not await client.is_user_authorized():
@@ -190,6 +296,10 @@ async def _warm_one(acc, anchors, peers) -> None:
     await _go_online(client)
     await asyncio.sleep(random.uniform(2, 6))
 
+    # на старте — оформляем профиль (bio/аватар), если пусто
+    if stage == 0:
+        await _setup_profile(client, acc)
+
     # 2) вступаем в каналы (по плану, по чуть-чуть)
     for ch in random.sample(CHANNELS, min(plan["channels"], len(CHANNELS))):
         try:
@@ -204,6 +314,9 @@ async def _warm_one(acc, anchors, peers) -> None:
 
     # 4) лайкаем посты (реакции в каналах/группах)
     await _react_feed(client, plan.get("react", 0))
+
+    # 4b) смотрим сторис из ленты (ещё живее)
+    await _view_stories(client, plan.get("react", 1))
 
     # 5) лёгкая переписка со «своими» (якоря + другие прогреваемые) — только если по плану есть ЛС
     targets = [a for a in anchors] + [p for p in peers if p["id"] != acc["id"]]
@@ -222,6 +335,10 @@ async def _warm_one(acc, anchors, peers) -> None:
             continue
         left -= await _send_chatter(client, ent, 1, label=peer)
 
+    # 6) опционально: вплести немного реальной ЦА (анти-бан, выкл по умолчанию)
+    if ca_mix and stage >= 5:
+        await _ca_mix(client, acc, stage)
+
     new_stage = stage + 1
     activate = new_stage >= READY_STAGE
     with database.get_conn() as conn:
@@ -235,14 +352,15 @@ async def run() -> None:
     with database.get_conn() as conn:
         accs = [dict(a) for a in database.warming_accounts(conn)]
         anchors = [dict(a) for a in database.warm_anchors(conn)]
+        ca_mix = database.get_setting(conn, "warm_ca_mix", "off") == "on"
     if not accs:
         print("нет аккаунтов в прогреве с сессией. Сначала: python -m channels.account_login --id N "
               "(и статус 'warming' в «Мои агенты»)")
         return
-    print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}")
+    print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}; ЦА-микс: {'вкл' if ca_mix else 'выкл'}")
     for acc in accs:
         try:
-            await _warm_one(acc, anchors, accs)
+            await _warm_one(acc, anchors, accs, ca_mix=ca_mix)
         except Exception as e:  # noqa: BLE001
             print(f"[fail #{acc['id']}] {e}")
         await asyncio.sleep(random.uniform(8, 20))

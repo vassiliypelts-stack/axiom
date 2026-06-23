@@ -288,6 +288,20 @@ def _proxy_scheduler() -> None:
                                cwd=str(BASE_DIR.parent), timeout=300)
         except Exception as e:  # noqa: BLE001
             print(f"[proxy scheduler] {e}")
+        # --- авто-прогрев (одна ступень по расписанию) ---
+        try:
+            with database.get_conn() as conn:
+                wauto = database.get_setting(conn, "warm_auto", "off")
+                wint = int(database.get_setting(conn, "warm_interval_min", "1440"))
+                wlast = database.get_setting(conn, "warm_last_run_ts", "0")
+            if wauto == "on" and (time.time() - float(wlast or 0)) >= wint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "warm_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "warm_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                subprocess.run([sys.executable, "-m", "channels.warmup", "--run"],
+                               cwd=str(BASE_DIR.parent), timeout=1800)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warmup scheduler] {e}")
         time.sleep(60)
 
 
@@ -1510,6 +1524,30 @@ def campaign_warmup(cid: int, payload: dict = Body(default={})) -> JSONResponse:
         return JSONResponse({"error": "в команде нет аккаунтов в статусе «прогрев» с авторизованной сессией"}, status_code=400)
     _spawn("channels.warmup", "--run")
     return JSONResponse({"ok": True, "warming": warming})
+
+
+@app.get("/api/warmup/settings")
+def warmup_settings_get() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "auto": database.get_setting(conn, "warm_auto", "off") == "on",
+            "interval_h": int(database.get_setting(conn, "warm_interval_min", "1440")) // 60,
+            "ca_mix": database.get_setting(conn, "warm_ca_mix", "off") == "on",
+            "last_run": database.get_setting(conn, "warm_last_run", None),
+        })
+
+
+@app.post("/api/warmup/settings")
+def warmup_settings_set(payload: dict = Body(...)) -> JSONResponse:
+    with database.get_conn() as conn:
+        if "auto" in payload:
+            database.set_setting(conn, "warm_auto", "on" if payload.get("auto") else "off")
+        if "interval_h" in payload:
+            database.set_setting(conn, "warm_interval_min", str(max(1, int(payload.get("interval_h") or 24)) * 60))
+        if "ca_mix" in payload:
+            database.set_setting(conn, "warm_ca_mix", "on" if payload.get("ca_mix") else "off")
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/campaign/{cid}/launch")

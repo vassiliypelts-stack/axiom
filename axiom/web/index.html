@@ -1066,7 +1066,18 @@ function renderCampList(mount,camps){
       box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
         ${team.length?`<table style="width:100%;border-collapse:collapse"><tr><th>Аккаунт</th><th>Сессия</th><th>Статус</th><th>Прогрев</th></tr>${rows}</table>`:'<div class="sub">В команде нет аккаунтов. Добавь их в «⚙ Настроить» → «Команда агентов».</div>'}
         <div class="ttoolbar" style="margin:10px 0 0"><button class="primary" id="warm-go-${id}">🔥 Запустить ступень прогрева</button><span class="hint" id="warm-msg"></span></div>
-        <div class="hint" style="margin-top:8px">Безопасно: одна ступень = «день». Греет аккаунты в статусе «прогрев» (взаимная переписка между своими + вступление в каналы + якоря), темп человекоподобный. После 7 ступеней аккаунт → «активен». Запускай раз в день. <b>Антибан-совет:</b> не выводи 0→15 сообщений сразу — после прогрева начинай рассылку малыми порциями (3-5/день), наращивая.</div></div>`;
+        <div class="ttoolbar" style="margin:8px 0 0;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="warm-auto"> авто-ступень каждые</label>
+          <input id="warm-int" type="number" min="1" value="24" style="max-width:64px"> ч
+          <label style="display:inline-flex;align-items:center;gap:6px;margin-left:14px"><input type="checkbox" id="warm-camix"> 📊 микс 10-20% реальной ЦА (поздние ступени)</label>
+          <button id="warm-set-save">сохранить</button><span class="hint" id="warm-set-msg"></span></div>
+        <div class="hint" style="margin-top:8px">Безопасно: одна ступень = «день» (~2 недели до «активен»). Первые дни — только пассив (каналы, чтение, лайки, сторис, онлайн), ЛС позже и плавно. <b>ЦА-микс</b> (по галочке, реальные люди): со стадии 5 аккаунт добавляет 1→2→3 реальных касаний ЦА в день вперемешку — естественнее, меньше риск бана. Включай осознанно.</div></div>`;
+      api("/api/warmup/settings").then(s=>{const a=box.querySelector("#warm-auto"),i=box.querySelector("#warm-int"),m=box.querySelector("#warm-camix");
+        if(a)a.checked=!!s.auto;if(i)i.value=s.interval_h||24;if(m)m.checked=!!s.ca_mix;
+        if(s.last_run)box.querySelector("#warm-set-msg").textContent="последний авто-прогрев: "+s.last_run;});
+      const ss=box.querySelector("#warm-set-save");if(ss)ss.onclick=async()=>{
+        await api("/api/warmup/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:box.querySelector("#warm-auto").checked,interval_h:+box.querySelector("#warm-int").value,ca_mix:box.querySelector("#warm-camix").checked})});
+        box.querySelector("#warm-set-msg").textContent="сохранено";};
       const gb=box.querySelector(`#warm-go-${id}`);if(gb)gb.onclick=async()=>{gb.disabled=true;gb.textContent="запускаю…";
         const r=await api(`/api/campaign/${id}/warmup`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
         gb.disabled=false;gb.textContent="🔥 Запустить ступень прогрева";

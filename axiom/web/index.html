@@ -973,12 +973,14 @@ function renderCampList(mount,camps){
           <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
           <button class="cl-prog" data-id="${c.id}">📋 Прогресс</button>
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
+          <button class="cl-warm" data-id="${c.id}">🔥 Прогрев</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go" data-id="${c.id}">▶ Запустить</button>
           <button class="cl-del" data-id="${c.id}">✕</button>
         </div></div>
         <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div>
-        <div class="cprog" id="econ-${c.id}" style="margin-top:12px"></div></div>`;
+        <div class="cprog" id="econ-${c.id}" style="margin-top:12px"></div>
+        <div class="cprog" id="warm-${c.id}" style="margin-top:12px"></div></div>`;
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
   mount.querySelectorAll(".cl-prog").forEach(b=>b.onclick=async()=>{
@@ -1039,6 +1041,31 @@ function renderCampList(mount,camps){
         renderEcon();};
     };
     renderEcon();
+  });
+  mount.querySelectorAll(".cl-warm").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,box=document.getElementById("warm-"+id);
+    if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
+    box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    const render=async()=>{
+      const d=await api(`/api/campaign/${id}/team`);
+      const team=d.team||[];
+      const rows=team.map(a=>{const pct=Math.round((a.warm_stage||0)/(a.ready_stage||7)*100);
+        return `<tr><td>${esc(a.label||a.phone||("#"+a.id))}</td>
+          <td>${a.tg_connected?'<span class="badge b-active">TG ✓</span>':'<span class="badge b-nurture">нет сессии</span>'}</td>
+          <td><span class="badge b-${a.status==='active'?'active':a.status==='banned'?'stop':'nurture'}">${ACC_ST[a.status]||a.status}</span></td>
+          <td style="min-width:140px"><div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--green)"></div></div><span class="sub mono">${a.warm_stage||0}/${a.ready_stage||7}</span></td></tr>`;}).join("");
+      box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
+        ${team.length?`<table style="width:100%;border-collapse:collapse"><tr><th>Аккаунт</th><th>Сессия</th><th>Статус</th><th>Прогрев</th></tr>${rows}</table>`:'<div class="sub">В команде нет аккаунтов. Добавь их в «⚙ Настроить» → «Команда агентов».</div>'}
+        <div class="ttoolbar" style="margin:10px 0 0"><button class="primary" id="warm-go-${id}">🔥 Запустить ступень прогрева</button><span class="hint" id="warm-msg"></span></div>
+        <div class="hint" style="margin-top:8px">Безопасно: одна ступень = «день». Греет аккаунты в статусе «прогрев» (взаимная переписка между своими + вступление в каналы + якоря), темп человекоподобный. После 7 ступеней аккаунт → «активен». Запускай раз в день. <b>Антибан-совет:</b> не выводи 0→15 сообщений сразу — после прогрева начинай рассылку малыми порциями (3-5/день), наращивая.</div></div>`;
+      const gb=box.querySelector(`#warm-go-${id}`);if(gb)gb.onclick=async()=>{gb.disabled=true;gb.textContent="запускаю…";
+        const r=await api(`/api/campaign/${id}/warmup`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+        gb.disabled=false;gb.textContent="🔥 Запустить ступень прогрева";
+        const m=box.querySelector("#warm-msg");
+        if(r.error){m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
+        else{m.textContent=`прогрев запущен (${r.warming} акк.) — идёт в фоне, ступень обновится через несколько минут`;}};
+    };
+    render();
   });
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;

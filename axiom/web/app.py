@@ -1459,6 +1459,39 @@ def campaign_econ_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/campaign/{cid}/team")
+def campaign_team(cid: int) -> JSONResponse:
+    """Команда кампании с прогрессом прогрева (для панели прогрева)."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.label, a.phone, a.username, a.status, a.warm_stage, "
+            "(a.tg_session IS NOT NULL AND a.tg_session<>'') AS tg_connected, a.proxy "
+            "FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
+            "WHERE ca.campaign_id=? ORDER BY a.id", (cid,)
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r); d["ready_stage"] = 7; d["tg_connected"] = bool(d["tg_connected"]); out.append(d)
+    return JSONResponse({"team": out})
+
+
+@app.post("/api/campaign/{cid}/warmup")
+def campaign_warmup(cid: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Запустить прогрев (одна ступень). Греет аккаунты в статусе 'warming'
+    (взаимная переписка + каналы + якоря). Безопасный человекоподобный темп."""
+    with database.get_conn() as conn:
+        warming = conn.execute(
+            "SELECT COUNT(*) c FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
+            "WHERE ca.campaign_id=? AND a.status='warming' AND a.tg_session IS NOT NULL AND a.tg_session<>''",
+            (cid,),
+        ).fetchone()["c"]
+    if not warming:
+        return JSONResponse({"error": "в команде нет аккаунтов в статусе «прогрев» с авторизованной сессией"}, status_code=400)
+    _spawn("channels.warmup", "--run")
+    return JSONResponse({"ok": True, "warming": warming})
+
+
 @app.post("/api/campaign/{cid}/launch")
 def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
     import subprocess

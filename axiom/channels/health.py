@@ -48,16 +48,24 @@ async def _check(client) -> tuple[str, str]:
 
 def _save(acc_id: int, status: str) -> None:
     with database.get_conn() as conn:
+        prev = conn.execute("SELECT spam_status, label, phone FROM accounts WHERE id=?", (acc_id,)).fetchone()
         conn.execute(
             "UPDATE accounts SET spam_status=?, spam_checked_at=datetime('now') WHERE id=?",
             (status, acc_id),
         )
         if status == "banned":
             conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (acc_id,))
+        # Событие в колокольчик при ухудшении (новый бан/ограничение)
+        if status in ("banned", "limited") and (not prev or prev["spam_status"] != status):
+            who = (prev["label"] or prev["phone"] or f"#{acc_id}") if prev else f"#{acc_id}"
+            ttl = "⛔ Аккаунт забанен" if status == "banned" else "⚠️ Аккаунт ограничен"
+            database.add_event(conn, "ban", f"{ttl}: {who}",
+                               "проверь @SpamBot и выведи из рассылки", level="warn", account_id=acc_id)
 
 
 async def _check_account(acc: dict) -> None:
-    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"))
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                          acc.get("api_id"), acc.get("api_hash"))
     await client.connect()
     if not await client.is_user_authorized():
         _save(acc["id"], "unknown")

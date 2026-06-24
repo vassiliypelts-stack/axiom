@@ -26,10 +26,16 @@ def _load_campaign(cid: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _channels(channel: str | None) -> list[str]:
+    return [c.strip() for c in (channel or "").split(",") if c.strip()]
+
+
 def _audience(tag: str | None, channel: str, cap: int):
+    """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram."""
     where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
     params: list = []
-    if channel == "telegram":
+    # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
+    if "telegram" in _channels(channel):
         where += " AND has_tg IN ('yes','unknown')"
     if tag:
         where += " AND tags LIKE ?"
@@ -73,9 +79,14 @@ async def run(cid: int, limit: int) -> None:
     if not camp:
         print(f"кампания #{cid} не найдена")
         return
-    if camp["channel"] != "telegram":
-        print(f"канал '{camp['channel']}' пока не поддержан (только telegram)")
+    chans = _channels(camp["channel"])
+    if "telegram" not in chans:
+        print(f"канал '{camp['channel']}': отправка через WhatsApp пока не подключена "
+              f"(Baileys-мост). Сейчас этот отправщик шлёт только Telegram.")
         return
+    if "whatsapp" in chans:
+        print("режим мультиканала: TG-достижимым шлём сейчас; WhatsApp-only контакты "
+              "дождутся подключения WA-моста.")
     cap = min(limit, camp["daily_limit"] or limit)
     rows = _audience(camp["audience_tag"], camp["channel"], cap)
     if not rows:
@@ -129,10 +140,15 @@ async def run(cid: int, limit: int) -> None:
     # Если в аудитории больше никого не осталось — кампания отработана.
     remaining = _audience(camp["audience_tag"], camp["channel"], 1)
     with database.get_conn() as conn:
+        done = not remaining
         conn.execute(
             "UPDATE campaigns SET status=? WHERE id=?",
-            ("done" if not remaining else "running", cid),
+            ("done" if done else "running", cid),
         )
+        if done:
+            database.add_event(conn, "campaign_done", f"✅ Кампания «{camp['name']}» отработана",
+                               f"аудитория исчерпана, в этот заход отправлено {sent}",
+                               level="good", campaign_id=cid)
     print(f"кампания #{cid}: отправлено {sent}")
     await client.disconnect()
 

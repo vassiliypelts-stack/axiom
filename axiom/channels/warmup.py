@@ -280,7 +280,8 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
 
 
 async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
-    client = build_client(StringSession(acc["tg_session"]), acc["proxy"])
+    client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
+                          acc.get("api_id"), acc.get("api_hash"))
     await client.connect()
     if not await client.is_user_authorized():
         print(f"[skip #{acc['id']}] сессия не авторизована — перелогинь: python -m channels.account_login --id {acc['id']}")
@@ -343,16 +344,27 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
     activate = new_stage >= READY_STAGE
     with database.get_conn() as conn:
         database.bump_warm(conn, acc["id"], new_stage, activate=activate)
+        if activate:
+            who = acc.get("label") or acc.get("phone") or f"#{acc['id']}"
+            database.add_event(conn, "warm_ready", f"🌡 Аккаунт прогрет: {who}",
+                               "переведён в «активен» — можно ставить в рассылку",
+                               level="good", account_id=acc["id"])
     print(f"  стадия → {new_stage}{' · ГОТОВ (active)' if activate else ''}")
     await client.disconnect()
 
 
-async def run() -> None:
+async def run(only_id: int | None = None) -> None:
     database.init_db()
     with database.get_conn() as conn:
         accs = [dict(a) for a in database.warming_accounts(conn)]
         anchors = [dict(a) for a in database.warm_anchors(conn)]
         ca_mix = database.get_setting(conn, "warm_ca_mix", "off") == "on"
+    if only_id is not None:
+        accs = [a for a in accs if a["id"] == only_id]
+        if not accs:
+            print(f"аккаунт #{only_id} не годится для прогрева: нужен статус 'прогрев' И "
+                  f"авторизованная сессия (TG ✓). Подключи его и поставь статус 'прогрев'.")
+            return
     if not accs:
         print("нет аккаунтов в прогреве с сессией. Сначала: python -m channels.account_login --id N "
               "(и статус 'warming' в «Мои агенты»)")
@@ -372,12 +384,13 @@ def main() -> None:
     p.add_argument("--ping", help="тест: номера/юзернеймы через запятую, кому слать с основного аккаунта")
     p.add_argument("--n", type=int, default=3, help="сколько сообщений на цель в режиме --ping")
     p.add_argument("--run", action="store_true", help="полный прогрев аккаунтов в статусе 'warming'")
+    p.add_argument("--id", type=int, help="прогреть только один аккаунт по id (для теста из пульта)")
     args = p.parse_args()
     if args.ping:
         targets = [t.strip() for t in args.ping.split(",") if t.strip()]
         asyncio.run(ping(targets, args.n))
-    elif args.run:
-        asyncio.run(run())
+    elif args.run or args.id:
+        asyncio.run(run(only_id=args.id))
     else:
         p.print_help()
 

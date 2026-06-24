@@ -83,6 +83,8 @@ _EXTRA_ACCOUNT_COLS = {
     "spam_checked_at": "TEXT",
     "avatar": "TEXT",                     # имя файла аватара (data/avatars/...)
     "description": "TEXT",                # описание профиля агента (для команды)
+    "api_id": "INTEGER",                  # собственные api_id/api_hash аккаунта (для купленных
+    "api_hash": "TEXT",                   # сессий — используем их, а не глобальные из .env)
 }
 
 
@@ -382,6 +384,17 @@ def save_account_session(conn: sqlite3.Connection, acc_id: int, session: str, us
     conn.execute(
         "UPDATE accounts SET tg_session=?, username=COALESCE(?,username) WHERE id=?",
         (session, username, acc_id),
+    )
+
+
+def add_event(conn: sqlite3.Connection, type: str, title: str, text: str | None = None,
+              level: str = "info", contact_id: int | None = None,
+              campaign_id: int | None = None, account_id: int | None = None) -> None:
+    """Записать событие в ленту колокольчика (старт/финиш кампании, лид, бан, прогрев)."""
+    conn.execute(
+        "INSERT INTO events (type, level, title, text, contact_id, campaign_id, account_id) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (type, level, title, text, contact_id, campaign_id, account_id),
     )
 
 

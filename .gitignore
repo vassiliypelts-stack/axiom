@@ -2,6 +2,10 @@
 .env
 *.session
 *.session-journal
+twoFA.txt
+tdata/
+# Купленные TG-аккаунты (tdata, .json с api/proxy, 2FA, .exe) — СЕКРЕТЫ
+ТГ Аккуанты(portable)/
 
 # Python
 __pycache__/

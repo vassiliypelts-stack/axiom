@@ -110,9 +110,12 @@ def parse_mtproxy(raw: str | None):
     return None
 
 
-def build_client(session, proxy_raw: str | None = None) -> TelegramClient:
+def build_client(session, proxy_raw: str | None = None,
+                 api_id: int | None = None, api_hash: str | None = None) -> TelegramClient:
     """Единая сборка клиента: MTProto-прокси (tg://proxy) или SOCKS5. proxy_raw
-    пуст → прокси основного аккаунта из .env. Используется аккаунтами команды."""
+    пуст → прокси основного аккаунта из .env. Используется аккаунтами команды.
+    api_id/api_hash — собственные креды аккаунта (для купленных сессий обязательно
+    использовать те, под которыми сессия создана); иначе берём глобальные из .env."""
     mt = parse_mtproxy(proxy_raw)
     kwargs: dict = {}
     if mt:
@@ -121,7 +124,9 @@ def build_client(session, proxy_raw: str | None = None) -> TelegramClient:
         kwargs["proxy"] = mt
     else:
         kwargs["proxy"] = parse_proxy_str(proxy_raw) or _parse_proxy()
-    return TelegramClient(session, int(config.TG_API_ID), config.TG_API_HASH, **kwargs)
+    aid = int(api_id) if api_id else int(config.TG_API_ID)
+    ahash = api_hash or config.TG_API_HASH
+    return TelegramClient(session, aid, ahash, **kwargs)
 
 
 def _build_client() -> TelegramClient:
@@ -259,6 +264,12 @@ async def _handle_incoming(event) -> None:
         campaign_prompt = camp["agent_prompt"] if camp else None
         kp_file = (camp["kp_file"] if camp and "kp_file" in camp.keys() else None)
         extra_context = contact["agent_context"] if "agent_context" in contact.keys() else None
+        kps = []
+        if camp:
+            kps = [dict(r) for r in conn.execute(
+                "SELECT id, name, when_to_use, kp_text, kp_file FROM campaign_kps "
+                "WHERE campaign_id=? ORDER BY id", (camp["id"],),
+            ).fetchall()]
 
     kp_path = _kp_path(kp_file)
     messages.append({"role": "user", "content": text_in})
@@ -266,7 +277,7 @@ async def _handle_incoming(event) -> None:
     try:
         reply = await asyncio.to_thread(
             generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,
-            extra_context, bool(kp_path),
+            extra_context, bool(kp_path), kps,
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")
@@ -277,8 +288,30 @@ async def _handle_incoming(event) -> None:
     await _send_parts(event.client, peer, reply.reply_parts)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 
-    # КП файлом — если агент решил, что уместно, и файл реально приложен к кампании
-    if reply.send_kp and kp_path is not None:
+    # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужное (kp_choice по названию).
+    chosen = None
+    if kps and reply.kp_choice:
+        want = reply.kp_choice.strip().lower().strip("«»\"' ")
+        for k in kps:
+            if (k.get("name") or "").strip().lower() == want:
+                chosen = k
+                break
+    if chosen:
+        try:
+            await asyncio.sleep(random.uniform(*REPLY_DELAY))
+            if chosen.get("kp_text"):
+                await _send_parts(event.client, peer, [chosen["kp_text"]])
+                reply_text += f"\n[КП «{chosen.get('name')}»: {chosen['kp_text']}]"
+            cp = _kp_path(chosen.get("kp_file"))
+            if cp is not None:
+                await asyncio.sleep(random.uniform(*REPLY_DELAY))
+                await event.client.send_file(peer, str(cp))
+                reply_text += f"\n[отправлен файл КП: {cp.name}]"
+            print(f"[KP «{chosen.get('name')}» -> {contact_info.get('name', contact_id)}]")
+        except Exception as e:
+            print(f"[KP send error] contact {contact_id}: {e}")
+    # Легаси: одно КП файлом на кампании (если набор КП не задан)
+    elif not kps and reply.send_kp and kp_path is not None:
         try:
             await asyncio.sleep(random.uniform(*REPLY_DELAY))
             await event.client.send_file(peer, str(kp_path))
@@ -295,15 +328,21 @@ async def _handle_incoming(event) -> None:
     with database.get_conn() as conn:
         database.add_message(conn, contact_id, "in", text_in, intent=reply.intent)
         database.add_message(conn, contact_id, "out", reply_text, intent=None)
+        who = contact_info.get("name") or contact_info.get("person_name") or (f"@{username}" if username else str(contact_id))
         if meeting is not None:
             database.record_meeting(
                 conn, contact_id, meeting.meeting_at_iso, reply.notes,
                 zoom_link=meeting.zoom_link, calendar_event_id=meeting.calendar_event_id,
             )
+            database.add_event(conn, "meeting", f"📅 Встреча назначена: {who}",
+                               f"{meeting.meeting_at_iso}", level="good", contact_id=contact_id)
         elif reply.intent == "not_interested":
             database.set_status(conn, contact_id, "nurture")
         else:
             database.set_status(conn, contact_id, "in_dialog")
+            if reply.intent in ("positive", "agreed"):
+                database.add_event(conn, "lead", f"🔥 Тёплый лид: {who}",
+                                   (text_in or "").strip()[:160], level="good", contact_id=contact_id)
 
     if meeting is not None:
         print(f"[MEETING] contact {contact_id}: {meeting.meeting_at_iso} | "

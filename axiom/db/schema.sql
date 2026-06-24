@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS campaigns (
     created_at   TEXT DEFAULT (datetime('now'))
 );
 
+-- Несколько КП в одной кампании (под разные типы ЦА: брокеры/застройщики/АН).
+-- Агент сам выбирает уместное по полю when_to_use.
+CREATE TABLE IF NOT EXISTS campaign_kps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    name        TEXT,                          -- тип/сегмент: «Застройщики», «Брокеры», «АН»
+    when_to_use TEXT,                          -- условие выбора для агента: кому это КП подходит
+    kp_text     TEXT,                          -- текст КП
+    kp_file     TEXT,                          -- имя файла КП (в data/kp), опц.
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 -- Связь кампания ↔ контакт (кому в рамках кампании уже отправлено)
 CREATE TABLE IF NOT EXISTS campaign_contacts (
     campaign_id INTEGER NOT NULL,
@@ -202,6 +214,31 @@ CREATE TABLE IF NOT EXISTS chat_hits (
 );
 
 -- Простые настройки приложения (ключ-значение): расписание прокси и т.п.
+-- ИИ-агенты: роль + тип задачи + промпт + привязка к аккаунту-исполнителю.
+-- Один аккаунт может играть разные роли (нетворкинг/лидген/инвайтинг) разными агентами.
+CREATE TABLE IF NOT EXISTS ai_agents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT,
+    task        TEXT,                          -- leadgen|networking|inviting|qualify|support|other
+    prompt      TEXT,                          -- характер/инструкция агента
+    account_id  INTEGER,                       -- аккаунт-исполнитель (accounts.id), опц.
+    active      INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Лента событий для колокольчика: старт/финиш кампании, лиды, баны, прогрев.
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT,                          -- campaign_start|campaign_done|lead|meeting|ban|warm_ready|info
+    level       TEXT DEFAULT 'info',           -- info|good|warn
+    title       TEXT,
+    text        TEXT,
+    contact_id  INTEGER,
+    campaign_id INTEGER,
+    account_id  INTEGER,
+    ts          TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT

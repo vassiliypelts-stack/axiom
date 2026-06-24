@@ -823,7 +823,10 @@ async function openAgent(id){
     <div class="row2"><div class="field"><label>Роль</label><select data-k="role">${roleOpts}</select></div>
       <div class="field"><label>Статус</label><select data-k="status">${stOpts}</select></div></div>
     <div class="field"><label>📝 Описание профиля (для команды)</label>
-      <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea></div>
+      <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea>
+      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-profile-setup">✨ Оформить профиль в Telegram (фото + bio)</button></div>
+      <div class="hint" style="margin-top:4px">Поставит аватар и био (первые 70 симв. описания) прямо в аккаунт. Нужна авторизованная сессия. Сохрани изменения перед оформлением.</div>
+      <pre id="ag-profile-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🛡️ Прокси аккаунта</label>
       <input data-k="proxy" id="ag-proxy-inp" class="mono" value="${esc(a.proxy||"")}" placeholder="socks5://user:pass@host:port  (для купленных — SOCKS5, не MTProto)">
       <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-proxy-find">🔎 Найти бесплатный SOCKS5</button><button id="ag-proxy-auto">📡 Авто MTProto из пула (только TG)</button></div>
@@ -850,6 +853,16 @@ async function openAgent(id){
     const r=await api(`/api/account/${id}/warm_now`,{method:"POST"});
     wn.disabled=false;wn.textContent="🔥 Прогреть сейчас (с логом)";
     log.textContent=(r.output||"(пусто)");};
+  const ps=$("#ag-profile-setup");if(ps)ps.onclick=async()=>{
+    // сначала сохраняем поля карточки (чтобы био взялось из свежего описания), затем оформляем
+    const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.value);
+    await api(`/api/account/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    ps.disabled=true;ps.textContent="оформляю…";
+    const log=$("#ag-profile-log");log.style.display="block";log.textContent="ставлю аватар и био в Telegram…";
+    const r=await api(`/api/account/${id}/profile_setup`,{method:"POST"});
+    ps.disabled=false;ps.textContent="✨ Оформить профиль в Telegram (фото + bio)";
+    if(r.error){log.textContent="⚠ "+r.error;return;}
+    log.textContent="✓ Готово для @"+(r.username||id)+" — поставлено: "+((r.set||[]).join(", ")||"ничего");};
   const fileInp=$("#ag-ava-file");
   $("#ag-ava-btn").onclick=()=>fileInp.click();
   fileInp.onchange=async()=>{if(!fileInp.files.length)return;

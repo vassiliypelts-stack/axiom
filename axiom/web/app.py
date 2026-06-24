@@ -359,6 +359,42 @@ def account_warm_now(acc_id: int) -> JSONResponse:
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
+@app.post("/api/account/{acc_id}/profile_setup")
+async def account_profile_setup(acc_id: int) -> JSONResponse:
+    """Оформить профиль сейчас: поставить аватар + bio (описание) из карточки аккаунта."""
+    from telethon.sessions import StringSession
+    from channels.telegram import build_client
+    from channels.warmup import _setup_profile
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+    acc = dict(row)
+    if not acc.get("tg_session"):
+        return JSONResponse({"error": "у аккаунта нет сессии — сначала залогинь его (кнопка «Логин»)"}, status_code=400)
+    if not (acc.get("description") or acc.get("avatar")):
+        return JSONResponse({"error": "в карточке пусто: добавь описание и/или загрузи аватар"}, status_code=400)
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                          acc.get("api_id"), acc.get("api_hash"))
+    try:
+        await client.start()
+        await _setup_profile(client, acc, force=True)
+        me = await client.get_me()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"не удалось оформить: {e}"}, status_code=400)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    done = []
+    if acc.get("avatar"):
+        done.append("аватар")
+    if (acc.get("description") or "").strip():
+        done.append("описание")
+    return JSONResponse({"ok": True, "username": me.username or str(me.id), "set": done})
+
+
 @app.get("/api/account/{acc_id}/avatar")
 def account_avatar(acc_id: int):
     with database.get_conn() as conn:

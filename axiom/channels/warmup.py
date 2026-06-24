@@ -132,15 +132,17 @@ async def _react_feed(client, n: int) -> int:
     return done
 
 
-async def _setup_profile(client, acc: dict) -> None:
-    """Стартовое оформление профиля (на стадии 0): био и аватар, ТОЛЬКО если пусто
-    (не перезатираем существующее). Заполненный профиль реже флагают как спам."""
+async def _setup_profile(client, acc: dict, force: bool = False) -> None:
+    """Оформление профиля: био и аватар из карточки аккаунта.
+    По умолчанию (force=False) — только если пусто (прогрев, не перезатираем).
+    force=True — поставить из карточки поверх существующего (кнопка «оформить сейчас»).
+    Заполненный профиль реже флагают как спам."""
     # био из описания агента
     try:
         about = (acc.get("description") or "").strip()[:70]
         if about:
             full = await client(functions.users.GetFullUserRequest("me"))
-            if not getattr(full.full_user, "about", None):
+            if force or not getattr(full.full_user, "about", None):
                 from telethon.tl.functions.account import UpdateProfileRequest
                 await client(UpdateProfileRequest(about=about))
                 print("  профиль: заполнил bio")
@@ -153,7 +155,7 @@ async def _setup_profile(client, acc: dict) -> None:
             p = Path(config.DB_PATH).parent / "avatars" / acc["avatar"]
             if p.exists():
                 existing = await client.get_profile_photos("me", limit=1)
-                if not existing:
+                if force or not existing:
                     from telethon.tl.functions.photos import UploadProfilePhotoRequest
                     f = await client.upload_file(str(p))
                     await client(UploadProfilePhotoRequest(file=f))

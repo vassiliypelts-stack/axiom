@@ -15,9 +15,13 @@ import asyncio
 import random
 
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 
 from db import database
-from channels.telegram import _build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE
+from channels.telegram import (
+    _build_client, build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE,
+)
+from channels.warmup import _setup_profile
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -74,6 +78,32 @@ def _add_tag(raw: str | None, tag: str) -> str:
     return ",".join(tags)
 
 
+def _team(cid: int) -> list[dict]:
+    """Аккаунты кампании с ЖИВОЙ сессией (для мультиаккаунт-рассылки).
+    Берём из campaign_accounts, исключаем забаненных и без сессии. Лимит на аккаунт —
+    из campaign_accounts.daily_limit (если задан), иначе из accounts.daily_limit."""
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.label, a.username, a.phone, a.tg_session, a.proxy, "
+            "a.api_id, a.api_hash, a.description, a.avatar, "
+            "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
+            "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
+            "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
+            "AND a.tg_session IS NOT NULL AND a.tg_session <> '' "
+            "ORDER BY a.id",
+            (cid,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _pick(live: list[dict], rr: int) -> dict | None:
+    """Следующий отправитель в ротации среди тех, у кого осталась квота."""
+    avail = [s for s in live if s["remaining"] > 0]
+    if not avail:
+        return None
+    return avail[rr % len(avail)]
+
+
 async def run(cid: int, limit: int) -> None:
     camp = _load_campaign(cid)
     if not camp:
@@ -96,28 +126,69 @@ async def run(cid: int, limit: int) -> None:
         print("пустой шаблон сообщения — нечего слать")
         return
 
-    client = _build_client()
-    await client.start()
-    me = await client.get_me()
+    # Команда кампании (мультиаккаунт). Если команда не задана/без сессий —
+    # откатываемся на основной аккаунт из .env (старое поведение, ничего не ломаем).
+    team = _team(cid)
+    senders: list[dict] = []
+    if team:
+        for acc in team:
+            label = acc["label"] or acc["username"] or acc["phone"] or f"#{acc['id']}"
+            senders.append({
+                "id": acc["id"], "acc": acc, "label": label,
+                "client": build_client(StringSession(acc["tg_session"]), acc["proxy"],
+                                       acc.get("api_id"), acc.get("api_hash")),
+                "remaining": max(0, int(acc["cap"] or cap)),
+            })
+    else:
+        senders.append({
+            "id": camp.get("account_id"), "acc": None, "label": "основной (.env)",
+            "client": _build_client(), "remaining": cap,
+        })
+
+    # Подключаем отправителей: старт сессии + оформление профиля (фото/bio, если пусто).
+    live: list[dict] = []
+    for s in senders:
+        try:
+            await s["client"].start()
+            if s["acc"]:
+                try:
+                    await _setup_profile(s["client"], s["acc"])
+                except Exception as e:  # оформление не критично для отправки
+                    print(f"[{s['label']}] профиль: {e}")
+            me = await s["client"].get_me()
+            print(f"[{s['label']}] готов: @{me.username or me.id}, квота {s['remaining']}")
+            live.append(s)
+        except Exception as e:
+            print(f"[{s['label']}] не удалось подключить (сессия/прокси): {e}")
+    if not live:
+        print("нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
+        return
+
     tag = f"кампания #{cid}"
-    print(f"кампания #{cid} «{camp['name']}»: шлю с @{me.username or me.id}, до {cap} контактов")
+    print(f"кампания #{cid} «{camp['name']}»: отправителей {len(live)}, всего до {cap} контактов")
 
     sent = 0
+    rr = 0
     for row in rows:
         if sent >= cap:
             break
+        s = _pick(live, rr)
+        if s is None:
+            print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
+            break
+        rr += 1
         # обращение: из ФИО директора берём «Имя Отчество», иначе имя/название агентства
         name = _greeting(row)
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"])
         try:
-            entity = await _resolve_entity(client, row)
-            await _send_parts(client, entity, parts)
+            entity = await _resolve_entity(s["client"], row)
+            await _send_parts(s["client"], entity, parts)
         except FloodWaitError as e:
-            print(f"[floodwait] ждём {e.seconds}с")
-            await asyncio.sleep(e.seconds + 5)
+            print(f"[{s['label']}] floodwait {e.seconds}с — вывожу из ротации на этот заход")
+            s["remaining"] = 0
             continue
         except Exception as e:
-            print(f"[skip] contact {row['id']}: {e}")
+            print(f"[skip] contact {row['id']} ({s['label']}): {e}")
             with database.get_conn() as conn:
                 database.set_status(conn, row["id"], "lost")
             continue
@@ -130,12 +201,15 @@ async def run(cid: int, limit: int) -> None:
             conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
             conn.execute(
                 "INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) VALUES (?,?,?)",
-                (cid, row["id"], camp.get("account_id")),
+                (cid, row["id"], s["id"]),
             )
+        s["remaining"] -= 1
         sent += 1
-        print(f"[sent {sent}/{cap}] -> {name or row['username'] or row['phone']}")
+        print(f"[sent {sent}/{cap}] {s['label']} -> {name or row['username'] or row['phone']}")
         if sent < cap:
-            await asyncio.sleep(random.uniform(*OUTREACH_PAUSE))
+            # темп делим на число аккаунтов (пропускная выше), но каждый аккаунт
+            # всё равно паузит между своими сообщениями; не меньше 2 сек.
+            await asyncio.sleep(max(2.0, random.uniform(*OUTREACH_PAUSE) / len(live)))
 
     # Если в аудитории больше никого не осталось — кампания отработана.
     remaining = _audience(camp["audience_tag"], camp["channel"], 1)
@@ -149,8 +223,13 @@ async def run(cid: int, limit: int) -> None:
             database.add_event(conn, "campaign_done", f"✅ Кампания «{camp['name']}» отработана",
                                f"аудитория исчерпана, в этот заход отправлено {sent}",
                                level="good", campaign_id=cid)
-    print(f"кампания #{cid}: отправлено {sent}")
-    await client.disconnect()
+    accs = ", ".join(s["label"] for s in live)
+    print(f"кампания #{cid}: отправлено {sent} (аккаунты: {accs})")
+    for s in live:
+        try:
+            await s["client"].disconnect()
+        except Exception:
+            pass
 
 
 def main() -> None:

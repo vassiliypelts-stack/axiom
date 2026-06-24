@@ -363,7 +363,9 @@ def _make_sender(client: TelegramClient):
             print(f"[scheduler skip] {action.kind} contact {action.contact_id}: нет tg_user_id")
             return
         await asyncio.sleep(random.uniform(*REPLY_DELAY))
-        await client.send_message(int(action.tg_user_id), action.text)
+        # B1: дожим/напоминание тоже шлём человекоподобно (печатает… + по частям)
+        parts = [c for c in action.text.split("\n\n") if c.strip()] or [action.text]
+        await _send_parts(client, int(action.tg_user_id), parts)
         print(f"[scheduler {action.kind}] -> {action.name or action.contact_id}")
     return send
 

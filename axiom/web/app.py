@@ -106,10 +106,15 @@ def accounts_list() -> JSONResponse:
     with database.get_conn() as conn:
         _seed_accounts(conn)
         rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+        # сколько чатов «держит»/слушает каждый аккаунт (по инвентаризации, joined_by)
+        chats_by = {r["aid"]: r["c"] for r in conn.execute(
+            "SELECT joined_by aid, COUNT(*) c FROM chats WHERE joined_by IS NOT NULL "
+            "AND in_account='yes' GROUP BY joined_by")}
     out = []
     for r in rows:
         d = dict(r)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
+        d["chats_count"] = chats_by.get(d["id"], 0)
         out.append(d)
     return JSONResponse(out)
 
@@ -166,11 +171,19 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         with database.get_conn() as conn:
             conn.execute(f"UPDATE accounts SET status=? WHERE id IN ({qm})", (status, *ids))
         return JSONResponse({"ok": True, "updated": len(ids), "status": status})
+    if action == "protect":
+        val = 1 if payload.get("protected") else 0
+        with database.get_conn() as conn:
+            conn.execute(f"UPDATE accounts SET protected=? WHERE id IN ({qm})", (val, *ids))
+        return JSONResponse({"ok": True, "updated": len(ids), "protected": val})
     if action == "warmup":
         with database.get_conn() as conn:
-            rows = conn.execute(f"SELECT id, tg_session FROM accounts WHERE id IN ({qm})", ids).fetchall()
-            ready = [r["id"] for r in rows if r["tg_session"]]
-            no_sess = [r["id"] for r in rows if not r["tg_session"]]
+            rows = conn.execute(
+                f"SELECT id, tg_session, COALESCE(protected,0) protected FROM accounts WHERE id IN ({qm})", ids
+            ).fetchall()
+            protected = [r["id"] for r in rows if r["protected"]]            # родных не трогаем
+            ready = [r["id"] for r in rows if r["tg_session"] and not r["protected"]]
+            no_sess = [r["id"] for r in rows if not r["tg_session"] and not r["protected"]]
             if ready:
                 rq = ",".join("?" * len(ready))
                 conn.execute(
@@ -179,11 +192,21 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
                 )
         if ready:
             _spawn("channels.warmup", "--run")
-        return JSONResponse({"ok": True, "warming": len(ready), "skipped_no_session": no_sess})
+        return JSONResponse({"ok": True, "warming": len(ready), "skipped_no_session": no_sess,
+                             "skipped_protected": len(protected)})
     if action == "check":
         for i in ids:
             _spawn("channels.health", "--id", str(i))
         return JSONResponse({"ok": True, "checking": len(ids)})
+    if action == "inventory":
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
+                                "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        for i in queued:
+            _spawn("channels.chat_inventory", "--id", str(i))
+        skipped = len(ids) - len(queued)
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
     if action == "proxy":
         proxies = [p.strip() for p in (payload.get("proxies") or []) if p and p.strip()]
         if not proxies:
@@ -249,10 +272,15 @@ def account_detail(acc_id: int) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
     d = dict(row)
     d["tg_connected"] = bool(d.pop("tg_session", None))   # секрет наружу не отдаём
+    with database.get_conn() as conn:
+        d["chats_count"] = conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE joined_by=? AND in_account='yes'", (acc_id,)
+        ).fetchone()["c"]
     return JSONResponse(d)
 
 
-_ACCOUNT_EDIT_FIELDS = ("label", "phone", "username", "role", "status", "daily_limit", "description", "proxy")
+_ACCOUNT_EDIT_FIELDS = ("label", "phone", "username", "role", "status", "daily_limit",
+                        "description", "proxy", "protected", "chats_backup")
 
 
 @app.post("/api/account/{acc_id}/update")
@@ -263,6 +291,8 @@ def account_update(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
             v = payload.get(k)
             if k == "daily_limit":
                 v = int(v or 15)
+            elif k == "protected":
+                v = 1 if v else 0
             else:
                 v = (v or None)
             sets.append(f"{k}=?"); vals.append(v)
@@ -356,6 +386,13 @@ def account_proxy_find(acc_id: int) -> JSONResponse:
 def account_warm_now(acc_id: int) -> JSONResponse:
     """Прогреть один аккаунт сейчас и вернуть лог (для проверки из пульта)."""
     res = _run_capture(["channels.warmup", "--id", str(acc_id)], timeout=300)
+    return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
+@app.post("/api/account/{acc_id}/inventory")
+def account_inventory(acc_id: int) -> JSONResponse:
+    """Инвентаризация чатов ЭТОГО аккаунта (его сессия) — заносит группы/каналы в каталог."""
+    res = _run_capture(["channels.chat_inventory", "--id", str(acc_id)], timeout=240)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
@@ -1996,6 +2033,20 @@ def warmup_settings_get() -> JSONResponse:
             "ca_mix": database.get_setting(conn, "warm_ca_mix", "off") == "on",
             "last_run": database.get_setting(conn, "warm_last_run", None),
         })
+
+
+@app.post("/api/warmup/run_now")
+def warmup_run_now() -> JSONResponse:
+    """Прогреть СЕЙЧАС всех аккаунтов в статусе «прогрев» с сессией (фоновый процесс)."""
+    with database.get_conn() as conn:
+        cnt = conn.execute(
+            "SELECT COUNT(*) c FROM accounts WHERE status='warming' "
+            "AND tg_session IS NOT NULL AND tg_session <> ''"
+        ).fetchone()["c"]
+    if not cnt:
+        return JSONResponse({"error": "нет аккаунтов в статусе «прогрев» с авторизованной сессией"}, status_code=400)
+    _spawn("channels.warmup", "--run")
+    return JSONResponse({"ok": True, "warming": cnt})
 
 
 @app.post("/api/warmup/settings")

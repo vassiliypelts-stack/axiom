@@ -289,6 +289,7 @@ function smartTable(mount,cfg){
     Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(fv)rows=rows.filter(r=>String(r[k]??"").toLowerCase().includes(fv));});
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
+    if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
     const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
     const head=`<tr>${cols.map(c=>`<th data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
     const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
@@ -374,6 +375,22 @@ async function viewDashboard(v){
 
 const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
 const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
+// Анти-бан: страна по коду номера (длинные префиксы раньше коротких: 77=KZ перед 7=RU)
+function tgPhoneCountry(phone){
+  const d=(phone||"").replace(/\D/g,"");
+  const P=[["77","Казахстан"],["375","Беларусь"],["380","Украина"],["374","Армения"],["994","Азербайджан"],["995","Грузия"],["996","Киргизия"],["998","Узбекистан"],["992","Таджикистан"],["7","Россия"],["1","США/Канада"],["44","Британия"],["49","Германия"],["48","Польша"],["90","Турция"]];
+  for(const [pref,name] of P){if(d.startsWith(pref))return name;}
+  return null;
+}
+function tgGeoHint(phone,proxy){
+  const country=tgPhoneCountry(phone);
+  const isMt=/tg:\/\/proxy|secret=/.test((proxy||"").toLowerCase());
+  const parts=[];
+  if(country)parts.push(`📍 Номер из страны <b>${country}</b> — прокси должен быть из <b>${country}</b> (резидентский/мобильный), иначе риск бана на входе.`);
+  if(isMt)parts.push(`⚠ Похоже на <b>MTProto-прокси</b> (faketls). Для боя ненадёжен — ставь <b>SOCKS5</b> резидентский/мобильный.`);
+  if(!parts.length)return"";
+  return `<div class="hint" style="margin-top:6px;color:#7A530A;background:var(--accent-soft);border-radius:8px;padding:8px 10px">${parts.join("<br>")}</div>`;
+}
 async function viewAgents(v){
   const a=await api("/api/accounts");
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
@@ -401,6 +418,9 @@ async function viewAgents(v){
       <div class="hint" style="margin-top:8px">Фон двигает каждый аккаунт в статусе «прогрев» на +1 ступень за заход (~2 недели до «активен»). Прогресс — в колонке «Прогрев» ниже. Человекоподобный темп: первые дни только пассив (каналы/чтение/лайки/онлайн), ЛС позже и плавно.</div></div>
     <div id="acc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
       <b style="font-size:13px">Массово (<span id="ab-cnt">0</span>):</b>
+      <button id="ab-selall" title="выделить все строки, что сейчас видны после фильтра/поиска">☑ Выделить всё</button>
+      <button id="ab-selnone" title="снять выделение со всех">☐ Снять</button>
+      <span style="width:1px;height:18px;background:var(--border)"></span>
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">🛡 Проверить выбранные</button>
       <button id="ab-invent">📋 Инвентаризация чатов</button>
@@ -435,10 +455,12 @@ async function viewAgents(v){
     if(r.error){$("#wa-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     $("#wa-msg").innerHTML='<span style="color:var(--green)">прогреваю '+r.warming+' акк. — прогресс обновится через пару минут (обнови страницу)</span>';};
   const selAcc=new Set();
+  let accFiltered=a.slice();   // текущий отфильтрованный набор строк таблицы
   const updBulkCnt=()=>{const c=$("#ab-cnt");if(c)c.textContent=selAcc.size;};
   smartTable($("#acc-tbl"),{
     tableKey:"agents",
     rows:a,searchKeys:["label","phone","username","role"],
+    onDraw:rows=>{accFiltered=rows;},
     groupOptions:[{key:"role",label:"роль"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
     onRowClick:openAgent,
@@ -484,6 +506,9 @@ async function viewAgents(v){
     $("#ab-msg").innerHTML='<span style="color:var(--green)">'+esc(okMsg(r))+'</span>';
     setTimeout(route,1200);
   };
+  const syncSelDom=()=>{$("#acc-tbl").querySelectorAll(".acc-sel").forEach(cb=>cb.checked=selAcc.has(+cb.dataset.id));updBulkCnt();};
+  $("#ab-selall").onclick=()=>{accFiltered.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`выделено ${accFiltered.length} (отфильтрованных)`;};
+  $("#ab-selnone").onclick=()=>{selAcc.clear();syncSelDom();$("#ab-msg").textContent="выделение снято";};
   $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
@@ -859,6 +884,7 @@ async function openAgent(id){
       <pre id="ag-profile-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🛡️ Прокси аккаунта</label>
       <input data-k="proxy" id="ag-proxy-inp" class="mono" value="${esc(a.proxy||"")}" placeholder="socks5://user:pass@host:port  (для купленных — SOCKS5, не MTProto)">
+      ${tgGeoHint(a.phone,a.proxy)}
       <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-proxy-find">🔎 Найти бесплатный SOCKS5</button><button id="ag-proxy-auto">📡 Авто MTProto из пула (только TG)</button></div>
       <div class="hint" style="margin-top:4px">«Найти бесплатный» проверит публичные SOCKS5 на доступ к Telegram и подставит живой (для теста; для боя — платный мобильный).</div>
       <pre id="ag-proxy-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto;font-size:12px"></pre></div>
@@ -866,6 +892,14 @@ async function openAgent(id){
       <div class="hint" style="margin-bottom:6px">Нужно: статус «прогрев» + TG✓ (подключён) + рабочий прокси. Один заход = одна стадия (всего ~14).</div>
       <button id="ag-warm-now">🔥 Прогреть сейчас (с логом)</button>
       <pre id="ag-warm-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:240px;overflow:auto;font-size:12px"></pre></div>
+    <div class="field"><label>📋 Чаты аккаунта</label>
+      <div class="hint" style="margin-bottom:6px">Соберёт все группы/каналы, где аккаунт уже состоит, в каталог «Чаты». Сейчас за аккаунтом: <b id="ag-chats-cnt">${a.chats_count||0}</b>. Нужна подключённая сессия (TG✓).</div>
+      <button id="ag-invent-now">📋 Инвентаризовать чаты сейчас</button>
+      <pre id="ag-invent-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto;font-size:12px"></pre></div>
+    <div class="field"><label>🗂 Резерв чатов (на случай бана)</label>
+      <div class="hint" style="margin-bottom:6px">Списки чатов и ссылки, где аккаунт постит/держит контакт. Если забанят — зайдёшь в эти же чаты с другого номера и продолжишь. По строке на чат: название — ссылка — заметка.</div>
+      <textarea data-k="chats_backup" rows="5" placeholder="Пикник+Баня Сочи — https://t.me/... — постил, дал результат&#10;Анонс Марафона — https://t.me/...">${esc(a.chats_backup||"")}</textarea>
+      <button id="ag-backup-fill" type="button" style="margin-top:6px">⤵ Заполнить из каталога (что за этим аккаунтом)</button></div>
     <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">💾 Сохранить</button></div>`;
   const pa=$("#ag-proxy-auto");if(pa)pa.onclick=async()=>{pa.disabled=true;pa.textContent="…";
     const r=await api(`/api/account/${id}/proxy_auto`,{method:"POST"});
@@ -883,6 +917,17 @@ async function openAgent(id){
     const r=await api(`/api/account/${id}/warm_now`,{method:"POST"});
     wn.disabled=false;wn.textContent="🔥 Прогреть сейчас (с логом)";
     log.textContent=(r.output||"(пусто)");};
+  const inv=$("#ag-invent-now");if(inv)inv.onclick=async()=>{inv.disabled=true;inv.textContent="собираю чаты… (до 4 мин)";
+    const log=$("#ag-invent-log");log.style.display="block";log.textContent="прохожу диалоги аккаунта #"+id+"…";
+    const r=await api(`/api/account/${id}/inventory`,{method:"POST"});
+    inv.disabled=false;inv.textContent="📋 Инвентаризовать чаты сейчас";
+    log.textContent=(r.output||"(пусто)");
+    try{const o=JSON.parse((r.output||"").trim().split("\n").pop());if(o&&o.account_id!=null){const c=$("#ag-chats-cnt");if(c)c.textContent=(o.found??"")+"";}}catch(e){}};
+  const bf=$("#ag-backup-fill");if(bf)bf.onclick=async()=>{
+    const ch=await api(`/api/account/${id}/chats`);
+    if(!ch||!ch.length){alert("за этим аккаунтом в каталоге чатов нет — сначала «Инвентаризовать чаты сейчас»");return;}
+    const ta=$('[data-k="chats_backup"]');
+    ta.value=ch.map(c=>[c.title||"—",c.link||(c.username?("https://t.me/"+c.username):"")].filter(Boolean).join(" — ")).join("\n");};
   const ps=$("#ag-profile-setup");if(ps)ps.onclick=async()=>{
     // сначала сохраняем поля карточки (чтобы био взялось из свежего описания), затем оформляем
     const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.type==="checkbox"?el.checked:el.value);
@@ -934,6 +979,7 @@ async function viewChatCatalog(v){
     groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):val,
     onRowClick:openChat,
     columns:[
+      {key:"favorite",label:"⭐",render:r=>`<button class="cc-fav" data-id="${r.id}" onclick="event.stopPropagation()" title="избранный чат — слушать в первую очередь (только ⭐)" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0;line-height:1">${r.favorite?"⭐":"☆"}</button>`},
       {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
       {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
@@ -947,6 +993,12 @@ async function viewChatCatalog(v){
       {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='analyzed'?'active':r.status==='joined'?'won':'nurture'}">${esc(CHAT_ST[r.status]||r.status)}</span>`},
     ],
     emptyText:"Чатов нет. «Инвентаризация» подтянет твои чаты, или добавь @username вручную → «Анализ».",
+  });
+  $("#cc-body").addEventListener("click",async(e)=>{
+    const b=e.target.closest(".cc-fav");if(!b)return;e.stopPropagation();
+    const id=+b.dataset.id,row=CHATCAT.find(c=>c.id===id);const nv=row&&row.favorite?0:1;
+    b.textContent=nv?"⭐":"☆";if(row)row.favorite=nv;
+    await api(`/api/chatcat/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({favorite:nv})});
   });
 }
 function renderChatAdmins(admins){
@@ -1062,7 +1114,9 @@ async function viewLeadHits(v){
   <div class="card" style="margin-bottom:16px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <b style="font-size:14px">🎯 Ниши (наборы ключевых слов)</b>
-      <button class="primary" id="ni-run">🔄 Прослушать чаты сейчас</button></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <label class="hint" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer" title="слушать только чаты, отмеченные ⭐ в каталоге «Чаты»"><input type="checkbox" id="ni-fav"> только ⭐ избранные</label>
+        <button class="primary" id="ni-run">🔄 Прослушать чаты сейчас</button></div></div>
     <div class="sub" style="margin-bottom:10px">Слушатель проходит по чатам из каталога «📡 Чаты» и ищет ключи активных ниш. Находки — в очередь ниже на твой обзор (в лиды заносишь сам). <span id="ni-msg"></span></div>
     <div id="ni-list"></div>
     <div class="ttoolbar" style="margin:10px 0 0"><input id="ni-name" placeholder="Название ниши (напр. Загородная)" style="max-width:240px">
@@ -1094,7 +1148,7 @@ async function viewLeadHits(v){
   nl.querySelectorAll(".ni-del").forEach(b=>b.onclick=async()=>{if(!confirm("Удалить нишу?"))return;
     await api(`/api/niche/${b.dataset.id}/delete`,{method:"POST"});route();});
   $("#ni-run").onclick=async()=>{const b=$("#ni-run"),m=$("#ni-msg");b.disabled=true;b.textContent="слушаю чаты… (до ~5 мин)";m.textContent="аккаунт проходит по чатам каталога и ищет ключи…";
-    const r=await api("/api/keywords/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+    const r=await api("/api/keywords/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({favorites:$("#ni-fav")&&$("#ni-fav").checked})});
     b.disabled=false;b.textContent="🔄 Прослушать чаты сейчас";
     if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';}
     else{m.textContent="готово: "+esc((r.output||"").slice(-200));renderHits();}};
@@ -1114,10 +1168,11 @@ async function renderHits(){
       <div style="flex:1;min-width:240px">
         <b>${esc(h.name||"—")}</b> ${h.username?`<a class="ext" href="https://t.me/${esc(h.username)}" target="_blank">@${esc(h.username)} ↗</a>`:""}
         <span class="badge b-active" style="margin-left:6px">${esc(h.niche_name||"")}</span>
-        <div class="sub" style="margin:4px 0">в «${esc(h.chat_title||"")}» · ключ «${esc(h.keyword)}» · ${fmt(h.ts)}</div>
+        <div class="sub" style="margin:4px 0">в «${h.msg_link?`<a class="ext" href="${esc(h.msg_link)}" target="_blank">${esc(h.chat_title||"чат")} ↗</a>`:esc(h.chat_title||"")}» · ключ «${esc(h.keyword)}» · ${fmt(h.ts)}</div>
         <div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px">${esc(h.text)}</div>
       </div>
       <div class="ttoolbar" style="margin:0;flex-direction:column">
+        ${h.msg_link?`<a class="btn ext" href="${esc(h.msg_link)}" target="_blank" style="text-decoration:none">💬 Открыть сообщение</a>`:""}
         ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в лиды</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
           :h.status==="lead"?`<span class="badge b-won">в CRM${h.contact_id?" #"+h.contact_id:""}</span>`:`<span class="badge b-stop">игнор</span>`}
       </div></div></div>`).join("");

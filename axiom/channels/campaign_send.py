@@ -22,6 +22,7 @@ from channels.telegram import (
     _build_client, build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE,
 )
 from channels.warmup import _setup_profile
+from channels.antiban import classify_error
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -188,6 +189,23 @@ async def run(cid: int, limit: int) -> None:
             s["remaining"] = 0
             continue
         except Exception as e:
+            cat = classify_error(e)
+            if cat == "ban":
+                # аккаунт мёртв/деактивирован: помечаем banned и выводим из работы.
+                # контакт НЕ теряем — достанется живому аккаунту в следующий заход.
+                print(f"[{s['label']}] ⛔ аккаунт забанен/деактивирован ({e}) — статус banned, из ротации")
+                if s["id"]:
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (s["id"],))
+                        database.add_event(conn, "account_banned", f"⛔ Аккаунт «{s['label']}» забанен",
+                                           f"Telegram: {e}", level="bad", campaign_id=cid, account_id=s["id"])
+                s["remaining"] = 0
+                continue
+            if cat == "spam":
+                # PeerFlood: слишком много ЛС незнакомцам → пауза аккаунта на этот заход
+                print(f"[{s['label']}] ⚠ PeerFlood (много ЛС незнакомцам) — пауза аккаунта на заход")
+                s["remaining"] = 0
+                continue
             print(f"[skip] contact {row['id']} ({s['label']}): {e}")
             with database.get_conn() as conn:
                 database.set_status(conn, row["id"], "lost")

@@ -376,7 +376,16 @@ async def run(only_id: int | None = None) -> None:
         try:
             await _warm_one(acc, anchors, accs, ca_mix=ca_mix)
         except Exception as e:  # noqa: BLE001
-            print(f"[fail #{acc['id']}] {e}")
+            from channels.antiban import classify_error
+            if classify_error(e) == "ban":
+                print(f"[#{acc['id']}] ⛔ забанен/деактивирован во время прогрева ({e}) — статус banned")
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (acc["id"],))
+                    database.add_event(conn, "account_banned",
+                                       f"⛔ Аккаунт «{acc.get('label') or acc['id']}» забанен при прогреве",
+                                       f"Telegram: {e}", level="bad", account_id=acc["id"])
+            else:
+                print(f"[fail #{acc['id']}] {e}")
         await asyncio.sleep(random.uniform(8, 20))
     print("прогрев за этот заход завершён")
 

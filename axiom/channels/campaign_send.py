@@ -51,14 +51,35 @@ def _audience(tag: str | None, channel: str, cap: int):
         ).fetchall()
 
 
+def _spin(text: str) -> str:
+    """Спинтакс-рандомизация: {вариант1|вариант2|…} → случайный вариант на каждую отправку.
+    {name}/{agency} не трогаем — там нет «|»."""
+    import re
+    # без .strip() — значащие пробелы в вариантах (напр. «{слушайте, |}») сохраняем
+    return re.sub(r"\{([^{}|]*\|[^{}]*)\}",
+                  lambda m: random.choice(m.group(1).split("|")), text)
+
+
+def _humanize(line: str) -> str:
+    """Лёгкая «человечность» строки (антибан, не палить ИИ):
+    у коротких реплик в личке люди не ставят точку в конце — иногда убираем её.
+    Вопрос/восклицание/смайл не трогаем. Текст не корёжим (опечатки в B2B вредят)."""
+    s = line.strip()
+    if len(s) <= 90 and s.endswith(".") and not s.endswith("..") and random.random() < 0.7:
+        s = s[:-1].rstrip()
+    return s
+
+
 def _parts(template: str | None, name: str, agency: str = "") -> list[str]:
     """Шаблон → список сообщений. Каждая непустая строка — отдельное сообщение.
-    {name}/{имя} — обращение, {agency}/{агентство} — название агентства."""
+    {name}/{имя} — обращение, {agency}/{агентство} — название агентства.
+    {a|b|c} — синонимизация (случайный вариант на каждый контакт, антибан).
+    Плюс лёгкая человечность (см. _humanize)."""
     ag = agency or name or ""
-    text = ((template or "")
-            .replace("{name}", name or "").replace("{имя}", name or "")
-            .replace("{agency}", ag).replace("{агентство}", ag))
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+    text = _spin(template or "")
+    text = (text.replace("{name}", name or "").replace("{имя}", name or "")
+                .replace("{agency}", ag).replace("{агентство}", ag))
+    return [_humanize(ln) for ln in text.splitlines() if ln.strip()]
 
 
 def _greeting(row) -> str:
@@ -86,7 +107,7 @@ def _team(cid: int) -> list[dict]:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT a.id, a.label, a.username, a.phone, a.tg_session, a.proxy, "
-            "a.api_id, a.api_hash, a.description, a.avatar, "
+            "a.api_id, a.api_hash, a.description, a.avatar, a.status, "
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
@@ -147,8 +168,17 @@ async def run(cid: int, limit: int) -> None:
         })
 
     # Подключаем отправителей: старт сессии + оформление профиля (фото/bio, если пусто).
+    # Антибан-правило: холодную шлём ТОЛЬКО с прогретых (status='active'). Непрогретые
+    # (warming/paused) пропускаем — иначе свежий аккаунт сгорит на первой же рассылке.
     live: list[dict] = []
+    skipped_warm: list[str] = []
     for s in senders:
+        acc = s["acc"]
+        if acc and acc.get("status") != "active":
+            skipped_warm.append(f"{s['label']} ({acc.get('status')})")
+            print(f"[{s['label']}] ⏳ пропуск: не прогрет (статус {acc.get('status')}). "
+                  f"Холодную шлём только с 'active' — заверши прогрев или переведи в 'active' вручную.")
+            continue
         try:
             await s["client"].start()
             if s["acc"]:
@@ -162,7 +192,12 @@ async def run(cid: int, limit: int) -> None:
         except Exception as e:
             print(f"[{s['label']}] не удалось подключить (сессия/прокси): {e}")
     if not live:
-        print("нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
+        if skipped_warm:
+            print(f"нет ПРОГРЕТЫХ (active) аккаунтов: {', '.join(skipped_warm)} ещё в прогреве. "
+                  f"Холодную с непрогретых не шлём (антибан). Дождись окончания прогрева "
+                  f"или вручную переведи аккаунт в статус 'active'.")
+        else:
+            print("нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
         return
 
     tag = f"кампания #{cid}"
@@ -185,7 +220,13 @@ async def run(cid: int, limit: int) -> None:
             entity = await _resolve_entity(s["client"], row)
             await _send_parts(s["client"], entity, parts)
         except FloodWaitError as e:
-            print(f"[{s['label']}] floodwait {e.seconds}с — вывожу из ротации на этот заход")
+            hrs = round(e.seconds / 3600, 1)
+            print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
+            with database.get_conn() as conn:
+                database.add_event(conn, "ban", f"⏳ Флуд-лимит: «{s['label']}»",
+                                   f"Telegram запретил отправку на ~{hrs}ч (FloodWait). Холодных ЛС с этого "
+                                   f"аккаунта пока слишком много — нужен прогрев и медленнее темп.",
+                                   level="warn", campaign_id=cid, account_id=s["id"])
             s["remaining"] = 0
             continue
         except Exception as e:
@@ -241,6 +282,11 @@ async def run(cid: int, limit: int) -> None:
             database.add_event(conn, "campaign_done", f"✅ Кампания «{camp['name']}» отработана",
                                f"аудитория исчерпана, в этот заход отправлено {sent}",
                                level="good", campaign_id=cid)
+        elif sent == 0:
+            database.add_event(conn, "info", f"⚠️ Кампания «{camp['name']}»: отправлено 0",
+                               "ни одного не ушло — частая причина: флуд-лимит/спам-блок или "
+                               "нет живого аккаунта с прокси. Проверь 🚦 Готовность и колокольчик.",
+                               level="warn", campaign_id=cid)
     accs = ", ".join(s["label"] for s in live)
     print(f"кампания #{cid}: отправлено {sent} (аккаунты: {accs})")
     for s in live:

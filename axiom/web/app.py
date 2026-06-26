@@ -280,7 +280,7 @@ def account_detail(acc_id: int) -> JSONResponse:
 
 
 _ACCOUNT_EDIT_FIELDS = ("label", "phone", "username", "role", "status", "daily_limit",
-                        "description", "proxy", "protected", "chats_backup")
+                        "description", "proxy", "protected", "chats_backup", "kind")
 
 
 @app.post("/api/account/{acc_id}/update")
@@ -394,6 +394,110 @@ def account_inventory(acc_id: int) -> JSONResponse:
     """Инвентаризация чатов ЭТОГО аккаунта (его сессия) — заносит группы/каналы в каталог."""
     res = _run_capture(["channels.chat_inventory", "--id", str(acc_id)], timeout=240)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
+# Папка Node-приложения WhatsApp (Baileys). Можно переопределить через env AXIOM_WA_DIR.
+import os as _os
+WA_DIR = Path(_os.environ.get("AXIOM_WA_DIR", r"C:\Users\vp198\axiom-wa"))
+_WA_PROCS: dict = {}   # acc_id -> Popen (держим ссылку, чтобы процесс жил для привязки)
+
+
+@app.post("/api/account/{acc_id}/wa_login")
+def account_wa_login(acc_id: int) -> JSONResponse:
+    """Подключить WhatsApp по коду привязки: запускает Node-логин и возвращает 8-значный код.
+    Код вводишь на телефоне: WhatsApp → Связанные устройства → Привязать → по номеру телефона."""
+    import re
+    import shutil
+    import subprocess
+    import threading
+    import time
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+    digits = re.sub(r"\D", "", row["phone"] or "")
+    if not digits:
+        return JSONResponse({"error": "у аккаунта не задан номер телефона"}, status_code=400)
+    if not (WA_DIR / "index.js").exists():
+        return JSONResponse({"error": f"WhatsApp-модуль не найден в {WA_DIR}. Укажи путь в AXIOM_WA_DIR."},
+                            status_code=400)
+    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    if not Path(node).exists() and not shutil.which("node"):
+        return JSONResponse({"error": "Node.js не найден — установи Node или добавь в PATH"}, status_code=400)
+    # старый процесс этого аккаунта прибиваем, чтобы не плодить коннекты
+    old = _WA_PROCS.pop(acc_id, None)
+    if old and old.poll() is None:
+        old.terminate()
+    proc = subprocess.Popen([node, "index.js", "--auth", digits, "--pair"], cwd=str(WA_DIR),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace")
+    _WA_PROCS[acc_id] = proc
+    lines: list[str] = []
+    code = None
+
+    def _reader():
+        for ln in proc.stdout:  # type: ignore
+            lines.append(ln)
+    t = threading.Thread(target=_reader, daemon=True); t.start()
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        for ln in lines:
+            m = re.search(r"КОД:\s*([A-Z0-9\-]{6,12})", ln)
+            if m:
+                code = m.group(1).strip()
+                break
+        if code or proc.poll() is not None:
+            break
+        time.sleep(0.4)
+    if code:
+        return JSONResponse({"ok": True, "code": code, "phone": digits,
+                             "hint": "На телефоне: WhatsApp → Связанные устройства → Привязать устройство → "
+                                     "«Привязать по номеру телефона» → введи код. Окно подключения не закрывай."})
+    if proc.poll() is None:
+        proc.terminate()
+    _WA_PROCS.pop(acc_id, None)
+    return JSONResponse({"ok": False, "error": "не удалось получить код привязки (см. лог)",
+                         "output": "".join(lines[-20:])}, status_code=200)
+
+
+@app.post("/api/account/{acc_id}/tdesktop")
+def account_tdesktop(acc_id: int) -> JSONResponse:
+    """Собрать портативный Telegram Desktop для аккаунта (зайти в него руками)."""
+    res = _run_capture(["channels.tg_export", "--id", str(acc_id)], timeout=200)
+    out = res.get("output") or ""
+    info = {}
+    try:
+        import json as _json
+        info = _json.loads(out.strip().split("\n")[-1])
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({"ok": bool(info.get("ok")), "folder": info.get("folder"),
+                         "exe": info.get("exe"), "error": info.get("error"), "output": out})
+
+
+@app.get("/api/account/{acc_id}/chats")
+def account_chats(acc_id: int) -> JSONResponse:
+    """Чаты, числящиеся за аккаунтом (по инвентаризации) — для резервного списка в карточке."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, title, username, link, kind, members_count, can_write "
+            "FROM chats WHERE joined_by=? AND in_account='yes' ORDER BY members_count DESC NULLS LAST, title",
+            (acc_id,)).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/account/{acc_id}/gen_bio")
+def account_gen_bio(acc_id: int) -> JSONResponse:
+    """Сгенерировать короткое человеческое bio (ИИ) под роль/легенду аккаунта."""
+    from channels.profile_gen import generate_bio
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT role, label, description FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+    bio = generate_bio(role=row["role"], label=row["label"], description=row["description"])
+    return JSONResponse({"ok": True, "bio": bio})
 
 
 @app.post("/api/account/{acc_id}/profile_setup")
@@ -562,6 +666,19 @@ def meetings_list() -> JSONResponse:
             "WHERE d.meeting_at IS NOT NULL ORDER BY d.meeting_at"
         ).fetchall()
     return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/gcal")
+def gcal_events() -> JSONResponse:
+    """События из личного Google-календаря (показываем рядом со встречами AXIOM).
+    connected=False → файл доступа не подключён (см. README по Google Calendar)."""
+    from integrations import calendar as gcal
+    if not gcal.enabled():
+        return JSONResponse({"connected": False, "reason": "no_credentials"})
+    evs = gcal.list_events()
+    if evs is None:
+        return JSONResponse({"connected": False, "reason": "auth_error"})
+    return JSONResponse({"connected": True, "events": evs})
 
 
 @app.get("/api/notifications")
@@ -936,6 +1053,59 @@ def deal_create(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
 
+@app.get("/api/leads")
+def leads_list() -> JSONResponse:
+    """Лиды на квалификацию: контакты в диалоге/ответившие, у кого ещё НЕТ сделки."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.name, c.person_name, c.person_role, c.username, c.phone,
+                   c.city, c.agency, c.tags, c.status, c.source, c.hook, c.specialization,
+                   (SELECT COUNT(*) FROM messages m WHERE m.contact_id=c.id AND m.direction='in') AS in_cnt,
+                   (SELECT text FROM messages m WHERE m.contact_id=c.id AND m.direction='in' ORDER BY m.id DESC LIMIT 1) AS last_in,
+                   (SELECT MAX(ts) FROM messages m WHERE m.contact_id=c.id) AS last_ts
+            FROM contacts c
+            WHERE c.status IN ('messaged','in_dialog','meeting_set')
+              AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.contact_id=c.id)
+            ORDER BY (in_cnt>0) DESC, last_ts DESC, c.id DESC
+            """
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r); d["tags"] = _split_tags(d.get("tags")); out.append(d)
+    return JSONResponse(out)
+
+
+@app.post("/api/contact/{contact_id}/to_deal")
+def contact_to_deal(contact_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Квалифицировал → конвертирую контакт в сделку и веду по воронке."""
+    database.init_db()
+    with database.get_conn() as conn:
+        c = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        if not c:
+            return JSONResponse({"error": "контакт не найден"}, status_code=404)
+        ex = conn.execute("SELECT id FROM deals WHERE contact_id=? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+        if ex:
+            return JSONResponse({"ok": True, "deal_id": ex["id"], "existing": True})
+        title = (payload.get("title") or c["person_name"] or c["name"] or c["agency"] or f"Лид #{contact_id}").strip()
+        pid = (payload or {}).get("pipeline_id") or database.get_default_pipeline_id(conn)
+        cur = conn.execute(
+            "INSERT INTO deals (contact_id, company_id, pipeline_id, stage, title, created_at, updated_at) "
+            "VALUES (?,?,?,?,?, datetime('now'), datetime('now'))",
+            (contact_id, c["company_id"] if "company_id" in c.keys() else None, pid, "new", title),
+        )
+        # помечаем контакт как квалифицированный и двигаем по воронке
+        database.set_status(conn, contact_id, "in_dialog")
+        cur_tags = [t.strip() for t in (c["tags"] or "").split(",") if t.strip()]
+        if "квал ✓" not in cur_tags:
+            cur_tags.append("квал ✓")
+            conn.execute("UPDATE contacts SET tags=? WHERE id=?", (",".join(cur_tags), contact_id))
+        database.add_event(conn, "lead", f"✅ Квалифицирован → сделка: {title}",
+                           "лид прошёл квалификацию, заведена сделка", level="good", contact_id=contact_id)
+    return JSONResponse({"ok": True, "deal_id": cur.lastrowid})
+
+
 @app.post("/api/deal/{did}/move")
 def deal_move(did: int, payload: dict = Body(...)) -> JSONResponse:
     stage = payload.get("stage")
@@ -1104,9 +1274,10 @@ def chatcat_create(payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/chatcat/{chat_id}/update")
 def chatcat_update(chat_id: int, payload: dict = Body(...)) -> JSONResponse:
     sets, vals = [], []
-    for k in ("title", "topic", "city", "notes", "status", "link", "can_write"):
+    for k in ("title", "topic", "city", "notes", "status", "link", "can_write", "favorite"):
         if k in payload:
-            sets.append(f"{k}=?"); vals.append(payload.get(k) or None)
+            v = (1 if payload.get(k) else 0) if k == "favorite" else (payload.get(k) or None)
+            sets.append(f"{k}=?"); vals.append(v)
     if not sets:
         return JSONResponse({"ok": True})
     vals.append(chat_id)
@@ -1325,13 +1496,24 @@ def hits_list(status: str = "new") -> JSONResponse:
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute(
-            "SELECT h.*, n.name AS niche_name FROM chat_hits h "
+            "SELECT h.*, n.name AS niche_name, c.username AS chat_username, c.link AS chat_link "
+            "FROM chat_hits h "
             "LEFT JOIN niches n ON n.id=h.niche_id "
+            "LEFT JOIN chats c ON c.id=h.chat_id "
             "WHERE h.status=? ORDER BY h.id DESC LIMIT 500", (status,)
         ).fetchall()
         counts = {r["status"]: r["c"] for r in conn.execute(
             "SELECT status, COUNT(*) c FROM chat_hits GROUP BY status")}
-    return JSONResponse({"items": [dict(r) for r in rows], "counts": counts})
+    items = []
+    for r in rows:
+        d = dict(r)
+        # ссылка прямо на сообщение в чате (перейти, увидеть контекст, продолжить переписку)
+        if d.get("chat_username") and d.get("source_msg_id"):
+            d["msg_link"] = f"https://t.me/{d['chat_username']}/{d['source_msg_id']}"
+        else:
+            d["msg_link"] = d.get("chat_link") or None    # приватный чат — хотя бы ссылка на сам чат
+        items.append(d)
+    return JSONResponse({"items": items, "counts": counts})
 
 
 @app.post("/api/hit/{hid}/lead")
@@ -1360,11 +1542,30 @@ def hit_ignore(hid: int) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/keywords/status")
+def keywords_status() -> JSONResponse:
+    """Прозрачность слушателя: кто слушает, по скольким чатам, сколько ниш активно."""
+    database.init_db()
+    with database.get_conn() as conn:
+        niches = conn.execute("SELECT COUNT(*) c FROM niches WHERE active=1").fetchone()["c"]
+        chats = conn.execute("SELECT COUNT(*) c FROM chats WHERE (username IS NOT NULL AND username<>'') "
+                             "OR in_account='yes'").fetchone()["c"]
+        fav = conn.execute("SELECT COUNT(*) c FROM chats WHERE COALESCE(favorite,0)=1").fetchone()["c"]
+        sample = [dict(r) for r in conn.execute(
+            "SELECT title, username FROM chats WHERE (username IS NOT NULL AND username<>'') "
+            "OR in_account='yes' ORDER BY COALESCE(favorite,0) DESC, id LIMIT 12")]
+    return JSONResponse({"account": "основной аккаунт (.env)" if config.TG_STRING_SESSION else "основной (.env)",
+                         "chats": chats, "favorite": fav, "niches": niches, "sample": sample})
+
+
 @app.post("/api/keywords/run")
 def keywords_run(payload: dict = Body(default={})) -> JSONResponse:
     """Прослушать чаты каталога по ключам активных ниш (поллинг, на обзор)."""
     limit = int((payload or {}).get("limit") or 300)
-    res = _run_capture(["channels.chat_keywords", "--limit", str(limit)], timeout=300)
+    args = ["channels.chat_keywords", "--limit", str(limit)]
+    if (payload or {}).get("favorites"):
+        args.append("--favorites")    # слушать только ⭐ избранные
+    res = _run_capture(args, timeout=300)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
@@ -1861,6 +2062,59 @@ def campaign_detail(cid: int) -> JSONResponse:
     return JSONResponse(d)
 
 
+@app.get("/api/campaign/{cid}/preflight")
+def campaign_preflight(cid: int) -> JSONResponse:
+    """Пред-полётная проверка: что готово/мешает запуску кампании."""
+    database.init_db()
+    with database.get_conn() as conn:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not camp:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        camp = dict(camp)
+        team = [dict(t) for t in conn.execute(
+            "SELECT a.* FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
+            "WHERE ca.campaign_id=?", (cid,)).fetchall()]
+        aud = _audience_count(conn, camp.get("audience_tag"), camp.get("channel"))
+        kps = conn.execute("SELECT COUNT(*) c FROM campaign_kps WHERE campaign_id=?", (cid,)).fetchone()["c"]
+        has_main = bool(config.TG_STRING_SESSION)
+
+    connected = [t for t in team if t.get("tg_session")]
+    no_proxy = [t for t in connected if not (t.get("proxy") or "").strip()]
+    banned = [t for t in team if t.get("status") == "banned"]
+    usable = [t for t in connected if t.get("status") != "banned"]
+
+    checks = []
+    def add(ok, level, text):
+        checks.append({"ok": ok, "level": level, "text": text})
+
+    add(bool((camp.get("channel") or "").strip()), "fail", "Канал выбран" if camp.get("channel") else "Не выбран канал (Telegram/WhatsApp)")
+    add(bool((camp.get("message_template") or "").strip()), "fail",
+        "Первое сообщение заполнено" if (camp.get("message_template") or "").strip() else "Пустое первое сообщение — нечего слать")
+    add(aud > 0, "fail", f"Аудитория: {aud} контактов" if aud > 0 else "Аудитория пуста (проверь тег и канал)")
+
+    if team:
+        add(True, "ok", f"Команда отправителей: {len(team)} акк.")
+        add(len(usable) > 0, "fail",
+            f"Подключены (TG✓), не в бане: {len(usable)} из {len(team)}" if usable
+            else "Ни один отправитель не подключён/живой — подключи и прогрей")
+        add(len(no_proxy) == 0, "warn",
+            "У всех отправителей есть прокси" if not no_proxy
+            else f"Без прокси: {len(no_proxy)} акк. — из РФ не подключатся (вставь SOCKS5)")
+        if banned:
+            add(False, "warn", f"В бане: {len(banned)} акк. — выведи из кампании")
+    else:
+        add(has_main, "warn",
+            "Команда не назначена — пойдёт с основного аккаунта (.env)" if has_main
+            else "Нет ни команды, ни основного аккаунта (.env) — слать нечем")
+
+    add(bool((camp.get("kp_text") or "").strip()) or bool(camp.get("kp_file")) or kps > 0, "info",
+        (f"КП: {kps} под типы" if kps else "КП задано") if (kps or camp.get("kp_text") or camp.get("kp_file"))
+        else "КП не задано (не критично — агент пришлёт позже, если добавишь)")
+
+    ready = all(c["ok"] for c in checks if c["level"] == "fail")
+    return JSONResponse({"ready": ready, "checks": checks, "audience": aud, "team": len(team)})
+
+
 @app.get("/api/campaign/{cid}/progress")
 def campaign_progress(cid: int) -> JSONResponse:
     """Таблица прогресса: кому пишем, с какого аккаунта, отправлено ли (✓)."""
@@ -2066,12 +2320,22 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
     import subprocess
     import sys
     limit = int(payload.get("limit") or 3)
+    force = bool(payload.get("force"))
     with database.get_conn() as conn:
         row = conn.execute("SELECT message_template FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         if not (row["message_template"] or "").strip():
             return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        # Защита от повторного запуска: если запускали < 10 мин назад — просим подтверждение.
+        recent = conn.execute(
+            "SELECT ts FROM events WHERE campaign_id=? AND type='campaign_start' "
+            "AND ts >= datetime('now','-10 minutes') ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+        if recent and not force:
+            return JSONResponse({"needs_confirm": True,
+                                 "warn": "Кампанию уже запускали недавно — рассылка ещё идёт в фоне. "
+                                         "Повторный запуск задвоит сообщения и повысит риск флуд-лимита. "
+                                         "Точно запустить ещё раз?"})
         nm = conn.execute("SELECT name FROM campaigns WHERE id=?", (cid,)).fetchone()
         conn.execute("UPDATE campaigns SET status='running' WHERE id=?", (cid,))
         database.add_event(conn, "campaign_start", f"▶ Старт кампании «{(nm['name'] if nm else cid)}»",

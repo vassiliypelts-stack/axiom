@@ -41,6 +41,38 @@ def _service():
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+def list_events(days_ahead: int = 21, max_results: int = 50) -> list[dict] | None:
+    """Ближайшие события из основного Google-календаря (для показа в Axiom).
+    None = не подключено/ошибка. Иначе [{id, summary, start, end, link, location}]."""
+    if not enabled():
+        return None
+    try:
+        from datetime import timezone
+
+        svc = _service()
+        now = datetime.now(timezone.utc).isoformat()
+        end = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).isoformat()
+        res = svc.events().list(
+            calendarId="primary", timeMin=now, timeMax=end,
+            singleEvents=True, orderBy="startTime", maxResults=max_results,
+        ).execute()
+        out = []
+        for ev in res.get("items", []):
+            s, e = ev.get("start", {}), ev.get("end", {})
+            out.append({
+                "id": ev.get("id"),
+                "summary": ev.get("summary") or "(без названия)",
+                "start": s.get("dateTime") or s.get("date"),
+                "end": e.get("dateTime") or e.get("date"),
+                "link": ev.get("htmlLink"),
+                "location": ev.get("location"),
+            })
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"[calendar list error] {e}")
+        return None
+
+
 def create_event(
     summary: str, start: datetime, duration_min: int, tz: str,
     description: str = "", attendees: list[str] | None = None,

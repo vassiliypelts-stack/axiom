@@ -31,6 +31,21 @@ _EXTRA_CONTACT_COLS = {
     "agent_context": "TEXT",    # ручной контекст для агента (история/нюансы общения с этим лидом)
     "pipeline_id": "INTEGER",   # в какой воронке лид (NULL = дефолтная)
     "company_id": "INTEGER",    # юрлицо, к которому привязан контакт (companies.id)
+    # --- H1: AI-досье физлица по сообщениям из чатов (enrich_person.py) ---
+    "pains": "TEXT",            # боли (что мешает/беспокоит)
+    "fears": "TEXT",            # страхи/риски, которых избегает
+    "desires": "TEXT",          # желания/цели
+    "interests": "TEXT",        # темы/интересы (через «; »)
+    "psychotype": "TEXT",       # психотип/тип принятия решений
+    "comm_style": "TEXT",       # стиль общения (как с ним лучше говорить)
+    "best_time": "TEXT",        # оптимальное время для контакта
+    "score": "REAL",            # AI-скоринг релевантности 0..1 (на скрине Дениса 0.90)
+    "segment": "TEXT",          # авто-сфера/сегмент (IT/бизнес/маркетинг/…)
+    "quotes": "TEXT",           # 1-3 показательные цитаты из чатов
+    "rec_message": "TEXT",      # рекомендуемое первое сообщение (готовый крючок)
+    "photo_analysis": "TEXT",   # анализ аватара (дресс-код/возраст/статус) — этап 4
+    "confidence": "REAL",       # достоверность портрета 0..1 («85% по профилю»)
+    "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
 }
 
 
@@ -85,6 +100,11 @@ _EXTRA_ACCOUNT_COLS = {
     "description": "TEXT",                # описание профиля агента (для команды)
     "api_id": "INTEGER",                  # собственные api_id/api_hash аккаунта (для купленных
     "api_hash": "TEXT",                   # сессий — используем их, а не глобальные из .env)
+    "protected": "INTEGER DEFAULT 0",     # «родной» личный номер — НЕ трогать автоматикой (прогрев/рассылка)
+    "chats_backup": "TEXT",               # резерв чатов аккаунта (JSON: список {title,link,note}) на случай бана
+    "kind": "TEXT",                       # происхождение: own (родной) | sim (своя симка) | bought (купленный/расходный)
+    "country": "TEXT",                    # страна аккаунта, ISO2 (авто по коду номера: ru|kz|uz|... ) — для гео-прокси
+    "bought_at": "TEXT",                  # дата покупки на маркете (для оценки живучести: «жив N дней»)
 }
 
 
@@ -101,6 +121,7 @@ _EXTRA_CHAT_COLS = {
     "in_account": "TEXT",        # yes = чат уже в личном аккаунте
     "city": "TEXT",
     "kw_last_id": "INTEGER",     # watermark: до какого msg_id уже сканировали по ключам
+    "favorite": "INTEGER DEFAULT 0",   # ⭐ избранный чат — лучшие, по ним и слушаем в первую очередь
 }
 
 
@@ -307,6 +328,31 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
     return cur.lastrowid
 
 
+def save_user_posts(conn: sqlite3.Connection, tg_user_id: int, chat_id: int | None,
+                    chat_title: str | None, posts: list[tuple]) -> int:
+    """Кладёт сырьё для досье (H1): сообщения человека из чата. posts: [(msg_id, ts, text), ...].
+    Дедуп по (tg_user_id, chat_id, msg_id). Возвращает число новых строк."""
+    new = 0
+    for msg_id, ts, text in posts:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO tg_user_posts (tg_user_id, chat_id, chat_title, text, msg_id, ts) "
+            "VALUES (?,?,?,?,?,?)",
+            (tg_user_id, chat_id, chat_title, text, msg_id, ts),
+        )
+        new += cur.rowcount
+    return new
+
+
+def set_bio_by_tg(conn: sqlite3.Connection, tg_user_id: int, bio: str | None) -> None:
+    """Записывает bio из TG-профиля в карточку лида (если есть и контакт найден)."""
+    if not bio:
+        return
+    conn.execute(
+        "UPDATE contacts SET bio = COALESCE(?, bio), updated_at = datetime('now') WHERE tg_user_id = ?",
+        (bio, tg_user_id),
+    )
+
+
 def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str, intent: str | None = None) -> None:
     conn.execute(
         "INSERT INTO messages (contact_id, direction, text, intent) VALUES (?, ?, ?, ?)",
@@ -399,9 +445,11 @@ def add_event(conn: sqlite3.Connection, type: str, title: str, text: str | None 
 
 
 def warming_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Аккаунты в прогреве, у которых есть авторизованная TG-сессия."""
+    """Аккаунты в прогреве, у которых есть авторизованная TG-сессия.
+    «Родные» (protected) личные номера исключаем — автоматика их не трогает."""
     return conn.execute(
-        "SELECT * FROM accounts WHERE status='warming' AND tg_session IS NOT NULL AND tg_session<>''"
+        "SELECT * FROM accounts WHERE status='warming' AND tg_session IS NOT NULL AND tg_session<>'' "
+        "AND COALESCE(protected,0)=0"
     ).fetchall()
 
 

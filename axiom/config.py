@@ -13,6 +13,9 @@ load_dotenv(BASE_DIR / ".env")
 # Runtime AXIOM по умолчанию на Haiku 4.5 (в 5 раз дешевле Opus). Opus оставляем
 # для разработки приложения, не для боевой работы агентов.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Доп. ключи Anthropic через запятую — авто-переключение при дневном лимите/429/нехватке
+# кредитов (agent/llm.py). Пример в .env: ANTHROPIC_API_KEYS=sk-ant-...,sk-ant-...
+ANTHROPIC_API_KEYS = os.getenv("ANTHROPIC_API_KEYS", "")
 # Обогащение (массово, дёшево) — Haiku.
 MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
 # Диалоги агента (где делаются деньги) — можно умнее/дороже: claude-opus-4-8 или

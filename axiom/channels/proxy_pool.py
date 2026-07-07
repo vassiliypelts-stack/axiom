@@ -143,15 +143,21 @@ async def refresh(target_alive: int = TARGET_ALIVE) -> dict:
 
 
 def assign() -> int:
-    """Раздаёт аккаунтам (с tg_session) живой прокси с мин. пингом. Round-robin."""
+    """Раздаёт живой прокси (мин. пинг, round-robin) только аккаунтам БЕЗ прокси.
+    НЕ перетирает уже назначенный (рабочий) прокси и пропускает «родные» (protected)."""
+    from channels.telegram import parse_mtproxy
     with database.get_conn() as conn:
         live = conn.execute(
             "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 20"
         ).fetchall()
+        # только telethon-совместимые (не faketls ee…): иначе аккаунт молча уйдёт «напрямую»
+        live = [p for p in live if parse_mtproxy(_mt_link(p["server"], p["port"], p["secret"]))]
         if not live:
+            print("[assign] в пуле нет telethon-совместимых прокси (все faketls/битые) — не раздаю")
             return 0
         accs = conn.execute(
-            "SELECT id FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>''"
+            "SELECT id FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND (proxy IS NULL OR proxy='') AND COALESCE(protected,0)=0"
         ).fetchall()
         n = 0
         for i, a in enumerate(accs):

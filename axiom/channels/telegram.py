@@ -72,14 +72,19 @@ def _default_slots() -> list[str]:
 
 
 def parse_proxy_str(raw: str | None) -> dict | None:
-    """socks5://user:pass@host:port → dict для python-socks. Пусто → None."""
+    """socks5://user:pass@host:port → dict для python-socks. Пусто → None.
+    tg:// (MTProto) и любые не-socks/http схемы → None (их обрабатывает parse_mtproxy,
+    а как socks их совать нельзя — иначе ValueError: Unknown proxy protocol type)."""
     raw = (raw or "").strip()
     if not raw:
         return None
     from urllib.parse import urlparse
 
     p = urlparse(raw)
-    proxy = {"proxy_type": p.scheme or "socks5", "addr": p.hostname, "port": p.port, "rdns": True}
+    scheme = (p.scheme or "socks5").lower()
+    if scheme not in ("socks5", "socks4", "http", "https"):
+        return None
+    proxy = {"proxy_type": scheme, "addr": p.hostname, "port": p.port, "rdns": True}
     if p.username:
         proxy["username"] = p.username
     if p.password:
@@ -93,7 +98,10 @@ def _parse_proxy() -> dict | None:
 
 
 def parse_mtproxy(raw: str | None):
-    """tg://proxy?server=&port=&secret= → (server, port, secret) для Telethon MTProxy. Иначе None."""
+    """tg://proxy?server=&port=&secret= → (server, port, secret) для Telethon MTProxy.
+    Telethon умеет только «чистый» (32 hex) или «секьюрный» dd-секрет (dd+32 hex). Faketls
+    (ee…) и битые секреты telethon не поддерживает — для них возвращаем None, чтобы клиент
+    шёл напрямую, а не падал с «MTProxy secret must be 16 bytes»."""
     raw = (raw or "").strip()
     if "proxy?" not in raw or "secret=" not in raw:
         return None
@@ -102,12 +110,17 @@ def parse_mtproxy(raw: str | None):
     server = (q.get("server") or [None])[0]
     port = (q.get("port") or [None])[0]
     secret = (q.get("secret") or [None])[0]
-    if server and port and secret:
-        try:
-            return (server, int(port), secret)
-        except ValueError:
-            return None
-    return None
+    if not (server and port and secret):
+        return None
+    try:
+        port = int(port)
+    except ValueError:
+        return None
+    s = secret.lower()
+    is_hex = all(c in "0123456789abcdef" for c in s)
+    if is_hex and (len(s) == 32 or (s.startswith("dd") and len(s) == 34)):
+        return (server, port, secret)
+    return None   # faketls (ee…) / нестандартный — telethon не потянет, идём напрямую
 
 
 def build_client(session, proxy_raw: str | None = None,

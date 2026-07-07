@@ -1,20 +1,22 @@
-"""Слушатель Telegram-чатов по ключевым словам. Источник лидов №3.
+"""Реал-тайм слушатель Telegram-чатов по ключам ниш (H2). Источник лидов №3.
 
-Ловит сообщения в группах/чатах, где состоит аккаунт, и ищет ключевые слова
-(«ищу риелтора», «куплю квартиру», «нужен ипотечный»…). При совпадении кладёт
-автора в книжку как горячего лида и сохраняет сообщение-триггер.
+В отличие от channels/chat_keywords.py (поллинг «раз в день»), здесь МГНОВЕННАЯ
+реакция через events.NewMessage: как только в чате, где состоит аккаунт, кто-то
+пишет фразу-триггер из активных ниш (`niches`), находка тут же кладётся в очередь
+`chat_hits` — НА ОБЗОР ОПЕРАТОРУ (раздел «Запросы»), как и у поллинга. Оператор сам
+решает, брать ли в лиды. Это «скорость», о которой говорил Денис: ловим того, кто
+нуждается здесь и сейчас, в ту же секунду.
 
-Только ГРУППЫ/чаты — личку (диалоги) обрабатывает channels/telegram.py, чтобы
-два слушателя не дрались за одни и те же входящие.
+По умолчанию НЕ пишет в ЛС (антибан/чужой чат). Авто-ЛС — опция на будущее (см.
+--auto-dm, пока заглушка): включать осознанно, с лимитами и пулом аккаунтов.
 
-⚠️ Аккаунт должен СОСТОЯТЬ в нужных чатах — вступи в целевые группы заранее.
-Не отвечает автоматически (чтобы не спамить в чужом чате): только ловит лид,
-дальше пишешь ему в личку через outreach/агента.
+Только ГРУППЫ/чаты — личку слушает channels/telegram.py.
+⚠️ Аккаунт должен СОСТОЯТЬ в нужных чатах. Ключи берутся из активных ниш в БД
+(если ниш нет — fallback на DEFAULT_KEYWORDS).
 
 Запуск:
-    python -m channels.tg_listener
-    python -m channels.tg_listener --keywords "ищу риелтора, куплю квартиру, нужен ипотечный, продаю квартиру"
-    python -m channels.tg_listener --dry      # только печатать совпадения, не писать в книжку
+    python -m channels.tg_listener            # ключи из активных ниш → chat_hits
+    python -m channels.tg_listener --dry      # только печатать совпадения
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from telethon.tl.types import User
 from channels.telegram import _build_client
 from db import database
 
-# Ключи по умолчанию (ниша недвижимости/ипотеки). Регистр не важен.
+# Fallback-ключи (ниша недвижимости/ипотеки), если в БД нет активных ниш.
 DEFAULT_KEYWORDS = [
     "ищу риелтора", "нужен риелтор", "посоветуйте риелтора",
     "куплю квартиру", "продаю квартиру", "сниму квартиру", "сдаю квартиру",
@@ -35,21 +37,49 @@ DEFAULT_KEYWORDS = [
     "новостройк", "вторичк", "переуступк",
 ]
 
-_keywords: list[str] = []
+_niches: list[tuple[int | None, list[str]]] = []  # [(niche_id, [ключи]), ...]
 _dry = False
+_auto_dm = False  # на будущее: авто-ЛС по триггеру (пока не реализовано — только лог)
 
 
-def _match(text: str) -> str | None:
+def _load_niches() -> list[tuple[int | None, list[str]]]:
+    """Активные ниши из БД (как у chat_keywords). Пусто → один псевдо-набор DEFAULT."""
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT id, keywords FROM niches WHERE active=1").fetchall()
+    out: list[tuple[int | None, list[str]]] = []
+    for r in rows:
+        kws = [k.strip().lower() for k in (r["keywords"] or "").split(",") if k.strip()]
+        if kws:
+            out.append((r["id"], kws))
+    if not out:
+        out.append((None, [k.lower() for k in DEFAULT_KEYWORDS]))
+    return out
+
+
+def _match(text: str):
     low = text.lower()
-    for kw in _keywords:
-        if kw in low:
-            return kw
+    for nid, kws in _niches:
+        for kw in kws:
+            if kw in low:
+                return nid, kw
     return None
 
 
 def _display_name(u: User) -> str:
     name = " ".join(x for x in [u.first_name, u.last_name] if x).strip()
     return name or (u.username and f"@{u.username}") or str(u.id)
+
+
+def _save_hit(niche_id, chat_id, chat_title, sender, text, kw, msg_id, ts) -> bool:
+    """Кладёт находку в chat_hits (на обзор оператору). Дедуп по (chat_id, msg_id)."""
+    with database.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
+            "username, name, text, keyword, source_msg_id, ts, status) VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
+            (niche_id, chat_id, chat_title, sender.id, sender.username,
+             _display_name(sender), text.strip()[:500], kw, msg_id, str(ts) if ts else None),
+        )
+        return cur.rowcount > 0
 
 
 async def _handle(event) -> None:
@@ -59,9 +89,10 @@ async def _handle(event) -> None:
     text = event.raw_text or ""
     if not text.strip():
         return
-    kw = _match(text)
-    if not kw:
+    m = _match(text)
+    if not m:
         return
+    nid, kw = m
     sender = await event.get_sender()
     if not isinstance(sender, User) or sender.bot or sender.deleted:
         return
@@ -70,53 +101,45 @@ async def _handle(event) -> None:
     chat_title = getattr(chat, "title", None) or "чат"
     snippet = text.strip().replace("\n", " ")[:200]
     name = _display_name(sender)
-    print(f"[lead] «{kw}» от {name} (@{sender.username or '-'}) в «{chat_title}»: {snippet}")
 
     if _dry:
+        print(f"[dry] «{kw}» от {name} (@{sender.username or '-'}) в «{chat_title}»: {snippet}")
         return
 
-    with database.get_conn() as conn:
-        existing = database.find_contact_by_tg(conn, tg_user_id=sender.id, username=sender.username)
-        tag = f"Ключ TG: {kw}"
-        note = f"[{chat_title}] триггер «{kw}»: {snippet}"
-        if existing:
-            old_tags = existing["tags"] or ""
-            tags = old_tags if tag in old_tags else (f"{old_tags}, {tag}" if old_tags else tag)
-            old_notes = existing["notes"] or ""
-            notes = f"{old_notes} | {note}" if old_notes else note
-            conn.execute(
-                "UPDATE contacts SET tags=?, notes=?, updated_at=datetime('now') WHERE id=?",
-                (tags, notes, existing["id"]),
-            )
-        else:
-            cid = database.upsert_contact(
-                conn, source="tg_keyword", username=sender.username, tg_user_id=sender.id,
-                name=name, tags=tag, notes=note,
-            )
-            conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
+    new = _save_hit(nid, event.chat_id, chat_title, sender, text, kw, event.message.id,
+                    getattr(event.message, "date", None))
+    if new:
+        print(f"[hit] «{kw}» от {name} (@{sender.username or '-'}) в «{chat_title}» → Запросы")
+    if _auto_dm:
+        # TODO H2-фаза2: авто-ЛС по триггеру из позиции заботы, с лимитами и пулом
+        # аккаунтов (antiban). Пока осознанно НЕ шлём — только обзор оператору.
+        print("  [auto-dm] пропущено: авто-ЛС ещё не включено (только обзор оператору)")
 
 
 async def run() -> None:
+    global _niches
     database.init_db()
+    _niches = _load_niches()
+    total_kw = sum(len(k) for _, k in _niches)
     client = _build_client()
     await client.start()
     me = await client.get_me()
     print(f"Подключён как @{me.username or me.id}")
-    print(f"Ключи ({len(_keywords)}): {', '.join(_keywords)}")
-    print("Слушаю группы/чаты на ключевые слова. Ctrl+C для остановки." + ("  [DRY: не пишу в книжку]" if _dry else ""))
+    print(f"Активных ниш: {len(_niches)}, ключей всего: {total_kw}")
+    print("Реал-тайм слушаю группы/чаты → находки в «Запросы». Ctrl+C для остановки."
+          + ("  [DRY]" if _dry else ""))
     client.add_event_handler(_handle, events.NewMessage(incoming=True))
     await client.run_until_disconnected()
 
 
 def main() -> None:
-    global _keywords, _dry
-    p = argparse.ArgumentParser(description="AXIOM слушатель Telegram-чатов по ключам")
-    p.add_argument("--keywords", help="свои ключи через запятую (иначе список по умолчанию)")
-    p.add_argument("--dry", action="store_true", help="только печатать совпадения, не писать в книжку")
+    global _dry, _auto_dm
+    p = argparse.ArgumentParser(description="AXIOM реал-тайм слушатель чатов по ключам ниш (H2)")
+    p.add_argument("--dry", action="store_true", help="только печатать совпадения, не писать в Запросы")
+    p.add_argument("--auto-dm", action="store_true", help="(заглушка) авто-ЛС по триггеру — пока не шлёт")
     args = p.parse_args()
-    raw = args.keywords or ",".join(DEFAULT_KEYWORDS)
-    _keywords = [k.strip().lower() for k in raw.split(",") if k.strip()]
     _dry = args.dry
+    _auto_dm = args.auto_dm
     asyncio.run(run())
 
 

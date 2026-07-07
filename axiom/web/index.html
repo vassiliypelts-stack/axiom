@@ -90,6 +90,9 @@
   nav .navhdr.clk:hover{background:var(--panel2);}
   nav .navhdr .chev{font-size:11px;transition:transform .15s;opacity:.65;}
   nav .navhdr.col .chev{transform:rotate(-90deg);}
+  nav .navhdr .ghandle{opacity:0;font-size:12px;letter-spacing:0;cursor:grab;transition:opacity .12s;}
+  nav .navhdr:hover .ghandle{opacity:.4;}
+  nav .navhdr.drop-hi{box-shadow:inset 0 2px 0 var(--accent);background:var(--panel2);}
   .side .foot{padding:12px 18px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);
     display:flex;align-items:center;justify-content:space-between;gap:10px;}
   .theme-pick{display:flex;gap:6px;}
@@ -214,8 +217,30 @@
   .dash-empty .big{font-family:'JetBrains Mono';font-weight:800;font-size:46px;color:var(--muted);opacity:.6;}
   .dash-empty .txt{font-size:12.5px;color:var(--muted);max-width:210px;line-height:1.5;}
   .dash-empty .mini{display:flex;gap:20px;} .dash-empty .mini div{font-family:'JetBrains Mono';font-size:12px;color:var(--muted);} .dash-empty .mini b{display:block;font-size:22px;color:var(--text);margin-bottom:3px;}
+  /* ── Фирменная шапка дашборда (логотип-молния + AXIOM + «борт»-уголки) ── */
+  .dbrand-bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px 24px;margin-bottom:14px;}
+  .dbrand{display:flex;align-items:center;gap:14px;min-width:0;}
+  .dlogo{width:54px;height:54px;border-radius:14px;flex:none;display:grid;place-items:center;position:relative;
+    background:var(--panel);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);
+    box-shadow:0 8px 26px -8px color-mix(in srgb,var(--accent) 32%,transparent),inset 0 1px 0 rgba(255,255,255,.05);}
+  .dlogo svg{width:36px;height:36px;filter:drop-shadow(0 0 6px color-mix(in srgb,var(--accent) 45%,transparent));}
+  .dwordmark h1{font-family:'Oswald';font-weight:700;font-size:30px;letter-spacing:.42em;text-indent:.42em;color:var(--ink);margin:0;line-height:1.1;}
+  .dwordmark span{display:block;font-size:11.5px;color:var(--muted);letter-spacing:.04em;margin-top:5px;max-width:380px;}
+  .dbrand-bar .sp{flex:1;}
+  .dclock{font-family:'JetBrains Mono';font-size:11px;color:var(--muted);text-align:right;}
+  .dclock b{display:block;color:var(--accent);font-size:15px;font-weight:700;margin-top:2px;}
+  .dstrip{display:flex;align-items:center;gap:14px;margin:0 0 16px;flex-wrap:wrap;}
+  .dpill{font-family:'JetBrains Mono';font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;
+    padding:7px 13px;border-radius:8px;color:var(--accent2);background:color-mix(in srgb,var(--accent2) 9%,transparent);border:1px solid color-mix(in srgb,var(--accent2) 38%,transparent);}
+  .dslogan{font-family:'Oswald';font-weight:300;font-size:15px;color:var(--muted);}
+  .dslogan b{color:var(--text);font-weight:500;}
+  .dfoot{margin-top:24px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+    font-family:'JetBrains Mono';font-size:11px;color:var(--muted);}
+  .dfoot .sysok{display:inline-flex;align-items:center;gap:7px;color:var(--green);}
+  .dfoot .sysok i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 9px var(--green);}
   @media(max-width:960px){.d-sales,.d-mkt,.d-res,.d-cal{grid-column:span 12;}}
-  @media(max-width:680px){.conv{grid-template-columns:repeat(2,1fr);gap:18px 8px}.conv .belt,.conv .pkg,.conv .st .arr{display:none}}
+  @media(max-width:680px){.conv{grid-template-columns:repeat(2,1fr);gap:18px 8px}.conv .belt,.conv .pkg,.conv .st .arr{display:none}
+    .dwordmark h1{font-size:24px;letter-spacing:.3em;text-indent:.3em}.dclock{text-align:left}}
 
   /* ---- Smart table ---- */
   .ttoolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
@@ -522,6 +547,19 @@ async function viewDashboard(v){
   const sales=(s.funnel||[]).map(f=>tile(f.count,f.label,saleCls[f.key]||"",f.key==="new"?"contacts":"deals")).join("");
 
   v.innerHTML=`<div class="dash">
+    <header class="dash-glass dbrand-bar">
+      <div class="dbrand">
+        <div class="dlogo"><svg viewBox="0 0 64 64" fill="none">
+          <defs><linearGradient id="axg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" style="stop-color:var(--accent)"/><stop offset="1" style="stop-color:var(--accent2)"/></linearGradient></defs>
+          <path d="M13 53 L32 11 L51 53" stroke="url(#axg)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M35 21 L24 37 L30.5 37 L27 50 L41 31 L33.5 31 L37.5 21 Z" style="fill:var(--accent2)"/>
+        </svg></div>
+        <div class="dwordmark"><h1>AXIOM</h1><span>AI-конвейер лидгенерации и продаж для мессенджеров и соцсетей</span></div>
+      </div>
+      <div class="sp"></div>
+      <div class="dclock">обновлено<b id="dash-clock">—</b></div>
+    </header>
+    <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span></div>
     <section class="dash-glass dash-hero">
       <div class="dash-hh"><div class="t">⚙ Конвейер лидов · <span>сырьё → сделка</span></div>
         <button class="dash-run" id="conv-run"><span class="d"></span>Запустить конвейер</button></div>
@@ -567,7 +605,16 @@ async function viewDashboard(v){
         </div>
       </section>
     </div>
+    <footer class="dfoot">
+      <span class="sysok"><i></i><span id="dash-sys">система в норме · конвейер на холостом ходу</span></span>
+      <span>AXIOM · LeadMachine — «Конвейер работает — клиенты приходят»</span>
+    </footer>
   </div>`;
+
+  // живые часы «обновлено» в шапке
+  const clockEl=$("#dash-clock");if(clockEl){clockEl.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}
+  if(!window._axDashClock){window._axDashClock=setInterval(()=>{const c=document.getElementById("dash-clock");
+    if(c)c.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});},1000);}
 
   // count-up табло
   v.querySelectorAll("[data-cv]").forEach((el,i)=>{const to=+el.getAttribute("data-cv");
@@ -581,7 +628,8 @@ async function viewDashboard(v){
   // переходы
   v.querySelectorAll("[data-go]").forEach(c=>c.onclick=()=>{location.hash=c.dataset.go;});
   const cr=$("#conv-run");if(cr)cr.onclick=()=>{const el=$("#conv");const on=el.classList.toggle("run");
-    cr.classList.toggle("on",on);cr.lastChild.textContent=on?"Конвейер работает":"Запустить конвейер";};
+    cr.classList.toggle("on",on);cr.lastChild.textContent=on?"Конвейер работает":"Запустить конвейер";
+    const sys=$("#dash-sys");if(sys)sys.textContent=on?"система в норме · конвейер работает":"система в норме · конвейер на холостом ходу";};
 }
 
 const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
@@ -2165,22 +2213,38 @@ const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,aia
 
 let NAV_COLLAPSE={};try{NAV_COLLAPSE=JSON.parse(localStorage.getItem("axiom_nav_collapse")||"{}");}catch(e){}
 let NAV_ORDER=null;try{NAV_ORDER=JSON.parse(localStorage.getItem("axiom_nav_order")||"null");}catch(e){}
+let NAV_GORDER=null;try{NAV_GORDER=JSON.parse(localStorage.getItem("axiom_nav_gorder")||"null");}catch(e){}
 function navApplyOrder(){
-  if(!NAV_ORDER)return;
-  NAV_GROUPS.forEach(g=>{const ord=NAV_ORDER[g.title||"_"];if(!ord)return;
+  // порядок разделов (групп) целиком — тянем заголовок вверх/вниз
+  if(NAV_GORDER)NAV_GROUPS.sort((a,b)=>{const ia=NAV_GORDER.indexOf(a.title||"_"),ib=NAV_GORDER.indexOf(b.title||"_");
+    return (ia<0?99:ia)-(ib<0?99:ib);});
+  // порядок подпунктов внутри раздела
+  if(NAV_ORDER)NAV_GROUPS.forEach(g=>{const ord=NAV_ORDER[g.title||"_"];if(!ord)return;
     g.items.sort((a,b)=>{const ia=ord.indexOf(a.id),ib=ord.indexOf(b.id);return (ia<0?99:ia)-(ib<0?99:ib);});});
 }
 function renderNav(active){
   navApplyOrder();
   $("#nav").innerHTML=NAV_GROUPS.map(g=>{
     const col=g.collapsible&&NAV_COLLAPSE[g.title];
-    const hdr=g.title?`<div class="navhdr${g.collapsible?' clk':''}${col?' col':''}" data-g="${g.title}" style="padding:10px 13px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);font-weight:700;${g.collapsible?'cursor:pointer;display:flex;justify-content:space-between;align-items:center':''}">${g.title}${g.collapsible?`<span class="chev">▾</span>`:""}</div>`:"";
+    const hdr=g.title?`<div class="navhdr${g.collapsible?' clk':''}${col?' col':''}" draggable="true" title="потяни ⠿, чтобы поменять порядок разделов" data-g="${g.title}" style="padding:10px 13px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);font-weight:700;display:flex;justify-content:space-between;align-items:center;cursor:pointer"><span style="display:flex;align-items:center;gap:6px;min-width:0"><span class="ghandle">⠿</span>${g.title}</span>${g.collapsible?`<span class="chev">▾</span>`:""}</div>`:"";
     const items=col?"":g.items.map(n=>`<a draggable="true" data-id="${n.id}" data-g="${g.title||'_'}" class="${n.id===active?"active":""}"><span class="ic">${n.ic}</span>${n.label}${n.cnt!=null?`<span class="cnt">${n.cnt}</span>`:""}</a>`).join("");
     return hdr+items;
   }).join("");
   $("#nav").querySelectorAll("a").forEach(a=>a.onclick=()=>{location.hash=a.dataset.id;});
-  $("#nav").querySelectorAll(".navhdr[data-g]").forEach(h=>{if(!NAV_GROUPS.find(g=>g.title===h.dataset.g&&g.collapsible))return;
-    h.onclick=()=>{NAV_COLLAPSE[h.dataset.g]=!NAV_COLLAPSE[h.dataset.g];localStorage.setItem("axiom_nav_collapse",JSON.stringify(NAV_COLLAPSE));renderNav(active);};});
+  let dragG=null;
+  $("#nav").querySelectorAll(".navhdr[data-g]").forEach(h=>{
+    h.onclick=()=>{if(!NAV_GROUPS.find(g=>g.title===h.dataset.g&&g.collapsible))return;
+      NAV_COLLAPSE[h.dataset.g]=!NAV_COLLAPSE[h.dataset.g];localStorage.setItem("axiom_nav_collapse",JSON.stringify(NAV_COLLAPSE));renderNav(active);};
+    h.ondragstart=e=>{dragG=h.dataset.g;h.style.opacity=".4";e.stopPropagation();};
+    h.ondragend=()=>{h.style.opacity="1";dragG=null;$("#nav").querySelectorAll(".navhdr").forEach(x=>x.classList.remove("drop-hi"));};
+    h.ondragover=e=>{if(dragG&&dragG!==h.dataset.g){e.preventDefault();h.classList.add("drop-hi");}};
+    h.ondragleave=()=>h.classList.remove("drop-hi");
+    h.ondrop=e=>{h.classList.remove("drop-hi");if(!dragG||dragG===h.dataset.g)return;e.preventDefault();
+      const order=NAV_GROUPS.map(g=>g.title||"_");
+      const from=order.indexOf(dragG),to=order.indexOf(h.dataset.g);
+      const [m]=order.splice(from,1);order.splice(to,0,m);
+      NAV_GORDER=order;localStorage.setItem("axiom_nav_gorder",JSON.stringify(order));renderNav(active);};
+  });
   let drag=null;
   $("#nav").querySelectorAll("a[draggable]").forEach(a=>{
     a.ondragstart=()=>{drag=a;a.style.opacity=".4";};

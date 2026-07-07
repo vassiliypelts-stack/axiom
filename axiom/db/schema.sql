@@ -213,6 +213,21 @@ CREATE TABLE IF NOT EXISTS chat_hits (
     UNIQUE(chat_id, source_msg_id)
 );
 
+-- Сырьё для AI-досье (H1): что человек РЕАЛЬНО писал в чатах. Собирает парсер
+-- (--harvest), потребляет agent/enrich_person.py для психо-портрета (боли/желания).
+CREATE TABLE IF NOT EXISTS tg_user_posts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_user_id  INTEGER NOT NULL,
+    contact_id  INTEGER,                    -- связь с contacts (если лид уже заведён)
+    chat_id     INTEGER,
+    chat_title  TEXT,
+    text        TEXT,
+    msg_id      INTEGER,
+    ts          TEXT,                        -- дата сообщения (для окна 90 дней)
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(tg_user_id, chat_id, msg_id)      -- дедуп: повторный прогон не плодит
+);
+
 -- Простые настройки приложения (ключ-значение): расписание прокси и т.п.
 -- ИИ-агенты: роль + тип задачи + промпт + привязка к аккаунту-исполнителю.
 -- Один аккаунт может играть разные роли (нетворкинг/лидген/инвайтинг) разными агентами.
@@ -263,3 +278,4 @@ CREATE TABLE IF NOT EXISTS proxies (
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);
+CREATE INDEX IF NOT EXISTS idx_user_posts_user ON tg_user_posts(tg_user_id);

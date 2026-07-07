@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import urllib.request
 
+from telethon import functions
 from telethon.sessions import StringSession
 
 from channels.telegram import build_client
@@ -53,14 +54,16 @@ def _fetch(limit: int = 150) -> list[str]:
     return out[:limit]
 
 
-async def _alive(proxy_url: str, timeout: int = 8) -> bool:
-    """Живой ли прокси для Telegram: пробуем подключиться к TG через него."""
+async def _alive(proxy_url: str, timeout: int = 9) -> bool:
+    """Живой ли прокси для Telegram. Мало TCP-коннекта — делаем РЕАЛЬНЫЙ запрос
+    (help.GetConfig, без авторизации): он реально гоняет MTProto через прокси.
+    Так отсеиваем «открывается, но трафик не тянет» — частую беду free-прокси."""
     client = build_client(StringSession(), proxy_url)
     try:
         await asyncio.wait_for(client.connect(), timeout=timeout)
-        ok = client.is_connected()
+        await asyncio.wait_for(client(functions.help.GetConfigRequest()), timeout=timeout)
         await client.disconnect()
-        return ok
+        return True
     except Exception:  # noqa: BLE001
         try:
             await client.disconnect()

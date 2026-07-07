@@ -19,24 +19,37 @@ tg_user_id, username, имя, тег с источником. Дедуп по tg
     python -m channels.tg_parser --target @somechat --mode members --limit 500 --save
     python -m channels.tg_parser --target @somechat --mode active --scan 3000 --top 50 --save
     python -m channels.tg_parser --target @chan --mode all --save   # админы + активные
+    python -m channels.tg_parser --target @chat --mode active --harvest --save  # +сырьё для досье (H1)
+
+H1: с флагом --harvest по активным авторам дополнительно собираются ТЕКСТЫ их
+сообщений (до 30 за 90 дней) в tg_user_posts и bio в карточку — сырьё, из которого
+agent/enrich_person.py строит психо-портрет (боли/страхи/желания/score).
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import random
-from collections import Counter
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 from telethon.errors import ChatAdminRequiredError, FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
+from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import Channel, ChannelParticipantsAdmins, User
 
+import config
 from channels.telegram import _build_client
 from db import database
 
 # Антибан: пауза между «тяжёлыми» вызовами и порции участников.
 SCRAPE_PAUSE = (2.0, 5.0)
+
+# H1 (досье): сколько сообщений на человека и за какое окно собирать (--harvest).
+POSTS_PER_USER = 30
+HARVEST_DAYS = 90
+AVATAR_DIR = config.BASE_DIR / "data" / "avatars"  # этап 4: фото для vision-анализа
 
 
 def _display_name(u: User) -> str:
@@ -86,29 +99,72 @@ async def collect_members(client, entity, limit: int) -> list[User]:
     return [u for u in ppl if _is_lead_user(u)]
 
 
-async def collect_active(client, entity, scan: int, top: int) -> list[tuple[User, int]]:
-    """Топ авторов по числу сообщений в чате/обсуждении за последние `scan` сообщений."""
+async def _fetch_bio(client, user: User) -> str | None:
+    """Тянет bio (about) из полного профиля. Антибан: вызывать дозированно. Ошибка → None."""
+    try:
+        full = await client(GetFullUserRequest(user))
+        return (getattr(full.full_user, "about", None) or None)
+    except FloodWaitError as e:
+        print(f"[bio] floodwait {e.seconds}с"); await asyncio.sleep(e.seconds + 5)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def collect_active(client, entity, scan: int, top: int,
+                         harvest: bool = False, days: int = HARVEST_DAYS,
+                         posts_per_user: int = POSTS_PER_USER) -> tuple[list[tuple[User, int]], dict[int, str]]:
+    """Топ авторов по числу сообщений в чате/обсуждении за последние `scan` сообщений.
+
+    harvest=True (H1): дополнительно собирает ТЕКСТЫ сообщений каждого автора (до
+    `posts_per_user` за `days` дней) в tg_user_posts + тянет bio — сырьё для досье.
+    Возвращает (топ-авторы, {tg_user_id: bio})."""
     chat = await _resolve_scan_chat(client, entity)
     if chat is None:
         print("[active] у цели нет чата обсуждения — нечего сканировать.")
-        return []
+        return [], {}
+    chat_id = getattr(chat, "id", None)
+    chat_title = getattr(chat, "title", None)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     counts: Counter[int] = Counter()
+    texts: dict[int, list[tuple]] = defaultdict(list)  # uid -> [(msg_id, ts, text), ...]
     n = 0
     async for m in client.iter_messages(chat, limit=scan):
         if m.sender_id and m.sender_id > 0:  # >0 = пользователь (каналы/анонимы отсекаем)
             counts[m.sender_id] += 1
+            if harvest and m.message and m.date and m.date >= cutoff \
+                    and len(texts[m.sender_id]) < posts_per_user:
+                texts[m.sender_id].append((m.id, str(m.date), m.message.strip()[:1000]))
         n += 1
     print(f"[active] просмотрено {n} сообщений, уникальных авторов: {len(counts)}")
     out: list[tuple[User, int]] = []
+    bios: dict[int, str] = {}
     for uid, cnt in counts.most_common(top):
         try:
             u = await client.get_entity(uid)
         except Exception:  # noqa: BLE001
             continue
-        if _is_lead_user(u):
-            out.append((u, cnt))
+        if not _is_lead_user(u):
+            continue
+        out.append((u, cnt))
+        if harvest:
+            posts = texts.get(uid, [])
+            if posts:
+                with database.get_conn() as conn:
+                    saved = database.save_user_posts(conn, u.id, chat_id, chat_title, posts)
+                if saved:
+                    print(f"  [harvest] {_display_name(u):24} +{saved} сообщ.")
+            bio = await _fetch_bio(client, u)
+            if bio:
+                bios[u.id] = bio
+            try:  # аватар для vision-анализа (этап 4); без фото — просто пропускаем
+                AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+                await client.download_profile_photo(u, file=str(AVATAR_DIR / f"{u.id}.jpg"))
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(random.uniform(0.5, 1.2))  # доп. пауза: bio — тяжёлый вызов
         await asyncio.sleep(random.uniform(0.3, 0.8))
-    return out
+    return out, bios
 
 
 def _save_lead(conn, u: User, target: str, role: str) -> str:
@@ -168,7 +224,8 @@ async def search_chats(client, query: str, limit: int) -> None:
     print("\nПарсить выбранную: python -m channels.tg_parser --target @username --mode all --save")
 
 
-async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool) -> None:
+async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
+              harvest: bool = False, days: int = HARVEST_DAYS) -> None:
     database.init_db()
     client = _build_client()
     await client.start()
@@ -196,12 +253,19 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
             _persist(members, target, "участник")
 
     if mode in ("active", "all"):
-        active = await collect_active(client, entity, scan, top)
+        active, bios = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
         users = [u for u, _ in active]
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
         if save:
             _persist(users, target, "активный")
+            if bios:  # bio пишем в уже созданные карточки лидов
+                with database.get_conn() as conn:
+                    for uid, bio in bios.items():
+                        database.set_bio_by_tg(conn, uid, bio)
+                print(f"[save] bio записано: {len(bios)}")
+        if harvest:
+            print("[harvest] сырьё для досье собрано в tg_user_posts — дальше agent/enrich_person.py")
 
     await client.disconnect()
     print("\nГотово." + ("" if save else "  (сухой прогон — добавь --save, чтобы записать в книжку)"))
@@ -215,8 +279,11 @@ def main() -> None:
     p.add_argument("--scan", type=int, default=2000, help="сколько сообщений просмотреть в режиме active")
     p.add_argument("--top", type=int, default=50, help="сколько топ-авторов взять в режиме active")
     p.add_argument("--save", action="store_true", help="записать найденных в книжку (иначе только печать)")
+    p.add_argument("--harvest", action="store_true", help="H1: собрать тексты+bio авторов в tg_user_posts (сырьё для досье)")
+    p.add_argument("--days", type=int, default=HARVEST_DAYS, help="окно сбора сообщений для --harvest (дней)")
     args = p.parse_args()
-    asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save))
+    asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
+                    harvest=args.harvest, days=args.days))
 
 
 if __name__ == "__main__":

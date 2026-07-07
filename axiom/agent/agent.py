@@ -110,14 +110,15 @@ def generate_reply(
     if "haiku" not in config.AGENT_MODEL:
         kwargs["thinking"] = {"type": "adaptive"}
 
-    response = _get_client().messages.parse(
+    from agent import llm
+    response = llm.call(lambda c: c.messages.parse(
         model=config.AGENT_MODEL,
         max_tokens=1000,
         system=system,
         messages=history,
         output_format=Reply,
         **kwargs,
-    )
+    ))
     return response.parsed_output
 
 

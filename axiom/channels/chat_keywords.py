@@ -47,18 +47,21 @@ def _display_name(u: User) -> str:
     return name or (u.username and f"@{u.username}") or str(u.id)
 
 
-async def run(limit: int) -> None:
+async def run(limit: int, only_fav: bool = False) -> None:
     database.init_db()
     with database.get_conn() as conn:
         niches = _load_niches(conn)
-        chats = conn.execute(
-            "SELECT id, title, username, kw_last_id FROM chats "
-            "WHERE (username IS NOT NULL AND username<>'') OR in_account='yes'"
-        ).fetchall()
+        sql = ("SELECT id, title, username, kw_last_id FROM chats "
+               "WHERE ((username IS NOT NULL AND username<>'') OR in_account='yes')")
+        if only_fav:
+            sql += " AND COALESCE(favorite,0)=1"   # слушаем только избранные (лучшие) чаты
+        chats = conn.execute(sql).fetchall()
     if not niches:
         print(json.dumps({"ok": False, "error": "нет активных ниш"}, ensure_ascii=False)); return
     if not chats:
-        print(json.dumps({"ok": False, "error": "нет чатов в каталоге для прослушки"}, ensure_ascii=False)); return
+        msg = ("нет ⭐ избранных чатов — отметь лучшие звёздочкой в каталоге «Чаты»"
+               if only_fav else "нет чатов в каталоге для прослушки")
+        print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False)); return
 
     client = _build_client()
     await client.start()
@@ -108,8 +111,9 @@ async def run(limit: int) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description="AXIOM прослушка чатов по ключам ниш")
     p.add_argument("--limit", type=int, default=300, help="глубина сканирования по каждому чату")
+    p.add_argument("--favorites", action="store_true", help="слушать только ⭐ избранные чаты")
     args = p.parse_args()
-    asyncio.run(run(args.limit))
+    asyncio.run(run(args.limit, args.favorites))
 
 
 if __name__ == "__main__":

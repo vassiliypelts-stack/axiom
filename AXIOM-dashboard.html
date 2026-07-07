@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AXIOM · LeadMachine — конвейер лидгена</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ══════════════ ТЕМЫ / ГАММЫ ══════════════ */
+:root, [data-theme="dark"]{                 /* 1 · NAVY OPS (тёмная) */
+  --page:radial-gradient(120% 90% at 12% -8%,#11335a 0%,transparent 46%),radial-gradient(120% 100% at 100% 0%,#0c2444 0%,transparent 50%),linear-gradient(160deg,#0A192F 0%,#060F1F 60%,#050b16 100%);
+  --bg2:#060F1F;
+  --ink:#E8F1FF; --muted:#7E96B8; --muted2:#5b7396;
+  --accent:#00B4D8; --accent2:#CCFF00; --accent2-txt:#CCFF00; --accent-ink:#15240a;
+  --panel:rgba(17,34,58,.55); --panel-brd:rgba(255,255,255,.07); --tick:rgba(0,180,216,.30);
+  --tile:rgba(7,18,33,.5); --tile-brd:rgba(255,255,255,.05); --tile-hov:rgba(12,30,54,.6);
+  --good:#3ee08a; --warm:#ffc14d; --bad:#ff5d73;
+  --node:radial-gradient(70% 70% at 50% 30%,#10294a,#0a1a30); --belt:#081627; --belt-brd:rgba(0,180,216,.22);
+  --glow-a:rgba(0,180,216,.18); --glow-b:rgba(204,255,0,.10); --grid:rgba(0,180,216,.06);
+  --grain:.05; --shadow:0 22px 50px -20px rgba(0,0,0,.7); --glasshi:rgba(255,255,255,.05);
+  --ic-bg:rgba(0,180,216,.16);
+}
+[data-theme="light"]{                        /* 2 · STUDIO (светлая) */
+  --page:radial-gradient(120% 90% at 12% -8%,#ffffff 0%,transparent 46%),radial-gradient(120% 100% at 100% 0%,#eaf2f8 0%,transparent 55%),linear-gradient(160deg,#EEF3F8 0%,#E2E9F1 70%,#dde6f0 100%);
+  --bg2:#E4EAF2;
+  --ink:#0E1B2E; --muted:#566880; --muted2:#90a2b8;
+  --accent:#0090B8; --accent2:#CCFF00; --accent2-txt:#6f9e00; --accent-ink:#1f2e08;
+  --panel:rgba(255,255,255,.72); --panel-brd:rgba(14,27,46,.09); --tick:rgba(0,144,184,.35);
+  --tile:rgba(255,255,255,.66); --tile-brd:rgba(14,27,46,.07); --tile-hov:rgba(255,255,255,.92);
+  --good:#1E9E5A; --warm:#C77F00; --bad:#D23B4E;
+  --node:linear-gradient(160deg,#ffffff,#eaf1f8); --belt:#dde6f0; --belt-brd:rgba(0,144,184,.3);
+  --glow-a:rgba(0,144,184,.10); --glow-b:rgba(150,190,0,.07); --grid:rgba(0,90,130,.06);
+  --grain:0; --shadow:0 18px 40px -22px rgba(20,50,90,.4); --glasshi:rgba(255,255,255,.7);
+  --ic-bg:rgba(0,144,184,.12);
+}
+[data-theme="graphite"]{                     /* 3 · GRAPHITE PRO (премиум-тёмная) */
+  --page:radial-gradient(120% 90% at 12% -8%,#1d2533 0%,transparent 46%),radial-gradient(120% 100% at 100% 0%,#1a212c 0%,transparent 55%),linear-gradient(160deg,#171C24 0%,#10141B 70%,#0c0f15 100%);
+  --bg2:#0F1218;
+  --ink:#E7EAF0; --muted:#909AA8; --muted2:#69727f;
+  --accent:#2DD4BF; --accent2:#F4B740; --accent2-txt:#F4B740; --accent-ink:#231a05;
+  --panel:rgba(30,37,48,.55); --panel-brd:rgba(255,255,255,.06); --tick:rgba(45,212,191,.30);
+  --tile:rgba(255,255,255,.035); --tile-brd:rgba(255,255,255,.05); --tile-hov:rgba(255,255,255,.07);
+  --good:#34d399; --warm:#fbbf24; --bad:#f87171;
+  --node:radial-gradient(70% 70% at 50% 30%,#242c39,#161b24); --belt:#11151c; --belt-brd:rgba(45,212,191,.22);
+  --glow-a:rgba(45,212,191,.14); --glow-b:rgba(244,183,64,.10); --grid:rgba(255,255,255,.04);
+  --grain:.04; --shadow:0 22px 50px -20px rgba(0,0,0,.65); --glasshi:rgba(255,255,255,.05);
+  --ic-bg:rgba(45,212,191,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Manrope',sans-serif;color:var(--ink);background:var(--bg2);min-height:100vh;
+  overflow-x:hidden;position:relative;padding:24px clamp(14px,3vw,40px) 60px;-webkit-font-smoothing:antialiased;
+  transition:background .4s,color .4s}
+.bg{position:fixed;inset:0;z-index:-3;background:var(--page);transition:background .4s}
+.bg-glow{position:fixed;inset:-20%;z-index:-2;pointer-events:none;
+  background:radial-gradient(40% 38% at 20% 30%,var(--glow-a),transparent 70%),radial-gradient(34% 34% at 82% 16%,var(--glow-b),transparent 70%),radial-gradient(50% 50% at 60% 100%,var(--glow-a),transparent 70%);
+  animation:drift 22s ease-in-out infinite alternate;filter:blur(8px)}
+@keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(-3%,2%) scale(1.08)}}
+.bg-grid{position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.6;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:54px 54px;mask-image:radial-gradient(120% 90% at 50% 0%,#000 30%,transparent 92%)}
+.grain{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:var(--grain);mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.wrap{max-width:1320px;margin:0 auto}
+
+/* topbar */
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.logo{width:54px;height:54px;border-radius:14px;flex:none;display:grid;place-items:center;position:relative;
+  background:var(--node);border:1px solid var(--tick);
+  box-shadow:0 8px 26px -8px var(--glow-a),inset 0 1px 0 var(--glasshi)}
+.logo svg{width:36px;height:36px;filter:drop-shadow(0 0 6px var(--glow-a))}
+.logo svg .s1{stop-color:var(--accent)}.logo svg .s2{stop-color:var(--accent2)}
+.logo svg .bolt{fill:var(--accent2)}
+.wordmark h1{font-family:'Oswald',sans-serif;font-weight:700;font-size:30px;letter-spacing:.42em;text-indent:.42em;color:var(--ink)}
+.wordmark .sub{font-size:11.5px;color:var(--muted);letter-spacing:.04em;margin-top:5px;max-width:360px}
+.top-spacer{flex:1}
+
+/* theme switch */
+.themes{display:flex;gap:5px;padding:5px;border-radius:12px;background:var(--tile);border:1px solid var(--panel-brd)}
+.themes button{font-family:'Oswald',sans-serif;font-size:11px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;
+  border:none;background:none;color:var(--muted);cursor:pointer;padding:7px 12px;border-radius:8px;display:flex;align-items:center;gap:7px;transition:.2s}
+.themes button .sw{width:11px;height:11px;border-radius:50%;box-shadow:0 0 0 2px var(--panel-brd)}
+.themes button[data-t="dark"] .sw{background:linear-gradient(135deg,#00B4D8,#CCFF00)}
+.themes button[data-t="light"] .sw{background:linear-gradient(135deg,#0090B8,#cfe600)}
+.themes button[data-t="graphite"] .sw{background:linear-gradient(135deg,#2DD4BF,#F4B740)}
+.themes button.on{color:var(--ink);background:var(--tile-hov);box-shadow:inset 0 0 0 1px var(--tick)}
+
+.updated{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted2);text-align:right}
+.updated b{display:block;color:var(--accent);font-size:15px;font-weight:700;margin-top:2px}
+.btns{display:flex;gap:10px;flex-wrap:wrap}
+.btn{font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:12.5px;
+  border:none;cursor:pointer;border-radius:12px;padding:13px 18px;display:inline-flex;align-items:center;gap:9px;position:relative;overflow:hidden;transition:transform .15s,box-shadow .25s,filter .2s}
+.btn:active{transform:translateY(1px) scale(.99)}
+.btn-refresh{background:var(--accent2);color:var(--accent-ink);box-shadow:0 0 0 1px var(--accent2),0 6px 18px -4px var(--accent2),0 0 26px -6px var(--accent2)}
+.btn-refresh:hover{filter:brightness(1.06)}
+.btn-refresh svg{width:15px;height:15px}
+.btn-refresh.spin svg{animation:spin .7s ease}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-run{background:var(--node);color:var(--ink);border:1px solid var(--tick);box-shadow:0 6px 20px -8px rgba(0,0,0,.5),inset 0 1px 0 var(--glasshi)}
+.btn-run::before{content:"";position:absolute;top:0;left:-60%;width:45%;height:100%;background:linear-gradient(90deg,transparent,var(--glow-a),transparent);transform:skewX(-20deg);animation:sheen 3.2s ease-in-out infinite}
+@keyframes sheen{0%,60%{left:-60%}85%,100%{left:130%}}
+.btn-run .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.btn-run.live{border-color:var(--accent2);color:var(--accent2-txt)}
+.btn-run.live .dot{background:var(--accent2);box-shadow:0 0 12px var(--accent2);animation:blink .9s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+
+.strip{display:flex;align-items:center;gap:14px;margin:20px 0 24px;flex-wrap:wrap}
+.pill{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;
+  padding:7px 13px;border-radius:8px;color:var(--accent2-txt);background:color-mix(in srgb,var(--accent2) 8%,transparent);border:1px solid color-mix(in srgb,var(--accent2) 35%,transparent)}
+.slogan{font-family:'Oswald',sans-serif;font-weight:300;font-size:15px;color:var(--muted)}
+.slogan b{color:var(--ink);font-weight:500}
+
+/* glass */
+.glass{background:var(--panel);border:1px solid var(--panel-brd);border-radius:18px;
+  backdrop-filter:blur(14px) saturate(120%);-webkit-backdrop-filter:blur(14px) saturate(120%);
+  box-shadow:var(--shadow),inset 0 1px 0 var(--glasshi);position:relative;transition:background .4s,border-color .4s}
+.glass::before,.glass::after{content:"";position:absolute;width:11px;height:11px;border:1.5px solid var(--tick);opacity:.7}
+.glass::before{top:9px;left:9px;border-right:none;border-bottom:none}
+.glass::after{bottom:9px;right:9px;border-left:none;border-top:none}
+
+/* conveyor */
+.hero{padding:24px clamp(18px,2.6vw,34px) 30px;overflow:hidden}
+.hero-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:26px;flex-wrap:wrap}
+.hero-head h2{font-family:'Oswald',sans-serif;font-weight:500;font-size:15px;letter-spacing:.26em;text-transform:uppercase;color:var(--accent)}
+.hero-head h2 span{color:var(--muted)}
+.conv-throughput{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted)}
+.conv-throughput b{color:var(--accent2-txt)}
+.conveyor{display:grid;grid-template-columns:repeat(5,1fr);position:relative;padding:6px 0 2px}
+.belt{position:absolute;left:7%;right:7%;top:42px;height:14px;border-radius:10px;z-index:0;background:var(--belt);border:1px solid var(--belt-brd);overflow:hidden;box-shadow:inset 0 2px 8px rgba(0,0,0,.4)}
+.belt::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(115deg,transparent 0 14px,var(--belt-brd) 14px 28px);background-size:40px 100%;animation:roll 1.4s linear infinite}
+.running .belt::before{animation-duration:.55s;background:repeating-linear-gradient(115deg,transparent 0 12px,color-mix(in srgb,var(--accent2) 40%,transparent) 12px 24px);background-size:36px 100%}
+@keyframes roll{to{background-position:-40px 0}}
+.pkg{position:absolute;top:44px;left:7%;width:10px;height:10px;border-radius:3px;background:var(--accent2);z-index:1;box-shadow:0 0 12px var(--accent2);opacity:0;animation:ride 4.2s linear infinite}
+.running .pkg{opacity:1}.pkg.b{animation-delay:1.4s}.pkg.c{animation-delay:2.8s}
+@keyframes ride{0%{left:7%;opacity:0}6%{opacity:1}94%{opacity:1}100%{left:93%;opacity:0}}
+.stage{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px}
+.node{width:84px;height:84px;border-radius:22px;display:grid;place-items:center;position:relative;background:var(--node);border:1px solid var(--tick);box-shadow:0 10px 26px -12px rgba(0,0,0,.7),inset 0 1px 0 var(--glasshi);transition:.4s}
+.node .n{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:30px;color:var(--ink);line-height:1}
+.stage.hot .node{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent),0 0 30px -6px var(--accent),inset 0 1px 0 var(--glasshi)}
+.stage.hot .node .n{color:var(--accent)}
+.stage.peak .node{border-color:var(--accent2)}
+.stage.peak .node .n{color:var(--accent2-txt)}
+.stage.idle .node{opacity:.5}.stage.idle .node .n{color:var(--muted2)}
+.stage .lbl{font-family:'Oswald',sans-serif;font-weight:500;font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.stage.hot .lbl,.stage.peak .lbl{color:var(--ink)}
+.stage .arrow{position:absolute;right:-6px;top:34px;color:var(--accent);opacity:.5;font-size:18px;z-index:3}
+.stage:last-child .arrow{display:none}
+.pulse{position:absolute;inset:-6px;border-radius:26px;border:1px solid var(--accent);opacity:0}
+.stage.hot .pulse{animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{0%{transform:scale(.92);opacity:.5}100%{transform:scale(1.25);opacity:0}}
+
+/* grid */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:18px;margin-top:22px}
+.card{padding:20px 22px 22px}
+.c-sales,.c-res{grid-column:span 7}.c-mkt,.c-cal{grid-column:span 5}
+.card-h{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.card-h .ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--ic-bg);border:1px solid var(--tick);color:var(--accent);font-size:15px}
+.card-h h3{font-family:'Oswald',sans-serif;font-weight:600;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink)}
+.card-h .tag{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted2);letter-spacing:.1em}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:11px}
+.tile{background:var(--tile);border:1px solid var(--tile-brd);border-radius:13px;padding:13px 14px;position:relative;overflow:hidden;transition:transform .18s,border-color .25s,background .25s}
+.tile:hover{transform:translateY(-3px);border-color:var(--tick);background:var(--tile-hov)}
+.tile .v{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:27px;line-height:1;color:var(--ink)}
+.tile .k{font-size:11px;color:var(--muted);margin-top:8px}
+.tile.accent .v{color:var(--accent)}
+.tile.lime .v{color:var(--accent2-txt)}
+.tile .bar{position:absolute;left:0;bottom:0;height:3px;background:var(--accent);box-shadow:0 0 10px var(--accent);width:0;transition:width .9s ease}
+.ready{display:flex;align-items:center;gap:16px;background:var(--tile);border:1px solid var(--tick);border-radius:13px;padding:14px 16px;margin-bottom:11px}
+.ring{--p:22;width:62px;height:62px;border-radius:50%;flex:none;display:grid;place-items:center;position:relative;background:conic-gradient(var(--accent2) calc(var(--p)*1%),var(--tile-brd) 0)}
+.ring::after{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--bg2)}
+.ring b{position:relative;font-family:'JetBrains Mono',monospace;font-weight:800;font-size:15px;color:var(--accent2-txt)}
+.ready .meta .t{font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.12em;text-transform:uppercase;font-size:13px}
+.ready .meta .d{font-size:11.5px;color:var(--muted);margin-top:4px}
+.chips{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.chip{font-family:'JetBrains Mono',monospace;font-size:11px;padding:6px 10px;border-radius:8px;border:1px solid var(--tile-brd);color:var(--muted)}
+.chip b{font-weight:800;margin-right:4px}
+.chip.warm{color:var(--warm);border-color:color-mix(in srgb,var(--warm) 30%,transparent)}
+.chip.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 30%,transparent)}
+.chip.good{color:var(--good);border-color:color-mix(in srgb,var(--good) 30%,transparent)}
+.empty-cal{display:grid;place-items:center;text-align:center;padding:18px 10px;gap:10px;min-height:150px}
+.empty-cal .big{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:46px;color:var(--muted2)}
+.empty-cal .txt{font-size:12.5px;color:var(--muted);max-width:200px;line-height:1.5}
+.empty-cal .mini{display:flex;gap:18px}
+.empty-cal .mini div{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted)}
+.empty-cal .mini b{display:block;font-size:22px;color:var(--ink);margin-bottom:3px}
+.foot{margin-top:30px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted2)}
+.foot .sysok{display:inline-flex;align-items:center;gap:7px;color:var(--good)}
+.foot .sysok i{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 9px var(--good)}
+.reveal{opacity:0;transform:translateY(16px);animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+@media(max-width:900px){.c-sales,.c-mkt,.c-res,.c-cal{grid-column:span 12}.wordmark h1{font-size:24px;letter-spacing:.3em;text-indent:.3em}}
+@media(max-width:680px){.conveyor{grid-template-columns:repeat(2,1fr);gap:22px 8px}.belt,.pkg,.stage .arrow{display:none}.updated{text-align:left}}
+</style>
+</head>
+<body>
+<div class="bg"></div><div class="bg-glow"></div><div class="bg-grid"></div><div class="grain"></div>
+<div class="wrap">
+
+  <header class="top reveal" style="animation-delay:.02s">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 64 64" fill="none">
+          <defs><linearGradient id="ax" x1="0" y1="1" x2="1" y2="0"><stop class="s1" offset="0"/><stop class="s2" offset="1"/></linearGradient></defs>
+          <path d="M13 53 L32 11 L51 53" stroke="url(#ax)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path class="bolt" d="M35 21 L24 37 L30.5 37 L27 50 L41 31 L33.5 31 L37.5 21 Z"/>
+        </svg>
+      </div>
+      <div class="wordmark"><h1>AXIOM</h1><span class="sub">AI-конвейер лидгенерации и продаж для мессенджеров и соцсетей</span></div>
+    </div>
+    <div class="top-spacer"></div>
+    <div class="themes" id="themes">
+      <button data-t="dark" class="on"><span class="sw"></span>Тёмная</button>
+      <button data-t="light"><span class="sw"></span>Светлая</button>
+      <button data-t="graphite"><span class="sw"></span>Графит</button>
+    </div>
+    <div class="updated">обновлено<b id="clock">22:44:35</b></div>
+    <div class="btns">
+      <button class="btn btn-refresh" id="refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>Обновить</button>
+      <button class="btn btn-run" id="run"><span class="dot"></span><span id="run-txt">Запустить конвейер</span></button>
+    </div>
+  </header>
+
+  <div class="strip reveal" style="animation-delay:.08s">
+    <span class="pill">⚡ LeadMachine</span>
+    <span class="slogan">«Конвейер работает — <b>клиенты приходят</b>»</span>
+  </div>
+
+  <section class="glass hero reveal" id="hero" style="animation-delay:.14s">
+    <div class="hero-head">
+      <h2>Конвейер лидов · <span>сырьё → сделка</span></h2>
+      <div class="conv-throughput">пропускная: <b>290</b> на входе · <b>5</b> стадий</div>
+    </div>
+    <div class="conveyor" id="conveyor">
+      <div class="belt"></div><div class="pkg a"></div><div class="pkg b"></div><div class="pkg c"></div>
+      <div class="stage peak"><span class="arrow">→</span><div class="node"><span class="pulse"></span><span class="n" data-v="290">0</span></div><div class="lbl">Сырьё</div></div>
+      <div class="stage hot"><span class="arrow">→</span><div class="node"><span class="pulse"></span><span class="n" data-v="2">0</span></div><div class="lbl">Касание</div></div>
+      <div class="stage hot"><span class="arrow">→</span><div class="node"><span class="pulse"></span><span class="n" data-v="1">0</span></div><div class="lbl">Диалог</div></div>
+      <div class="stage idle"><span class="arrow">→</span><div class="node"><span class="n" data-v="0">0</span></div><div class="lbl">Прогрев</div></div>
+      <div class="stage idle"><div class="node"><span class="n" data-v="0">0</span></div><div class="lbl">Сделка</div></div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="glass card c-sales reveal" style="animation-delay:.2s">
+      <div class="card-h"><span class="ic">◎</span><h3>Продажи · CRM</h3><span class="tag">301 контакт</span></div>
+      <div class="tiles">
+        <div class="tile lime"><div class="v" data-v="290"></div><div class="k">Новые</div></div>
+        <div class="tile accent"><div class="v" data-v="2"></div><div class="k">Написано</div></div>
+        <div class="tile accent"><div class="v" data-v="1"></div><div class="k">В диалоге</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Встреча назначена</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Встреча прошла</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Сделка</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Прогрев</div></div>
+        <div class="tile accent"><div class="v" data-v="8"></div><div class="k">Проверены</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Стоп</div></div>
+      </div>
+    </section>
+    <section class="glass card c-mkt reveal" style="animation-delay:.26s">
+      <div class="card-h"><span class="ic">⤳</span><h3>Маркетинг · Лидген</h3><span class="tag">2/3 кампаний</span></div>
+      <div class="tiles">
+        <div class="tile lime"><div class="v" data-v="2"></div><div class="k">Кампаний идёт</div></div>
+        <div class="tile"><div class="v" data-v="3"></div><div class="k">Кампаний всего</div></div>
+        <div class="tile accent"><div class="v" data-v="1"></div><div class="k">Новых запросов</div></div>
+        <div class="tile"><div class="v" data-v="3"></div><div class="k">Исходящих</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">Входящих</div></div>
+      </div>
+    </section>
+    <section class="glass card c-res reveal" style="animation-delay:.32s">
+      <div class="card-h"><span class="ic">⚙</span><h3>Ресурсы</h3><span class="tag">машинный парк</span></div>
+      <div class="ready">
+        <div class="ring" style="--p:22"><b>2/9</b></div>
+        <div class="meta"><div class="t">Аккаунтов готово</div><div class="d">2 в бою · 6 на прогреве · 1 в бане</div></div>
+        <div class="chips"><span class="chip warm"><b>6</b>прогрев</span><span class="chip bad"><b>1</b>бан</span><span class="chip good"><b>189</b>прокси</span></div>
+      </div>
+      <div class="tiles">
+        <div class="tile lime"><div class="v" data-v="2"></div><div class="k">Аккаунтов в бою</div></div>
+        <div class="tile accent"><div class="v" data-v="189"></div><div class="k">Живых прокси</div></div>
+        <div class="tile accent"><div class="v" data-v="238"></div><div class="k">Чатов в каталоге</div></div>
+        <div class="tile"><div class="v" data-v="6"></div><div class="k">На прогреве</div></div>
+        <div class="tile"><div class="v" data-v="1"></div><div class="k">Забанено</div></div>
+        <div class="tile"><div class="v" data-v="0"></div><div class="k">ИИ-агентов</div></div>
+      </div>
+    </section>
+    <section class="glass card c-cal reveal" style="animation-delay:.38s">
+      <div class="card-h"><span class="ic">▦</span><h3>Задачи · Календарь</h3><span class="tag">расписание</span></div>
+      <div class="empty-cal">
+        <div class="big">0</div>
+        <div class="txt">Предстоящих встреч пока нет — конвейер ещё доводит лиды до диалога</div>
+        <div class="mini"><div><b>0</b>предстоит</div><div><b>0</b>всего встреч</div></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="foot reveal" style="animation-delay:.44s">
+    <span class="sysok"><i></i><span id="sys">система в норме · конвейер на холостом ходу</span></span>
+    <span>AXIOM · LeadMachine v1 — «Конвейер работает — клиенты приходят»</span>
+  </footer>
+</div>
+
+<script>
+function countUp(el,to,dur){to=+to;if(to===0){el.textContent="0";return;}const t0=performance.now();
+  (function s(t){const p=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-p,3);el.textContent=Math.round(to*e).toLocaleString("ru-RU");if(p<1)requestAnimationFrame(s);else el.textContent=to.toLocaleString("ru-RU");})(t0);}
+function runCounts(){
+  document.querySelectorAll("[data-v]").forEach((el,i)=>setTimeout(()=>countUp(el,el.getAttribute("data-v"),900),120+i*26));
+  document.querySelectorAll(".tile").forEach(t=>{const v=+(t.querySelector(".v")?.getAttribute("data-v")||0);
+    let b=t.querySelector(".bar");if(!b){b=document.createElement("span");b.className="bar";t.appendChild(b);}
+    setTimeout(()=>b.style.width=Math.min(100,(v/290)*300+(v?8:0))+"%",500);});}
+runCounts();
+let liveClock=false;
+function setClock(){document.getElementById("clock").textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}
+setInterval(()=>{if(liveClock)setClock();},1000);
+document.getElementById("refresh").addEventListener("click",function(){this.classList.remove("spin");void this.offsetWidth;this.classList.add("spin");liveClock=true;setClock();runCounts();});
+const conv=document.getElementById("conveyor"),runBtn=document.getElementById("run"),hero=document.getElementById("hero");let running=false;
+runBtn.addEventListener("click",()=>{running=!running;conv.classList.toggle("running",running);runBtn.classList.toggle("live",running);
+  document.getElementById("run-txt").textContent=running?"Конвейер работает":"Запустить конвейер";
+  document.getElementById("sys").textContent=running?"система в норме · конвейер работает":"система в норме · конвейер на холостом ходу";
+  if(running)hero.animate([{boxShadow:"0 0 0 0 rgba(204,255,0,.45)"},{boxShadow:"0 0 0 14px rgba(204,255,0,0)"}],{duration:700,easing:"ease-out"});});
+// theme switch
+document.getElementById("themes").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
+  document.documentElement.dataset.theme=b.dataset.t;
+  document.querySelectorAll("#themes button").forEach(x=>x.classList.toggle("on",x===b));});
+</script>
+</body>
+</html>

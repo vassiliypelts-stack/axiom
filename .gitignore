@@ -21,6 +21,15 @@ axiom/data/kp/
 axiom/data/avatars/
 axiom/*.xlsx
 
+# Скрапер: ДАННЫЕ и токены (перс.данные лидов + секретный токен) — только код (*.py/*.bat) в репо
+axiom/scrapers/*.csv
+axiom/scrapers/*.xlsx
+axiom/scrapers/*.json
+axiom/scrapers/*.txt
+# WhatsApp-авторизация (Baileys) — секрет
+axiom/../axiom-wa/auth_*/
+auth_*/
+
 # Тяжёлые исходные материалы (референс, не код)
 Доки Верняка/
 

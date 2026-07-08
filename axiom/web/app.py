@@ -100,8 +100,22 @@ def stats() -> JSONResponse:
 
 
 # ---- Мои агенты (аккаунты) ------------------------------------------------ #
+def _days_since(ts: str | None) -> int | None:
+    """Сколько дней прошло с даты ts (SQLite datetime, UTC). None — если не распарсили.
+    Нужно для колонки «жив N дней» = живучесть аккаунта с момента покупки."""
+    if not ts:
+        return None
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("T", " ").split(".")[0])
+    except (ValueError, TypeError):
+        return None
+    return max(0, (datetime.utcnow() - dt).days)
+
+
 @app.get("/api/accounts")
 def accounts_list() -> JSONResponse:
+    import phone_geo
     database.init_db()
     with database.get_conn() as conn:
         _seed_accounts(conn)
@@ -115,22 +129,29 @@ def accounts_list() -> JSONResponse:
         d = dict(r)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
         d["chats_count"] = chats_by.get(d["id"], 0)
+        # страна: сохранённый ISO2 или определяем по номеру на лету (+ готовая надпись с флагом)
+        code = d.get("country") or phone_geo.detect(d.get("phone"))
+        d["country_label"] = phone_geo.label(code) if code else ""
+        d["days_alive"] = _days_since(d.get("bought_at") or d.get("created_at"))
         out.append(d)
     return JSONResponse(out)
 
 
 @app.post("/api/accounts")
 def accounts_add(payload: dict = Body(...)) -> JSONResponse:
+    import phone_geo
     f = {k: (payload.get(k) or None) for k in ("label", "phone", "username", "role", "status", "notes")}
     f["status"] = f["status"] or "warming"
     limit = int(payload.get("daily_limit") or 15)
     if not f["label"] and not f["phone"]:
         return JSONResponse({"error": "нужен хотя бы ярлык или телефон"}, status_code=400)
+    country = payload.get("country") or phone_geo.detect(f["phone"])   # страна по коду номера
     with database.get_conn() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes) VALUES (?,?,?,?,?,?,?)",
-                (f["label"], f["phone"], f["username"], f["role"], f["status"], limit, f["notes"]),
+                "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, country, bought_at) "
+                "VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
+                (f["label"], f["phone"], f["username"], f["role"], f["status"], limit, f["notes"], country),
             )
         except Exception as e:
             return JSONResponse({"error": f"возможно, такой телефон уже есть ({e})"}, status_code=400)
@@ -198,6 +219,25 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         for i in ids:
             _spawn("channels.health", "--id", str(i))
         return JSONResponse({"ok": True, "checking": len(ids)})
+    if action == "identity":
+        bio_style = (payload.get("bio_style") or "").strip()
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
+                                "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.identity", "--ids", ",".join(str(i) for i in queued), "--bio-style", bio_style)
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
+    if action == "onboard":
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
+                                "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.onboard", "--ids", ",".join(str(i) for i in queued))
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
     if action == "inventory":
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
@@ -502,7 +542,9 @@ def account_gen_bio(acc_id: int) -> JSONResponse:
 
 @app.post("/api/account/{acc_id}/profile_setup")
 async def account_profile_setup(acc_id: int) -> JSONResponse:
-    """Оформить профиль сейчас: поставить аватар + bio (описание) из карточки аккаунта."""
+    """Оформить профиль сейчас: аватар + bio (описание) из карточки + приватность
+    (спрятать номер, защита от репортов). Приватность применяется даже если карточка
+    пустая — спрятать номер полезно любому купленному аккаунту."""
     from telethon.sessions import StringSession
     from channels.telegram import build_client
     from channels.warmup import _setup_profile
@@ -513,13 +555,11 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
     acc = dict(row)
     if not acc.get("tg_session"):
         return JSONResponse({"error": "у аккаунта нет сессии — сначала залогинь его (кнопка «Логин»)"}, status_code=400)
-    if not (acc.get("description") or acc.get("avatar")):
-        return JSONResponse({"error": "в карточке пусто: добавь описание и/или загрузи аватар"}, status_code=400)
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
                           acc.get("api_id"), acc.get("api_hash"))
     try:
         await client.start()
-        await _setup_profile(client, acc, force=True)
+        done = await _setup_profile(client, acc, force=True)   # bio+аватар+приватность
         me = await client.get_me()
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"не удалось оформить: {e}"}, status_code=400)
@@ -528,12 +568,43 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-    done = []
-    if acc.get("avatar"):
-        done.append("аватар")
-    if (acc.get("description") or "").strip():
-        done.append("описание")
     return JSONResponse({"ok": True, "username": me.username or str(me.id), "set": done})
+
+
+@app.get("/api/account/{acc_id}/inspect")
+async def account_inspect(acc_id: int) -> JSONResponse:
+    """Инспектор: живой профиль аккаунта (как оформлен, спрятан ли номер) + диалоги."""
+    from channels.inspect import inspect
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+    acc = dict(row)
+    if not acc.get("tg_session"):
+        return JSONResponse({"error": "нет сессии — сначала подключи аккаунт (кнопка «Подключить»)"}, status_code=400)
+    try:
+        data = await inspect(acc)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"не удалось прочитать аккаунт: {e}"}, status_code=400)
+    return JSONResponse(data)
+
+
+@app.get("/api/account/{acc_id}/dialog_messages")
+async def account_dialog_messages(acc_id: int, peer: int) -> JSONResponse:
+    """Сообщения выбранного диалога аккаунта (peer — id из /inspect). Read-only."""
+    from channels.inspect import dialog_messages
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+    acc = dict(row)
+    if not acc.get("tg_session"):
+        return JSONResponse({"error": "нет сессии"}, status_code=400)
+    try:
+        data = await dialog_messages(acc, peer)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"не удалось прочитать переписку: {e}"}, status_code=400)
+    return JSONResponse(data)
 
 
 @app.get("/api/account/{acc_id}/avatar")
@@ -1785,17 +1856,27 @@ def set_agent_context(contact_id: int, payload: dict = Body(...)) -> JSONRespons
 
 
 # ---- Кампании ------------------------------------------------------------- #
-def _sync_campaign_accounts(conn, cid: int, account_ids) -> None:
-    """Полная пересборка команды кампании (какие агенты её работают)."""
+def _sync_campaign_accounts(conn, cid: int, account_ids, account_limits: dict | None = None) -> None:
+    """Полная пересборка команды кампании (какие агенты её работают + лимит/день
+    на КАЖДЫЙ — сколько эта кампания вправе слать именно с него в сутки).
+    account_limits: {account_id (int|str): daily_limit}. Пусто у аккаунта — падает
+    обратно на его общий daily_limit (см. COALESCE в campaign_send._team)."""
+    account_limits = account_limits or {}
     conn.execute("DELETE FROM campaign_accounts WHERE campaign_id=?", (cid,))
     for aid in (account_ids or []):
         try:
-            conn.execute(
-                "INSERT OR IGNORE INTO campaign_accounts (campaign_id, account_id) VALUES (?,?)",
-                (cid, int(aid)),
-            )
+            aid_i = int(aid)
         except (TypeError, ValueError):
             continue
+        lim = account_limits.get(aid_i) if aid_i in account_limits else account_limits.get(str(aid_i))
+        try:
+            lim = int(lim) if lim not in (None, "") else None
+        except (TypeError, ValueError):
+            lim = None
+        conn.execute(
+            "INSERT OR IGNORE INTO campaign_accounts (campaign_id, account_id, daily_limit) VALUES (?,?,?)",
+            (cid, aid_i, lim),
+        )
 
 
 def _channel_clause(channel: str | None) -> str:
@@ -1828,8 +1909,10 @@ def _camp_row(conn, r) -> dict:
     d["sent"] = conn.execute(
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
     ).fetchone()["c"]
-    d["accounts"] = [row["account_id"] for row in conn.execute(
-        "SELECT account_id FROM campaign_accounts WHERE campaign_id=?", (d["id"],))]
+    team_rows = conn.execute(
+        "SELECT account_id, daily_limit FROM campaign_accounts WHERE campaign_id=?", (d["id"],)).fetchall()
+    d["accounts"] = [r["account_id"] for r in team_rows]
+    d["account_limits"] = {str(r["account_id"]): r["daily_limit"] for r in team_rows if r["daily_limit"] is not None}
     return d
 
 
@@ -1858,6 +1941,7 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"error": "нужно название кампании"}, status_code=400)
     project_id = payload.get("project_id") or None
     account_ids = payload.get("account_ids") or []
+    account_limits = payload.get("account_limits") or {}
     with database.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns (name, product, audience_tag, channel, account_id, daily_limit, "
@@ -1865,7 +1949,7 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
             (f["name"], f["product"], f["audience_tag"], f["channel"], account_id, daily_limit,
              f["message_template"], f["agent_prompt"], f["kp_text"], project_id),
         )
-        _sync_campaign_accounts(conn, cur.lastrowid, account_ids)
+        _sync_campaign_accounts(conn, cur.lastrowid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
 
@@ -1879,6 +1963,7 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"error": "нужно название кампании"}, status_code=400)
     project_id = payload.get("project_id") or None
     account_ids = payload.get("account_ids")
+    account_limits = payload.get("account_limits") or {}
     with database.get_conn() as conn:
         row = conn.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
@@ -1890,8 +1975,77 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
              f["message_template"], f["agent_prompt"], f["kp_text"], project_id, cid),
         )
         if account_ids is not None:
-            _sync_campaign_accounts(conn, cid, account_ids)
+            _sync_campaign_accounts(conn, cid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cid})
+
+
+@app.post("/api/campaign/{cid}/test_contacts")
+def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Свои номера/юзернеймы для теста ЭТОЙ кампании — без отдельной тестовой кампании.
+    Помечает is_test=1 (см. channels/campaign_send._audience: тестовые всегда идут первыми
+    в очереди), сбрасывает статус в 'new' (даже если контакт уже был раньше) и добавляет
+    тег аудитории кампании — иначе не попадут в фильтр _audience по audience_tag."""
+    raw = (payload.get("text") or "").strip()
+    if not raw:
+        return JSONResponse({"error": "пусто — введи хотя бы один номер или @username"}, status_code=400)
+    with database.get_conn() as conn:
+        camp = conn.execute("SELECT audience_tag FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not camp:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        tag = (camp["audience_tag"] or "").strip()
+        added = 0
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("@"):
+                uname = line.lstrip("@")
+                row_id = database.upsert_contact(conn, source="test", username=uname, name=line, tags=tag)
+            else:
+                p = norm_phone(line)
+                if not p:
+                    continue
+                row_id = database.upsert_contact(conn, source="test", phone=p, name=p, tags=tag)
+            conn.execute("UPDATE contacts SET is_test=1, status='new' WHERE id=?", (row_id,))
+            added += 1
+    if not added:
+        return JSONResponse({"error": "не нашёл ни валидного номера, ни @username"}, status_code=400)
+    return JSONResponse({"ok": True, "added": added})
+
+
+@app.get("/api/campaign/{cid}/preview")
+def campaign_preview(cid: int) -> JSONResponse:
+    """Показать РЕАЛЬНЫЙ текст, который уйдёт каждому получателю — без единой отправки
+    в Telegram. Рендерит тот же шаблон (обращение по ФИО, синонимизация {a|b|c}), что и
+    боевая рассылка, на тестовых (is_test=1) и на первых из обычной аудитории контактах."""
+    from channels.campaign_send import _parts, _greeting
+    database.init_db()
+    with database.get_conn() as conn:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not camp:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        camp = dict(camp)
+        tag = (camp.get("audience_tag") or "").strip()
+        where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
+        params: list = []
+        if tag:
+            where += " AND tags LIKE ?"
+            params.append(f"%{tag}%")
+        rows = conn.execute(
+            f"SELECT * FROM contacts WHERE {where} "
+            f"ORDER BY COALESCE(is_test,0) DESC, id LIMIT 10", params,
+        ).fetchall()
+    out = []
+    for r in rows:
+        name = _greeting(r)
+        parts = _parts(camp.get("message_template"), name, r["agency"] or r["name"])
+        out.append({
+            "contact_id": r["id"], "handle": ("@" + r["username"]) if r["username"] else (r["phone"] or "—"),
+            "greeting": name or "(без имени — обращение будет пустым)",
+            "is_test": bool(r["is_test"]) if "is_test" in r.keys() else False,
+            "parts": parts,
+        })
+    return JSONResponse({"campaign": camp.get("name"), "count": len(out), "items": out})
 
 
 def _safe_kp_name(cid: int, filename: str) -> str:
@@ -2072,7 +2226,8 @@ def campaign_preflight(cid: int) -> JSONResponse:
             return JSONResponse({"error": "not found"}, status_code=404)
         camp = dict(camp)
         team = [dict(t) for t in conn.execute(
-            "SELECT a.* FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
+            "SELECT a.*, COALESCE(ca.daily_limit, a.daily_limit) AS cap "
+            "FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
             "WHERE ca.campaign_id=?", (cid,)).fetchall()]
         aud = _audience_count(conn, camp.get("audience_tag"), camp.get("channel"))
         kps = conn.execute("SELECT COUNT(*) c FROM campaign_kps WHERE campaign_id=?", (cid,)).fetchone()["c"]
@@ -2102,6 +2257,10 @@ def campaign_preflight(cid: int) -> JSONResponse:
             else f"Без прокси: {len(no_proxy)} акк. — из РФ не подключатся (вставь SOCKS5)")
         if banned:
             add(False, "warn", f"В бане: {len(banned)} акк. — выведи из кампании")
+        # реальная суммарная ёмкость: только живые не-забаненные, с их персональным (или общим) лимитом
+        usable_ids = {t["id"] for t in usable}
+        total_cap = sum(int(t.get("cap") or 15) for t in team if t["id"] in usable_ids)
+        add(True, "info", f"Суммарно готовы слать до {total_cap}/день на всю команду (при текущих лимитах)")
     else:
         add(has_main, "warn",
             "Команда не назначена — пойдёт с основного аккаунта (.env)" if has_main
@@ -2148,7 +2307,8 @@ def campaign_progress(cid: int) -> JSONResponse:
             where += " AND tags LIKE ?"
             params.append(f"%{tag}%")
         pend = conn.execute(
-            f"SELECT id,name,username,phone,person_name,status FROM contacts WHERE {where} ORDER BY id LIMIT 500",
+            f"SELECT id,name,username,phone,person_name,status,COALESCE(is_test,0) is_test "
+            f"FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT 500",
             params,
         ).fetchall()
 
@@ -2169,6 +2329,7 @@ def campaign_progress(cid: int) -> JSONResponse:
         rows.append({
             "id": r["id"], "name": r["person_name"] or r["name"], "handle": handle(r),
             "sent": False, "sent_at": None, "account": acc_name, "status": r["status"],
+            "is_test": bool(r["is_test"]),
         })
     return JSONResponse({"account": acc, "account_name": acc_name,
                          "sent_count": len(sent_ids), "total": len(rows), "rows": rows})

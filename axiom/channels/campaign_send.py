@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import random
+from datetime import datetime, timedelta
 
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
@@ -23,6 +25,11 @@ from channels.telegram import (
 )
 from channels.warmup import _setup_profile
 from channels.antiban import classify_error
+
+# Пауза перед СЛЕДУЮЩЕЙ строкой опенера (не портянка, ждём — вдруг человек уже ответил).
+# Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток не шлём,
+# см. channels/opener_queue.py.
+OPENER_NEXT_LINE_MIN = (5 * 60, 10 * 60)  # секунды: 5–10 минут
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -46,8 +53,12 @@ def _audience(tag: str | None, channel: str, cap: int):
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
     with database.get_conn() as conn:
+        # свои тестовые номера (is_test=1) — всегда первыми в очереди: с малым лимитом
+        # (напр. 2) заход бьёт именно по ним, а следующий (боевой) заход сам продолжит
+        # реальной аудиторией — тестовые уже 'messaged' и не задвоятся.
         return conn.execute(
-            f"SELECT * FROM contacts WHERE {where} ORDER BY id LIMIT ?", (*params, cap)
+            f"SELECT * FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT ?",
+            (*params, cap),
         ).fetchall()
 
 
@@ -218,7 +229,10 @@ async def run(cid: int, limit: int) -> None:
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"])
         try:
             entity = await _resolve_entity(s["client"], row)
-            await _send_parts(s["client"], entity, parts)
+            # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана
+            # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
+            # опенер целиком сразу — очередь на потом ставить некому.
+            await _send_parts(s["client"], entity, parts if s["id"] is None else parts[:1])
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
             print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
@@ -252,19 +266,28 @@ async def run(cid: int, limit: int) -> None:
                 database.set_status(conn, row["id"], "lost")
             continue
 
-        text = "\n".join(parts)
+        rest = parts[1:]   # остальные строки опенера — не портянкой, а с паузой (см. opener_queue)
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
-            database.add_message(conn, row["id"], "out", text, intent=None)
+            database.add_message(conn, row["id"], "out", parts[0], intent=None)
             database.set_status(conn, row["id"], "messaged")
             conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
             conn.execute(
                 "INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) VALUES (?,?,?)",
                 (cid, row["id"], s["id"]),
             )
+            if rest and s["id"] is not None:  # очередь возможна только у реального accounts.id
+                next_at = (datetime.utcnow()
+                           + timedelta(seconds=random.uniform(*OPENER_NEXT_LINE_MIN))).isoformat(sep=" ", timespec="seconds")
+                conn.execute(
+                    "INSERT INTO opener_queue (contact_id, account_id, campaign_id, parts_json, next_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (row["id"], s["id"], cid, json.dumps(rest, ensure_ascii=False), next_at),
+                )
         s["remaining"] -= 1
         sent += 1
-        print(f"[sent {sent}/{cap}] {s['label']} -> {name or row['username'] or row['phone']}")
+        print(f"[sent {sent}/{cap}] {s['label']} -> {name or row['username'] or row['phone']}"
+              + (f" (+{len(rest)} строк(и) следом, если не ответит)" if rest and s["id"] is not None else ""))
         if sent < cap:
             # темп делим на число аккаунтов (пропускная выше), но каждый аккаунт
             # всё равно паузит между своими сообщениями; не меньше 2 сек.

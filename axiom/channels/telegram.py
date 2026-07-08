@@ -193,9 +193,15 @@ async def _send_parts(client, peer, parts: list[str]) -> None:
 
 
 async def _resolve_entity(client: TelegramClient, row):
-    """Находит TG-сущность контакта: по @username, иначе импортирует номер телефона."""
+    """Находит TG-сущность контакта: по @username, иначе импортирует номер телефона.
+    Если username протух (переименован/удалён) — не падаем, а откатываемся на телефон,
+    если он есть у контакта (жёсткий отказ только когда вообще нечем резолвить)."""
     if row["username"]:
-        return await client.get_entity(row["username"].lstrip("@"))
+        try:
+            return await client.get_entity(row["username"].lstrip("@"))
+        except Exception:  # noqa: BLE001
+            if not row["phone"]:
+                raise
     if row["phone"]:
         res = await client(
             ImportContactsRequest(

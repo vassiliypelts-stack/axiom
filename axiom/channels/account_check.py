@@ -214,6 +214,7 @@ async def check_one(cand: Candidate) -> Result:
 # ─────────────────────────── запись в БД ────────────────────────────
 
 def save_to_db(r: Result, status: str) -> str:
+    import phone_geo
     c = r.cand
     phone = r.phone or ("+" + str(c.meta.get("phone") or c.name).lstrip("+"))
     username = r.username or c.meta.get("username")
@@ -226,6 +227,7 @@ def save_to_db(r: Result, status: str) -> str:
     notes = "проверен account_check" + (f" · 2FA: {c.twofa}" if c.twofa else "")
     api_id = r.api_id if r.api_id and r.api_id != API.TelegramDesktop.api_id else None
     api_hash = r.api_hash if api_id else None
+    country = phone_geo.detect(phone)   # страна по коду номера (для гео-прокси + таблицы)
 
     database.init_db()
     with database.get_conn() as conn:
@@ -234,14 +236,15 @@ def save_to_db(r: Result, status: str) -> str:
             conn.execute(
                 "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), "
                 "api_id=COALESCE(?,api_id), api_hash=COALESCE(?,api_hash), "
-                "proxy=COALESCE(?,proxy), label=COALESCE(label,?), notes=? WHERE id=?",
-                (r.session_str, username, api_id, api_hash, proxy_str, name, notes, row["id"]),
+                "proxy=COALESCE(?,proxy), label=COALESCE(label,?), notes=?, "
+                "country=COALESCE(NULLIF(country,''), ?) WHERE id=?",
+                (r.session_str, username, api_id, api_hash, proxy_str, name, notes, country, row["id"]),
             )
             return f"обновлён #{row['id']} {phone} (@{username or '—'})"
         cur = conn.execute(
             "INSERT INTO accounts (label, phone, username, role, status, daily_limit, "
-            "notes, tg_session, api_id, api_hash, proxy) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (name, phone, username, "sdr", status, 15, notes, r.session_str, api_id, api_hash, proxy_str),
+            "notes, tg_session, api_id, api_hash, proxy, country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (name, phone, username, "sdr", status, 15, notes, r.session_str, api_id, api_hash, proxy_str, country),
         )
         return f"добавлен #{cur.lastrowid} {phone} (@{username or '—'})"
 

@@ -684,6 +684,8 @@ async function viewAgents(v){
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">🛡 Проверить выбранные</button>
       <button id="ab-invent">📋 Инвентаризация чатов</button>
+      <button id="ab-onboard" title="Bio + аватар (если заданы в карточке) + приватность: спрятать номер, защита от репортов">✨ Оформить + спрятать номер</button>
+      <button id="ab-identity" title="Каждому — своё случайное русское имя + своя ИИ-подпись bio по одной инструкции, и сразу в Telegram">🎭 Личность (имя+bio)</button>
       <button id="ab-proxy">🌐 Раздать прокси</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
@@ -727,7 +729,8 @@ async function viewAgents(v){
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
       {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}</span>`},
-      {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||'<span class="no">—</span>'},
+      {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:""}`},
+      {key:"country_label",label:"Страна",cls:"sub",render:r=>r.country_label?esc(r.country_label):'<span class="no" title="страна не определена по коду номера">—</span>'},
       {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
       {key:"conn",label:"Подключение",render:r=>{
         const tg=r.tg_connected?'<span class="badge b-active">TG ✓</span>':'<span class="badge b-nurture">TG —</span>';
@@ -744,6 +747,10 @@ async function viewAgents(v){
         return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">🔥 прогрев ${st}/14 дн</span></span>`;}},
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>r.proxy?'<span class="badge b-active">есть</span>':'<span class="no">нет</span>'},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
+      {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
+        const d=r.bought_at?String(r.bought_at).slice(0,10):'';
+        const badge=(r.days_alive!=null)?`<span class="badge b-${r.status==='banned'?'stop':'active'}" title="дней с даты покупки — живучесть аккаунта">🕒 ${r.days_alive} дн</span>`:'<span class="no">—</span>';
+        return (d?`<span class="mono" style="font-size:11px;opacity:.75">🛒 ${d}</span><br>`:'')+badge;}},
       {key:"daily_limit",label:"Лимит/день",cls:"mono"},
       {key:"id",label:"",render:r=>`<button class="acc-del" data-id="${r.id}">✕</button>`},
     ],
@@ -757,6 +764,8 @@ async function viewAgents(v){
       await api(`/api/accounts/${del.dataset.id}/delete`,{method:"POST"});route();return;}
     const lg=e.target.closest(".acc-login");
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
+    const eye=e.target.closest(".acc-eye");
+    if(eye){e.stopPropagation();showInspectModal(eye.dataset.id,eye.dataset.label);return;}
   });
   tbl.addEventListener("change",(e)=>{
     const cb=e.target.closest(".acc-sel");
@@ -775,6 +784,13 @@ async function viewAgents(v){
   $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
+  $("#ab-onboard").onclick=()=>bulk({action:"onboard"},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (bio/аватар из карточки + приватность)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+  $("#ab-identity").onclick=()=>{
+    if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
+    const style=prompt("Одна инструкция для ИИ на всю пачку (стиль/легенда bio), напр. «риелтор из Сочи, дружелюбный тон». Можно оставить пустым — bio возьмётся из резервного пула:","");
+    if(style===null)return;   // отмена
+    bulk({action:"identity",bio_style:style},r=>`🎭 присваиваю личности ${r.queued} аккаунт(ам) в фоне (своё имя + своё bio каждому)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+  };
   $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
   $("#ab-proxy").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxyDistDialog([...selAcc],bulk);};
@@ -821,6 +837,49 @@ function showLoginDialog(accId,phone,label){
   };
 }
 
+async function showInspectModal(id,label){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;max-height:84vh;overflow:auto;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b style="font-size:16px">👁 ${esc(label||("#"+id))}</b><button class="ins-close">✕</button></div>
+    <div id="ins-body"><div class="hint">читаю аккаунт из Telegram… (5–15 сек)</div></div></div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelector(".ins-close").onclick=close;modal.onclick=e=>{if(e.target===modal)close();};
+  const body=modal.querySelector("#ins-body");
+  const r=await api(`/api/account/${id}/inspect`);
+  if(r.error){body.innerHTML='<div style="color:#c0392b">⚠ '+esc(r.error)+'</div>';return;}
+  const p=r.profile||{};
+  const yn=v=>v===true?'<span style="color:var(--green)">да ✓</span>':v===false?'<span style="color:#c0392b">нет ✕</span>':'—';
+  const prof=`<div style="background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">
+    <div style="font-weight:700;font-size:15px">${esc(p.name||'—')} ${p.premium?'⭐':''}</div>
+    <div class="hint">${p.username?('@'+esc(p.username)):'без ника'}${p.phone?(' · '+esc(p.phone)):''}</div>
+    <div style="margin-top:6px;font-size:13px">📝 bio: ${p.bio?esc(p.bio):'<span class="no">пусто</span>'}</div>
+    <div style="margin-top:4px;font-size:13px">🖼 аватар: ${yn(p.has_photo)} &nbsp;·&nbsp; 🔒 номер спрятан: ${yn(p.phone_hidden)}</div></div>`;
+  const dlgs=(r.dialogs||[]);
+  const list=dlgs.length?dlgs.map(d=>{
+    const ico=d.kind==='user'?'👤':d.kind==='channel'?'📢':'👥';
+    const un=d.unread?` <span class="badge b-stop">${d.unread}</span>`:'';
+    const pre=d.last_out?'→ ':'';
+    return `<div class="insp-dlg" data-peer="${d.peer_id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
+      <div style="font-weight:600;font-size:13px">${ico} ${esc(d.title)}${un}</div>
+      <div class="hint" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(pre+(d.last_text||''))||'—'}</div>
+      <div class="insp-msgs" style="display:none;margin-top:8px"></div></div>`;
+  }).join(''):'<div class="hint">диалогов нет</div>';
+  body.innerHTML=prof+'<div style="font-weight:600;margin-bottom:6px">💬 Диалоги (кликни — покажу переписку)</div>'+list;
+  body.querySelectorAll('.insp-dlg').forEach(el=>el.addEventListener('click',async(e)=>{
+    e.stopPropagation();
+    const mbox=el.querySelector('.insp-msgs');
+    if(mbox.style.display==='block'){mbox.style.display='none';return;}
+    mbox.style.display='block';mbox.innerHTML='<div class="hint">читаю переписку…</div>';
+    const mr=await api(`/api/account/${id}/dialog_messages?peer=${el.dataset.peer}`);
+    if(mr.error){mbox.innerHTML='<div style="color:#c0392b">⚠ '+esc(mr.error)+'</div>';return;}
+    const ms=(mr.messages||[]);
+    mbox.innerHTML=ms.length?ms.map(m=>`<div style="display:flex;justify-content:${m.out?'flex-end':'flex-start'};margin:3px 0">
+      <div style="max-width:80%;padding:6px 10px;border-radius:10px;font-size:13px;background:${m.out?'var(--accent-soft)':'var(--panel)'};border:1px solid var(--border)">${esc(m.text)}</div></div>`).join(''):'<div class="hint">пусто</div>';
+  }));
+}
 function showProxyDistDialog(ids,bulk){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
@@ -1181,7 +1240,7 @@ async function openAgent(id){
     <label style="display:flex;align-items:center;gap:8px;margin:2px 0 12px;font-weight:600;padding:8px 10px;background:var(--panel2);border-radius:8px"><input type="checkbox" data-k="protected" ${a.protected?"checked":""}> 🏠 Родной (личный) номер — автоматика (прогрев/рассылка) его НЕ трогает</label>
     <div class="field"><label>📝 Описание профиля (для команды)</label>
       <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea>
-      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-gen-bio">🤖 Сгенерировать bio (ИИ)</button><button id="ag-profile-setup">✨ Оформить профиль в Telegram (фото + bio)</button></div>
+      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-gen-bio">🤖 Сгенерировать bio (ИИ)</button><button id="ag-profile-setup">✨ Оформить профиль в Telegram (фото + bio + спрятать номер)</button></div>
       <div class="hint" style="margin-top:4px">Поставит аватар и био (первые 70 симв. описания) прямо в аккаунт. Нужна авторизованная сессия. Сохрани изменения перед оформлением.</div>
       <pre id="ag-profile-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🛡️ Прокси аккаунта</label>
@@ -1198,6 +1257,10 @@ async function openAgent(id){
       <div class="hint" style="margin-bottom:6px">Соберёт портативный Telegram с этим аккаунтом — запустишь Telegram.exe и окажешься внутри (полистать/пописать руками). Нужна подключённая живая сессия (TG✓).</div>
       <button id="ag-tdesk">🖥 Войти в Telegram Desktop</button>
       <pre id="ag-tdesk-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
+    <div class="field"><label>👁 Заглянуть внутрь (профиль + переписки)</label>
+      <div class="hint" style="margin-bottom:6px">Покажет прямо здесь, как оформлен аккаунт (аватар / имя / bio / спрятан ли номер) и его последние диалоги — не заходя в Telegram. Только чтение. Нужна подключённая сессия (TG✓).</div>
+      <button id="ag-inspect">👁 Показать профиль и переписки</button>
+      <div id="ag-inspect-box" style="display:none;margin-top:8px"></div></div>
     <div class="field"><label>📲 Подключить WhatsApp (код привязки)</label>
       <div class="hint" style="margin-bottom:6px">Запросит 8-значный код. Вводишь на телефоне с этим номером: WhatsApp → Связанные устройства → Привязать устройство → «Привязать по номеру телефона». Нужен запущенный WhatsApp-модуль (Node).</div>
       <button id="ag-wa">📲 Получить код WhatsApp</button>
@@ -1212,6 +1275,41 @@ async function openAgent(id){
       <textarea data-k="chats_backup" rows="5" placeholder="Пикник+Баня Сочи — https://t.me/... — постил, дал результат&#10;Анонс Марафона — https://t.me/...">${esc(a.chats_backup||"")}</textarea>
       <button id="ag-backup-fill" type="button" style="margin-top:6px">⤵ Заполнить из каталога (что за этим аккаунтом)</button></div>
     <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">💾 Сохранить</button></div>`;
+  const insp=$("#ag-inspect");if(insp)insp.onclick=async()=>{
+    const box=$("#ag-inspect-box");box.style.display="block";
+    box.innerHTML='<div class="hint">читаю аккаунт из Telegram… (5–15 сек)</div>';
+    const r=await api(`/api/account/${id}/inspect`);
+    if(r.error){box.innerHTML='<div style="color:#c0392b">⚠ '+esc(r.error)+'</div>';return;}
+    const p=r.profile||{};
+    const yn=v=>v===true?'<span style="color:var(--green)">да ✓</span>':v===false?'<span style="color:#c0392b">нет ✕</span>':'—';
+    const prof=`<div style="background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">
+      <div style="font-weight:700;font-size:15px">${esc(p.name||'—')} ${p.premium?'⭐':''}</div>
+      <div class="hint">${p.username?('@'+esc(p.username)):'без ника'}${p.phone?(' · '+esc(p.phone)):''}</div>
+      <div style="margin-top:6px;font-size:13px">📝 bio: ${p.bio?esc(p.bio):'<span class="no">пусто</span>'}</div>
+      <div style="margin-top:4px;font-size:13px">🖼 аватар: ${yn(p.has_photo)} &nbsp;·&nbsp; 🔒 номер спрятан: ${yn(p.phone_hidden)}</div></div>`;
+    const dlgs=(r.dialogs||[]);
+    const list=dlgs.length?dlgs.map(d=>{
+      const ico=d.kind==='user'?'👤':d.kind==='channel'?'📢':'👥';
+      const un=d.unread?` <span class="badge b-stop">${d.unread}</span>`:'';
+      const pre=d.last_out?'→ ':'';
+      return `<div class="insp-dlg" data-peer="${d.peer_id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
+        <div style="font-weight:600;font-size:13px">${ico} ${esc(d.title)}${un}</div>
+        <div class="hint" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(pre+(d.last_text||''))||'—'}</div>
+        <div class="insp-msgs" style="display:none;margin-top:8px"></div></div>`;
+    }).join(''):'<div class="hint">диалогов нет</div>';
+    box.innerHTML=prof+'<div style="font-weight:600;margin-bottom:6px">💬 Диалоги (кликни — покажу переписку)</div>'+list;
+    box.querySelectorAll('.insp-dlg').forEach(el=>el.addEventListener('click',async(e)=>{
+      e.stopPropagation();
+      const mbox=el.querySelector('.insp-msgs');
+      if(mbox.style.display==='block'){mbox.style.display='none';return;}
+      mbox.style.display='block';mbox.innerHTML='<div class="hint">читаю переписку…</div>';
+      const mr=await api(`/api/account/${id}/dialog_messages?peer=${el.dataset.peer}`);
+      if(mr.error){mbox.innerHTML='<div style="color:#c0392b">⚠ '+esc(mr.error)+'</div>';return;}
+      const ms=(mr.messages||[]);
+      mbox.innerHTML=ms.length?ms.map(m=>`<div style="display:flex;justify-content:${m.out?'flex-end':'flex-start'};margin:3px 0">
+        <div style="max-width:80%;padding:6px 10px;border-radius:10px;font-size:13px;background:${m.out?'var(--accent-soft)':'var(--panel)'};border:1px solid var(--border)">${esc(m.text)}</div></div>`).join(''):'<div class="hint">пусто</div>';
+    }));
+  };
   const pa=$("#ag-proxy-auto");if(pa)pa.onclick=async()=>{pa.disabled=true;pa.textContent="…";
     const r=await api(`/api/account/${id}/proxy_auto`,{method:"POST"});
     pa.disabled=false;pa.textContent="📡 Авто MTProto из пула (только TG)";
@@ -1264,9 +1362,9 @@ async function openAgent(id){
     const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.type==="checkbox"?el.checked:el.value);
     await api(`/api/account/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     ps.disabled=true;ps.textContent="оформляю…";
-    const log=$("#ag-profile-log");log.style.display="block";log.textContent="ставлю аватар и био в Telegram…";
+    const log=$("#ag-profile-log");log.style.display="block";log.textContent="ставлю аватар, био и приватность (прячу номер) в Telegram…";
     const r=await api(`/api/account/${id}/profile_setup`,{method:"POST"});
-    ps.disabled=false;ps.textContent="✨ Оформить профиль в Telegram (фото + bio)";
+    ps.disabled=false;ps.textContent="✨ Оформить профиль в Telegram (фото + bio + спрятать номер)";
     if(r.error){log.textContent="⚠ "+r.error;return;}
     log.textContent="✓ Готово для @"+(r.username||id)+" — поставлено: "+((r.set||[]).join(", ")||"ничего");};
   const fileInp=$("#ag-ava-file");
@@ -1575,6 +1673,15 @@ async function viewCampaigns(v){
         <div class="field"><label>Продукт</label><input id="c-product" placeholder="Фонд доступного жилья"></div></div>
       <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
         <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
+      <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании)</label>
+        <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся).</div>
+        <textarea id="c-test-nums" rows="2" placeholder="+79991234567&#10;@my_second_account"></textarea>
+        <div class="ttoolbar" style="margin:6px 0 0">
+          <button type="button" id="c-test-add">➕ Добавить в начало очереди</button>
+          <button type="button" id="c-preview">👁 Предпросмотр — что уйдёт получателям</button>
+        </div>
+        <div id="c-test-msg" style="margin-top:4px;font-size:13px"></div>
+        <div id="c-preview-out" style="display:none;margin-top:10px"></div></div>
       <div class="row2"><div class="field"><label>Каналы (можно оба — система выберет доступный для контакта)</label>
           <div style="padding:6px 0">
             <label style="margin-right:18px;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" class="c-chan-chk" value="telegram" checked> Telegram</label>
@@ -1609,6 +1716,7 @@ async function viewCampaigns(v){
     <div id="c-list"></div>`;
   const form=$("#c-form");
   const teamSet=new Set();
+  const teamLimits={};   // {account_id: лимит/день ИМЕННО в этой кампании; пусто = общий лимит аккаунта}
   let mainAcc="";
   const renderMain=()=>{
     const box=$("#c-main-acc");if(!box)return;
@@ -1628,22 +1736,37 @@ async function viewCampaigns(v){
       if(q){const hay=((a.label||"")+" "+(a.phone||"")+" "+(a.username||"")).toLowerCase();if(!hay.includes(q))return false;}
       return true;
     });
-    const tm=$("#c-team-msg");if(tm)tm.textContent="выбрано: "+teamSet.size;
+    const tm=$("#c-team-msg");
+    if(tm){
+      const cap=[...teamSet].reduce((sum,id)=>{
+        const a=accounts.find(x=>x.id===id);
+        return sum+(teamLimits[id]!=null?teamLimits[id]:(a?(a.daily_limit||15):15));
+      },0);
+      tm.innerHTML=`выбрано: ${teamSet.size} · суммарно до <b>${cap}</b>/день на всю команду`;
+    }
     box.innerHTML=list.length?list.map(a=>{
       const ch=accChan(a);const spam=a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"";
       const isMain=String(a.id)===String(mainAcc);
+      const lim=teamLimits[a.id];
       return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border)">
         <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""}>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${esc(a.label||a.username||("#"+a.id))} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
-          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)} · лимит ${a.daily_limit||"—"}/день${spam}</div>
+          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam}</div>
         </div>
+        <input type="number" min="0" class="c-acc-lim mono" data-id="${a.id}" value="${lim!=null?lim:''}"
+          placeholder="${a.daily_limit||15}" title="лимит/день ИМЕННО в этой кампании — пусто = общий лимит аккаунта (${a.daily_limit||15}/день)"
+          style="width:64px;text-align:center">
         <button type="button" class="c-acc-star" data-id="${a.id}" title="сделать основным отправителем" style="border:none;background:none;cursor:pointer;font-size:18px;line-height:1">${isMain?"⭐":"☆"}</button></div>`;
     }).join(""):'<div class="no" style="padding:10px">нет аккаунтов по фильтру — заведи в «Мои агенты»</div>';
     box.querySelectorAll(".c-acc-chk").forEach(cb=>cb.onchange=()=>{
       const id=+cb.value;if(cb.checked)teamSet.add(id);else teamSet.delete(id);
       if(!cb.checked&&String(id)===String(mainAcc)){mainAcc="";renderMain();}
       const t=$("#c-team-msg");if(t)t.textContent="выбрано: "+teamSet.size;});
+    box.querySelectorAll(".c-acc-lim").forEach(inp=>inp.onchange=()=>{
+      const id=+inp.dataset.id,v=inp.value.trim();
+      if(v==="")delete teamLimits[id];else teamLimits[id]=Math.max(0,parseInt(v,10)||0);
+      renderTeam();});
     box.querySelectorAll(".c-acc-star").forEach(b=>b.onclick=()=>{
       mainAcc=b.dataset.id;teamSet.add(+mainAcc);renderMain();renderTeam();});
   };
@@ -1659,6 +1782,8 @@ async function viewCampaigns(v){
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
     teamSet.clear();(c.accounts||[]).forEach(id=>teamSet.add(+id));
     if(mainAcc)teamSet.add(+mainAcc);
+    Object.keys(teamLimits).forEach(k=>delete teamLimits[k]);
+    Object.entries(c.account_limits||{}).forEach(([id,v])=>teamLimits[+id]=+v);
     renderMain();renderTeam();
     renderKpBox(c);
     renderKpsBox(c);
@@ -1715,14 +1840,41 @@ async function viewCampaigns(v){
   const wb=$("#c-wizard-btn");if(wb)wb.onclick=()=>startWizard();
   $("#c-cancel").onclick=()=>{form.style.display="none";};
   $("#c-prompt-ex").onclick=()=>{$("#c-prompt").value=PROMPT_PH;};
+  const ctAdd=$("#c-test-add");if(ctAdd)ctAdd.onclick=async()=>{
+    const eid=form.dataset.edit;const msg=$("#c-test-msg");
+    if(!eid){msg.innerHTML='<span style="color:#c0392b">сначала сохрани кампанию, затем открой её ещё раз — и добавь тестовые номера</span>';return;}
+    const text=$("#c-test-nums").value;
+    if(!text.trim()){msg.textContent="введи хотя бы один номер или @username";return;}
+    ctAdd.disabled=true;ctAdd.textContent="добавляю…";
+    const r=await api(`/api/campaign/${eid}/test_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+    ctAdd.disabled=false;ctAdd.textContent="➕ Добавить в начало очереди";
+    if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    msg.innerHTML=`<span style="color:var(--green)">✅ добавлено ${r.added} — теперь запусти кампанию с лимитом ${r.added} (поле у кнопки «▶ Запустить» в списке кампаний), проверь, и уже потом увеличь лимит для боевого захода</span>`;
+    $("#c-test-nums").value="";
+  };
+  const cPrev=$("#c-preview");if(cPrev)cPrev.onclick=async()=>{
+    const eid=form.dataset.edit;const out=$("#c-preview-out");
+    if(!eid){out.style.display="block";out.innerHTML='<span style="color:#c0392b">сначала сохрани кампанию, затем открой её ещё раз</span>';return;}
+    cPrev.disabled=true;cPrev.textContent="гружу…";
+    const r=await api(`/api/campaign/${eid}/preview`);
+    cPrev.disabled=false;cPrev.textContent="👁 Предпросмотр — что уйдёт получателям";
+    out.style.display="block";
+    if(r.error){out.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    if(!r.items.length){out.innerHTML='<span class="hint">нет ни одного получателя (проверь тег аудитории/добавь тестовые номера) — шаблон не с кем показать</span>';return;}
+    out.innerHTML=r.items.map(it=>`<div class="card" style="margin-bottom:8px;padding:10px 12px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">${it.is_test?'🧪 тест · ':''}${esc(it.handle)} — обращение: <b>${esc(it.greeting)}</b></div>
+      ${it.parts.map(p=>`<div style="background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:5px;max-width:520px">${esc(p)}</div>`).join("")}
+    </div>`).join("");
+  };
   const allproj=$("#c-allproj");if(allproj)allproj.onclick=()=>{PROJECT_SEL=null;route();};
   $("#c-save").onclick=async()=>{
     const team=[...teamSet];
     const chans=[...document.querySelectorAll(".c-chan-chk:checked")].map(ch=>ch.value);
     if(!chans.length){alert("выбери хотя бы один канал (Telegram или WhatsApp)");return;}
+    const limits={};team.forEach(id=>{if(teamLimits[id]!=null)limits[id]=teamLimits[id];});
     const body={name:$("#c-name").value,product:$("#c-product").value,audience_tag:$("#c-tag").value,
       channel:chans.join(","),account_id:mainAcc||"",project_id:$("#c-project").value||null,
-      account_ids:team,daily_limit:$("#c-limit").value,
+      account_ids:team,account_limits:limits,daily_limit:$("#c-limit").value,
       message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",

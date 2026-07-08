@@ -35,7 +35,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vendor"))
 from telethon import TelegramClient  # noqa: E402
 from telethon.sessions import SQLiteSession, StringSession  # noqa: E402
 
-from opentele.td import TDesktop  # noqa: E402
 from opentele.api import API, UseCurrentSession  # noqa: E402
 
 from db import database  # noqa: E402
@@ -149,6 +148,7 @@ def _string_session_from(sess) -> str:
 async def _make_client(cand: Candidate, proxy) -> tuple[TelegramClient, int | None, str | None]:
     """Создаёт TelegramClient под кандидата (без нового логина). Не подключает."""
     if cand.kind == "tdata":
+        from opentele.td import TDesktop  # нужен только PyQt5-путь tdata; для .session не грузим
         tdesk = TDesktop(str(cand.path))
         if not tdesk.isLoaded():
             raise RuntimeError("tdata не загрузилась (пустая/битая)")

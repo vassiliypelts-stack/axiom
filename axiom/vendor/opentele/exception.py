@@ -2,7 +2,10 @@ from __future__ import annotations
 import inspect
 import types
 import typing
-from PyQt5.QtCore import QDataStream
+try:
+    from PyQt5.QtCore import QDataStream
+except ImportError:  # PyQt5 не нужен для .session-only использования (нужен лишь для tdata)
+    QDataStream = None  # type: ignore
 
 
 class OpenTeleException(BaseException):  # nocov

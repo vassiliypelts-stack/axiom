@@ -2018,7 +2018,7 @@ def campaign_preview(cid: int) -> JSONResponse:
     """Показать РЕАЛЬНЫЙ текст, который уйдёт каждому получателю — без единой отправки
     в Telegram. Рендерит тот же шаблон (обращение по ФИО, синонимизация {a|b|c}), что и
     боевая рассылка, на тестовых (is_test=1) и на первых из обычной аудитории контактах."""
-    from channels.campaign_send import _parts, _greeting
+    from channels.campaign_send import _parts, _greeting, _decision_phrase
     database.init_db()
     with database.get_conn() as conn:
         camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
@@ -2038,7 +2038,7 @@ def campaign_preview(cid: int) -> JSONResponse:
     out = []
     for r in rows:
         name = _greeting(r)
-        parts = _parts(camp.get("message_template"), name, r["agency"] or r["name"])
+        parts = _parts(camp.get("message_template"), name, r["agency"] or r["name"], _decision_phrase(r))
         out.append({
             "contact_id": r["id"], "handle": ("@" + r["username"]) if r["username"] else (r["phone"] or "—"),
             "greeting": name or "(без имени — обращение будет пустым)",

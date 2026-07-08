@@ -81,15 +81,19 @@ def _humanize(line: str) -> str:
     return s
 
 
-def _parts(template: str | None, name: str, agency: str = "") -> list[str]:
+def _parts(template: str | None, name: str, agency: str = "", decision: str = "") -> list[str]:
     """Шаблон → список сообщений. Каждая непустая строка — отдельное сообщение.
-    {name}/{имя} — обращение, {agency}/{агентство} — название агентства.
+    {name}/{имя} — обращение (ФИО директора, если известно), {agency}/{агентство} —
+    название агентства, {decision} — «с Романом Анатольевичем» (если ФИО известно)
+    либо «с тем, кто у вас отвечает за развитие бизнеса» (мягкий обход секретаря,
+    без давления на первого встречного, если ЛПР ещё не выявлен).
     {a|b|c} — синонимизация (случайный вариант на каждый контакт, антибан).
     Плюс лёгкая человечность (см. _humanize)."""
     ag = agency or name or ""
     text = _spin(template or "")
     text = (text.replace("{name}", name or "").replace("{имя}", name or "")
-                .replace("{agency}", ag).replace("{агентство}", ag))
+                .replace("{agency}", ag).replace("{агентство}", ag)
+                .replace("{decision}", decision or ""))
     return [_humanize(ln) for ln in text.splitlines() if ln.strip()]
 
 
@@ -102,6 +106,17 @@ def _greeting(row) -> str:
             return f"{parts[1]} {parts[2]}"
         return pn
     return (row["name"] or "").strip()
+
+
+def _decision_phrase(row) -> str:
+    """{decision}: если ФИО директора известно — «с Романом Анатольевичем», иначе
+    нейтральный обход секретаря — «с тем, кто у вас отвечает за развитие бизнеса»."""
+    pn = (row["person_name"] or "").strip()
+    if pn:
+        parts = pn.split()
+        who = f"{parts[1]} {parts[2]}" if len(parts) == 3 else pn
+        return f"с {who}"
+    return "с тем, кто у вас отвечает за развитие бизнеса"
 
 
 def _add_tag(raw: str | None, tag: str) -> str:
@@ -226,7 +241,7 @@ async def run(cid: int, limit: int) -> None:
         rr += 1
         # обращение: из ФИО директора берём «Имя Отчество», иначе имя/название агентства
         name = _greeting(row)
-        parts = _parts(camp["message_template"], name, row["agency"] or row["name"])
+        parts = _parts(camp["message_template"], name, row["agency"] or row["name"], _decision_phrase(row))
         try:
             entity = await _resolve_entity(s["client"], row)
             # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана

@@ -20,6 +20,7 @@ import datetime
 
 from telethon import events
 from telethon.sessions import StringSession
+from telethon.tl.types import User
 
 import config
 from channels.telegram import _agent_reply, _record_incoming, build_client
@@ -28,10 +29,38 @@ from db import database
 _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
-STATUS: dict = {"started": None, "accounts": {}}  # снимок для веб-статуса
+STATUS: dict = {"started": None, "accounts": {}, "hits": 0}  # снимок для веб-статуса
+_NICHES: list[tuple[int | None, list[str]]] = []  # [(niche_id, [ключи]), ...] — кэш ключей
 
 CONNECT_TIMEOUT = 25    # сек на подключение одного аккаунта (дохлый прокси не повесит всё)
 RECHECK_SEC = 120       # как часто пере-сканировать: новые логины / отвалившиеся
+
+
+def _load_niches() -> list[tuple[int | None, list[str]]]:
+    """Активные ниши (ключи) из БД. Пусто → слушаем только личку, чаты не сканируем."""
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT id, keywords FROM niches WHERE active=1").fetchall()
+    out: list[tuple[int | None, list[str]]] = []
+    for r in rows:
+        kws = [k.strip().lower() for k in (r["keywords"] or "").split(",") if k.strip()]
+        if kws:
+            out.append((r["id"], kws))
+    return out
+
+
+def _match_niche(text: str):
+    low = text.lower()
+    for nid, kws in _NICHES:
+        for kw in kws:
+            if kw in low:
+                return nid, kw
+    return None
+
+
+def _display_name(u) -> str:
+    name = " ".join(x for x in [getattr(u, "first_name", None),
+                                getattr(u, "last_name", None)] if x).strip()
+    return name or (getattr(u, "username", None) and f"@{u.username}") or str(getattr(u, "id", "?"))
 
 
 def _log(msg: str) -> None:
@@ -65,26 +94,69 @@ def _listenable() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def _handle_private(event, acc_id: int) -> None:
+    """Личка: ответ известного контакта → в «Диалоги» (+ авто-ответ с активных)."""
+    sender = await event.get_sender()
+    username = getattr(sender, "username", None)
+    text_in = (event.raw_text or "").strip()
+    if not text_in:
+        return
+    with database.get_conn() as conn:
+        contact = database.find_contact_by_tg(
+            conn, tg_user_id=int(sender.id), username=username)
+    if contact is None:
+        return  # незнакомый (в т.ч. взаимный прогрев) — не наш контакт, молчим
+    _record_incoming(contact["id"], text_in, username, account_id=acc_id)
+    _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
+    if _should_reply(acc_id):
+        await _agent_reply(event, contact["id"], username)
+        _log(f"[#{acc_id}] → авто-ответ контакту {contact['id']}")
+
+
+async def _scan_group(event, acc_id: int) -> None:
+    """Группа/чат: ищем в сообщении ключи активных ниш → находка в «Запросы»
+    (chat_hits). Дедуп по (chat_id, msg_id) — если в чате несколько наших аккаунтов,
+    запрос попадёт один раз. Это и есть лидген «поймать того, кто пишет прямо сейчас»."""
+    if not _NICHES:
+        return
+    text = (event.raw_text or "").strip()
+    if not text:
+        return
+    m = _match_niche(text)
+    if not m:
+        return
+    nid, kw = m
+    sender = await event.get_sender()
+    if not isinstance(sender, User) or sender.bot or sender.deleted:
+        return
+    chat = await event.get_chat()
+    title = getattr(chat, "title", None) or "чат"
+    name = _display_name(sender)
+    with database.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
+            "username, name, text, keyword, source_msg_id, ts, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
+            (nid, event.chat_id, title, sender.id, sender.username, name,
+             text[:500], kw, event.message.id,
+             str(getattr(event.message, "date", None)) if getattr(event.message, "date", None) else None),
+        )
+        if cur.rowcount > 0:
+            STATUS["hits"] = STATUS.get("hits", 0) + 1
+            database.add_event(conn, "hit", f"🎯 Запрос в «{title}»: {name}",
+                               f"«{kw}» — {text[:140]}", level="good")
+            _log(f"[#{acc_id}] 🎯 запрос «{kw}» от {name} в «{title}» → Запросы")
+
+
 def _make_handler(acc_id: int):
     async def handler(event) -> None:
         try:
-            sender = await event.get_sender()
-            username = getattr(sender, "username", None)
-            text_in = (event.raw_text or "").strip()
-            if not text_in:
-                return
-            with database.get_conn() as conn:
-                contact = database.find_contact_by_tg(
-                    conn, tg_user_id=int(sender.id), username=username)
-            if contact is None:
-                return  # незнакомый (в т.ч. взаимный прогрев) — не наш контакт, молчим
-            _record_incoming(contact["id"], text_in, username, account_id=acc_id)
-            _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
-            if _should_reply(acc_id):
-                await _agent_reply(event, contact["id"], username)
-                _log(f"[#{acc_id}] → авто-ответ контакту {contact['id']}")
+            if event.is_private:
+                await _handle_private(event, acc_id)
+            elif event.is_group or event.is_channel:
+                await _scan_group(event, acc_id)
         except Exception as e:  # noqa: BLE001
-            _log(f"[#{acc_id}] ошибка обработки входящего: {e}")
+            _log(f"[#{acc_id}] ошибка обработки сообщения: {e}")
     return handler
 
 
@@ -104,8 +176,10 @@ async def _connect(acc: dict):
 
 
 async def _supervise() -> None:
+    global _NICHES
     STATUS["started"] = datetime.datetime.now().isoformat()
     while True:
+        _NICHES = _load_niches()   # свежие ключи ниш (можно править в пульте на лету)
         want = {a["id"]: a for a in _listenable()}
         # 1) отключаем выбывших / отвалившихся (переподключим на следующем круге)
         for acc_id, client in list(CLIENTS.items()):
@@ -133,7 +207,8 @@ async def _supervise() -> None:
         if to_add:
             await asyncio.gather(*[_try(a) for a in to_add])
         ok = sum(1 for v in STATUS["accounts"].values() if v.get("ok"))
-        _log(f"итог: слушаю {ok} из {len(want)} годных аккаунтов")
+        kw = sum(len(k) for _, k in _NICHES)
+        _log(f"итог: слушаю {ok} из {len(want)} аккаунтов · ниш {len(_NICHES)}/ключей {kw} · найдено запросов {STATUS.get('hits',0)}")
         await asyncio.sleep(RECHECK_SEC)
 
 

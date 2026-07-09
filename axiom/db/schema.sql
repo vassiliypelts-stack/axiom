@@ -185,6 +185,17 @@ CREATE TABLE IF NOT EXISTS chat_admins (
     UNIQUE(chat_id, tg_user_id)
 );
 
+-- Членство армии в чатах (many-to-many): какой аккаунт в каком чате состоит.
+-- Основа отчёта покрытия «сколько агентов в скольких чатах» и распределения
+-- авто-вступления (чтобы не слать один аккаунт в один чат дважды).
+CREATE TABLE IF NOT EXISTS account_chats (
+    account_id INTEGER NOT NULL,
+    chat_id    INTEGER NOT NULL,
+    can_write  TEXT,
+    joined_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(account_id, chat_id)
+);
+
 -- Ниши лидгена: наборы ключевых слов для прослушки чатов (запросы людей).
 CREATE TABLE IF NOT EXISTS niches (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,

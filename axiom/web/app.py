@@ -807,9 +807,11 @@ def listener_status() -> JSONResponse:
                          "ok": info.get("ok"), "err": info.get("err")})
         with database.get_conn() as conn:
             auto_reply = database.get_setting(conn, "tg_auto_reply", "on") == "on"
+            niches = conn.execute("SELECT COUNT(*) c FROM niches WHERE active=1").fetchone()["c"]
         return JSONResponse({"started": listener.STATUS.get("started"),
                              "listening": sum(1 for a in accs if a["ok"]),
-                             "accounts": accs, "auto_reply": auto_reply})
+                             "accounts": accs, "auto_reply": auto_reply,
+                             "hits": listener.STATUS.get("hits", 0), "niches": niches})
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": str(e)}, status_code=200)
 
@@ -1468,6 +1470,52 @@ def chatcat_inventory() -> JSONResponse:
     """Инвентаризация: занести чаты личного аккаунта в каталог (только чтение)."""
     res = _run_capture(["channels.chat_inventory"], timeout=240)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
+@app.post("/api/chats/join")
+def chats_join(payload: dict = Body(default={})) -> JSONResponse:
+    """Разослать армию по чатам каталога (авто-вступление). per — сколько новых чатов
+    на аккаунт за заход; favorites — только ⭐ избранные. Возвращает отчёт куда получилось."""
+    per = max(1, min(int(payload.get("per") or 3), 15))
+    args = ["channels.chat_join", "--per", str(per)]
+    if payload.get("favorites"):
+        args.append("--favorites")
+    res = _run_capture(args, timeout=1500)
+    info = {}
+    try:
+        info = json.loads((res.get("output") or "").strip().split("\n")[-1])
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({"ok": res.get("ok") and info.get("ok", True),
+                         "joined": info.get("joined"), "failed": info.get("failed"),
+                         "accounts": info.get("accounts"), "report": info.get("report"),
+                         "error": info.get("error"), "output": res.get("output")})
+
+
+@app.get("/api/coverage")
+def coverage() -> JSONResponse:
+    """Отчёт покрытия: сколько агентов в скольких чатах, разбивка по аккаунтам и чатам."""
+    database.init_db()
+    with database.get_conn() as conn:
+        per_acc = [dict(r) for r in conn.execute(
+            "SELECT ac.account_id AS id, a.label, a.status, COUNT(*) AS chats "
+            "FROM account_chats ac JOIN accounts a ON a.id=ac.account_id "
+            "GROUP BY ac.account_id ORDER BY chats DESC")]
+        chats_covered = conn.execute("SELECT COUNT(DISTINCT chat_id) c FROM account_chats").fetchone()["c"]
+        memberships = conn.execute("SELECT COUNT(*) c FROM account_chats").fetchone()["c"]
+        joinable = conn.execute(
+            "SELECT COUNT(*) c FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND status IN ('active','warming') AND COALESCE(protected,0)=0").fetchone()["c"]
+        catalog = conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE (username IS NOT NULL AND username<>'') "
+            "OR link LIKE '%t.me/+%' OR link LIKE '%joinchat%'").fetchone()["c"]
+        chats = [dict(r) for r in conn.execute(
+            "SELECT c.id, c.title, c.username, c.members_count, COUNT(ac.account_id) AS agents "
+            "FROM account_chats ac JOIN chats c ON c.id=ac.chat_id "
+            "GROUP BY ac.chat_id ORDER BY agents DESC, c.members_count DESC LIMIT 200")]
+    return JSONResponse({"joinable_accounts": joinable, "chats_covered": chats_covered,
+                         "memberships": memberships, "catalog_joinable": catalog,
+                         "per_account": per_acc, "chats": chats})
 
 
 @app.post("/api/chatcat/{chat_id}/delete")

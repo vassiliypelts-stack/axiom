@@ -319,6 +319,12 @@ def init_db() -> None:
         _migrate_companies(conn)
         _migrate_deals(conn)
         _backfill_account_geo(conn)
+        # членство армии в чатах: подтягиваем уже вступленные (chats.joined_by) в
+        # account_chats, чтобы отчёт покрытия сразу отражал реальность
+        conn.execute(
+            "INSERT OR IGNORE INTO account_chats (account_id, chat_id, can_write) "
+            "SELECT joined_by, id, can_write FROM chats WHERE joined_by IS NOT NULL"
+        )
 
 
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:

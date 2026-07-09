@@ -1460,6 +1460,40 @@ async function openAgent(id){
 // ===== ЧАТЫ (каталог + анализ, Волна C фаза 1) =====
 const CHAT_ST={new:"новый",analyzed:"проанализирован",queued:"в очереди",joined:"вступил",skip:"пропуск"};
 let CHATCAT=[];
+async function loadCoverage(){
+  const box=$("#cc-coverage");if(!box)return;
+  let cov;try{cov=await api("/api/coverage");}catch(e){box.innerHTML='<span class="hint">покрытие недоступно</span>';return;}
+  const per=(cov.per_account||[]);
+  const topAcc=per.slice(0,8).map(a=>`<span class="dchip" style="margin:2px"><b>${a.chats}</b>${esc(a.label||("#"+a.id))}</span>`).join("")||'<span class="hint">пока никто не вступил</span>';
+  box.innerHTML=`
+    <div style="display:flex;flex-wrap:wrap;gap:18px;align-items:center;margin-bottom:10px">
+      <div><div style="font-size:22px;font-weight:800;color:var(--accent)">${cov.chats_covered||0}</div><div class="hint">чатов под охватом</div></div>
+      <div><div style="font-size:22px;font-weight:800">${cov.memberships||0}</div><div class="hint">всего вступлений</div></div>
+      <div><div style="font-size:22px;font-weight:800;color:var(--accent2)">${cov.joinable_accounts||0}</div><div class="hint">аккаунтов-бойцов</div></div>
+      <div><div style="font-size:22px;font-weight:800">${(cov.catalog_joinable||0).toLocaleString("ru-RU")}</div><div class="hint">чатов в каталоге</div></div>
+      <div style="flex:1"></div>
+      <div class="ttoolbar" style="margin:0">
+        <label class="hint" style="display:inline-flex;align-items:center;gap:4px">по <input id="cc-per" type="number" value="4" min="1" max="15" style="width:56px"> чата/акк</label>
+        <label class="hint" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="cc-join-fav"> только ⭐</label>
+        <button class="primary" id="cc-join">🚀 Разослать армию по чатам</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-bottom:6px">В скольких чатах каждый агент: ${topAcc}</div>
+    <div id="cc-join-msg" class="hint"></div>`;
+  const jb=$("#cc-join");
+  if(jb)jb.onclick=async()=>{
+    const per=+($("#cc-per").value||4), fav=$("#cc-join-fav").checked;
+    if(!confirm(`Разослать армию: каждый боец вступит максимум в ${per} новых чат(а)${fav?" из избранных":""}.\nЭто займёт несколько минут (человекоподобные паузы). Продолжить?`))return;
+    jb.disabled=true;jb.textContent="рассылаю… (2-5 мин)";
+    const msg=$("#cc-join-msg");msg.textContent="бойцы заходят в чаты по-человечески, с паузами — подожди…";
+    try{const r=await api("/api/chats/join",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({per,favorites:fav})});
+      if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
+      else{msg.innerHTML=`✅ вступили в <b>${r.joined||0}</b> чат(ов), не удалось ${r.failed||0}. Обновляю покрытие…`;}
+    }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    jb.disabled=false;jb.textContent="🚀 Разослать армию по чатам";
+    loadCoverage();
+  };
+}
 async function viewChatCatalog(v){
   CHATCAT=await api("/api/chatcat");
   v.innerHTML=`<div class="ttoolbar">
@@ -1468,7 +1502,10 @@ async function viewChatCatalog(v){
       <button id="cc-import">📤 Импортировать</button>
       <button id="cc-inv">🔄 Инвентаризация</button>
       <span class="hint" id="cc-inv-msg">Каталог отдельно от CRM. «Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
-    </div><div id="cc-body"></div>`;
+    </div>
+    <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
+    <div id="cc-body"></div>`;
+  loadCoverage();
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openChat(r.id),200);};

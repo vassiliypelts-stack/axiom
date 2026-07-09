@@ -1,0 +1,223 @@
+"""Авто-вступление армии аккаунтов в чаты каталога (Волна C, фаза 2).
+
+Распределяет чаты из каталога между боевыми/прогреваемыми аккаунтами и вступает в
+них человекоподобно: лимит на аккаунт за заход, большие паузы, обработка FloodWait
+и авто-детект бана. Пишет членство в account_chats (many-to-many) — основа отчёта
+покрытия «сколько агентов в скольких чатах». Поддерживает публичные (@username) и
+закрытые по инвайту (+hash) чаты. Чаты раздаются round-robin — чтобы армия покрыла
+как можно БОЛЬШЕ разных чатов (широта), а не толпилась в одном.
+
+⚠️ Массовые вступления — быстрый путь к бану. Лимит на аккаунт по умолчанию мал,
+паузы большие. Прогреваемые аккаунты тоже вступают (это пассив), но осторожно.
+
+Запуск:
+    python -m channels.chat_join --per 3              # каждый акк — max 3 новых чата
+    python -m channels.chat_join --per 3 --favorites  # только ⭐ избранные чаты
+    python -m channels.chat_join --id 9 --per 5       # только аккаунт #9
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import random
+
+from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
+
+from channels.chat_scan import _kind, can_write
+from channels.tg_invites import INVITE_RE
+from channels.telegram import build_client
+from db import database
+
+JOIN_PAUSE = (35, 90)      # антибан-пауза между вступлениями ОДНОГО аккаунта, сек
+MAX_FLOOD_SKIP = 600       # если FloodWait дольше — пропускаем аккаунт на этот заход
+
+
+def _joinable_accounts(only_id: int | None):
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND status IN ('active','warming') AND COALESCE(protected,0)=0"
+        ).fetchall()
+    accs = [dict(r) for r in rows]
+    if only_id is not None:
+        accs = [a for a in accs if a["id"] == only_id]
+    return accs
+
+
+def _candidate_chats(favorites: bool):
+    """Чаты каталога, куда можно вступить: публичные (@) или с инвайт-ссылкой.
+    Избранные — вперёд, дальше по числу участников. status skip/joined-целиком не режем:
+    членство пер-аккаунт проверяем отдельно (в чат могут войти несколько аккаунтов)."""
+    with database.get_conn() as conn:
+        sql = ("SELECT id, title, username, link FROM chats "
+               "WHERE COALESCE(status,'') NOT IN ('skip','banned') "
+               "AND ((username IS NOT NULL AND username<>'') OR (link LIKE '%t.me/+%') "
+               "OR (link LIKE '%joinchat%'))")
+        if favorites:
+            sql += " AND COALESCE(favorite,0)=1"
+        sql += " ORDER BY COALESCE(favorite,0) DESC, COALESCE(members_count,0) DESC, id"
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def _already() -> set[tuple[int, int]]:
+    with database.get_conn() as conn:
+        return {(r["account_id"], r["chat_id"])
+                for r in conn.execute("SELECT account_id, chat_id FROM account_chats")}
+
+
+def _plan(accs: list[dict], chats: list[dict], per: int) -> dict[int, list[dict]]:
+    """Round-robin: раздаём чаты по аккаунтам, максимизируя ШИРОТУ охвата."""
+    already = _already()
+    assign: dict[int, list[dict]] = {a["id"]: [] for a in accs}
+    if not accs:
+        return assign
+    ai = 0
+    n = len(accs)
+    for ch in chats:
+        if all(len(assign[a["id"]]) >= per for a in accs):
+            break
+        for _ in range(n):
+            a = accs[ai % n]; ai += 1
+            if len(assign[a["id"]]) >= per:
+                continue
+            if (a["id"], ch["id"]) in already:
+                continue
+            assign[a["id"]].append(ch)
+            break
+    return assign
+
+
+def _invite_hash(link: str | None) -> str | None:
+    if not link:
+        return None
+    m = INVITE_RE.search(link)
+    return m.group(1) if m else None
+
+
+def _record_membership(acc_id: int, chat: dict, cw: str | None, kind: str | None) -> None:
+    with database.get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO account_chats (account_id, chat_id, can_write) VALUES (?,?,?)",
+            (acc_id, chat["id"], cw),
+        )
+        conn.execute(
+            "UPDATE account_chats SET can_write=COALESCE(?,can_write) WHERE account_id=? AND chat_id=?",
+            (cw, acc_id, chat["id"]),
+        )
+        conn.execute(
+            "UPDATE chats SET in_account='yes', status='joined', joined_by=COALESCE(joined_by,?), "
+            "can_write=COALESCE(?,can_write), kind=COALESCE(kind,?) WHERE id=?",
+            (acc_id, cw, kind, chat["id"]),
+        )
+
+
+async def _join_one(acc: dict, chats: list[dict], report: dict) -> None:
+    acc_id = acc["id"]
+    r = report[acc_id] = {"label": acc.get("label") or f"#{acc_id}", "joined": [], "failed": []}
+    if not chats:
+        return
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                          acc.get("api_id"), acc.get("api_hash"))
+    try:
+        await asyncio.wait_for(client.connect(), timeout=25)
+        if not await client.is_user_authorized():
+            r["failed"].append({"chat": "—", "err": "сессия не авторизована (нужен вход)"})
+            return
+    except Exception as e:  # noqa: BLE001
+        r["failed"].append({"chat": "—", "err": f"не подключился: {str(e)[:80]}"})
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    try:
+        for i, ch in enumerate(chats):
+            title = ch.get("title") or ch.get("username") or f"#{ch['id']}"
+            try:
+                if ch.get("username"):
+                    upd = await client(JoinChannelRequest(ch["username"]))
+                else:
+                    h = _invite_hash(ch.get("link"))
+                    if not h:
+                        r["failed"].append({"chat": title, "err": "нет @username и валидного инвайта"})
+                        continue
+                    upd = await client(ImportChatInviteRequest(h))
+                # права/тип из вернувшейся сущности (если есть)
+                cw = kind = None
+                try:
+                    ent = (getattr(upd, "chats", None) or [None])[0]
+                    if ent is not None:
+                        cw = can_write(ent); kind = _kind(ent)
+                except Exception:  # noqa: BLE001
+                    pass
+                _record_membership(acc_id, ch, cw, kind)
+                r["joined"].append(title)
+            except FloodWaitError as e:
+                if e.seconds > MAX_FLOOD_SKIP:
+                    r["failed"].append({"chat": title, "err": f"FloodWait {e.seconds}с — стоп аккаунта"})
+                    break
+                await asyncio.sleep(e.seconds + 5)
+                continue
+            except Exception as e:  # noqa: BLE001
+                from channels.antiban import classify_error
+                low = str(e).lower()
+                if "already" in low or "participant" in low:
+                    _record_membership(acc_id, ch, None, None)  # уже внутри — фиксируем членство
+                    r["joined"].append(title + " (уже был)")
+                elif classify_error(e) == "ban":
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (acc_id,))
+                        database.add_event(conn, "account_banned",
+                                           f"⛔ Аккаунт «{r['label']}» забанен при вступлении",
+                                           str(e)[:160], level="bad", account_id=acc_id)
+                    r["failed"].append({"chat": title, "err": "БАН аккаунта — остановлен"})
+                    break
+                else:
+                    r["failed"].append({"chat": title, "err": str(e)[:80]})
+            if i < len(chats) - 1:
+                await asyncio.sleep(random.uniform(*JOIN_PAUSE))
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def run(per: int, favorites: bool, only_id: int | None) -> None:
+    database.init_db()
+    accs = _joinable_accounts(only_id)
+    if not accs:
+        print(json.dumps({"ok": False, "error": "нет годных аккаунтов (нужны active/warming с сессией)"},
+                         ensure_ascii=False))
+        return
+    chats = _candidate_chats(favorites)
+    if not chats:
+        print(json.dumps({"ok": False, "error": "нет чатов-кандидатов в каталоге"
+                          + (" среди избранных" if favorites else "")}, ensure_ascii=False))
+        return
+    plan = _plan(accs, chats, per)
+    report: dict = {}
+    # аккаунты идут параллельно (разные IP/сессии), внутри аккаунта — по одному с паузой
+    await asyncio.gather(*[_join_one(a, plan[a["id"]], report) for a in accs])
+    total_joined = sum(len(r["joined"]) for r in report.values())
+    total_failed = sum(len(r["failed"]) for r in report.values())
+    print(json.dumps({"ok": True, "accounts": len(accs), "joined": total_joined,
+                      "failed": total_failed, "report": report}, ensure_ascii=False))
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="AXIOM авто-вступление армии в чаты каталога")
+    p.add_argument("--per", type=int, default=3, help="макс новых чатов на один аккаунт за заход")
+    p.add_argument("--favorites", action="store_true", help="только ⭐ избранные чаты")
+    p.add_argument("--id", type=int, default=None, dest="acc_id", help="только один аккаунт по id")
+    args = p.parse_args()
+    asyncio.run(run(args.per, args.favorites, args.acc_id))
+
+
+if __name__ == "__main__":
+    main()

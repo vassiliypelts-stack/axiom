@@ -132,11 +132,55 @@ async def _react_feed(client, n: int) -> int:
     return done
 
 
-async def _setup_profile(client, acc: dict, force: bool = False) -> None:
-    """Оформление профиля: био и аватар из карточки аккаунта.
-    По умолчанию (force=False) — только если пусто (прогрев, не перезатираем).
-    force=True — поставить из карточки поверх существующего (кнопка «оформить сейчас»).
-    Заполненный профиль реже флагают как спам."""
+async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
+    """Оформление профиля: био, аватар и приватность (спрятать номер) из карточки.
+    По умолчанию (force=False) — только пустое (прогрев, не перезатираем).
+    force=True — поставить поверх существующего + применить приватность (кнопка
+    «оформить сейчас»). Заполненный профиль + спрятанный номер реже флагают как спам.
+    Возвращает список выполненных действий (для отчёта в интерфейсе)."""
+    done: list[str] = []
+    # имя профиля: tg_name (чистое «Имя Фамилия», без цифр) в приоритете — так
+    # ставится по массовой «🎭 Личности». Если его нет — берём ярлык карточки
+    # (ручной ввод), но не трогаем номера/плейсхолдеры вида «+7…» или «#12».
+    full_name = (acc.get("tg_name") or "").strip() or (acc.get("label") or "").strip()
+    try:
+        if full_name and not full_name.startswith(("+", "#")):
+            first, _, last = full_name.partition(" ")
+            me = await client.get_me()
+            if force or not (me.first_name or "").strip():
+                from telethon.tl.functions.account import UpdateProfileRequest
+                await client(UpdateProfileRequest(first_name=first[:64], last_name=last[:64] or ""))
+                done.append("имя профиля")
+                print(f"  профиль: поставил имя «{full_name}»")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [name] {e}")
+    # ник (@username): доверие-вызывающий вид — транслит имени + цифры номера
+    # («vasiliy928»), не спамный набор символов. Ставим только явным оформлением
+    # и только если ника ещё нет — не отбираем уже прижившийся у аккаунта.
+    if force:
+        try:
+            me = await client.get_me()
+            if not (me.username or "").strip():
+                from channels.ru_names import make_username_base
+                from telethon.tl.functions.account import CheckUsernameRequest, UpdateUsernameRequest
+                base = make_username_base(full_name, acc.get("phone"))
+                candidate = None
+                for suffix in ("", str(random.randint(10, 99)), str(random.randint(100, 999))):
+                    cand = (base + suffix)[:32]
+                    if len(cand) < 5:      # минимум Telegram — 5 символов
+                        continue
+                    try:
+                        if await client(CheckUsernameRequest(username=cand)):
+                            candidate = cand
+                            break
+                    except Exception:  # noqa: BLE001 — занят/невалиден — пробуем следующий вариант
+                        continue
+                if candidate:
+                    await client(UpdateUsernameRequest(username=candidate))
+                    done.append(f"ник @{candidate}")
+                    print(f"  профиль: поставил ник @{candidate}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [username] {e}")
     # био из описания агента
     try:
         about = (acc.get("description") or "").strip()[:70]
@@ -145,6 +189,7 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> None:
             if force or not getattr(full.full_user, "about", None):
                 from telethon.tl.functions.account import UpdateProfileRequest
                 await client(UpdateProfileRequest(about=about))
+                done.append("описание")
                 print("  профиль: заполнил bio")
     except Exception as e:  # noqa: BLE001
         print(f"  [bio] {e}")
@@ -159,9 +204,19 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> None:
                     from telethon.tl.functions.photos import UploadProfilePhotoRequest
                     f = await client.upload_file(str(p))
                     await client(UploadProfilePhotoRequest(file=f))
+                    done.append("аватар")
                     print("  профиль: поставил аватар")
     except Exception as e:  # noqa: BLE001
         print(f"  [avatar] {e}")
+    # приватность (спрятать номер + защита от репортов) — на явное оформление
+    if force:
+        try:
+            from channels.privacy import apply_privacy
+            if await apply_privacy(client):
+                done.append("🔒 приватность (номер спрятан)")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [privacy] {e}")
+    return done
 
 
 async def _view_stories(client, n: int) -> int:

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from telethon.sessions import SQLiteSession, StringSession
 
+import phone_geo
 from db import database
 
 
@@ -66,6 +67,7 @@ def _import_one(session_path: Path, status: str) -> tuple[bool, str]:
     proxy = _proxy_from_json(meta)
     twofa = meta.get("twoFA") or ""
     notes = f"импорт с маркета{' · 2FA: ' + str(twofa) if twofa else ''}"
+    country = phone_geo.detect(phone)   # страна по коду номера (для гео-прокси)
 
     database.init_db()
     with database.get_conn() as conn:
@@ -73,14 +75,16 @@ def _import_one(session_path: Path, status: str) -> tuple[bool, str]:
         if row:
             conn.execute(
                 "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), api_id=?, "
-                "api_hash=?, proxy=COALESCE(?,proxy), label=COALESCE(label,?), notes=? WHERE id=?",
-                (session_str, username, api_id, api_hash, proxy, name, notes, row["id"]),
+                "api_hash=?, proxy=COALESCE(?,proxy), label=COALESCE(label,?), notes=?, "
+                "country=COALESCE(NULLIF(country,''), ?) WHERE id=?",
+                (session_str, username, api_id, api_hash, proxy, name, notes, country, row["id"]),
             )
             return True, f"обновлён #{row['id']} {phone} (@{username or '—'})"
         cur = conn.execute(
             "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, "
-            "tg_session, api_id, api_hash, proxy) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (name, phone, username, "sdr", status, 15, notes, session_str, api_id, api_hash, proxy),
+            "tg_session, api_id, api_hash, proxy, country, bought_at, kind) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'),'bought')",
+            (name, phone, username, "sdr", status, 15, notes, session_str, api_id, api_hash, proxy, country),
         )
         return True, f"добавлен #{cur.lastrowid} {phone} (@{username or '—'})"
 

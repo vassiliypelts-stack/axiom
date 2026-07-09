@@ -50,3 +50,7 @@ GOOGLE_TOKEN_FILE = os.getenv("GOOGLE_TOKEN_FILE", "google_token.json")
 ZOOM_ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID", "")
 ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
 ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
+
+# --- Proxy6.net (автопокупка/подбор прокси по стране аккаунта) ---
+# Ключ — в личном кабинете proxy6.net → API. Пусто = кнопки покупки покажут понятную ошибку.
+PROXY6_API_KEY = os.getenv("PROXY6_API_KEY", "")

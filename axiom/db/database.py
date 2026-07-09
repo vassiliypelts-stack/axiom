@@ -46,6 +46,7 @@ _EXTRA_CONTACT_COLS = {
     "photo_analysis": "TEXT",   # анализ аватара (дресс-код/возраст/статус) — этап 4
     "confidence": "REAL",       # достоверность портрета 0..1 («85% по профилю»)
     "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
+    "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
 }
 
 
@@ -105,6 +106,8 @@ _EXTRA_ACCOUNT_COLS = {
     "kind": "TEXT",                       # происхождение: own (родной) | sim (своя симка) | bought (купленный/расходный)
     "country": "TEXT",                    # страна аккаунта, ISO2 (авто по коду номера: ru|kz|uz|... ) — для гео-прокси
     "bought_at": "TEXT",                  # дата покупки на маркете (для оценки живучести: «жив N дней»)
+    "tg_name": "TEXT",                    # чистое «Имя Фамилия» для профиля Telegram (без цифр — не путать
+                                           # с label, который может быть внутренним ярлыком вида «Василий928»)
 }
 
 
@@ -288,6 +291,24 @@ def _seed_default_niche(conn: sqlite3.Connection) -> None:
                      ("Недвижимость / ипотека", kws))
 
 
+def _backfill_account_geo(conn: sqlite3.Connection) -> None:
+    """Заполняет country (по коду номера) и bought_at (по дате добавления) у аккаунтов,
+    где они пусты. Так страна и «жив N дней» появляются и у ранее заведённых номеров."""
+    import phone_geo
+    rows = conn.execute(
+        "SELECT id, phone, created_at FROM accounts "
+        "WHERE (country IS NULL OR country='') OR (bought_at IS NULL OR bought_at='')"
+    ).fetchall()
+    for r in rows:
+        code = phone_geo.detect(r["phone"])
+        conn.execute(
+            "UPDATE accounts SET "
+            "country = COALESCE(NULLIF(country,''), ?), "
+            "bought_at = COALESCE(NULLIF(bought_at,''), ?) WHERE id=?",
+            (code, r["created_at"], r["id"]),
+        )
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
@@ -297,6 +318,7 @@ def init_db() -> None:
         _seed_default_niche(conn)
         _migrate_companies(conn)
         _migrate_deals(conn)
+        _backfill_account_geo(conn)
 
 
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:

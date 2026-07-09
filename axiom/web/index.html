@@ -431,7 +431,15 @@ function smartTable(mount,cfg){
     order:(saved.order&&saved.order.length?saved.order.slice():allCols.map(c=>c.key)),
     widths:saved.widths||{},colFilters:saved.colFilters||{},
     showFilters:!!(saved.colFilters&&Object.values(saved.colFilters).some(Boolean))};
-  allCols.forEach(c=>{if(!st.order.includes(c.key))st.order.push(c.key);});
+  allCols.forEach((c,i)=>{
+    if(st.order.includes(c.key))return;
+    // новую колонку (появившуюся после обновления) ставим РЯДОМ с соседней уже
+    // известной колонкой по её месту в коде — иначе она уедет в конец и потеряется
+    // за экраном у тех, кто когда-то менял порядок/ширину колонок.
+    let insertAt=st.order.length;
+    for(let j=i+1;j<allCols.length;j++){const idx=st.order.indexOf(allCols[j].key);if(idx!==-1){insertAt=idx;break;}}
+    st.order.splice(insertAt,0,c.key);
+  });
   const colByKey=k=>allCols.find(c=>c.key===k);
   const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
   const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters}));
@@ -684,9 +692,10 @@ async function viewAgents(v){
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">🛡 Проверить выбранные</button>
       <button id="ab-invent">📋 Инвентаризация чатов</button>
-      <button id="ab-onboard" title="Bio + аватар (если заданы в карточке) + приватность: спрятать номер, защита от репортов">✨ Оформить + спрятать номер</button>
-      <button id="ab-identity" title="Каждому — своё случайное русское имя + своя ИИ-подпись bio по одной инструкции, и сразу в Telegram">🎭 Личность (имя+bio)</button>
-      <button id="ab-proxy">🌐 Раздать прокси</button>
+      <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">✨ Оформить (имя+ник+bio+фото+приватность)</button>
+      <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
+      <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
+      <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
       <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">✏️ применить</button></span>
@@ -784,16 +793,24 @@ async function viewAgents(v){
   $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
-  $("#ab-onboard").onclick=()=>bulk({action:"onboard"},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (bio/аватар из карточки + приватность)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
   $("#ab-identity").onclick=()=>{
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
     const style=prompt("Одна инструкция для ИИ на всю пачку (стиль/легенда bio), напр. «риелтор из Сочи, дружелюбный тон». Можно оставить пустым — bio возьмётся из резервного пула:","");
     if(style===null)return;   // отмена
-    bulk({action:"identity",bio_style:style},r=>`🎭 присваиваю личности ${r.queued} аккаунт(ам) в фоне (своё имя + своё bio каждому)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+    bulk({action:"identity",bio_style:style},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (имя+ник+bio+фото+приватность, каждому своё)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
   };
   $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
   $("#ab-proxy").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxyDistDialog([...selAcc],bulk);};
+  $("#ab-proxy6").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxy6BuyDialog([...selAcc],bulk);};
+  $("#ab-proxy6-check").onclick=async()=>{
+    const b=$("#ab-proxy6-check");b.disabled=true;b.textContent="проверяю…";
+    const r=await api("/api/proxy6/whoami");
+    b.disabled=false;b.textContent="🔑 Проверить ключ Proxy6";
+    $("#ab-msg").innerHTML=r.error
+      ?'<span style="color:#c0392b">⚠ '+esc(r.error)+'</span>'
+      :`<span style="color:var(--green)">✅ ключ рабочий — баланс ${esc(r.balance)} ${esc(r.currency)} (user_id ${esc(r.user_id)})</span>`;
+  };
   $("#ab-limit-go").onclick=()=>{const l=+$("#ab-limit").value;if(!l){$("#ab-msg").textContent="введи лимит";return;}bulk({action:"limit",daily_limit:l},r=>`✏️ лимит ${r.daily_limit} у ${r.updated}`);};
   $("#ab-status-go").onclick=()=>{const s=$("#ab-status").value;if(!s){$("#ab-msg").textContent="выбери статус";return;}bulk({action:"status",status:s},r=>`статус «${ACC_ST[r.status]||r.status}» у ${r.updated}`);};
 }
@@ -897,6 +914,51 @@ function showProxyDistDialog(ids,bulk){
     const proxies=modal.querySelector("#pd-text").value.split("\n").map(s=>s.trim()).filter(Boolean);
     if(!proxies.length){modal.querySelector("#pd-msg").textContent="вставь хотя бы один прокси";return;}
     await bulk({action:"proxy",proxies},r=>`🌐 роздано ${r.updated} аккаунтам (${r.proxies} прокси)`);
+    close();
+  };
+}
+const PROXY6_VERSIONS=[
+  [4,"IPv4 — индивидуальный (рекомендую для антибана)"],
+  [3,"IPv4 Shared — дешевле, IP делится с другими"],
+  [6,"IPv6 — самый дешёвый, не все сервисы принимают"],
+  [5,"MTProto — для Telegram MTProxy, не для этого сценария"],
+];
+function showProxy6BuyDialog(ids,bulk){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:480px;width:92%;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">🛒 Купить прокси Proxy6 (${ids.length} акк.)</b><button class="p6-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">По одному прокси на аккаунт, страна берётся из номера. Сначала посчитай цену — деньги спишутся только по кнопке «Купить».</div>
+    <div class="field"><label>Тип прокси</label><select id="p6-version" style="width:100%">${PROXY6_VERSIONS.map(([v,l])=>`<option value="${v}">${esc(l)}</option>`).join("")}</select></div>
+    <div class="field"><label>Срок, дней</label><input id="p6-period" type="number" min="1" value="30" style="width:100%"></div>
+    <div class="ttoolbar" style="margin-top:10px"><button id="p6-calc">💰 Посчитать цену</button></div>
+    <div id="p6-price" style="margin:10px 0;font-size:14px"></div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:6px"><button class="p6-close">Отмена</button><button class="primary" id="p6-go" disabled>🛒 Купить</button></div>
+    <div id="p6-msg" style="margin-top:8px;font-size:13px"></div></div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelectorAll(".p6-close").forEach(b=>b.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  const goBtn=modal.querySelector("#p6-go");
+  let lastQuote=null;
+  modal.querySelector("#p6-calc").onclick=async()=>{
+    const version=+modal.querySelector("#p6-version").value,period=+modal.querySelector("#p6-period").value||30;
+    const calcBtn=modal.querySelector("#p6-calc");calcBtn.disabled=true;calcBtn.textContent="считаю…";
+    const r=await api("/api/proxy6/price_bulk",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,version,period})});
+    calcBtn.disabled=false;calcBtn.textContent="💰 Посчитать цену";
+    const priceBox=modal.querySelector("#p6-price");
+    if(r.error){priceBox.innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error)+'</span>';goBtn.disabled=true;lastQuote=null;return;}
+    priceBox.innerHTML=`<b>Итого спишется: ${esc(r.price)}</b> (${esc(r.price_single)} × ${r.accounts} шт., ${r.period} дн.)`+
+      (r.skipped_no_country?`<div class="hint">без определённой страны — не куплю ${r.skipped_no_country}</div>`:"");
+    lastQuote={version,period};
+    goBtn.disabled=false;
+  };
+  goBtn.onclick=async()=>{
+    if(!lastQuote){return;}
+    if(!confirm(`Списать деньги и купить прокси для ${ids.length} аккаунт(ов)? Действие необратимо.`))return;
+    goBtn.disabled=true;goBtn.textContent="покупаю…";
+    await bulk({action:"proxy6_buy",version:lastQuote.version,period:lastQuote.period},
+      r=>`🛒 покупаю прокси для ${r.queued} аккаунт(ов) в фоне${r.skipped_no_country?` · без страны пропущено: ${r.skipped_no_country}`:""} — результат в 🔔 через 1-2 мин`);
     close();
   };
 }
@@ -1667,6 +1729,15 @@ async function viewCampaigns(v){
       <button id="c-new-btn">➕ Новая кампания</button>
       ${PROJECT_SEL?`<span class="badge b-active">проект: ${esc(PROJECT_SEL.name)}</span> <button id="c-allproj">показать все</button>`:""}
       <span class="hint">Антибан: 2-3 аккаунта на мессенджер · 10-15 контактов/день на аккаунт · постепенный прогрев до КЭВ.</span></div>
+    <div class="ttoolbar" style="margin:0 0 12px">
+      <span style="display:inline-flex;align-items:center;gap:6px">сортировка
+        <select id="c-sort"><option value="date_desc">дата создания: новые сверху</option>
+          <option value="date_asc">дата создания: старые сверху</option>
+          <option value="name">по названию А-Я</option></select></span>
+      <span style="display:inline-flex;align-items:center;gap:6px">создана с <input id="c-date-from" type="date"></span>
+      <span style="display:inline-flex;align-items:center;gap:6px">по <input id="c-date-to" type="date"></span>
+      <button id="c-date-reset">✕ сбросить фильтр даты</button>
+      <span class="hint" id="c-filt-cnt"></span></div>
     <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="c-form-title">Новая кампания</div>
       <div class="row2"><div class="field"><label>Название</label><input id="c-name" placeholder="Агентства Сочи — Фонд доступного жилья"></div>
@@ -1886,7 +1957,24 @@ async function viewCampaigns(v){
     form.dataset.edit=id;$("#c-form-title").textContent="Настройка кампании: "+esc(c.name||("#"+id));
     fill(c);$("#c-save").textContent="Сохранить изменения";form.style.display="block";form.scrollIntoView({behavior:"smooth"});
   };
-  renderCampList($("#c-list"),camps);
+  const applyCampFilters=()=>{
+    const sort=$("#c-sort").value;
+    const from=$("#c-date-from").value,to=$("#c-date-to").value;
+    let list=camps.filter(c=>{
+      const d=(c.created_at||"").slice(0,10);
+      if(from&&d<from)return false;
+      if(to&&d>to)return false;
+      return true;
+    });
+    if(sort==="date_asc")list.sort((a,b)=>(a.created_at||"")<(b.created_at||"")?-1:1);
+    else if(sort==="name")list.sort((a,b)=>(a.name||"").localeCompare(b.name||"","ru"));
+    else list.sort((a,b)=>(a.created_at||"")>(b.created_at||"")?-1:1);   // date_desc — по умолчанию
+    $("#c-filt-cnt").textContent=(from||to)?`показано ${list.length} из ${camps.length}`:"";
+    renderCampList($("#c-list"),list);
+  };
+  ["#c-sort","#c-date-from","#c-date-to"].forEach(s=>$(s).onchange=applyCampFilters);
+  $("#c-date-reset").onclick=()=>{$("#c-date-from").value="";$("#c-date-to").value="";applyCampFilters();};
+  applyCampFilters();
 }
 function renderCampList(mount,camps){
   if(!camps.length){mount.innerHTML='<div class="empty">Кампаний нет — создай первую кнопкой выше</div>';return;}
@@ -1900,7 +1988,7 @@ function renderCampList(mount,camps){
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
-          <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${(c.channel||"").split(",").map(x=>CH_RU[x.trim()]||x.trim()).filter(Boolean).join(" + ")||"—"}</div>
+          <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${(c.channel||"").split(",").map(x=>CH_RU[x.trim()]||x.trim()).filter(Boolean).join(" + ")||"—"} · создана ${c.created_at?fmt(c.created_at):"—"}</div>
           <div class="sub mono">отправлено ${done} · в очереди ${left}</div>
           <div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;margin-top:6px;overflow:hidden;max-width:340px">
             <div style="height:100%;width:${pct}%;background:var(--green)"></div></div>

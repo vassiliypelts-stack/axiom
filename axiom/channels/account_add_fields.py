@@ -83,24 +83,26 @@ async def verify(session_str: str) -> tuple[bool, dict]:
 
 
 def save_to_db(phone: str, session_str: str, info: dict, twofa: str, label: str, status: str) -> str:
+    import phone_geo
     phone = "+" + phone.lstrip("+")
     username = info.get("username")
     name = label or info.get("first_name") or username or phone
     notes = "заведён из полей панели" + (f" · 2FA: {twofa}" if twofa else "")
+    country = phone_geo.detect(phone)   # страна по коду номера (для гео-прокси)
     database.init_db()
     with database.get_conn() as conn:
         row = conn.execute("SELECT id FROM accounts WHERE phone=?", (phone,)).fetchone()
         if row:
             conn.execute(
                 "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), "
-                "label=COALESCE(label,?), notes=? WHERE id=?",
-                (session_str, username, name, notes, row["id"]),
+                "label=COALESCE(label,?), notes=?, country=COALESCE(NULLIF(country,''), ?) WHERE id=?",
+                (session_str, username, name, notes, country, row["id"]),
             )
             return f"обновлён #{row['id']} {phone} (@{username or '—'})"
         cur = conn.execute(
-            "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, tg_session) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (name, phone, username, "sdr", status, 15, notes, session_str),
+            "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, "
+            "tg_session, country, bought_at, kind) VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),'bought')",
+            (name, phone, username, "sdr", status, 15, notes, session_str, country),
         )
         return f"добавлен #{cur.lastrowid} {phone} (@{username or '—'})"
 

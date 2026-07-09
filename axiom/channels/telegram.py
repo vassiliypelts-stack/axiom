@@ -71,18 +71,52 @@ def _default_slots() -> list[str]:
     return [f"{d1:%d.%m} в 11:00", f"{d1:%d.%m} в 16:00", f"{d2:%d.%m} в 12:00"]
 
 
+def _parse_raw_hostport(raw: str) -> dict | None:
+    """Сырой прокси БЕЗ scheme:// — так отдают многие панели (lzt.market и т.п.):
+    «host:port:user:pass», «host:port» или «user:pass@host:port». Раньше такое тихо
+    ломало addr/port в None (urlparse считает часть до первого «:» схемой) — аккаунт
+    физически не мог подключиться к Telegram, без явной ошибки в интерфейсе."""
+    s = raw
+    user = password = None
+    if "@" in s:                              # user:pass@host:port
+        creds, _, hostport = s.rpartition("@")
+        s = hostport
+        if ":" in creds:
+            user, _, password = creds.partition(":")
+    parts = s.split(":")
+    if len(parts) == 4:                       # host:port:user:pass (частый формат панелей)
+        host, port_s, user, password = parts
+    elif len(parts) == 2:                     # host:port
+        host, port_s = parts
+    else:
+        return None
+    if not host or not port_s.isdigit():
+        return None
+    proxy = {"proxy_type": "socks5", "addr": host, "port": int(port_s), "rdns": True}
+    if user:
+        proxy["username"] = user
+    if password:
+        proxy["password"] = password
+    return proxy
+
+
 def parse_proxy_str(raw: str | None) -> dict | None:
     """socks5://user:pass@host:port → dict для python-socks. Пусто → None.
     tg:// (MTProto) и любые не-socks/http схемы → None (их обрабатывает parse_mtproxy,
-    а как socks их совать нельзя — иначе ValueError: Unknown proxy protocol type)."""
+    а как socks их совать нельзя — иначе ValueError: Unknown proxy protocol type).
+    Без scheme:// (сырой «host:port[:user:pass]» из панелей) — см. _parse_raw_hostport."""
     raw = (raw or "").strip()
     if not raw:
         return None
+    if "://" not in raw:
+        return _parse_raw_hostport(raw)
     from urllib.parse import urlparse
 
     p = urlparse(raw)
     scheme = (p.scheme or "socks5").lower()
     if scheme not in ("socks5", "socks4", "http", "https"):
+        return None
+    if not p.hostname or not p.port:          # битый URL (напр. лишние «:» в netloc) — не отдаём мусор
         return None
     proxy = {"proxy_type": scheme, "addr": p.hostname, "port": p.port, "rdns": True}
     if p.username:

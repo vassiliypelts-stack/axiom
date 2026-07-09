@@ -65,7 +65,7 @@ def detect(phone: str | None) -> str | None:
     """Телефон → ISO2-код страны ('kz') или None, если не распознали.
     Спец-случай +7: Казахстан (7 6xx/7xx) против России (остальное)."""
     d = _digits(phone)
-    if not d:
+    if len(d) < 7:                                      # слишком коротко для межд. номера — не гадаем
         return None
     if d.startswith("7") and len(d) >= 2:               # общий код РФ/Казахстана
         return "kz" if d[1] in ("6", "7") else "ru"

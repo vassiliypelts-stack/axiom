@@ -275,7 +275,21 @@ CREATE TABLE IF NOT EXISTS proxies (
     UNIQUE(server, port, secret)
 );
 
+-- Очередь «доотправки» опенера: не шлём все строки пачкой («портянкой»), а по одной,
+-- с паузой в несколько минут между строками. Если за это время человек ОТВЕТИЛ (статус
+-- контакта уже не 'messaged') — оставшиеся строки НЕ шлём, дальше ведёт живой диалог/агент.
+CREATE TABLE IF NOT EXISTS opener_queue (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    contact_id   INTEGER NOT NULL REFERENCES contacts(id),
+    account_id   INTEGER NOT NULL REFERENCES accounts(id),
+    campaign_id  INTEGER,
+    parts_json   TEXT NOT NULL,               -- JSON-список ЕЩЁ не отправленных строк
+    next_at      TEXT NOT NULL,               -- когда слать следующую строку
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);
 CREATE INDEX IF NOT EXISTS idx_user_posts_user ON tg_user_posts(tg_user_id);
+CREATE INDEX IF NOT EXISTS idx_opener_queue_due ON opener_queue(next_at);

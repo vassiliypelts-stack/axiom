@@ -99,6 +99,42 @@ def stats() -> JSONResponse:
     })
 
 
+@app.get("/api/proxy6/whoami")
+def proxy6_whoami() -> JSONResponse:
+    """Проверка ключа Proxy6 (PROXY6_API_KEY в .env) — баланс и валюта аккаунта."""
+    from channels.proxy6 import Proxy6Error, whoami
+    try:
+        return JSONResponse({"ok": True, **whoami()})
+    except Proxy6Error as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.post("/api/proxy6/price_bulk")
+def proxy6_price_bulk(payload: dict = Body(...)) -> JSONResponse:
+    """Сколько СПИШЕТСЯ по факту за выбранные аккаунты — до самой покупки. Проверка
+    цены идёт ОДИН раз на всё выбранное количество (Proxy6 считает по count), не по
+    странам отдельно — цена одинакова для версии/срока независимо от страны."""
+    import phone_geo
+    from channels.proxy6 import Proxy6Error, price
+    ids = [int(x) for x in (payload.get("ids") or []) if str(x).isdigit()]
+    period = int(payload.get("period") or 30)
+    version = int(payload.get("version") or 4)
+    if not ids:
+        return JSONResponse({"error": "ничего не выбрано"}, status_code=400)
+    with database.get_conn() as conn:
+        qm = ",".join("?" * len(ids))
+        rows = conn.execute(f"SELECT id, phone, country FROM accounts WHERE id IN ({qm})", ids).fetchall()
+    known = [r["id"] for r in rows if r["country"] or phone_geo.detect(r["phone"])]
+    skipped = len(ids) - len(known)
+    if not known:
+        return JSONResponse({"error": "ни у одного выбранного аккаунта не определена страна"}, status_code=400)
+    try:
+        p = price(count=len(known), period=period, version=version)
+    except Proxy6Error as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True, **p, "accounts": len(known), "skipped_no_country": skipped})
+
+
 # ---- Мои агенты (аккаунты) ------------------------------------------------ #
 def _days_since(ts: str | None) -> int | None:
     """Сколько дней прошло с даты ts (SQLite datetime, UTC). None — если не распарсили.
@@ -229,6 +265,18 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         if queued:
             _spawn("channels.identity", "--ids", ",".join(str(i) for i in queued), "--bio-style", bio_style)
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
+    if action == "proxy6_buy":
+        import phone_geo
+        period = int(payload.get("period") or 30)
+        version = int(payload.get("version") or 4)
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id, phone, country FROM accounts WHERE id IN ({qm})", ids).fetchall()
+        queued = [r["id"] for r in rows if r["country"] or phone_geo.detect(r["phone"])]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.proxy6_bulk", "--ids", ",".join(str(i) for i in queued),
+                  "--period", str(period), "--version", str(version))
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_country": skipped})
     if action == "onboard":
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "

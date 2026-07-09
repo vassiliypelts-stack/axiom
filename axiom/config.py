@@ -2,9 +2,20 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Windows-консоль по умолчанию cp1251 — любой print() с эмодзи/«→» роняет процесс
+# (UnicodeEncodeError). Это тихо крошило автопрогрев/парсинг, запускаемые как
+# дочерние процессы. Принудительно переводим вывод в utf-8 при импорте config —
+# а его импортирует КАЖДЫЙ модуль, так что защищены все точки входа разом.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001 — старый Python/необычный поток: не критично
+        pass
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")

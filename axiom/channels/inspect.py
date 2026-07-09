@@ -24,7 +24,7 @@ def _client_for(acc: dict):
                         acc.get("api_id"), acc.get("api_hash"))
 
 
-async def inspect(acc: dict, dialogs_limit: int = 25) -> dict:
+async def inspect(acc: dict, dialogs_limit: int = 100) -> dict:
     """Профиль + последние диалоги аккаунта. Read-only."""
     client = _client_for(acc)
     try:

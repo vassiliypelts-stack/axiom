@@ -430,6 +430,7 @@ function smartTable(mount,cfg){
     hidden:new Set(saved.hidden||[]),
     order:(saved.order&&saved.order.length?saved.order.slice():allCols.map(c=>c.key)),
     widths:saved.widths||{},colFilters:saved.colFilters||{},
+    page:0,pageSize:(saved.pageSize||50),
     showFilters:!!(saved.colFilters&&Object.values(saved.colFilters).some(Boolean))};
   allCols.forEach((c,i)=>{
     if(st.order.includes(c.key))return;
@@ -442,7 +443,7 @@ function smartTable(mount,cfg){
   });
   const colByKey=k=>allCols.find(c=>c.key===k);
   const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
-  const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters}));
+  const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters,pageSize:st.pageSize}));
   const wrap=document.createElement("div");
   const groupOpts=`<option value="">без группировки</option>`+(cfg.groupOptions||[]).map(g=>`<option value="${g.key}">группа: ${g.label}</option>`).join("");
   wrap.innerHTML=`<div class="ttoolbar">
@@ -450,10 +451,13 @@ function smartTable(mount,cfg){
       ${cfg.groupOptions?`<select id="st-g">${groupOpts}</select>`:""}
       <button id="st-filt" title="фильтры по колонкам">🔽 фильтры</button>
       <button id="st-cols" title="настроить колонки (показать/скрыть, порядок, ширина)">⚙ колонки</button>
+      <label class="hint" style="display:inline-flex;align-items:center;gap:4px">на странице
+        <select id="st-ps">${[10,20,50,100].map(n=>`<option value="${n}" ${n===st.pageSize?"selected":""}>${n}</option>`).join("")}</select></label>
       <span class="hint" id="st-cnt"></span>
     </div>
     <div id="st-pick" class="card" style="display:none;margin-bottom:10px"></div>
-    <div id="st-tbl"></div>`;
+    <div id="st-tbl"></div>
+    <div id="st-pager" style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap"></div>`;
   mount.appendChild(wrap);
   const drawPicker=()=>{
     const p=wrap.querySelector("#st-pick");p.style.display=st.showPicker?"block":"none";
@@ -483,6 +487,21 @@ function smartTable(mount,cfg){
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
     if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
+    // пагинация: режем на страницы только без группировки (в группировке показываем всё)
+    const ps=st.pageSize||50, total=rows.length, pages=Math.max(1,Math.ceil(total/ps));
+    if(st.page>=pages)st.page=pages-1; if(st.page<0)st.page=0;
+    const paged=(!st.group&&total>ps)?rows.slice(st.page*ps,(st.page+1)*ps):rows;
+    const pager=wrap.querySelector("#st-pager");
+    if(!st.group&&total>ps){
+      const from=st.page*ps+1, to=Math.min(total,(st.page+1)*ps);
+      pager.style.display="flex";
+      pager.innerHTML=`<button id="st-prev" ${st.page<=0?"disabled":""}>← назад</button>
+        <span class="hint">${from}–${to} из ${total} · стр. ${st.page+1}/${pages}</span>
+        <button id="st-next" ${st.page>=pages-1?"disabled":""}>вперёд →</button>`;
+      const pv=pager.querySelector("#st-prev"),nx=pager.querySelector("#st-next");
+      if(pv)pv.onclick=()=>{st.page--;draw();}; if(nx)nx.onclick=()=>{st.page++;draw();};
+    } else { pager.style.display="none"; pager.innerHTML=""; }
+    rows=paged;
     const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
     const head=`<tr>${cols.map(c=>`<th data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
     const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
@@ -511,10 +530,11 @@ function smartTable(mount,cfg){
     if(cfg.onRowClick)wrap.querySelectorAll("tbody tr.clk").forEach(tr=>tr.onclick=e=>{if(e.target.closest(".tag,.tag-add,.tag x,a,input,select,button"))return;cfg.onRowClick(+tr.dataset.id);});
     bindTags(wrap);
   };
-  wrap.querySelector("#st-q").oninput=e=>{st.q=e.target.value;draw();};
-  if(cfg.groupOptions)wrap.querySelector("#st-g").onchange=e=>{st.group=e.target.value;draw();};
+  wrap.querySelector("#st-q").oninput=e=>{st.q=e.target.value;st.page=0;draw();};
+  if(cfg.groupOptions)wrap.querySelector("#st-g").onchange=e=>{st.group=e.target.value;st.page=0;draw();};
   wrap.querySelector("#st-cols").onclick=()=>{st.showPicker=!st.showPicker;drawPicker();};
   wrap.querySelector("#st-filt").onclick=()=>{st.showFilters=!st.showFilters;draw();};
+  wrap.querySelector("#st-ps").onchange=e=>{st.pageSize=+e.target.value;st.page=0;persist();draw();};
   drawPicker();draw();
 }
 function tagsCell(r){
@@ -891,16 +911,23 @@ async function showInspectModal(id,label){
     <div style="margin-top:6px;font-size:13px">📝 bio: ${p.bio?esc(p.bio):'<span class="no">пусто</span>'}</div>
     <div style="margin-top:4px;font-size:13px">🖼 аватар: ${yn(p.has_photo)} &nbsp;·&nbsp; 🔒 номер спрятан: ${yn(p.phone_hidden)}</div></div>`;
   const dlgs=(r.dialogs||[]);
-  const list=dlgs.length?dlgs.map(d=>{
+  const renderDlg=d=>{
     const ico=d.kind==='user'?'👤':d.kind==='channel'?'📢':'👥';
     const un=d.unread?` <span class="badge b-stop">${d.unread}</span>`:'';
     const pre=d.last_out?'→ ':'';
+    const link=d.username?` <a class="ext" href="https://t.me/${esc(d.username)}" target="_blank" onclick="event.stopPropagation()">↗</a>`:'';
     return `<div class="insp-dlg" data-peer="${d.peer_id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
-      <div style="font-weight:600;font-size:13px">${ico} ${esc(d.title)}${un}</div>
+      <div style="font-weight:600;font-size:13px">${ico} ${esc(d.title)}${link}${un}</div>
       <div class="hint" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(pre+(d.last_text||''))||'—'}</div>
       <div class="insp-msgs" style="display:none;margin-top:8px"></div></div>`;
-  }).join(''):'<div class="hint">диалогов нет</div>';
-  body.innerHTML=prof+'<div style="font-weight:600;margin-bottom:6px">💬 Диалоги (кликни — покажу переписку)</div>'+list;
+  };
+  const chats=dlgs.filter(d=>d.kind!=='user');   // группы/каналы — «в каких чатах состоит»
+  const people=dlgs.filter(d=>d.kind==='user');  // личные диалоги
+  const sec=(t,arr)=>arr.length?`<div style="font-weight:600;margin:10px 0 6px">${t} (${arr.length})</div>`+arr.map(renderDlg).join(''):'';
+  const chatsBlock=chats.length
+    ? `<div style="font-weight:600;margin:6px 0">📡 Чаты, где состоит (${chats.length})</div>`+chats.map(renderDlg).join('')
+    : '<div class="hint" style="margin:6px 0">📡 Аккаунт пока не состоит ни в одном чате/группе</div>';
+  body.innerHTML=prof+chatsBlock+sec('💬 Личные диалоги (кликни — покажу переписку)',people);
   body.querySelectorAll('.insp-dlg').forEach(el=>el.addEventListener('click',async(e)=>{
     e.stopPropagation();
     const mbox=el.querySelector('.insp-msgs');

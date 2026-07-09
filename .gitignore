@@ -16,6 +16,8 @@ venv/
 
 # Данные и артефакты (тестовая БД, выгрузки, excel)
 axiom/data/*.db
+axiom/*.db
+axiom/data/logs/
 axiom/data/agentstva_sochi.csv
 axiom/data/sample_2gis.csv
 axiom/data/kp/

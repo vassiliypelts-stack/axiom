@@ -298,19 +298,34 @@ async def run_outreach(client: TelegramClient, limit: int | None = None) -> int:
 # --------------------------------------------------------------------------- #
 #  LISTEN — входящие ответы → ИИ-агент → ответ                                 #
 # --------------------------------------------------------------------------- #
-async def _handle_incoming(event) -> None:
-    sender = await event.get_sender()
-    username = getattr(sender, "username", None)
-    text_in = event.raw_text or ""
-    if not text_in.strip():
-        return
-
+def _record_incoming(contact_id: int, text_in: str, username: str | None,
+                     account_id: int | None = None) -> str:
+    """ВСЕГДА сохраняем входящее сообщение в книжку сразу — чтобы ответ появился
+    в разделе «Диалоги» даже если ИИ-агент упадёт или авто-ответ выключен.
+    Раньше входящее писалось только вместе с успешным ответом агента — из-за этого
+    ответы клиентов терялись. Возвращает «кто» (для событий колокольчика)."""
     with database.get_conn() as conn:
-        contact = database.find_contact_by_tg(conn, tg_user_id=int(sender.id), username=username)
-        if contact is None:
-            print(f"[ignore] входящее от незнакомого {sender.id} (@{username}) — не в книжке")
-            return
-        contact_id = contact["id"]
+        row = conn.execute("SELECT status, name, person_name FROM contacts WHERE id=?",
+                           (contact_id,)).fetchone()
+        database.add_message(conn, contact_id, "in", text_in)
+        # не сбиваем терминальные статусы (встреча/сделка) назад в «диалог»
+        if row and (row["status"] or "") in ("new", "messaged", "nurture", "in_dialog", ""):
+            database.set_status(conn, contact_id, "in_dialog")
+        who = (row["name"] if row else None) or (row["person_name"] if row else None) \
+            or (f"@{username}" if username else str(contact_id))
+        database.add_event(conn, "reply", f"💬 Новый ответ: {who}",
+                           (text_in or "").strip()[:160], level="good",
+                           contact_id=contact_id, account_id=account_id)
+    return who
+
+
+async def _agent_reply(event, contact_id: int, username: str | None) -> None:
+    """Генерит ответ ИИ-агентом и шлёт его ЧЕРЕЗ аккаунт, получивший сообщение
+    (event.client). Входящее уже сохранено вызывающим — здесь только исходящее и
+    события (встреча/тёплый лид). Историю берём из книжки — она уже содержит
+    только что записанное входящее последней репликой."""
+    with database.get_conn() as conn:
+        contact = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
         opener, messages = _history_for_agent(database.get_history(conn, contact_id))
         contact_info = _contact_dict(contact)
         camp = database.get_contact_campaign(conn, contact_id)
@@ -325,7 +340,8 @@ async def _handle_incoming(event) -> None:
             ).fetchall()]
 
     kp_path = _kp_path(kp_file)
-    messages.append({"role": "user", "content": text_in})
+    if not messages or messages[-1]["role"] != "user":
+        return  # нечего отвечать (нет реплики собеседника)
 
     try:
         reply = await asyncio.to_thread(
@@ -336,6 +352,7 @@ async def _handle_incoming(event) -> None:
         print(f"[agent error] contact {contact_id}: {e}")
         return
 
+    text_in = messages[-1]["content"]
     peer = await event.get_input_chat()
     await asyncio.sleep(random.uniform(*REPLY_DELAY))  # пауза перед началом ответа
     await _send_parts(event.client, peer, reply.reply_parts)
@@ -379,7 +396,11 @@ async def _handle_incoming(event) -> None:
         meeting = await asyncio.to_thread(meetings.arrange, contact_info, reply.proposed_datetime)
 
     with database.get_conn() as conn:
-        database.add_message(conn, contact_id, "in", text_in, intent=reply.intent)
+        # входящее уже записано в _record_incoming — тут только проставляем ему intent
+        # (для аналитики) и сохраняем наш ответ
+        conn.execute("UPDATE messages SET intent=? WHERE id=("
+                     "SELECT id FROM messages WHERE contact_id=? AND direction='in' "
+                     "ORDER BY id DESC LIMIT 1)", (reply.intent, contact_id))
         database.add_message(conn, contact_id, "out", reply_text, intent=None)
         who = contact_info.get("name") or contact_info.get("person_name") or (f"@{username}" if username else str(contact_id))
         if meeting is not None:
@@ -403,6 +424,24 @@ async def _handle_incoming(event) -> None:
         if meeting.zoom_link:
             await _send_parts(event.client, peer, [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"])
     print(f"[reply -> {contact_info.get('name', contact_id)}] intent={reply.intent} agreed={reply.meeting_agreed}")
+
+
+async def _handle_incoming(event) -> None:
+    """Одиночный слушатель (--listen): найти контакт → записать входящее → ответить.
+    Многоаккаунтный слушатель (channels.listener) переиспользует те же _record_incoming
+    и _agent_reply, но с гейтом авто-ответа по статусу аккаунта."""
+    sender = await event.get_sender()
+    username = getattr(sender, "username", None)
+    text_in = (event.raw_text or "").strip()
+    if not text_in:
+        return
+    with database.get_conn() as conn:
+        contact = database.find_contact_by_tg(conn, tg_user_id=int(sender.id), username=username)
+    if contact is None:
+        print(f"[ignore] входящее от незнакомого {sender.id} (@{username}) — не в книжке")
+        return
+    _record_incoming(contact["id"], text_in, username)
+    await _agent_reply(event, contact["id"], username)
 
 
 def _register(client: TelegramClient) -> None:

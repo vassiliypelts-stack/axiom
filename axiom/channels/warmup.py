@@ -208,14 +208,14 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
                     print("  профиль: поставил аватар")
     except Exception as e:  # noqa: BLE001
         print(f"  [avatar] {e}")
-    # приватность (спрятать номер + защита от репортов) — на явное оформление
-    if force:
-        try:
-            from channels.privacy import apply_privacy
-            if await apply_privacy(client):
-                done.append("🔒 приватность (номер спрятан)")
-        except Exception as e:  # noqa: BLE001
-            print(f"  [privacy] {e}")
+    # приватность (спрятать номер + защита от репортов) — всегда безопасно спрятать
+    # номер, даже без явного «оформить сейчас»: это защита, а не косметика.
+    try:
+        from channels.privacy import apply_privacy
+        if await apply_privacy(client):
+            done.append("🔒 приватность (номер спрятан)")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [privacy] {e}")
     return done
 
 

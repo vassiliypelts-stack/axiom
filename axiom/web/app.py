@@ -723,11 +723,30 @@ def proxies_auto_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "auto": auto == "on", "interval_h": interval_h})
 
 
+LOG_DIR = config.DB_PATH.parent / "logs"
+
+
+def _log_run(name: str, result) -> None:
+    """Пишет вывод фонового запуска в файл-лог (data/logs/<name>.log) — чтобы
+    не гадать по немой консоли, что реально произошло на автомате."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        out = (result.stdout or "") + (result.stderr or "")
+        with open(LOG_DIR / f"{name}.log", "a", encoding="utf-8") as f:
+            f.write(f"\n===== {ts} (код выхода {result.returncode}) =====\n{out}\n")
+    except Exception as e:  # noqa: BLE001
+        print(f"[log {name}] не удалось записать лог: {e}")
+
+
 def _proxy_scheduler() -> None:
     """Фоновый планировщик: периодически обновляет пул прокси, если включено."""
+    import os
     import subprocess
     import sys
     import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"   # иначе дочерний процесс падает на любом эмодзи/→ в print()
     while True:
         try:
             with database.get_conn() as conn:
@@ -738,8 +757,10 @@ def _proxy_scheduler() -> None:
                 with database.get_conn() as conn:
                     database.set_setting(conn, "proxy_last_run_ts", str(time.time()))
                     database.set_setting(conn, "proxy_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
-                subprocess.run([sys.executable, "-m", "channels.proxy_pool", "--refresh"],
-                               cwd=str(BASE_DIR.parent), timeout=300)
+                res = subprocess.run([sys.executable, "-m", "channels.proxy_pool", "--refresh"],
+                                     cwd=str(BASE_DIR.parent), timeout=300, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("proxy_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[proxy scheduler] {e}")
         # --- авто-прогрев (одна ступень по расписанию) ---
@@ -752,8 +773,10 @@ def _proxy_scheduler() -> None:
                 with database.get_conn() as conn:
                     database.set_setting(conn, "warm_last_run_ts", str(time.time()))
                     database.set_setting(conn, "warm_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
-                subprocess.run([sys.executable, "-m", "channels.warmup", "--run"],
-                               cwd=str(BASE_DIR.parent), timeout=1800)
+                res = subprocess.run([sys.executable, "-m", "channels.warmup", "--run"],
+                                     cwd=str(BASE_DIR.parent), timeout=1800, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("warmup_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[warmup scheduler] {e}")
         time.sleep(60)
@@ -764,6 +787,41 @@ def _start_scheduler() -> None:
     import threading
     database.init_db()
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
+    # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
+    # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
+    try:
+        from channels.listener import start_in_thread
+        start_in_thread()
+    except Exception as e:  # noqa: BLE001
+        print(f"[listener] не удалось запустить слушатель: {e}")
+
+
+@app.get("/api/listener/status")
+def listener_status() -> JSONResponse:
+    """Статус слушателя входящих: сколько аккаунтов слушается, кто не подключился."""
+    try:
+        from channels import listener
+        accs = []
+        for aid, info in sorted(listener.STATUS.get("accounts", {}).items()):
+            accs.append({"id": aid, "label": info.get("label"),
+                         "ok": info.get("ok"), "err": info.get("err")})
+        with database.get_conn() as conn:
+            auto_reply = database.get_setting(conn, "tg_auto_reply", "on") == "on"
+        return JSONResponse({"started": listener.STATUS.get("started"),
+                             "listening": sum(1 for a in accs if a["ok"]),
+                             "accounts": accs, "auto_reply": auto_reply})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=200)
+
+
+@app.post("/api/listener/auto_reply")
+def listener_auto_reply(payload: dict = Body(...)) -> JSONResponse:
+    """Тумблер авто-ответа ИИ-агентом (глобально). Слушание/запись ответов работает
+    всегда; этот флаг только про то, отвечать ли автоматически с активных аккаунтов."""
+    on = "on" if payload.get("auto_reply") else "off"
+    with database.get_conn() as conn:
+        database.set_setting(conn, "tg_auto_reply", on)
+    return JSONResponse({"ok": True, "auto_reply": on == "on"})
 
 
 @app.post("/api/health")
@@ -1835,8 +1893,14 @@ def chats() -> JSONResponse:
             """
             SELECT c.id, c.name, c.username, c.status, c.tags,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
+                   (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id AND m.direction='in') AS in_cnt,
                    (SELECT text FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_text,
-                   (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts
+                   (SELECT direction FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_dir,
+                   (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts,
+                   (SELECT a.label FROM campaign_contacts cc JOIN accounts a ON a.id=cc.account_id
+                      WHERE cc.contact_id=c.id AND cc.account_id IS NOT NULL ORDER BY cc.rowid DESC LIMIT 1) AS account_label,
+                   (SELECT cc.account_id FROM campaign_contacts cc
+                      WHERE cc.contact_id=c.id AND cc.account_id IS NOT NULL ORDER BY cc.rowid DESC LIMIT 1) AS account_id
             FROM contacts c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = c.id)
             ORDER BY last_ts DESC

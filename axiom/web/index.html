@@ -567,7 +567,10 @@ async function viewDashboard(v){
       <div class="sp"></div>
       <div class="dclock">обновлено<b id="dash-clock">—</b></div>
     </header>
-    <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span></div>
+    <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span>
+      <span style="flex:1"></span>
+      <span id="dash-listener" class="dslogan" style="font-family:'JetBrains Mono';font-size:11px" title="Слушатель входящих: сколько аккаунтов сейчас на связи и ловят ответы клиентов">📡 слушатель: …</span>
+      <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer" title="Отвечать клиентам автоматически ИИ-агентом (только с активных аккаунтов). Выключишь — ответы всё равно ловятся и видны в «Диалогах», но отвечаешь сам."><input type="checkbox" id="dash-autoreply"> авто-ответ ИИ</label></div>
     <section class="dash-glass dash-hero">
       <div class="dash-hh"><div class="t">⚙ Конвейер лидов · <span>сырьё → сделка</span></div>
         <button class="dash-run" id="conv-run"><span class="d"></span>Запустить конвейер</button></div>
@@ -623,6 +626,19 @@ async function viewDashboard(v){
   const clockEl=$("#dash-clock");if(clockEl){clockEl.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}
   if(!window._axDashClock){window._axDashClock=setInterval(()=>{const c=document.getElementById("dash-clock");
     if(c)c.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});},1000);}
+
+  // статус слушателя входящих + тумблер авто-ответа
+  (async()=>{try{const ls=await api("/api/listener/status");
+    const el=$("#dash-listener");
+    if(el){
+      if(ls.error||ls.started==null){el.innerHTML='📡 слушатель: <b style="color:var(--muted)">запускается…</b>';}
+      else{const tot=(ls.accounts||[]).length;
+        el.innerHTML=`📡 слушатель: <b style="color:var(--accent2)">${ls.listening}</b> из ${tot} на связи`;}
+    }
+    const ar=$("#dash-autoreply");
+    if(ar){ar.checked=!!ls.auto_reply;
+      ar.onchange=async()=>{await api("/api/listener/auto_reply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_reply:ar.checked})});};}
+  }catch(e){}})();
 
   // count-up табло
   v.querySelectorAll("[data-cv]").forEach((el,i)=>{const to=+el.getAttribute("data-cv");
@@ -2138,15 +2154,56 @@ function renderCampList(mount,camps){
 }
 
 let CHAT_SEL=null;
+let CHATS_ALL=[];
 async function viewChats(v){
-  const chats=await api("/api/chats");
-  v.innerHTML=`<div class="chat-wrap">
-    <div class="chat-list" id="clist">${chats.length?chats.map(c=>`<div class="chat-item" data-id="${c.id}">
-      <div class="nm">${esc(c.name)||(c.username?"@"+esc(c.username):"#"+c.id)}</div>
-      <div class="pv">${esc(c.last_text)||""}</div></div>`).join(""):'<div class="empty">Переписок пока нет</div>'}</div>
-    <div class="thread" id="thread"><div class="empty" style="margin:auto">Выбери диалог слева</div></div></div>`;
-  v.querySelectorAll(".chat-item").forEach(it=>it.onclick=()=>{CHAT_SEL=+it.dataset.id;
-    v.querySelectorAll(".chat-item").forEach(x=>x.classList.remove("sel"));it.classList.add("sel");openThread(CHAT_SEL);});
+  CHATS_ALL=await api("/api/chats");
+  const accs=[...new Map(CHATS_ALL.filter(c=>c.account_id).map(c=>[c.account_id,c.account_label||("#"+c.account_id)])).entries()];
+  v.innerHTML=`<div class="chat-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+      <input id="ch-q" placeholder="🔍 поиск: имя / @ник / текст" style="flex:1;min-width:180px">
+      <select id="ch-status">
+        <option value="">все статусы</option>
+        <option value="replied">💬 ответившие</option>
+        <option value="in_dialog">в диалоге</option>
+        <option value="messaged">написано, ждём</option>
+        <option value="meeting_set">встреча</option>
+        <option value="won">сделка</option>
+        <option value="nurture">прогрев</option>
+        <option value="lost">потеряны</option>
+      </select>
+      <select id="ch-acc"><option value="">любой аккаунт</option>${accs.map(([id,lbl])=>`<option value="${id}">${esc(lbl)}</option>`).join("")}</select>
+      <select id="ch-sort"><option value="recent">свежие сверху</option><option value="unread">сначала ответившие</option><option value="msgs">больше сообщений</option></select>
+      <span class="hint" id="ch-cnt"></span>
+    </div>
+    <div class="chat-wrap">
+      <div class="chat-list" id="clist"></div>
+      <div class="thread" id="thread"><div class="empty" style="margin:auto">Выбери диалог слева</div></div>
+    </div>`;
+  const drawList=()=>{
+    const q=($("#ch-q").value||"").toLowerCase().trim();
+    const st=$("#ch-status").value, acc=$("#ch-acc").value, sort=$("#ch-sort").value;
+    let rows=CHATS_ALL.slice();
+    if(st==="replied")rows=rows.filter(c=>(c.in_cnt||0)>0);
+    else if(st)rows=rows.filter(c=>c.status===st);
+    if(acc)rows=rows.filter(c=>String(c.account_id)===acc);
+    if(q)rows=rows.filter(c=>((c.name||"")+" "+(c.username||"")+" "+(c.last_text||"")).toLowerCase().includes(q));
+    if(sort==="unread")rows.sort((a,b)=>(b.in_cnt||0)-(a.in_cnt||0)||(b.last_ts>a.last_ts?1:-1));
+    else if(sort==="msgs")rows.sort((a,b)=>(b.msg_count||0)-(a.msg_count||0));
+    // recent — уже по last_ts с бэка
+    $("#ch-cnt").textContent=`${rows.length} из ${CHATS_ALL.length}`;
+    $("#clist").innerHTML=rows.length?rows.map(c=>{
+      const replied=(c.in_cnt||0)>0;
+      const waiting=c.last_dir==="in";   // последнее слово за клиентом — ждёт нашего ответа
+      return `<div class="chat-item${c.id===CHAT_SEL?" sel":""}" data-id="${c.id}">
+        <div class="nm">${esc(c.name)||(c.username?"@"+esc(c.username):"#"+c.id)}
+          ${waiting?'<span class="badge b-active" style="font-size:10px">ждёт ответа</span>':(replied?'<span class="badge b-nurture" style="font-size:10px">ответил</span>':"")}</div>
+        <div class="pv">${c.last_dir==="out"?"→ ":""}${esc(c.last_text)||""}</div>
+        <div class="pv" style="opacity:.6;font-size:11px">${c.account_label?("📱 "+esc(c.account_label)+" · "):""}${statusBadge(c.status)}</div></div>`;
+    }).join(""):'<div class="empty">Ничего не найдено</div>';
+    $("#clist").querySelectorAll(".chat-item").forEach(it=>it.onclick=()=>{CHAT_SEL=+it.dataset.id;
+      $("#clist").querySelectorAll(".chat-item").forEach(x=>x.classList.remove("sel"));it.classList.add("sel");openThread(CHAT_SEL);});
+  };
+  ["ch-q","ch-status","ch-acc","ch-sort"].forEach(id=>{const el=$("#"+id);el.oninput=drawList;el.onchange=drawList;});
+  drawList();
 }
 async function openThread(id){
   const c=await api(`/api/contact/${id}`);const th=$("#thread");

@@ -732,6 +732,7 @@ async function viewAgents(v){
       <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
       <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
       <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
+      <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет 🟢 живой / 🔴 мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
       <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">✏️ применить</button></span>
@@ -790,7 +791,13 @@ async function viewAgents(v){
       {key:"warm_stage",label:"Прогрев",render:r=>{if(r.status!=='warming')return r.status==='active'?'<span class="badge b-active">✅ готов</span>':'<span class="no">—</span>';
         const st=r.warm_stage||0,pct=Math.round(st/14*100);
         return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">🔥 прогрев ${st}/14 дн</span></span>`;}},
-      {key:"proxy",label:"Прокси",cls:"sub",render:r=>r.proxy?'<span class="badge b-active">есть</span>':'<span class="no">нет</span>'},
+      {key:"proxy",label:"Прокси",cls:"sub",render:r=>{
+        if(!r.proxy)return '<span class="no">нет</span>';
+        const pc=r.proxy_checked_at;
+        if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''}">🟢 живой</span>`;
+        if(r.proxy_alive===0)return `<span class="badge b-stop" title="проверено ${fmt(pc)||''} — не отвечает">🔴 мёртвый</span>`;
+        return `<span class="badge b-nurture" title="ещё не проверялся — нажми 🔎 Проверить прокси">⚪ не проверен</span>`;
+      }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
@@ -838,6 +845,7 @@ async function viewAgents(v){
   $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
   $("#ab-proxy").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxyDistDialog([...selAcc],bulk);};
+  $("#ab-proxy-check").onclick=()=>bulk({action:"proxy_check"},r=>`🔎 проверяю прокси у ${r.queued} акк. в фоне (30-60с)${r.skipped_no_proxy?` · без прокси пропущено: ${r.skipped_no_proxy}`:""} — цвет в колонке «Прокси» обновится, обнови страницу`);
   $("#ab-proxy6").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxy6BuyDialog([...selAcc],bulk);};
   $("#ab-proxy6-check").onclick=async()=>{
     const b=$("#ab-proxy6-check");b.disabled=true;b.textContent="проверяю…";

@@ -44,7 +44,10 @@ def generate_bio(role: str | None = None, label: str | None = None,
             f"город: {city}" if city else "",
             f"контекст/легенда: {description}" if description else "",
         ] if x) or "обычный живой человек"
-        msg = anthropic.Anthropic().messages.create(
+        # таймаут: SDK по умолчанию ждёт до 600с (10 мин) — при подвисшей сети это
+        # молча вешало ВЕСЬ массовый прогон (bio генерится синхронно в цикле по
+        # аккаунтам, без него следующие 19 аккаунтов просто не доходили до очереди).
+        msg = anthropic.Anthropic(timeout=15.0).messages.create(
             model=config.AGENT_MODEL,
             max_tokens=60,
             system=(

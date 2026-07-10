@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 
 from telethon import events
 from telethon.sessions import StringSession
@@ -25,6 +26,11 @@ from telethon.tl.types import User
 import config
 from channels.telegram import _agent_reply, _record_incoming, build_client
 from db import database
+
+# Дохлые прокси у прогреваемых аккаунтов заваливают консоль сервера простынёй
+# «Attempt N at connecting failed…» (внутренние ретраи Telethon). Сервер от этого не
+# падает, но выглядит «сломанным». Глушим этот шум — осмысленные строки пишем сами.
+logging.getLogger("telethon").setLevel(logging.CRITICAL)
 
 _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 

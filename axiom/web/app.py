@@ -277,6 +277,15 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
             _spawn("channels.proxy6_bulk", "--ids", ",".join(str(i) for i in queued),
                   "--period", str(period), "--version", str(version))
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_country": skipped})
+    if action == "proxy_check":
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
+                                "AND proxy IS NOT NULL AND proxy<>''", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.proxy_check", "--ids", ",".join(str(i) for i in queued))
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_proxy": skipped})
     if action == "onboard":
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
@@ -1327,9 +1336,19 @@ def deal_delete(did: int) -> JSONResponse:
 
 
 def _spawn(*args: str) -> None:
+    """Запускает модуль в фоне (fire-and-forget) — вывод пишем в data/logs/<модуль>.log,
+    чтобы при тихом зависании/падении (напр. без интернета) было видно ПОЧЕМУ, а не
+    гадать «ничего не происходит»."""
     import subprocess
     import sys
-    subprocess.Popen([sys.executable, "-m", *args], cwd=str(BASE_DIR.parent))
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    name = (args[0] if args else "spawn").replace(".", "_")
+    log_path = LOG_DIR / f"{name}.log"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n===== {__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S} запуск: {' '.join(args)} =====\n")
+        f.flush()
+        subprocess.Popen([sys.executable, "-m", *args], cwd=str(BASE_DIR.parent),
+                         stdout=f, stderr=subprocess.STDOUT)
 
 
 @app.post("/api/contact/{contact_id}/enrich")

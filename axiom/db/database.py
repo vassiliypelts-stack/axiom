@@ -57,6 +57,7 @@ _EXTRA_CONTACT_COLS = {
     # --- карточка человека (bэклог P0): идентификация ---
     "gender": "TEXT",           # male|female — угадан по имени (channels/ru_names.gender_of)
     "is_premium": "INTEGER",    # Telegram Premium: 1/0/NULL=неизвестно (виден при парсинге User-сущности)
+    "has_photo": "INTEGER DEFAULT 0",  # 1 = аватар скачан в data/avatars/{tg_user_id}.jpg (для карточки)
 }
 
 
@@ -427,6 +428,15 @@ def set_bio_by_tg(conn: sqlite3.Connection, tg_user_id: int, bio: str | None) ->
         "UPDATE contacts SET bio = COALESCE(?, bio), updated_at = datetime('now') WHERE tg_user_id = ?",
         (bio, tg_user_id),
     )
+
+
+def mark_photos_by_tg(conn: sqlite3.Connection, tg_user_ids) -> None:
+    """Ставит has_photo=1 контактам, чей аватар скачан (файл data/avatars/{id}.jpg)."""
+    ids = list(tg_user_ids)
+    if not ids:
+        return
+    qm = ",".join("?" * len(ids))
+    conn.execute(f"UPDATE contacts SET has_photo=1 WHERE tg_user_id IN ({qm})", ids)
 
 
 def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str, intent: str | None = None) -> None:

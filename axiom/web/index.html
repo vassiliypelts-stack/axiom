@@ -1981,9 +1981,10 @@ async function renderTargetLeads(body){
   grid.innerHTML=rows.map(c=>{
     const score=c.score!=null?(+c.score).toFixed(2):null;
     const scoreCls=score==null?"":(+score>=0.7?"b-active":(+score>=0.4?"b-nurture":"b-stop"));
+    const av=c.has_photo?`<img src="/api/contact/${c.id}/photo" alt="" style="width:32px;height:32px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">`:"";
     return `<div class="card tl-card" data-id="${c.id}" style="cursor:pointer">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
-        <div><b>${esc(c.name)||("#"+c.id)}</b> ${c.username?`<span class="tg">@${esc(c.username)}</span>`:""}</div>
+        <div style="display:flex;align-items:center;gap:8px">${av}<div><b>${esc(c.name)||("#"+c.id)}</b> ${c.username?`<span class="tg">@${esc(c.username)}</span>`:""}</div></div>
         ${score!=null?`<span class="badge ${scoreCls}" title="AI-скоринг (0-1)">${score}</span>`:'<span class="badge b-nurture" title="ещё не скорился">—</span>'}
       </div>
       <div class="sub" style="margin:4px 0">${c.segment?`<span class="badge b-active" style="margin-right:4px">${esc(c.segment)}</span>`:""}${c.source_chat?"из «"+esc(c.source_chat)+"»":""}</div>
@@ -2562,7 +2563,11 @@ async function openDossier(id){
   const sourceBlock=c.source_chat_title?`<div class="field"><label>📡 Найден в чате</label><div class="v">${
     c.source_chat_link?`<a class="ext" href="${esc(c.source_chat_link)}" target="_blank">${esc(c.source_chat_title)} ↗</a>`:esc(c.source_chat_title)
     }${c.source_chat_id?` <span class="lnk" data-chid="${c.source_chat_id}" style="cursor:pointer;color:var(--accent);margin-left:6px">карточка чата ↗</span>`:""}</div></div>`:"";
+  const photoBlock=c.has_photo?`<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <img src="/api/contact/${c.id}/photo" alt="фото" style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid var(--border)" onerror="this.style.display='none'">
+      <div><div style="font-weight:600">${esc(c.name)||"@"+esc(c.username||id)}</div>${c.username?`<div class="sub">@${esc(c.username)}</div>`:""}</div></div>`:"";
   $("#dr-body").innerHTML=`
+    ${photoBlock}
     <div class="row2"><div class="field"><label>Статус</label><div class="v">${statusBadge(c.status)}</div></div>
       <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
     ${dossierBlock}

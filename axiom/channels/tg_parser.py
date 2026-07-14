@@ -58,6 +58,20 @@ def _display_name(u: User) -> str:
     return name or (u.username and f"@{u.username}") or str(u.id)
 
 
+async def _download_avatar(client, u: User) -> bool:
+    """Качает аватар в data/avatars/{tg_user_id}.jpg. True — файл есть (фото у юзера).
+
+    Один файл на человека (ключ — tg_user_id), тем же путём его читает vision-анализ
+    (agent/enrich_person) и веб-карточка. Нет фото/приватность закрыта → False, тихо."""
+    try:
+        AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+        path = AVATAR_DIR / f"{u.id}.jpg"
+        res = await client.download_profile_photo(u, file=str(path))
+        return bool(res) and path.exists() and path.stat().st_size > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _is_lead_user(u) -> bool:
     """Годится ли как лид: реальный пользователь, не бот, не удалён."""
     return isinstance(u, User) and not u.bot and not u.deleted
@@ -114,16 +128,17 @@ async def _fetch_bio(client, user: User) -> str | None:
 
 async def collect_active(client, entity, scan: int, top: int,
                          harvest: bool = False, days: int = HARVEST_DAYS,
-                         posts_per_user: int = POSTS_PER_USER) -> tuple[list[tuple[User, int]], dict[int, str]]:
+                         posts_per_user: int = POSTS_PER_USER) -> tuple[list[tuple[User, int]], dict[int, str], set[int]]:
     """Топ авторов по числу сообщений в чате/обсуждении за последние `scan` сообщений.
 
     harvest=True (H1): дополнительно собирает ТЕКСТЫ сообщений каждого автора (до
     `posts_per_user` за `days` дней) в tg_user_posts + тянет bio — сырьё для досье.
-    Возвращает (топ-авторы, {tg_user_id: bio})."""
+    Аватар качаем всегда (это активные лиды, их немного — top) — для карточки/vision.
+    Возвращает (топ-авторы, {tg_user_id: bio}, {tg_user_id с фото})."""
     chat = await _resolve_scan_chat(client, entity)
     if chat is None:
         print("[active] у цели нет чата обсуждения — нечего сканировать.")
-        return [], {}
+        return [], {}, set()
     chat_id = getattr(chat, "id", None)         # сырой telegram-id → в tg_user_posts.chat_id
     chat_title = getattr(chat, "title", None)
     # заводим/находим этот чат в каталоге, чтобы «сырьё досье» связывалось с карточкой чата
@@ -144,6 +159,7 @@ async def collect_active(client, entity, scan: int, top: int,
     print(f"[active] просмотрено {n} сообщений, уникальных авторов: {len(counts)}")
     out: list[tuple[User, int]] = []
     bios: dict[int, str] = {}
+    photo_ids: set[int] = set()
     for uid, cnt in counts.most_common(top):
         try:
             u = await client.get_entity(uid)
@@ -152,6 +168,8 @@ async def collect_active(client, entity, scan: int, top: int,
         if not _is_lead_user(u):
             continue
         out.append((u, cnt))
+        if await _download_avatar(client, u):   # фото — для карточки человека и vision
+            photo_ids.add(u.id)
         if harvest:
             posts = texts.get(uid, [])
             if posts:
@@ -162,14 +180,9 @@ async def collect_active(client, entity, scan: int, top: int,
             bio = await _fetch_bio(client, u)
             if bio:
                 bios[u.id] = bio
-            try:  # аватар для vision-анализа (этап 4); без фото — просто пропускаем
-                AVATAR_DIR.mkdir(parents=True, exist_ok=True)
-                await client.download_profile_photo(u, file=str(AVATAR_DIR / f"{u.id}.jpg"))
-            except Exception:  # noqa: BLE001
-                pass
             await asyncio.sleep(random.uniform(0.5, 1.2))  # доп. пауза: bio — тяжёлый вызов
         await asyncio.sleep(random.uniform(0.3, 0.8))
-    return out, bios
+    return out, bios, photo_ids
 
 
 def _save_lead(conn, u: User, target: str, role: str) -> str:
@@ -261,17 +274,20 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
             _persist(members, target, "участник")
 
     if mode in ("active", "all"):
-        active, bios = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
+        active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
         users = [u for u, _ in active]
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
         if save:
             _persist(users, target, "активный")
-            if bios:  # bio пишем в уже созданные карточки лидов
-                with database.get_conn() as conn:
+            with database.get_conn() as conn:
+                if bios:  # bio пишем в уже созданные карточки лидов
                     for uid, bio in bios.items():
                         database.set_bio_by_tg(conn, uid, bio)
-                print(f"[save] bio записано: {len(bios)}")
+                    print(f"[save] bio записано: {len(bios)}")
+                if photo_ids:  # помечаем, у кого скачан аватар (для карточки)
+                    database.mark_photos_by_tg(conn, photo_ids)
+                    print(f"[save] фото скачано: {len(photo_ids)}")
         if harvest:
             print("[harvest] сырьё для досье собрано в tg_user_posts — дальше agent/enrich_person.py")
 

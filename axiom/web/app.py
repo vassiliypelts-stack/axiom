@@ -1154,6 +1154,24 @@ def contacts() -> JSONResponse:
     return JSONResponse(out)
 
 
+def _avatar_path(tg_user_id) -> Path:
+    """Путь к фото человека (одно на tg_user_id). Тот же файл пишет парсер и читает vision."""
+    return AVATAR_DIR / f"{tg_user_id}.jpg"
+
+
+@app.get("/api/contact/{contact_id}/photo")
+def contact_photo(contact_id: int):
+    """Отдаёт аватар человека (скачан парсером). Нет — 404 (карточка покажет плейсхолдер)."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT tg_user_id FROM contacts WHERE id=?", (contact_id,)).fetchone()
+    if not row or not row["tg_user_id"]:
+        return JSONResponse({"error": "нет фото"}, status_code=404)
+    path = _avatar_path(row["tg_user_id"])
+    if not path.exists() or path.stat().st_size == 0:
+        return JSONResponse({"error": "нет фото"}, status_code=404)
+    return FileResponse(path, media_type="image/jpeg")
+
+
 @app.get("/api/contact/{contact_id}")
 def contact_detail(contact_id: int) -> JSONResponse:
     database.init_db()
@@ -1183,6 +1201,8 @@ def contact_detail(contact_id: int) -> JSONResponse:
     d = dict(row); d["tags"] = _split_tags(d.get("tags"))
     d["company_name"] = comp["name"] if comp else None
     d["history"] = history; d["deal"] = dict(deal) if deal else None
+    # has_photo — авторитетно по файлу (флаг в БД мог отстать/файл могли удалить)
+    d["has_photo"] = bool(d.get("tg_user_id")) and _avatar_path(d.get("tg_user_id")).exists()
     if src:
         d["source_chat_id"] = src["chat_id"]
         d["source_chat_title"] = src["chat_title"]
@@ -2068,6 +2088,7 @@ def target_leads() -> JSONResponse:
             """
             SELECT c.id, c.name, c.username, c.tags, c.status, c.score, c.segment,
                    c.quotes, c.rec_message, c.pains, c.desires, c.psychotype, c.confidence,
+                   c.has_photo,
                    (SELECT h.chat_title FROM chat_hits h WHERE h.contact_id=c.id
                       ORDER BY h.id DESC LIMIT 1) AS source_chat,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id=c.id AND m.direction='out') AS sent_cnt,

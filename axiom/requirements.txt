@@ -19,3 +19,5 @@ google-auth-oauthlib>=1.0
 # Zoom — через requests (REST), отдельной либы не нужно
 requests>=2.31
 tzdata>=2024.1           # база таймзон для zoneinfo (на Windows системной нет)
+Pillow>=10.0              # обрезка авто-фото профиля (channels/avatar_gen.py) до квадрата
+psutil>=5.9               # остановка фонового прогрева по PID (кнопка «⏹ Стоп»)

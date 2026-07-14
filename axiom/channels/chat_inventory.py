@@ -67,26 +67,30 @@ async def run(limit: int, only_id: int | None = None) -> None:
         members = getattr(e, "participants_count", None)
         link = f"https://t.me/{username}" if username else None
         cw = can_write(e)
-        rows.append((title, username, link, kind, members, cw))
+        tg_id = getattr(e, "id", None)
+        rows.append((title, username, link, kind, members, cw, tg_id))
 
     with database.get_conn() as conn:
-        for title, username, link, kind, members, cw in rows:
+        for title, username, link, kind, members, cw, tg_id in rows:
             ex = None
-            if username:
+            if tg_id:
+                ex = conn.execute("SELECT id FROM chats WHERE tg_chat_id=?", (tg_id,)).fetchone()
+            if not ex and username:
                 ex = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
             if ex:
                 conn.execute(
                     "UPDATE chats SET title=?, kind=?, members_count=COALESCE(?,members_count), "
                     "can_write=?, in_account='yes', link=COALESCE(link,?), "
-                    "joined_by=COALESCE(?,joined_by) WHERE id=?",
-                    (title, kind, members, cw, link, acc_id, ex["id"]),
+                    "tg_chat_id=COALESCE(?,tg_chat_id), joined_by=COALESCE(?,joined_by) WHERE id=?",
+                    (title, kind, members, cw, link, tg_id, acc_id, ex["id"]),
                 )
                 updated += 1
             else:
                 conn.execute(
                     "INSERT INTO chats (title, username, link, kind, members_count, can_write, "
-                    "in_account, status, joined_by) VALUES (?,?,?,?,?,?, 'yes', 'joined', ?)",
-                    (title, username, link, kind, members, cw, acc_id),
+                    "tg_chat_id, in_account, status, joined_by) "
+                    "VALUES (?,?,?,?,?,?,?, 'yes', 'joined', ?)",
+                    (title, username, link, kind, members, cw, tg_id, acc_id),
                 )
                 added += 1
 

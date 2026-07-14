@@ -254,12 +254,17 @@ def _save(contact_id: int, e: Enrichment, dd: dict | None) -> None:
         )
 
 
-def _targets(cid: int | None, tag: str | None, limit: int, only_missing_hooks: bool = False) -> list:
+def _targets(cid: int | None, tag: str | None, limit: int, only_missing_hooks: bool = False,
+             hooks_any: bool = False) -> list:
     database.init_db()
     with database.get_conn() as conn:
         if cid:
             return conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchall()
-        if only_missing_hooks:
+        if hooks_any:
+            # дозалить хуки ВСЕМ без зацепки (даже если ФИО директора не пробито —
+            # зацепка строится из специализации/заметок, ФИО не обязательно)
+            where = "(hook IS NULL OR hook='')"
+        elif only_missing_hooks:
             # дозалить хуки тем, у кого директор уже пробит, а зацепки ещё нет
             where = "(hook IS NULL OR hook='') AND person_name IS NOT NULL"
         else:
@@ -272,8 +277,8 @@ def _targets(cid: int | None, tag: str | None, limit: int, only_missing_hooks: b
 
 
 def run(cid: int | None, tag: str | None, limit: int, no_llm: bool = False,
-        batch: bool = False, hooks: bool = False) -> None:
-    rows = _targets(cid, tag, limit, only_missing_hooks=hooks)
+        batch: bool = False, hooks: bool = False, hooks_all: bool = False) -> None:
+    rows = _targets(cid, tag, limit, only_missing_hooks=hooks, hooks_any=hooks_all)
     if not rows:
         print("нечего обогащать")
         return
@@ -307,11 +312,13 @@ def main() -> None:
     p.add_argument("--no-llm", action="store_true", help="только DaData (директор/ИНН), без Claude")
     p.add_argument("--batch", action="store_true", help="через Batch API (−50%% к цене, асинхронно)")
     p.add_argument("--hooks", action="store_true", help="дозалить хуки тем, у кого директор есть, а зацепки нет")
+    p.add_argument("--hooks-all", dest="hooks_all", action="store_true",
+                   help="дозалить хуки ВСЕМ без зацепки (в т.ч. без ФИО директора)")
     args = p.parse_args()
     if not args.no_llm and not config.ANTHROPIC_API_KEY:
         print("Нет ANTHROPIC_API_KEY в .env")
         return
-    run(args.id, args.tag, args.limit, args.no_llm, args.batch, args.hooks)
+    run(args.id, args.tag, args.limit, args.no_llm, args.batch, args.hooks, args.hooks_all)
 
 
 if __name__ == "__main__":

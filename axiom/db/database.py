@@ -9,9 +9,16 @@ import config
 
 def get_conn() -> sqlite3.Connection:
     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(config.DB_PATH)
+    # timeout=30 + WAL: у AXIOM много параллельных фоновых процессов (прогрев,
+    # упаковка, слушатель, веб) пишущих в один файл. Дефолтный sqlite3 (timeout=5с,
+    # journal rollback) роняет процесс с «database is locked» уже при небольшой
+    # накладке двух писателей — WAL даёт читателям не блокировать писателя и
+    # наоборот, а больший busy_timeout просто ждёт своей очереди вместо падения.
+    conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -47,6 +54,9 @@ _EXTRA_CONTACT_COLS = {
     "confidence": "REAL",       # достоверность портрета 0..1 («85% по профилю»)
     "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
     "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
+    # --- карточка человека (bэклог P0): идентификация ---
+    "gender": "TEXT",           # male|female — угадан по имени (channels/ru_names.gender_of)
+    "is_premium": "INTEGER",    # Telegram Premium: 1/0/NULL=неизвестно (виден при парсинге User-сущности)
 }
 
 
@@ -127,6 +137,14 @@ _EXTRA_CHAT_COLS = {
     "city": "TEXT",
     "kw_last_id": "INTEGER",     # watermark: до какого msg_id уже сканировали по ключам
     "favorite": "INTEGER DEFAULT 0",   # ⭐ избранный чат — лучшие, по ним и слушаем в первую очередь
+    # СЫРОЙ telegram-id чата (entity.id, БЕЗ приставки -100). Именно его пишет парсер
+    # в tg_user_posts.chat_id — по нему и связываем «сырьё досье» с карточкой каталога.
+    # NB: chats.id (каталожный) и tg_chat_id — РАЗНЫЕ вещи, не путать при JOIN'ах.
+    "tg_chat_id": "INTEGER",
+    "members_access": "TEXT",    # открыт|ограничен|скрыт|закрыт|неизвестно (детальнее members_visible)
+    "can_export_all": "TEXT",    # да|частично (>10k, TG отдаёт лимит)|нет
+    "summary": "TEXT",           # AI-описание: что это за чат, о чём (Claude по выборке сообщений)
+    "enriched_at": "TEXT",       # когда чат обогащён ИИ
 }
 
 
@@ -339,7 +357,8 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
     if row is None and username:
         row = conn.execute("SELECT id FROM contacts WHERE username = ?", (username,)).fetchone()
 
-    cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes"]
+    cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes",
+            "gender", "is_premium"]
     vals = {c: fields.get(c) for c in cols}
 
     if row:
@@ -354,6 +373,33 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
     cur = conn.execute(
         f"INSERT INTO contacts ({', '.join(cols)}) VALUES ({placeholders})",
         [vals[c] for c in cols],
+    )
+    return cur.lastrowid
+
+
+def resolve_catalog_chat(conn: sqlite3.Connection, tg_chat_id: int | None,
+                         title: str | None = None, username: str | None = None) -> int | None:
+    """chats.id (КАТАЛОЖНЫЙ) по сырому telegram-id чата. Ищет по tg_chat_id, затем по
+    @username; если чата в каталоге ещё нет — заводит его (чат реальный: мы в нём сидим/
+    слушаем, ему место в каталоге). Заодно проставляет tg_chat_id старым записям.
+
+    Нужен потому, что chat_hits.chat_id/chats.id — каталожные, а слушатель/парсер знают
+    только telegram-id. Без резолва JOIN на chats молча не находит ничего.
+    """
+    if tg_chat_id is None:
+        return None
+    row = conn.execute("SELECT id FROM chats WHERE tg_chat_id=?", (tg_chat_id,)).fetchone()
+    if row:
+        return row["id"]
+    if username:
+        row = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
+        if row:  # чат заводили по @username до появления tg_chat_id — до-заполняем
+            conn.execute("UPDATE chats SET tg_chat_id=? WHERE id=?", (tg_chat_id, row["id"]))
+            return row["id"]
+    cur = conn.execute(
+        "INSERT INTO chats (title, username, link, tg_chat_id, status) VALUES (?,?,?,?, 'new')",
+        (title or username or str(tg_chat_id), username,
+         f"https://t.me/{username}" if username else None, tg_chat_id),
     )
     return cur.lastrowid
 
@@ -475,11 +521,14 @@ def add_event(conn: sqlite3.Connection, type: str, title: str, text: str | None 
 
 
 def warming_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Аккаунты в прогреве, у которых есть авторизованная TG-сессия.
-    «Родные» (protected) личные номера исключаем — автоматика их не трогает."""
+    """Аккаунты в прогреве, у которых есть авторизованная TG-сессия И назначен
+    прокси, который не помечен мёртвым. «Родные» (protected) исключаем — их
+    автоматика не трогает. Без этого гейта аккаунт без прокси коннектится
+    напрямую (или через общий) — сразу несколько «разных» аккаунтов светят
+    Telegram один и тот же IP, прямой путь к бану всей пачки."""
     return conn.execute(
         "SELECT * FROM accounts WHERE status='warming' AND tg_session IS NOT NULL AND tg_session<>'' "
-        "AND COALESCE(protected,0)=0"
+        "AND COALESCE(protected,0)=0 AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
     ).fetchall()
 
 

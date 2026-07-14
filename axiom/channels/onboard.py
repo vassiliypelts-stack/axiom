@@ -27,7 +27,11 @@ async def _onboard_one(acc: dict) -> tuple[bool, str]:
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
                           acc.get("api_id"), acc.get("api_hash"))
     try:
-        await client.start()
+        # НЕ client.start(): на мёртвой сессии он спрашивает номер в консоли и висит.
+        # connect + проверка авторизации → на слетевшей сессии честно выходим.
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, f"{label}: сессия слетела — нужен перелогин (кнопка «Логин»)"
         done = await _setup_profile(client, acc, force=True)
         me = await client.get_me()   # синхронизируем реальный ник обратно в нашу БД
         if me.username:

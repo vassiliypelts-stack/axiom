@@ -33,6 +33,13 @@ from channels.telegram import (
     _first_message_parts,
     _history_for_agent,
 )
+# Единый рендер первого сообщения кампании (спинтакс {a|b} + {name}/{agency}/{decision}
+# + человечность) — тот же, что в Telegram, чтобы каналы не разъезжались.
+from channels.campaign_send import (
+    _parts as _render_parts,
+    _greeting as _cs_greeting,
+    _decision_phrase,
+)
 
 app = FastAPI(title="AXIOM WhatsApp bridge")
 
@@ -50,16 +57,6 @@ class Sent(BaseModel):
     text: str = ""
     cid: int | None = None          # кампания (чтобы зафиксировать campaign_contacts)
     account_id: int | None = None   # с какого аккаунта отправлено
-
-
-def _greeting(row) -> str:
-    """Обращение для {name}: из ФИО директора «Имя Отчество», иначе имя/название."""
-    keys = row.keys()
-    pn = (row["person_name"] or "").strip() if "person_name" in keys else ""
-    if pn:
-        parts = pn.split()
-        return f"{parts[1]} {parts[2]}" if len(parts) == 3 else pn
-    return (row["name"] or "").strip()
 
 
 @app.get("/wa/campaign_outreach")
@@ -82,11 +79,8 @@ def wa_campaign_outreach(cid: int, limit: int = 10) -> JSONResponse:
     tmpl = camp.get("message_template") or ""
     out = []
     for r in rows:
-        name = _greeting(r)
         ag = (r["agency"] if "agency" in r.keys() and r["agency"] else None) or r["name"] or ""
-        text = (tmpl.replace("{name}", name).replace("{имя}", name)
-                    .replace("{agency}", ag).replace("{агентство}", ag))
-        parts = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        parts = _render_parts(tmpl, _cs_greeting(r), ag, _decision_phrase(r))
         out.append({"contact_id": r["id"], "phone": r["phone"], "parts": parts})
     return JSONResponse({"contacts": out, "cid": cid, "account_id": camp.get("account_id")})
 

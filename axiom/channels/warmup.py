@@ -412,6 +412,15 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
 
 async def run(only_id: int | None = None) -> None:
     database.init_db()
+    # само-лечение прокси: проверяем прокси прогреваемых и битые заменяем на живые
+    # бесплатные из пула — чтобы прогрев не коннектился через мёртвый/мусорный IP
+    # (иначе застревает на ступени). Сбой лечения не должен ронять прогрев.
+    try:
+        from channels import proxy_pool
+        ids = [only_id] if only_id is not None else None
+        await proxy_pool.heal(ids=ids, warming_only=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warmup] авто-лечение прокси пропущено: {e}")
     with database.get_conn() as conn:
         accs = [dict(a) for a in database.warming_accounts(conn)]
         anchors = [dict(a) for a in database.warm_anchors(conn)]
@@ -419,12 +428,14 @@ async def run(only_id: int | None = None) -> None:
     if only_id is not None:
         accs = [a for a in accs if a["id"] == only_id]
         if not accs:
-            print(f"аккаунт #{only_id} не годится для прогрева: нужен статус 'прогрев' И "
-                  f"авторизованная сессия (TG ✓). Подключи его и поставь статус 'прогрев'.")
+            print(f"аккаунт #{only_id} не годится для прогрева: нужен статус 'прогрев', "
+                  f"авторизованная сессия (TG ✓) И назначенный НЕ мёртвый прокси (проверь в колонке "
+                  f"«Прокси» — без прокси не греем, чтобы не светить Telegram общим IP пачки аккаунтов).")
             return
     if not accs:
-        print("нет аккаунтов в прогреве с сессией. Сначала: python -m channels.account_login --id N "
-              "(и статус 'warming' в «Мои агенты»)")
+        print("нет готовых к прогреву аккаунтов: нужен статус 'прогрев' + сессия + живой прокси "
+              "у каждого. Разда́й прокси (кнопка «🆓 Бесплатный прокси» или «🌐 Раздать прокси»), "
+              "потом запускай прогрев.")
         return
     print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}; ЦА-микс: {'вкл' if ca_mix else 'выкл'}")
     for acc in accs:

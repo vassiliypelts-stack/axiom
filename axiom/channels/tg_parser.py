@@ -40,6 +40,7 @@ from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import Channel, ChannelParticipantsAdmins, User
 
 import config
+from channels.ru_names import gender_of
 from channels.telegram import _build_client
 from db import database
 
@@ -123,8 +124,12 @@ async def collect_active(client, entity, scan: int, top: int,
     if chat is None:
         print("[active] у цели нет чата обсуждения — нечего сканировать.")
         return [], {}
-    chat_id = getattr(chat, "id", None)
+    chat_id = getattr(chat, "id", None)         # сырой telegram-id → в tg_user_posts.chat_id
     chat_title = getattr(chat, "title", None)
+    # заводим/находим этот чат в каталоге, чтобы «сырьё досье» связывалось с карточкой чата
+    if chat_id and harvest:
+        with database.get_conn() as conn:
+            database.resolve_catalog_chat(conn, chat_id, chat_title, getattr(chat, "username", None))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     counts: Counter[int] = Counter()
     texts: dict[int, list[tuple]] = defaultdict(list)  # uid -> [(msg_id, ts, text), ...]
@@ -177,14 +182,17 @@ def _save_lead(conn, u: User, target: str, role: str) -> str:
             new_tags = f"{old}, {tag}" if old else tag
             conn.execute("UPDATE contacts SET tags=?, updated_at=datetime('now') WHERE id=?", (new_tags, existing["id"]))
         return "dup"
+    name = _display_name(u)
     cid = database.upsert_contact(
         conn,
         source="tg_parse",
         username=u.username,
         tg_user_id=u.id,
-        name=_display_name(u),
+        name=name,
         tags=tag,
         notes=f"Найден парсером TG в {target} ({role})",
+        gender=gender_of(name),
+        is_premium=1 if getattr(u, "premium", False) else 0,
     )
     conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
     return "new"

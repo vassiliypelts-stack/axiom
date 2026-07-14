@@ -393,6 +393,7 @@ function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</s
 const NAV_GROUPS=[
   {title:"",items:[
     {id:"dashboard",ic:"📊",label:"Дашборд"},
+    {id:"orgchart",ic:"🏛️",label:"Структура"},
     {id:"calendar",ic:"📅",label:"Календарь"},
   ]},
   {title:"CRM",collapsible:true,items:[
@@ -717,19 +718,23 @@ async function viewAgents(v){
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
         <button id="wa-save">сохранить</button>
         <button class="primary" id="wa-run">🔥 Прогреть всех сейчас</button>
+        <button id="wa-stop" title="Остановить текущий фоновый прогрев">⏹ Стоп</button>
         <span class="hint" id="wa-msg"></span>
       </div>
-      <div class="hint" style="margin-top:8px">Фон двигает каждый аккаунт в статусе «прогрев» на +1 ступень за заход (~2 недели до «активен»). Прогресс — в колонке «Прогрев» ниже. Человекоподобный темп: первые дни только пассив (каналы/чтение/лайки/онлайн), ЛС позже и плавно.</div></div>
+      <div class="hint" style="margin-top:8px">Фон двигает каждый аккаунт в статусе «прогрев» на +1 ступень за заход (~2 недели до «активен»). Прогресс — в колонке «Прогрев» ниже. Человекоподобный темп: первые дни только пассив (каналы/чтение/лайки/онлайн), ЛС позже и плавно. Греем ТОЛЬКО с живым прокси — без прокси/с мёртвым аккаунт пропускается (раздай прокси кнопкой «🆓 Бесплатный прокси» ниже).</div></div>
     <div id="acc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
       <b style="font-size:13px">Массово (<span id="ab-cnt">0</span>):</b>
       <button id="ab-selall" title="выделить все строки, что сейчас видны после фильтра/поиска">☑ Выделить всё</button>
       <button id="ab-selnone" title="снять выделение со всех">☐ Снять</button>
+      <button id="ab-selbattle" title="выделить всех, кроме родных (protected) — безопасно гонять массовые действия, не задев личные номера">🪖 Выделить боевых</button>
+      <button id="ab-selnative" title="выделить только родные (protected) номера">🏠 Выделить родных</button>
       <span style="width:1px;height:18px;background:var(--border)"></span>
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">🛡 Проверить выбранные</button>
       <button id="ab-invent">📋 Инвентаризация чатов</button>
       <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">✨ Оформить (имя+ник+bio+фото+приватность)</button>
       <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
+      <button id="ab-proxy-pool" title="Бесплатный MTProto из общего пула — сразу выбранным, включая тех, у кого прокси уже помечен мёртвым (заменит на свежий с минимальным пингом)">🆓 Бесплатный прокси (пул)</button>
       <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
       <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
       <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет 🟢 живой / 🔴 мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
@@ -761,7 +766,11 @@ async function viewAgents(v){
     const r=await api("/api/warmup/run_now",{method:"POST"});
     b.disabled=false;b.textContent="🔥 Прогреть всех сейчас";
     if(r.error){$("#wa-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
-    $("#wa-msg").innerHTML='<span style="color:var(--green)">прогреваю '+r.warming+' акк. — прогресс обновится через пару минут (обнови страницу)</span>';};
+    $("#wa-msg").innerHTML='<span style="color:var(--green)">прогреваю '+r.warming+' акк.'+(r.skipped_no_proxy?` · без живого прокси пропущено: ${r.skipped_no_proxy}`:'')+' — прогресс обновится через пару минут (обнови страницу)</span>';};
+  $("#wa-stop").onclick=async()=>{const b=$("#wa-stop");b.disabled=true;
+    const r=await api("/api/warmup/stop",{method:"POST"});
+    b.disabled=false;
+    $("#wa-msg").textContent=r.stopped?"⏹ прогрев остановлен":(r.note||"нечего останавливать");};
   const selAcc=new Set();
   let accFiltered=a.slice();   // текущий отфильтрованный набор строк таблицы
   const updBulkCnt=()=>{const c=$("#ab-cnt");if(c)c.textContent=selAcc.size;};
@@ -769,8 +778,8 @@ async function viewAgents(v){
     tableKey:"agents",
     rows:a,searchKeys:["label","phone","username","role"],
     onDraw:rows=>{accFiltered=rows;},
-    groupOptions:[{key:"role",label:"роль"},{key:"status",label:"статус"}],
-    groupFmt:(k,val)=>k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
+    groupOptions:[{key:"protected",label:"родной/боевой"},{key:"role",label:"роль"},{key:"status",label:"статус"}],
+    groupFmt:(k,val)=>k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
@@ -833,6 +842,8 @@ async function viewAgents(v){
   const syncSelDom=()=>{$("#acc-tbl").querySelectorAll(".acc-sel").forEach(cb=>cb.checked=selAcc.has(+cb.dataset.id));updBulkCnt();};
   $("#ab-selall").onclick=()=>{accFiltered.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`выделено ${accFiltered.length} (отфильтрованных)`;};
   $("#ab-selnone").onclick=()=>{selAcc.clear();syncSelDom();$("#ab-msg").textContent="выделение снято";};
+  $("#ab-selbattle").onclick=()=>{selAcc.clear();const battle=accFiltered.filter(r=>!r.protected);battle.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🪖 выделено боевых: ${battle.length} (родные не тронуты)`;};
+  $("#ab-selnative").onclick=()=>{selAcc.clear();const native=accFiltered.filter(r=>r.protected);native.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🏠 выделено родных: ${native.length}`;};
   $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
@@ -845,6 +856,7 @@ async function viewAgents(v){
   $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
   $("#ab-proxy").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxyDistDialog([...selAcc],bulk);};
+  $("#ab-proxy-pool").onclick=()=>bulk({action:"proxy_pool_assign"},r=>`🆓 обновляю пул и раздаю бесплатный прокси ${r.queued} акк. в фоне (30-90с)${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""} — колонка «Прокси» обновится, обнови страницу`);
   $("#ab-proxy-check").onclick=()=>bulk({action:"proxy_check"},r=>`🔎 проверяю прокси у ${r.queued} акк. в фоне (30-60с)${r.skipped_no_proxy?` · без прокси пропущено: ${r.skipped_no_proxy}`:""} — цвет в колонке «Прокси» обновится, обнови страницу`);
   $("#ab-proxy6").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxy6BuyDialog([...selAcc],bulk);};
   $("#ab-proxy6-check").onclick=async()=>{
@@ -1048,6 +1060,174 @@ async function viewAiAgents(v){
     const r=await api("/api/aiagents",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const m=list.querySelector(`.aie-msg[data-id="${id}"]`);if(m)m.textContent=r.ok?"✅ сохранено":(r.error||"ошибка");});
   list.querySelectorAll(".aie-del").forEach(b=>b.onclick=async()=>{if(!confirm("Удалить агента?"))return;await api(`/api/aiagents/${b.dataset.id}/delete`,{method:"POST"});route();});
+}
+
+// ----------------------------------------------------------------- оргструктура
+let ORG_TAB="chart";
+function setOrgTab(){["chart","members"].forEach(t=>{const b=$("#ot-"+t);if(b)b.classList.toggle("primary",ORG_TAB===t);});}
+async function viewOrgChart(v){
+  v.innerHTML=`<p class="sub" style="margin-top:0">Оргструктура: отделы и сотрудники внутри — живые люди и виртуальные ИИ-агенты. Чтобы видеть, какая у тебя команда и кто за что отвечает.</p>
+    <div class="ttoolbar"><button id="ot-chart" class="primary">🏛️ Схема</button><button id="ot-members">👥 Сотрудники</button></div>
+    <div id="ot-body" style="margin-top:12px"></div>`;
+  $("#ot-chart").onclick=()=>{ORG_TAB="chart";setOrgTab();renderOrgBody();};
+  $("#ot-members").onclick=()=>{ORG_TAB="members";setOrgTab();renderOrgBody();};
+  setOrgTab();renderOrgBody();
+}
+async function renderOrgBody(){
+  const body=$("#ot-body");if(!body)return;
+  const agents=await api("/api/aiagents");
+  if(ORG_TAB==="members"){await renderOrgMembers(body);return;}
+  await renderOrgChartTab(body,agents);
+}
+function orgKindOpts(m){
+  return `<option value="human" ${(!m||m.kind==='human')?'selected':''}>👤 живой человек</option><option value="agent" ${m&&m.kind==='agent'?'selected':''}>🤖 ИИ-агент</option>`;
+}
+function orgAgentOpts(agents,m){
+  return `<option value="">— выбери агента —</option>`+agents.map(a=>`<option value="${a.id}" ${m&&String(m.ai_agent_id)===String(a.id)?"selected":""}>${esc(a.name||("#"+a.id))}${a.task?(" · "+esc(AI_TASKS[a.task]||a.task)):""}</option>`).join("");
+}
+function orgParentOpts(depts,selId,excludeId){
+  return `<option value="">— без родителя (верхний уровень) —</option>`+depts.filter(d=>d.id!==excludeId).map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?"selected":""}>${esc(d.name)}</option>`).join("");
+}
+function orgMemberFormHtml(deptId,agents,m){
+  const id=m?m.id:"";
+  const isAgent=m&&m.kind==='agent';
+  return `<div class="row2">
+      <div class="field"><label>Тип</label><select class="om-kind">${orgKindOpts(m)}</select></div>
+      <div class="field om-agentwrap" style="${isAgent?'':'display:none'}"><label>ИИ-агент</label><select class="om-agent">${orgAgentOpts(agents,m)}</select></div>
+    </div>
+    <div class="row2"><div class="field"><label>Имя${isAgent?' (пусто = имя агента)':''}</label><input class="om-name" value="${esc((m&&m.name)||'')}" placeholder="${isAgent?'':'Никита Хрупин'}"></div>
+      <div class="field"><label>Роль/должность</label><input class="om-role" value="${esc((m&&m.role)||'')}" placeholder="Менеджер по продажам"></div></div>
+    <div class="row2"><div class="field"><label>Телефон</label><input class="om-phone" value="${esc((m&&m.phone)||'')}"></div>
+      <div class="field"><label>Email</label><input class="om-email" value="${esc((m&&m.email)||'')}"></div></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin:4px 0 10px"><input type="checkbox" class="om-access" ${m&&m.needs_access?"checked":""}> нужен доступ в пульт (пока просто пометка на будущее)</label>
+    <div><button class="primary om-save" data-dept="${deptId}" data-id="${id}">💾 ${m?'сохранить':'добавить'}</button> <button class="om-cancel">отмена</button> <span class="hint om-msg"></span></div>`;
+}
+function wireOrgMemberForm(wrap){
+  const kindSel=wrap.querySelector(".om-kind");
+  kindSel.onchange=()=>{wrap.querySelector(".om-agentwrap").style.display=kindSel.value==="agent"?"":"none";};
+  wrap.querySelector(".om-cancel").onclick=()=>{wrap.style.display="none";wrap.innerHTML="";};
+  wrap.querySelector(".om-save").onclick=async()=>{
+    const btn=wrap.querySelector(".om-save");
+    const body={
+      id:btn.dataset.id||null, department_id:+btn.dataset.dept,
+      kind:kindSel.value,
+      name:wrap.querySelector(".om-name").value,
+      role:wrap.querySelector(".om-role").value,
+      phone:wrap.querySelector(".om-phone").value,
+      email:wrap.querySelector(".om-email").value,
+      needs_access:wrap.querySelector(".om-access").checked,
+      ai_agent_id:kindSel.value==="agent"?(wrap.querySelector(".om-agent").value||null):null,
+    };
+    const r=await api("/api/org/member",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.error){wrap.querySelector(".om-msg").textContent=r.error;return;}
+    renderOrgBody();
+  };
+}
+function orgMemberChip(m){
+  const ic=m.kind==='agent'?'🤖':'👤';
+  const sub=[m.role, m.kind==='agent'?(AI_TASKS[m.agent_task]||''):null].filter(Boolean).join(" · ");
+  return `<div class="card" data-id="${m.id}" style="padding:8px 10px;min-width:170px">
+    <div style="font-weight:600">${ic} ${esc(m.name||'без имени')}</div>
+    ${sub?`<div class="hint">${esc(sub)}</div>`:""}
+    ${m.phone?`<div class="hint">${esc(m.phone)}</div>`:""}
+    ${m.needs_access?'<span class="badge b-active" style="margin-top:4px;display:inline-block">🔑 нужен доступ</span>':''}
+    <div class="ttoolbar" style="margin:6px 0 0"><button class="om-edit" data-id="${m.id}">✏️</button><button class="om-del" data-id="${m.id}">🗑</button></div>
+  </div>`;
+}
+async function renderOrgChartTab(body,agents){
+  const data=await api("/api/org/tree");
+  const depts=data.departments||[];
+  body.innerHTML=`
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;margin-bottom:10px">➕ Новый отдел</div>
+      <div class="row2"><div class="field"><label>Название</label><input id="od-name" placeholder="Продажи Сочи"></div>
+        <div class="field"><label>Родительский отдел</label><select id="od-parent">${orgParentOpts(depts,null,null)}</select></div></div>
+      <div class="field"><label>Зона ответственности</label><input id="od-desc" placeholder="Прогрев и рассылка по агентствам Сочи"></div>
+      <button class="primary" id="od-add">Создать отдел</button> <span class="hint" id="od-msg"></span>
+    </div>
+    <div id="od-tree"></div>`;
+  $("#od-add").onclick=async()=>{
+    const name=$("#od-name").value.trim();if(!name){$("#od-msg").textContent="нужно название";return;}
+    const r=await api("/api/org/department",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name,description:$("#od-desc").value,parent_id:$("#od-parent").value||null})});
+    if(r.error){$("#od-msg").textContent=r.error;return;}
+    $("#od-name").value="";$("#od-desc").value="";$("#od-msg").textContent="";
+    renderOrgBody();
+  };
+  const treeEl=$("#od-tree");
+  if(!depts.length){treeEl.innerHTML='<div class="empty">Отделов нет — создай первый формой выше.</div>';return;}
+  const byParent={};depts.forEach(d=>{const p=d.parent_id||0;(byParent[p]=byParent[p]||[]).push(d);});
+  const renderDept=(d,depth)=>{
+    const kids=byParent[d.id]||[];
+    return `<div class="card" style="margin:${depth?'8px 0 8px '+(depth*24)+'px':'0 0 12px'};background:var(--panel2)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div><b>🏛️ ${esc(d.name)}</b>${d.description?`<div class="sub" style="margin-top:2px">${esc(d.description)}</div>`:""}</div>
+        <div class="ttoolbar" style="margin:0">
+          <button class="od-addmember" data-id="${d.id}">➕ сотрудник</button>
+          <button class="od-addsub" data-id="${d.id}">➕ подотдел</button>
+          <button class="od-del" data-id="${d.id}">🗑</button>
+        </div>
+      </div>
+      <div class="od-members" data-id="${d.id}" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">
+        ${(d.members||[]).map(m=>orgMemberChip(m)).join("")||'<span class="hint">пока никого</span>'}
+      </div>
+      <div class="od-mform" data-id="${d.id}" style="display:none;margin-top:10px"></div>
+    </div>` + kids.map(k=>renderDept(k,depth+1)).join("");
+  };
+  treeEl.innerHTML=(byParent[0]||[]).map(d=>renderDept(d,0)).join("");
+  treeEl.querySelectorAll(".od-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Удалить отдел?"))return;
+    const r=await api(`/api/org/department/${b.dataset.id}/delete`,{method:"POST"});
+    if(r.error){alert(r.error);return;}
+    renderOrgBody();
+  });
+  treeEl.querySelectorAll(".od-addsub").forEach(b=>b.onclick=()=>{
+    const sel=$("#od-parent");if(sel)sel.value=b.dataset.id;
+    $("#od-name").scrollIntoView({behavior:"smooth",block:"center"});$("#od-name").focus();
+  });
+  treeEl.querySelectorAll(".od-addmember").forEach(b=>b.onclick=()=>{
+    const wrap=treeEl.querySelector(`.od-mform[data-id="${b.dataset.id}"]`);
+    if(!wrap)return;
+    const show=wrap.style.display==="none";
+    wrap.style.display=show?"block":"none";
+    if(show){wrap.innerHTML=orgMemberFormHtml(b.dataset.id,agents,null);wireOrgMemberForm(wrap);}
+  });
+  treeEl.querySelectorAll(".om-edit").forEach(b=>b.onclick=()=>{
+    const mid=b.dataset.id;
+    let member=null,deptId=null;
+    depts.forEach(d=>(d.members||[]).forEach(m=>{if(String(m.id)===String(mid)){member=m;deptId=d.id;}}));
+    if(!member)return;
+    const wrap=treeEl.querySelector(`.od-mform[data-id="${deptId}"]`);
+    if(!wrap)return;
+    wrap.style.display="block";wrap.innerHTML=orgMemberFormHtml(deptId,agents,member);
+    wireOrgMemberForm(wrap);
+    wrap.scrollIntoView({behavior:"smooth",block:"center"});
+  });
+  treeEl.querySelectorAll(".om-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Удалить сотрудника из отдела?"))return;
+    await api(`/api/org/member/${b.dataset.id}/delete`,{method:"POST"});
+    renderOrgBody();
+  });
+}
+async function renderOrgMembers(body){
+  const items=await api("/api/org/members");
+  body.innerHTML=`<table><thead><tr>
+      <th></th><th>Имя</th><th>Роль</th><th>Отдел</th><th>Телефон</th><th>Email</th><th>Доступ</th><th></th>
+    </tr></thead><tbody>${items.length?items.map(m=>`<tr data-id="${m.id}">
+      <td>${m.kind==='agent'?'🤖':'👤'}</td>
+      <td>${esc(m.name||'—')}</td>
+      <td>${esc(m.role||'—')}</td>
+      <td>${esc(m.department_name||'—')}</td>
+      <td>${esc(m.phone||'—')}</td>
+      <td>${esc(m.email||'—')}</td>
+      <td>${m.needs_access?'🔑 да':'—'}</td>
+      <td><button class="omt-del" data-id="${m.id}">🗑</button></td>
+    </tr>`).join(""):'<tr><td colspan="8" class="empty">Сотрудников нет — добавь на вкладке «Схема».</td></tr>'}</tbody></table>`;
+  body.querySelectorAll(".omt-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Удалить сотрудника?"))return;
+    await api(`/api/org/member/${b.dataset.id}/delete`,{method:"POST"});
+    renderOrgBody();
+  });
 }
 
 async function loadContacts(){STATE.contacts=await api("/api/contacts");return STATE.contacts;}
@@ -1580,6 +1760,14 @@ async function viewChatCatalog(v){
     await api(`/api/chatcat/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({favorite:nv})});
   });
 }
+function renderChatAgents(agents){
+  if(!agents||!agents.length)return '<div class="no">пока нет — «🔄 Инвентаризация» или «🚀 Разослать армию по чатам»</div>';
+  return `<table style="margin:0"><thead><tr><th>Агент</th><th>TG</th><th>Статус</th></tr></thead><tbody>`+
+    agents.map(a=>`<tr><td><span class="lnk" data-agid="${a.id}" style="cursor:pointer;color:var(--accent)">${esc(a.label||("#"+a.id))} ↗</span></td>`+
+      `<td>${a.username?`<a class="ext" href="https://t.me/${esc(a.username)}" target="_blank">@${esc(a.username)} ↗</a>`:'<span class="no">—</span>'}</td>`+
+      `<td>${esc(ACC_ST[a.status]||a.status||"—")}</td></tr>`).join("")+
+    `</tbody></table>`;
+}
 function renderChatAdmins(admins){
   if(!admins||!admins.length)return '<div class="no">пока нет — нажми «📊 Анализ»</div>';
   return `<table style="margin:0"><thead><tr><th>Имя</th><th>Аккаунт</th></tr></thead><tbody>`+
@@ -1597,17 +1785,23 @@ async function openChat(id){
     <div class="row2"><div class="field"><label>Участники</label><div class="v mono">${c.members_count!=null?Number(c.members_count).toLocaleString("ru-RU"):"—"}</div></div>
       <div class="field"><label>Активность</label><div class="v">${esc(c.activity)||"—"}</div></div></div>
     <div class="row2"><div class="field"><label>Могу писать</label><div class="v">${c.can_write?`<span class="badge b-${c.can_write==='да'?'active':(c.can_write==='заблокирован'||c.can_write==='только админы'||c.can_write==='ограничено')?'stop':'nurture'}">${esc(c.can_write)}</span>`:"—"}</div></div>
-      <div class="field"><label>Участники видны</label><div class="v">${esc(c.members_visible)||"—"}</div></div></div>
+      <div class="field"><label>Список участников</label><div class="v">${c.members_access?`<span class="badge b-${c.members_access==='открыт'?'active':c.members_access==='закрыт'?'stop':'nurture'}">${esc(c.members_access)}</span>`:(esc(c.members_visible)||"—")}</div></div></div>
+    <div class="row2"><div class="field"><label>Можно выгрузить целиком</label><div class="v">${c.can_export_all?esc(c.can_export_all):"—"}${c.can_export_all==='частично'?' <span class="sub">(>10k — остальных добираем комментаторами)</span>':""}</div></div>
+      <div class="field"></div></div>
     <div class="row2"><div class="field"><label>Тип</label><div class="v">${esc(c.kind)||"—"}${c.in_account==='yes'?' · <span class="badge b-active">в моём аккаунте</span>':""}</div></div>
       <div class="field"><label>Статус</label><select data-k="status">${STO.map(([k,l])=>`<option value="${k}" ${k===c.status?"selected":""}>${l}</option>`).join("")}</select></div></div>
+    ${c.summary?`<div class="field"><label>🧠 AI-описание чата</label><div class="v" style="white-space:pre-wrap;background:var(--panel2);padding:8px;border-radius:6px">${esc(c.summary)}</div></div>`:""}
     <div class="row2"><div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
       <div class="field"><label>Город</label><input data-k="city" value="${esc(c.city||"")}"></div></div>
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
     <div class="ttoolbar" style="margin:4px 0"><button class="primary" id="cc-save">💾 Сохранить</button><button id="cc-del">🗑 Удалить</button></div>
+    <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Мои агенты в этом чате (${(c.agents||[]).length})</label>
+    <div id="cc-agents" style="margin-top:6px">${renderChatAgents(c.agents)}</div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Админы (${(c.admins||[]).length}) — часто это ЛПР</label>
     <div id="cc-admins" style="margin-top:6px">${renderChatAdmins(c.admins)}</div>
     ${c.last_scanned_at?`<div class="sub" style="margin-top:8px">проанализирован ${fmt(c.last_scanned_at)}</div>`:""}`;
-  $("#cc-scan").onclick=async()=>{const b=$("#cc-scan"),m=$("#cc-scan-msg");b.disabled=true;b.textContent="анализирую… (до ~1 мин)";m.textContent="аккаунт читает чат: участники, активность, админы…";
+  $("#dr-body").querySelectorAll(".lnk[data-agid]").forEach(el=>el.onclick=()=>openAgent(+el.dataset.agid));
+  $("#cc-scan").onclick=async()=>{const b=$("#cc-scan"),m=$("#cc-scan-msg");b.disabled=true;b.textContent="анализирую… (до ~1 мин)";m.textContent="аккаунт читает чат: участники, активность, админы, AI-тема…";
     const r=await api(`/api/chatcat/${id}/scan`,{method:"POST"});
     if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка анализа — проверь @username и что аккаунт авторизован. Лог: '+esc((r.output||"").slice(-300))+'</span>';b.disabled=false;b.textContent="📊 Анализ (чтение)";return;}
     openChat(id);};
@@ -1745,6 +1939,7 @@ async function viewLeadHits(v){
 function setHitTab(){["new","lead","ignored"].forEach(t=>{const b=$("#ht-"+(t==="ignored"?"ign":t));if(b)b.classList.toggle("primary",HIT_TAB===t);});}
 async function renderHits(){
   const body=$("#ht-body");if(!body)return;
+  if(HIT_TAB==="lead"){await renderTargetLeads(body);return;}
   const d=await api(`/api/hits?status=${HIT_TAB}`);
   const cnt=$("#ht-cnt");if(cnt)cnt.textContent=`новых: ${d.counts.new||0} · в лидах: ${d.counts.lead||0} · игнор: ${d.counts.ignored||0}`;
   if(!d.items.length){body.innerHTML='<div class="empty">Пусто. Добавь чаты в «📡 Чаты», задай ниши и нажми «Прослушать чаты сейчас».</div>';return;}
@@ -1758,16 +1953,56 @@ async function renderHits(){
       </div>
       <div class="ttoolbar" style="margin:0;flex-direction:column">
         ${h.msg_link?`<a class="btn ext" href="${esc(h.msg_link)}" target="_blank" style="text-decoration:none">💬 Открыть сообщение</a>`:""}
-        ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в лиды</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
+        ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в лиды (+ AI-скоринг)</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
           :h.status==="lead"?`<span class="badge b-won">в CRM${h.contact_id?" #"+h.contact_id:""}</span>${h.contact_id?`<button class="primary ht-deal" data-cid="${h.contact_id}">✅ В сделку</button>`:""}`:`<span class="badge b-stop">игнор</span>`}
       </div></div></div>`).join("");
-  body.querySelectorAll(".ht-lead").forEach(b=>b.onclick=async()=>{b.textContent="…";
+  body.querySelectorAll(".ht-lead").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="⏳ скорю…";
     const r=await api(`/api/hit/${b.dataset.id}/lead`,{method:"POST"});
-    if(r.error){alert(r.error);return;}renderHits();});
+    if(r.error){alert(r.error);b.disabled=false;b.textContent="→ в лиды (+ AI-скоринг)";return;}
+    renderHits();});
   body.querySelectorAll(".ht-deal").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="…";
     await convertToDeal(+b.dataset.cid);b.disabled=false;b.textContent="✅ В сделку";});
   body.querySelectorAll(".ht-ign").forEach(b=>b.onclick=async()=>{
     await api(`/api/hit/${b.dataset.id}/ignore`,{method:"POST"});renderHits();});
+}
+let TL_SEG="";
+async function renderTargetLeads(body){
+  const d=await api("/api/target_leads");
+  const cnt=$("#ht-cnt");
+  if(cnt)cnt.textContent=`обработано AI: ${d.counts.processed} · подходящих: ${d.counts.qualified} · отправлено: ${d.counts.sent} · ответили: ${d.counts.replied}`;
+  const segOpts=`<option value="">все сферы</option>`+d.segments.map(s=>`<option value="${esc(s.segment)}" ${TL_SEG===s.segment?"selected":""}>${esc(s.segment)} (${s.c})</option>`).join("");
+  const rows=TL_SEG?d.items.filter(x=>x.segment===TL_SEG):d.items;
+  body.innerHTML=`<div class="ttoolbar" style="margin:0 0 10px"><select id="tl-seg">${segOpts}</select>
+      <span class="hint">${rows.length} из ${d.items.length}</span></div>
+    <div id="tl-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>`;
+  $("#tl-seg").onchange=e=>{TL_SEG=e.target.value;renderTargetLeads(body);};
+  const grid=$("#tl-grid");
+  if(!rows.length){grid.innerHTML='<div class="empty">Пока нет заскоренных лидов — перенеси находки из «Новые» кнопкой «→ в лиды».</div>';return;}
+  grid.innerHTML=rows.map(c=>{
+    const score=c.score!=null?(+c.score).toFixed(2):null;
+    const scoreCls=score==null?"":(+score>=0.7?"b-active":(+score>=0.4?"b-nurture":"b-stop"));
+    return `<div class="card tl-card" data-id="${c.id}" style="cursor:pointer">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+        <div><b>${esc(c.name)||("#"+c.id)}</b> ${c.username?`<span class="tg">@${esc(c.username)}</span>`:""}</div>
+        ${score!=null?`<span class="badge ${scoreCls}" title="AI-скоринг (0-1)">${score}</span>`:'<span class="badge b-nurture" title="ещё не скорился">—</span>'}
+      </div>
+      <div class="sub" style="margin:4px 0">${c.segment?`<span class="badge b-active" style="margin-right:4px">${esc(c.segment)}</span>`:""}${c.source_chat?"из «"+esc(c.source_chat)+"»":""}</div>
+      ${c.pains?`<div class="sub" style="margin:4px 0">${esc(c.pains)}</div>`:""}
+      ${c.quotes?`<div style="background:var(--panel2);border-left:3px solid var(--accent);padding:6px 8px;margin:6px 0;font-size:12.5px;font-style:italic">"${esc(c.quotes)}"</div>`:""}
+      ${c.rec_message?`<div style="background:var(--accent-soft);border-radius:6px;padding:6px 8px;margin:6px 0;font-size:12.5px"><b>💬 Подход:</b> ${esc(c.rec_message)}</div>`:""}
+      <div class="ttoolbar" style="margin:8px 0 0" onclick="event.stopPropagation()">
+        ${c.username?`<a class="btn ext" href="https://t.me/${esc(c.username)}" target="_blank" style="text-decoration:none">TG ↗</a>`:""}
+        <button class="primary tl-write" data-id="${c.id}">✍️ Написать</button>
+        ${score==null?`<button class="tl-enrich" data-id="${c.id}">🧠 Скорить</button>`:""}
+      </div></div>`;
+  }).join("");
+  grid.querySelectorAll(".tl-card").forEach(el=>el.onclick=()=>openDossier(+el.dataset.id));
+  grid.querySelectorAll(".tl-write").forEach(b=>b.onclick=e=>{e.stopPropagation();openDossier(+b.dataset.id);});
+  grid.querySelectorAll(".tl-enrich").forEach(b=>b.onclick=async e=>{e.stopPropagation();
+    b.disabled=true;b.textContent="⏳";
+    const r=await api(`/api/contact/${b.dataset.id}/enrich_now`,{method:"POST"});
+    if(r.error){alert(r.error);b.disabled=false;b.textContent="🧠 Скорить";return;}
+    renderTargetLeads(body);});
 }
 
 async function viewDossier(v){
@@ -2324,17 +2559,23 @@ async function openDossier(id){
       ${fld("Лучшее время",c.best_time)}${fld("📷 Анализ фото",c.photo_analysis)}${fld("Цитаты из чатов",c.quotes)}
       ${c.rec_message?`<div class="field"><label>💬 Рекомендуемое первое сообщение</label><div class="v" style="background:var(--panel);padding:8px;border-radius:6px;border-left:3px solid var(--accent)">${esc(c.rec_message)}</div></div>`:""}
     </div>`:"";
+  const sourceBlock=c.source_chat_title?`<div class="field"><label>📡 Найден в чате</label><div class="v">${
+    c.source_chat_link?`<a class="ext" href="${esc(c.source_chat_link)}" target="_blank">${esc(c.source_chat_title)} ↗</a>`:esc(c.source_chat_title)
+    }${c.source_chat_id?` <span class="lnk" data-chid="${c.source_chat_id}" style="cursor:pointer;color:var(--accent);margin-left:6px">карточка чата ↗</span>`:""}</div></div>`:"";
   $("#dr-body").innerHTML=`
     <div class="row2"><div class="field"><label>Статус</label><div class="v">${statusBadge(c.status)}</div></div>
       <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
     ${dossierBlock}
+    ${sourceBlock}
     ${enrichBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
       <div class="field"><label>🏢 Компания</label><div class="v">${c.company_id?`<span class="lnk" data-coid="${c.company_id}" style="cursor:pointer;color:var(--accent)">${esc(c.company_name||c.agency||"компания")} ↗</span>`:(esc(c.agency)||"—")}</div></div></div>
     <div class="field"><label>🗂 Воронка / продукт</label>
       <select id="dr-pipe">${PIPELINES.map(p=>`<option value="${p.id}" ${(c.pipeline_id===p.id||(c.pipeline_id==null&&p.is_default))?"selected":""}>${esc(p.name)}</option>`).join("")}</select></div>
-    <div class="row2"><div class="field"><label>Telegram</label><div class="v">${tgLink}</div></div>
+    <div class="row2"><div class="field"><label>Telegram</label><div class="v">${tgLink}${c.is_premium?' <span class="badge b-active">⭐ Premium</span>':""}</div></div>
       <div class="field"><label>Телефон</label><div class="v mono">${esc(c.phone)||"—"}</div></div></div>
+    <div class="row2"><div class="field"><label>Пол</label><div class="v">${c.gender==='male'?'муж.':c.gender==='female'?'жен.':'<span class="no">—</span>'}</div></div>
+      <div class="field"></div></div>
     <div class="field"><label>WhatsApp</label><div class="v">${waLink}</div></div>
     <div class="field"><label>Теги</label><div class="v">${tagsCell(c)}</div></div>
     <div class="field"><label>Заметки</label><div class="v">${esc(c.notes)||'<span class="no">нет</span>'}</div></div>
@@ -2345,6 +2586,7 @@ async function openDossier(id){
     <div class="th-body" style="max-height:none;padding:12px 0">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}</div></div>`).join("")||'<div class="no">Сообщений нет</div>'}</div>`;
   bindTags($("#dr-body"));
   $("#dr-body").querySelectorAll(".lnk[data-coid]").forEach(el=>el.onclick=()=>openCompany(+el.dataset.coid));
+  $("#dr-body").querySelectorAll(".lnk[data-chid]").forEach(el=>el.onclick=()=>openChat(+el.dataset.chid));
   const cb=$("#dr-ctx-save");
   if(cb)cb.onclick=async()=>{cb.textContent="…";
     await api(`/api/contact/${id}/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_context:$("#dr-context").value})});
@@ -2578,7 +2820,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,aiagents:viewAiAgents,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,aiagents:viewAiAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
 
 let NAV_COLLAPSE={};try{NAV_COLLAPSE=JSON.parse(localStorage.getItem("axiom_nav_collapse")||"{}");}catch(e){}
 let NAV_ORDER=null;try{NAV_ORDER=JSON.parse(localStorage.getItem("axiom_nav_order")||"null");}catch(e){}

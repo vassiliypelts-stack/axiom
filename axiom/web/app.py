@@ -16,8 +16,8 @@ import io
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, Body, UploadFile, File, Form
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Body, UploadFile, File, Form, Request
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 
 import config
 from db import database
@@ -36,6 +36,93 @@ FUNNEL = [
 FUNNEL_KEYS = [k for k, _ in FUNNEL]
 
 app = FastAPI(title="AXIOM Dashboard")
+
+# --------------------------------------------------------------------------- #
+#  Вход по паролю (закрытый доступ на сервере).                                #
+#  Включается ТОЛЬКО если задана переменная окружения AXIOM_PASSWORD —         #
+#  локально (без неё) пульт работает как раньше, без входа. Работает с любого  #
+#  IP: привязки к адресу нет. ⚠️ По-настоящему безопасно только под HTTPS      #
+#  (иначе пароль идёт по сети открытым текстом) — это следующий шаг.           #
+# --------------------------------------------------------------------------- #
+import hashlib as _hashlib
+import hmac as _hmac
+import os as _os_auth
+
+_AUTH_PW = _os_auth.environ.get("AXIOM_PASSWORD", "").strip()
+_AUTH_COOKIE = "axiom_auth"
+_AUTH_OPEN = {"/login", "/favicon.ico", "/health"}
+
+
+def _auth_token() -> str:
+    """Стабильный токен из пароля: меняется при смене пароля (старые входы слетают)."""
+    return _hmac.new(_AUTH_PW.encode(), b"axiom-web-v1", _hashlib.sha256).hexdigest()
+
+
+_LOGIN_HTML = """<!doctype html><html lang=ru><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>AXIOM — вход</title>
+<style>
+body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0b1020;font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#e8ecf5}
+form{background:#141b2f;padding:32px 28px;border-radius:16px;width:300px;
+box-shadow:0 20px 60px rgba(0,0,0,.5);border:1px solid #222c46}
+h1{font-size:20px;margin:0 0 4px;text-align:center}
+p{color:#8b96b3;font-size:13px;margin:0 0 20px;text-align:center}
+input{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:10px;
+border:1px solid #2a3557;background:#0d1428;color:#fff;font-size:15px;margin-bottom:12px}
+button{width:100%;padding:12px;border:0;border-radius:10px;background:#5b6cff;
+color:#fff;font-size:15px;font-weight:600;cursor:pointer}
+button:hover{background:#4a5bef}
+.err{background:#3a1622;color:#ff9db1;padding:9px 12px;border-radius:8px;
+font-size:13px;margin-bottom:12px;text-align:center}
+</style>
+<form method=post action=/login>
+<h1>🔒 AXIOM</h1><p>Пульт оператора — вход</p>
+<!--ERR-->
+<input type=password name=password placeholder="Пароль" autofocus required>
+<button type=submit>Войти</button>
+</form></html>"""
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    if not _AUTH_PW:                       # защита выключена (локальный режим)
+        return await call_next(request)
+    path = request.url.path
+    if path in _AUTH_OPEN:
+        return await call_next(request)
+    if _hmac.compare_digest(request.cookies.get(_AUTH_COOKIE, ""), _auth_token()):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"error": "нужен вход в пульт"}, status_code=401)
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.get("/login")
+def login_page() -> HTMLResponse:
+    return HTMLResponse(_LOGIN_HTML.replace("<!--ERR-->", ""))
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    pw = (form.get("password") or "").strip()
+    if _AUTH_PW and _hmac.compare_digest(pw, _AUTH_PW):
+        resp = RedirectResponse("/", status_code=302)
+        resp.set_cookie(_AUTH_COOKIE, _auth_token(), max_age=60 * 60 * 24 * 30,
+                        httponly=True, samesite="lax")
+        return resp
+    return HTMLResponse(
+        _LOGIN_HTML.replace("<!--ERR-->", '<div class=err>Неверный пароль</div>'),
+        status_code=401,
+    )
+
+
+@app.get("/logout")
+def logout() -> RedirectResponse:
+    resp = RedirectResponse("/login", status_code=302)
+    resp.delete_cookie(_AUTH_COOKIE)
+    return resp
 
 
 def _split_tags(raw: str | None) -> list[str]:
@@ -286,6 +373,16 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         if queued:
             _spawn("channels.proxy_check", "--ids", ",".join(str(i) for i in queued))
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_proxy": skipped})
+    if action == "proxy_pool_assign":
+        with database.get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM accounts WHERE id IN ({qm}) AND COALESCE(protected,0)=0", ids
+            ).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.proxy_pool", "--refresh", "--ids", ",".join(str(i) for i in queued))
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_protected": skipped})
     if action == "onboard":
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
@@ -357,6 +454,135 @@ def aiagents_save(payload: dict = Body(...)) -> JSONResponse:
 def aiagents_delete(aid: int) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM ai_agents WHERE id=?", (aid,))
+    return JSONResponse({"ok": True})
+
+
+# ---- Оргструктура (отделы + сотрудники, живые/виртуальные) --------------- #
+@app.get("/api/org/tree")
+def org_tree() -> JSONResponse:
+    """Дерево отделов с сотрудниками внутри — для схемы «как в Битрикс»."""
+    database.init_db()
+    with database.get_conn() as conn:
+        depts = conn.execute("SELECT * FROM departments ORDER BY sort_order, id").fetchall()
+        members = conn.execute(
+            "SELECT m.*, ag.name AS agent_name, ag.task AS agent_task "
+            "FROM org_members m LEFT JOIN ai_agents ag ON ag.id=m.ai_agent_id "
+            "ORDER BY m.sort_order, m.id"
+        ).fetchall()
+    by_dept: dict[int, list] = {}
+    for r in members:
+        d = dict(r)
+        if d["kind"] == "agent" and d.get("agent_name"):
+            d["name"] = d["name"] or d["agent_name"]
+        by_dept.setdefault(d["department_id"], []).append(d)
+    tree = []
+    for r in depts:
+        d = dict(r)
+        d["members"] = by_dept.get(d["id"], [])
+        tree.append(d)
+    return JSONResponse({"departments": tree})
+
+
+@app.post("/api/org/department")
+def org_department_save(payload: dict = Body(...)) -> JSONResponse:
+    did = payload.get("id")
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "нужно название отдела"}, status_code=400)
+    description = (payload.get("description") or "").strip() or None
+    parent_id = payload.get("parent_id") or None
+    if did and parent_id and int(parent_id) == int(did):
+        return JSONResponse({"error": "отдел не может быть родителем самого себя"}, status_code=400)
+    with database.get_conn() as conn:
+        if did:
+            conn.execute(
+                "UPDATE departments SET name=?, description=?, parent_id=? WHERE id=?",
+                (name, description, parent_id, int(did)),
+            )
+            new_id = int(did)
+        else:
+            cur = conn.execute(
+                "INSERT INTO departments (name, description, parent_id) VALUES (?,?,?)",
+                (name, description, parent_id),
+            )
+            new_id = cur.lastrowid
+    return JSONResponse({"ok": True, "id": new_id})
+
+
+@app.post("/api/org/department/{did}/delete")
+def org_department_delete(did: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        n_members = conn.execute(
+            "SELECT COUNT(*) c FROM org_members WHERE department_id=?", (did,)
+        ).fetchone()["c"]
+        n_children = conn.execute(
+            "SELECT COUNT(*) c FROM departments WHERE parent_id=?", (did,)
+        ).fetchone()["c"]
+        if n_members or n_children:
+            return JSONResponse(
+                {"error": "сначала перенеси сотрудников/подотделы из этого отдела"}, status_code=400
+            )
+        conn.execute("DELETE FROM departments WHERE id=?", (did,))
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/org/members")
+def org_members_list() -> JSONResponse:
+    """Плоский список сотрудников (для вкладки «Сотрудники» — таблицей)."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.*, d.name AS department_name, ag.name AS agent_name, ag.task AS agent_task "
+            "FROM org_members m LEFT JOIN departments d ON d.id=m.department_id "
+            "LEFT JOIN ai_agents ag ON ag.id=m.ai_agent_id ORDER BY d.sort_order, m.id"
+        ).fetchall()
+    items = [dict(r) for r in rows]
+    for x in items:
+        if x["kind"] == "agent" and x.get("agent_name"):
+            x["name"] = x["name"] or x["agent_name"]
+    return JSONResponse(items)
+
+
+@app.post("/api/org/member")
+def org_member_save(payload: dict = Body(...)) -> JSONResponse:
+    mid = payload.get("id")
+    department_id = payload.get("department_id")
+    if not department_id:
+        return JSONResponse({"error": "нужно выбрать отдел"}, status_code=400)
+    kind = payload.get("kind") or "human"
+    name = (payload.get("name") or "").strip() or None
+    role = (payload.get("role") or "").strip() or None
+    phone = (payload.get("phone") or "").strip() or None
+    email = (payload.get("email") or "").strip() or None
+    ai_agent_id = payload.get("ai_agent_id") or None
+    needs_access = 1 if payload.get("needs_access") else 0
+    notes = (payload.get("notes") or "").strip() or None
+    if kind == "agent" and not ai_agent_id:
+        return JSONResponse({"error": "для виртуального сотрудника выбери ИИ-агента"}, status_code=400)
+    if kind == "human" and not name:
+        return JSONResponse({"error": "нужно имя сотрудника"}, status_code=400)
+    with database.get_conn() as conn:
+        if mid:
+            conn.execute(
+                "UPDATE org_members SET department_id=?, kind=?, name=?, role=?, phone=?, email=?, "
+                "ai_agent_id=?, needs_access=?, notes=? WHERE id=?",
+                (department_id, kind, name, role, phone, email, ai_agent_id, needs_access, notes, int(mid)),
+            )
+            new_id = int(mid)
+        else:
+            cur = conn.execute(
+                "INSERT INTO org_members (department_id, kind, name, role, phone, email, ai_agent_id, "
+                "needs_access, notes) VALUES (?,?,?,?,?,?,?,?,?)",
+                (department_id, kind, name, role, phone, email, ai_agent_id, needs_access, notes),
+            )
+            new_id = cur.lastrowid
+    return JSONResponse({"ok": True, "id": new_id})
+
+
+@app.post("/api/org/member/{mid}/delete")
+def org_member_delete(mid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM org_members WHERE id=?", (mid,))
     return JSONResponse({"ok": True})
 
 
@@ -603,6 +829,7 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
     (спрятать номер, защита от репортов). Приватность применяется даже если карточка
     пустая — спрятать номер полезно любому купленному аккаунту."""
     from telethon.sessions import StringSession
+    from channels.avatar_gen import ensure_avatar
     from channels.telegram import build_client
     from channels.warmup import _setup_profile
     with database.get_conn() as conn:
@@ -612,6 +839,7 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
     acc = dict(row)
     if not acc.get("tg_session"):
         return JSONResponse({"error": "у аккаунта нет сессии — сначала залогинь его (кнопка «Логин»)"}, status_code=400)
+    acc["avatar"] = ensure_avatar(acc)   # сток/ИИ-фото под пол из имени, если своё не загружено
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
                           acc.get("api_id"), acc.get("api_hash"))
     try:
@@ -938,9 +1166,28 @@ def contact_detail(contact_id: int) -> JSONResponse:
         comp = None
         if row["company_id"]:
             comp = conn.execute("SELECT id, name FROM companies WHERE id=?", (row["company_id"],)).fetchone()
+        # источник — чат, где найден (карточка человека: «в каком чате найден»).
+        # NB: chat_hits.chat_id — КАТАЛОЖНЫЙ (chats.id), а tg_user_posts.chat_id — сырой
+        # telegram-id (chats.tg_chat_id). JOIN'ы разные, не перепутать.
+        src = conn.execute(
+            "SELECT c.id AS chat_id, h.chat_title, c.username AS chat_username, c.link AS chat_link "
+            "FROM chat_hits h LEFT JOIN chats c ON c.id=h.chat_id "
+            "WHERE h.contact_id=? ORDER BY h.id DESC LIMIT 1", (contact_id,)
+        ).fetchone()
+        if not src or src["chat_id"] is None:
+            src = conn.execute(
+                "SELECT c.id AS chat_id, p.chat_title, c.username AS chat_username, c.link AS chat_link "
+                "FROM tg_user_posts p LEFT JOIN chats c ON c.tg_chat_id=p.chat_id "
+                "WHERE p.contact_id=? ORDER BY p.id DESC LIMIT 1", (contact_id,)
+            ).fetchone()
     d = dict(row); d["tags"] = _split_tags(d.get("tags"))
     d["company_name"] = comp["name"] if comp else None
     d["history"] = history; d["deal"] = dict(deal) if deal else None
+    if src:
+        d["source_chat_id"] = src["chat_id"]
+        d["source_chat_title"] = src["chat_title"]
+        d["source_chat_link"] = (f"https://t.me/{src['chat_username']}" if src["chat_username"]
+                                  else src["chat_link"])
     return JSONResponse(d)
 
 
@@ -1446,7 +1693,14 @@ def chatcat_detail(chat_id: int) -> JSONResponse:
             "SELECT id, tg_user_id, username, name FROM chat_admins WHERE chat_id=? ORDER BY id",
             (chat_id,),
         ).fetchall()
+        # мои агенты в этом чате: tg-ссылка на агента + ссылка на его карточку в AXIOM
+        agents = conn.execute(
+            "SELECT a.id, a.label, a.username, a.status FROM account_chats ac "
+            "JOIN accounts a ON a.id=ac.account_id WHERE ac.chat_id=? ORDER BY a.id",
+            (chat_id,),
+        ).fetchall()
     d = dict(row); d["admins"] = [dict(a) for a in admins]
+    d["agents"] = [dict(a) for a in agents]
     return JSONResponse(d)
 
 
@@ -1761,8 +2015,12 @@ def hits_list(status: str = "new") -> JSONResponse:
 
 
 @app.post("/api/hit/{hid}/lead")
-def hit_to_lead(hid: int) -> JSONResponse:
-    """Занести находку в CRM как контакт (лид). Помечает hit как lead."""
+def hit_to_lead(hid: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Занести находку в CRM как контакт (лид) + сразу AI-скоринг (как «Целевые лиды» у OPUS):
+    сеем реальную цитату из чата в tg_user_posts (хоть какое-то сырьё уже есть — само
+    сообщение-триггер) и запускаем психо-портрет (score/сфера/визитка/рекомендация подхода).
+    auto_enrich=false в payload — пропустить AI (напр. при массовом переносе, чтобы не тратить
+    токены на каждый разом — тогда доскорить можно позже отдельной кнопкой)."""
     with database.get_conn() as conn:
         h = conn.execute("SELECT * FROM chat_hits WHERE id=?", (hid,)).fetchone()
         if not h:
@@ -1770,13 +2028,94 @@ def hit_to_lead(hid: int) -> JSONResponse:
         niche = conn.execute("SELECT name FROM niches WHERE id=?", (h["niche_id"],)).fetchone()
         tag = f"Ниша: {niche['name']}" if niche else (f"Ключ: {h['keyword']}")
         note = f"[{h['chat_title']}] «{h['keyword']}»: {h['text']}"
+        from channels.ru_names import gender_of
         cid = database.upsert_contact(
             conn, source="tg_keyword", username=h["username"], tg_user_id=h["tg_user_id"],
-            name=h["name"], tags=tag, notes=note,
+            name=h["name"], tags=tag, notes=note, gender=gender_of(h["name"]),
         )
         conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
         conn.execute("UPDATE chat_hits SET status='lead', contact_id=? WHERE id=?", (cid, hid))
-    return JSONResponse({"ok": True, "contact_id": cid})
+        if h["tg_user_id"] and h["text"]:
+            conn.execute(
+                "INSERT OR IGNORE INTO tg_user_posts (tg_user_id, contact_id, chat_id, chat_title, "
+                "text, msg_id, ts) VALUES (?,?,?,?,?,?,?)",
+                (h["tg_user_id"], cid, h["chat_id"], h["chat_title"], h["text"],
+                 h["source_msg_id"], h["ts"]),
+            )
+    score = None
+    if payload.get("auto_enrich", True) and config.ANTHROPIC_API_KEY:
+        try:
+            from agent.enrich_person import _posts_for, _save, enrich_person
+            with database.get_conn() as conn:
+                contact = dict(conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone())
+                posts = _posts_for(conn, contact["tg_user_id"]) if contact.get("tg_user_id") else []
+            if posts:
+                profile = enrich_person(contact, posts)
+                _save(cid, profile)
+                score = profile.score
+        except Exception as e:  # noqa: BLE001 — скоринг best-effort, лид всё равно заведён
+            print(f"[hit_to_lead enrich] contact {cid}: {e}")
+    return JSONResponse({"ok": True, "contact_id": cid, "score": score})
+
+
+@app.get("/api/target_leads")
+def target_leads() -> JSONResponse:
+    """«Целевые лиды» (как у OPUS): контакты из чат-мониторинга с AI-скорингом.
+    Счётчики + карточки со score/сферой/визиткой-цитатой/рекомендацией подхода."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.name, c.username, c.tags, c.status, c.score, c.segment,
+                   c.quotes, c.rec_message, c.pains, c.desires, c.psychotype, c.confidence,
+                   (SELECT h.chat_title FROM chat_hits h WHERE h.contact_id=c.id
+                      ORDER BY h.id DESC LIMIT 1) AS source_chat,
+                   (SELECT COUNT(*) FROM messages m WHERE m.contact_id=c.id AND m.direction='out') AS sent_cnt,
+                   (SELECT COUNT(*) FROM messages m WHERE m.contact_id=c.id AND m.direction='in') AS reply_cnt
+            FROM contacts c
+            WHERE c.id IN (SELECT DISTINCT contact_id FROM chat_hits WHERE contact_id IS NOT NULL)
+            ORDER BY COALESCE(c.score,-1) DESC, c.id DESC
+            """
+        ).fetchall()
+        segments = conn.execute(
+            "SELECT segment, COUNT(*) c FROM contacts WHERE id IN "
+            "(SELECT DISTINCT contact_id FROM chat_hits WHERE contact_id IS NOT NULL) "
+            "AND segment IS NOT NULL AND segment<>'' GROUP BY segment ORDER BY c DESC"
+        ).fetchall()
+    items = [dict(r) for r in rows]
+    for d in items:
+        d["tags"] = _split_tags(d.get("tags"))
+    counts = {
+        "processed": sum(1 for d in items if d.get("score") is not None),
+        "qualified": sum(1 for d in items if (d.get("score") or 0) >= 0.5),
+        "sent": sum(1 for d in items if (d.get("sent_cnt") or 0) > 0),
+        "replied": sum(1 for d in items if (d.get("reply_cnt") or 0) > 0),
+    }
+    return JSONResponse({"items": items, "counts": counts,
+                         "segments": [dict(r) for r in segments]})
+
+
+@app.post("/api/contact/{cid}/enrich_now")
+def contact_enrich_now(cid: int) -> JSONResponse:
+    """Досчитать/пересчитать AI-скоринг для конкретного контакта прямо сейчас (синхронно)."""
+    if not config.ANTHROPIC_API_KEY:
+        return JSONResponse({"error": "нет ANTHROPIC_API_KEY в .env"}, status_code=400)
+    from agent.enrich_person import _posts_for, _save, enrich_person
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "контакт не найден"}, status_code=404)
+        contact = dict(row)
+        posts = _posts_for(conn, contact["tg_user_id"]) if contact.get("tg_user_id") else []
+    if not posts:
+        return JSONResponse({"error": "нет сырья (сообщений) для скоринга"}, status_code=400)
+    try:
+        profile = enrich_person(contact, posts)
+        _save(cid, profile)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "score": profile.score, "segment": profile.segment,
+                         "rec_message": profile.rec_message})
 
 
 @app.post("/api/hit/{hid}/ignore")
@@ -2631,16 +2970,60 @@ def warmup_settings_get() -> JSONResponse:
 
 @app.post("/api/warmup/run_now")
 def warmup_run_now() -> JSONResponse:
-    """Прогреть СЕЙЧАС всех аккаунтов в статусе «прогрев» с сессией (фоновый процесс)."""
+    """Прогреть СЕЙЧАС аккаунты в статусе «прогрев» с сессией И живым прокси
+    (фоновый процесс). Без прокси не берём — иначе Telegram видит пачку
+    «разных» аккаунтов с одного IP."""
+    import subprocess
+    import sys
     with database.get_conn() as conn:
-        cnt = conn.execute(
-            "SELECT COUNT(*) c FROM accounts WHERE status='warming' "
-            "AND tg_session IS NOT NULL AND tg_session <> ''"
+        rows = database.warming_accounts(conn)
+        skipped = conn.execute(
+            "SELECT COUNT(*) c FROM accounts WHERE status='warming' AND tg_session IS NOT NULL "
+            "AND tg_session<>'' AND COALESCE(protected,0)=0 AND "
+            "(proxy IS NULL OR proxy='' OR proxy_alive=0)"
         ).fetchone()["c"]
-    if not cnt:
-        return JSONResponse({"error": "нет аккаунтов в статусе «прогрев» с авторизованной сессией"}, status_code=400)
-    _spawn("channels.warmup", "--run")
-    return JSONResponse({"ok": True, "warming": cnt})
+    if not rows:
+        return JSONResponse(
+            {"error": f"нет готовых к прогреву аккаунтов с живым прокси (без прокси/с мёртвым: {skipped}) "
+                      "— сначала раздай прокси"},
+            status_code=400,
+        )
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "channels_warmup.log"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n===== {__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S} запуск: channels.warmup --run =====\n")
+        f.flush()
+        proc = subprocess.Popen([sys.executable, "-m", "channels.warmup", "--run"],
+                                cwd=str(BASE_DIR.parent), stdout=f, stderr=subprocess.STDOUT)
+    with database.get_conn() as conn:
+        database.set_setting(conn, "warmup_pid", str(proc.pid))
+    return JSONResponse({"ok": True, "warming": len(rows), "skipped_no_proxy": skipped})
+
+
+@app.post("/api/warmup/stop")
+def warmup_stop() -> JSONResponse:
+    """Останавливает текущий фоновый прогрев (если запущен через «Прогреть всех сейчас»)."""
+    import psutil
+    with database.get_conn() as conn:
+        pid_s = database.get_setting(conn, "warmup_pid", None)
+    if not pid_s:
+        return JSONResponse({"ok": True, "stopped": False, "note": "прогрев сейчас не запущен"})
+    try:
+        proc = psutil.Process(int(pid_s))
+        cmdline = " ".join(proc.cmdline())
+        if "channels.warmup" not in cmdline:
+            return JSONResponse({"ok": True, "stopped": False, "note": "процесс уже не тот (перезапущен) — нечего останавливать"})
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except psutil.TimeoutExpired:
+            proc.kill()
+    except psutil.NoSuchProcess:
+        pass
+    with database.get_conn() as conn:
+        database.set_setting(conn, "warmup_pid", "")
+        database.add_event(conn, "info", "⏹ Прогрев остановлен вручную", level="warn")
+    return JSONResponse({"ok": True, "stopped": True})
 
 
 @app.post("/api/warmup/settings")

@@ -299,6 +299,36 @@ CREATE TABLE IF NOT EXISTS opener_queue (
     created_at   TEXT DEFAULT (datetime('now'))
 );
 
+-- Оргструктура (как в Битрикс): отделы + сотрудники внутри — живые люди и
+-- виртуальные ИИ-агенты (ссылка на ai_agents). Чисто для наглядности «кто за что
+-- отвечает» — не привязана жёстко к projects/campaigns.
+CREATE TABLE IF NOT EXISTS departments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,                       -- зона ответственности
+    parent_id   INTEGER,                    -- вложенность отделов (NULL = верхний уровень)
+    sort_order  INTEGER DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Сотрудник отдела: kind='human' — живой человек (поля ниже свои), kind='agent' —
+-- виртуальный, ссылается на ai_agents (имя/промпт/исполнитель берутся оттуда).
+CREATE TABLE IF NOT EXISTS org_members (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    department_id INTEGER NOT NULL REFERENCES departments(id),
+    kind          TEXT DEFAULT 'human',     -- human | agent
+    name          TEXT,                     -- для human; для agent можно пусто (берём из ai_agents.name)
+    role          TEXT,                     -- должность/роль
+    phone         TEXT,
+    email         TEXT,
+    ai_agent_id   INTEGER REFERENCES ai_agents(id),  -- для kind='agent'
+    needs_access  INTEGER DEFAULT 0,        -- нужен ли доступ в пульт (пока просто пометка на будущее)
+    notes         TEXT,
+    sort_order    INTEGER DEFAULT 0,
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_members_dept ON org_members(department_id);
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);

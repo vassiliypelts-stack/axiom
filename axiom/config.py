@@ -65,3 +65,12 @@ ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
 # --- Proxy6.net (автопокупка/подбор прокси по стране аккаунта) ---
 # Ключ — в личном кабинете proxy6.net → API. Пусто = кнопки покупки покажут понятную ошибку.
 PROXY6_API_KEY = os.getenv("PROXY6_API_KEY", "")
+
+# --- Авто-фото профиля (channels/avatar_gen.py): сток + ИИ-лицо микс ---
+# Pexels — бесплатный ключ на pexels.com/api (лицензия разрешает коммерческое
+# использование). Google AI Studio (aistudio.google.com) — бесплатный ключ для
+# генерации синтетических лиц (Gemini). Достаточно ОДНОГО из двух — если задан
+# только один, авто-фото просто всегда берёт его; если оба пусты, шаг фото тихо
+# пропускается (как и раньше — без ключей).
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

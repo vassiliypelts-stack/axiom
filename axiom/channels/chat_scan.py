@@ -54,6 +54,11 @@ def can_write(entity) -> str:
     return "неизвестно"
 
 
+# Telegram отдаёт максимум ~10k участников на запрос — больше не выгрузить никак.
+# Чаты крупнее собираем не списком, а по комментаторам (см. tg_parser --mode active).
+MEMBERS_HARD_LIMIT = 10_000
+
+
 async def members_visible(client, entity) -> str:
     """Виден ли список участников (можно ли парсить аудиторию)."""
     try:
@@ -65,23 +70,52 @@ async def members_visible(client, entity) -> str:
         return "нет"
 
 
-async def _activity(client, entity) -> str | None:
-    """Грубая оценка: сообщений/день по последним ~80 сообщениям чата/обсуждения."""
+async def members_access(client, entity, members: int | None) -> tuple[str, str]:
+    """Детальнее, чем members_visible: (тип списка, можно ли выгрузить целиком).
+
+    Возвращает:
+      • «открыт»    + «да»       — список читается и влезает в лимит TG → берём целиком;
+      • «открыт»    + «частично» — читается, но участников > 10k → TG отдаст лишь часть,
+                                   остальных добираем комментаторами;
+      • «скрыт»     + «нет»      — список закрыт правами (нужен админ) → только комментаторы;
+      • «закрыт»    + «нет»      — мы не в чате / нет доступа к сущности;
+      • «неизвестно»+ «нет»      — иная ошибка, судить не берёмся.
+    """
+    if isinstance(entity, Channel) and getattr(entity, "left", False):
+        return "закрыт", "нет"
+    try:
+        await client.get_participants(entity, limit=1)
+    except ChatAdminRequiredError:
+        return "скрыт", "нет"
+    except Exception:  # noqa: BLE001
+        return "неизвестно", "нет"
+    if members and members > MEMBERS_HARD_LIMIT:
+        return "открыт", "частично"
+    return "открыт", "да"
+
+
+async def _activity(client, entity) -> tuple[str | None, list[str]]:
+    """Грубая оценка активности + выборка текстов сообщений (для AI-обогащения темы чата).
+
+    Возвращает ("~N сообщений/день" | None, [тексты сообщений]). Один проход по последним
+    ~80 сообщениям чата/обсуждения — переиспользуем и для активности, и для выборки."""
     try:
         chat = await _resolve_scan_chat(client, entity)
         if chat is None:
-            return None
-        dates = []
+            return None, []
+        dates, sample = [], []
         async for m in client.iter_messages(chat, limit=80):
             if m.date:
                 dates.append(m.date)
+            if m.message and m.message.strip():
+                sample.append(m.message.strip().replace("\n", " ")[:200])
         if len(dates) < 2:
-            return None
+            return None, sample
         span_days = max((dates[0] - dates[-1]).total_seconds() / 86400, 0.04)
         per_day = round(len(dates) / span_days)
-        return f"~{per_day} сообщений/день"
+        return f"~{per_day} сообщений/день", sample
     except Exception:  # noqa: BLE001
-        return None
+        return None, []
 
 
 async def run(target: str, chat_id: int | None) -> None:
@@ -102,9 +136,11 @@ async def run(target: str, chat_id: int | None) -> None:
             pass
 
     admins = await collect_admins(client, entity)
-    activity = await _activity(client, entity)
+    activity, sample = await _activity(client, entity)
     cw = can_write(entity)
-    mv = await members_visible(client, entity)
+    access, export_all = await members_access(client, entity, members)
+    mv = "да" if access == "открыт" else "нет"   # старое грубое поле — из нового
+    tg_id = getattr(entity, "id", None)
     await client.disconnect()
 
     link = target if (target.startswith("http") or target.startswith("t.me")) else None
@@ -113,19 +149,24 @@ async def run(target: str, chat_id: int | None) -> None:
         if not cid and username:
             row = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
             cid = row["id"] if row else None
+        if not cid and tg_id:
+            row = conn.execute("SELECT id FROM chats WHERE tg_chat_id=?", (tg_id,)).fetchone()
+            cid = row["id"] if row else None
         if cid:
             conn.execute(
                 "UPDATE chats SET title=?, username=COALESCE(?,username), kind=?, members_count=?, "
-                "activity=?, can_write=?, members_visible=?, status='analyzed', "
+                "activity=?, can_write=?, members_visible=?, members_access=?, can_export_all=?, "
+                "tg_chat_id=COALESCE(?,tg_chat_id), status='analyzed', "
                 "last_scanned_at=datetime('now') WHERE id=?",
-                (title, username, kind, members, activity, cw, mv, cid),
+                (title, username, kind, members, activity, cw, mv, access, export_all, tg_id, cid),
             )
         else:
             cur = conn.execute(
                 "INSERT INTO chats (title, username, link, kind, members_count, activity, "
-                "can_write, members_visible, status, last_scanned_at) "
-                "VALUES (?,?,?,?,?,?,?,?, 'analyzed', datetime('now'))",
-                (title, username, link, kind, members, activity, cw, mv),
+                "can_write, members_visible, members_access, can_export_all, tg_chat_id, "
+                "status, last_scanned_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'analyzed', datetime('now'))",
+                (title, username, link, kind, members, activity, cw, mv, access, export_all, tg_id),
             )
             cid = cur.lastrowid
         conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (cid,))
@@ -135,10 +176,22 @@ async def run(target: str, chat_id: int | None) -> None:
                 (cid, u.id, u.username, _display_name(u)),
             )
 
+    # AI-обогащение темы/описания чата (best-effort: нет ключа/сырья → тихо пропускаем).
+    topic = summary = None
+    try:
+        from agent.enrich_chat import enrich as enrich_chat
+        prof = enrich_chat(cid, title, sample)
+        if prof:
+            topic, summary = prof.topic, prof.summary
+    except Exception as e:  # noqa: BLE001
+        print(f"[enrich_chat] пропущено: {e}")
+
     print(json.dumps({
         "ok": True, "chat_id": cid, "title": title, "username": username,
         "kind": kind, "members": members, "activity": activity,
         "can_write": cw, "members_visible": mv,
+        "members_access": access, "can_export_all": export_all,
+        "topic": topic, "summary": summary,
         "admins": [{"username": u.username, "name": _display_name(u)} for u in admins],
     }, ensure_ascii=False))
 

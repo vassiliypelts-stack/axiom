@@ -70,13 +70,20 @@ def _display_name(u: User) -> str:
     return name or (u.username and f"@{u.username}") or str(u.id)
 
 
-def _save_hit(niche_id, chat_id, chat_title, sender, text, kw, msg_id, ts) -> bool:
-    """Кладёт находку в chat_hits (на обзор оператору). Дедуп по (chat_id, msg_id)."""
+def _save_hit(niche_id, tg_chat_id, chat_title, chat_username, sender, text, kw, msg_id, ts) -> bool:
+    """Кладёт находку в chat_hits (на обзор оператору). Дедуп по (chat_id, msg_id).
+
+    chat_hits.chat_id — КАТАЛОЖНЫЙ chats.id (так же пишет chat_keywords.py), поэтому
+    сырой telegram-id события сначала резолвим в каталог. Раньше сюда клался сырой
+    telegram-id — из-за этого JOIN на chats не находил чат и в «Запросах» пропадала
+    ссылка на сообщение.
+    """
     with database.get_conn() as conn:
+        cat_id = database.resolve_catalog_chat(conn, tg_chat_id, chat_title, chat_username)
         cur = conn.execute(
             "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
             "username, name, text, keyword, source_msg_id, ts, status) VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
-            (niche_id, chat_id, chat_title, sender.id, sender.username,
+            (niche_id, cat_id, chat_title, sender.id, sender.username,
              _display_name(sender), text.strip()[:500], kw, msg_id, str(ts) if ts else None),
         )
         return cur.rowcount > 0
@@ -106,8 +113,11 @@ async def _handle(event) -> None:
         print(f"[dry] «{kw}» от {name} (@{sender.username or '-'}) в «{chat_title}»: {snippet}")
         return
 
-    new = _save_hit(nid, event.chat_id, chat_title, sender, text, kw, event.message.id,
-                    getattr(event.message, "date", None))
+    # chat.id — СЫРОЙ id (без -100), как и tg_user_posts.chat_id у парсера. Берём
+    # именно его, а не event.chat_id (тот «помеченный», вида -100123…) — иначе одному
+    # чату соответствовали бы два разных числа.
+    new = _save_hit(nid, getattr(chat, "id", None), chat_title, getattr(chat, "username", None),
+                    sender, text, kw, event.message.id, getattr(event.message, "date", None))
     if new:
         print(f"[hit] «{kw}» от {name} (@{sender.username or '-'}) в «{chat_title}» → Запросы")
     if _auto_dm:

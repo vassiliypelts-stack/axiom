@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import random
 
+from channels.avatar_gen import ensure_avatar
 from channels.onboard import _onboard_one
 from channels.profile_gen import generate_bio
 from channels.ru_names import make_label, sample_unique
@@ -25,25 +26,55 @@ from db import database
 
 async def run(ids: list[int], bio_style: str) -> None:
     database.init_db()
+    # само-лечение прокси перед пушем в Telegram: иначе логин идёт через мёртвый
+    # прокси и валится «Server closed the connection» — оформление молча не
+    # применяется (имя/био/фото не записываются). Сбой лечения не рушит пакет.
+    try:
+        from channels import proxy_pool
+        await proxy_pool.heal(ids=ids, warming_only=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"[identity] авто-лечение прокси пропущено: {e}")
     names = sample_unique(len(ids))
     ok = 0
     for i, (acc_id, name) in enumerate(zip(ids, names)):
-        with database.get_conn() as conn:
-            row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
-        if not row:
-            print(f"[skip] аккаунт #{acc_id} не найден")
-            continue
-        acc = dict(row)
-        label = make_label(name, acc.get("phone"))
-        # ИИ пишет РАЗНОЕ bio каждому по одной инструкции — не копирует один текст на всех
-        bio = generate_bio(role=acc.get("role"), label=name, description=bio_style or None)
-        with database.get_conn() as conn:
-            conn.execute("UPDATE accounts SET tg_name=?, label=?, description=? WHERE id=?",
-                        (name, label, bio, acc_id))
-        acc["tg_name"], acc["label"], acc["description"] = name, label, bio
-        success, msg = await _onboard_one(acc)   # пуш в Telegram: имя+ник+bio+аватар+приватность
-        print(("[ok] " if success else "[skip] ") + f"«{name}» ({label}) — {msg}")
-        ok += int(success)
+        try:
+            with database.get_conn() as conn:
+                row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+            if not row:
+                print(f"[skip] аккаунт #{acc_id} не найден")
+                continue
+            acc = dict(row)
+            # ИДЕМПОТЕНТНОСТЬ: если у аккаунта уже присвоена личность (tg_name) — НЕ
+            # перекатываем имя случайным (иначе каждый повторный запуск даёт новое
+            # имя, а фото/ник остаются старыми → рассинхрон «Егор + женское фото»).
+            # Берём существующее имя; фото ниже перегенерится под его пол, если надо.
+            if (acc.get("tg_name") or "").strip():
+                name = acc["tg_name"].strip()
+            label = make_label(name, acc.get("phone"))
+            # bio: держим существующее; генерим только если пусто ИЛИ задан новый стиль (канва)
+            if bio_style or not (acc.get("description") or "").strip():
+                bio = generate_bio(role=acc.get("role"), label=name, description=bio_style or None)
+            else:
+                bio = acc["description"]
+            with database.get_conn() as conn:
+                conn.execute("UPDATE accounts SET tg_name=?, label=?, description=? WHERE id=?",
+                            (name, label, bio, acc_id))
+            acc["tg_name"], acc["label"], acc["description"] = name, label, bio
+            acc["avatar"] = ensure_avatar(acc)   # фото строго под пол имени (перегенерит при рассинхроне)
+            with database.get_conn() as conn:  # синхронизируем avatar в acc и БД
+                conn.execute("UPDATE accounts SET avatar=? WHERE id=?", (acc.get("avatar"), acc_id))
+            success, msg = await _onboard_one(acc)   # пуш в Telegram: имя+ник+bio+аватар+приватность
+            print(("[ok] " if success else "[skip] ") + f"«{name}» ({label}) — {msg}")
+            # честный лог по КАЖДОМУ аккаунту (виден в колокольчике/у глазка), а не общий итог
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "identity" if success else "identity_fail",
+                    f"{'✅' if success else '⛔'} Упаковка: {name}",
+                    msg, level="good" if success else "bad", account_id=acc_id,
+                )
+            ok += int(success)
+        except Exception as e:  # noqa: BLE001 — один сбойный аккаунт не должен рушить весь пакет
+            print(f"[error] аккаунт #{acc_id}: {e}")
         if i < len(ids) - 1:
             await asyncio.sleep(random.uniform(2.0, 5.0))  # не долбим разом
     with database.get_conn() as conn:

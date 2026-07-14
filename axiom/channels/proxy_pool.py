@@ -109,7 +109,7 @@ def _mt_link(server: str, port: int, secret: str) -> str:
     return f"tg://proxy?server={server}&port={port}&secret={secret}"
 
 
-async def refresh(target_alive: int = TARGET_ALIVE) -> dict:
+async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None) -> dict:
     from channels.telegram import _build_client
     database.init_db()
     client = _build_client()
@@ -138,13 +138,16 @@ async def refresh(target_alive: int = TARGET_ALIVE) -> dict:
             "(SELECT id FROM proxies WHERE status='dead' ORDER BY added_at DESC LIMIT 20)"
         )
     print(f"[refresh] живых прокси: {alive}")
-    assigned = assign()
+    assigned = assign(ids=ids)
     return {"alive": alive, "harvested": len(fresh), "assigned": assigned}
 
 
-def assign() -> int:
-    """Раздаёт живой прокси (мин. пинг, round-robin) только аккаунтам БЕЗ прокси.
-    НЕ перетирает уже назначенный (рабочий) прокси и пропускает «родные» (protected)."""
+def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
+    """Раздаёт живой прокси (мин. пинг, round-robin) аккаунтам БЕЗ прокси, а при
+    replace_dead=True — ещё и тем, у кого текущий прокси уже помечен мёртвым
+    (proxy_alive=0, см. кнопку «🔎 Проверить прокси»). НЕ трогает прокси, который
+    ещё не проверялся или жив, и пропускает «родные» (protected). ids — сузить
+    только на выбранные аккаунты (пусто = все подходящие)."""
     from channels.telegram import parse_mtproxy
     with database.get_conn() as conn:
         live = conn.execute(
@@ -155,30 +158,143 @@ def assign() -> int:
         if not live:
             print("[assign] в пуле нет telethon-совместимых прокси (все faketls/битые) — не раздаю")
             return 0
-        accs = conn.execute(
-            "SELECT id FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
-            "AND (proxy IS NULL OR proxy='') AND COALESCE(protected,0)=0"
-        ).fetchall()
+        cond = "(proxy IS NULL OR proxy='')" + (" OR proxy_alive=0" if replace_dead else "")
+        params: list = []
+        where = f"tg_session IS NOT NULL AND tg_session<>'' AND ({cond}) AND COALESCE(protected,0)=0"
+        if ids:
+            qm = ",".join("?" * len(ids))
+            where += f" AND id IN ({qm})"
+            params.extend(ids)
+        accs = conn.execute(f"SELECT id FROM accounts WHERE {where}", params).fetchall()
         n = 0
         for i, a in enumerate(accs):
             p = live[i % len(live)]
-            conn.execute("UPDATE accounts SET proxy=? WHERE id=?",
-                         (_mt_link(p["server"], p["port"], p["secret"]), a["id"]))
+            conn.execute(
+                "UPDATE accounts SET proxy=?, proxy_alive=NULL, proxy_checked_at=NULL WHERE id=?",
+                (_mt_link(p["server"], p["port"], p["secret"]), a["id"]),
+            )
             n += 1
     print(f"[assign] прокси выдан аккаунтам: {n}")
     return n
 
 
+def _hostport(px: str | None) -> tuple[str, int] | None:
+    """Достаёт (host, port) из ЛЮБОГО формата прокси для TCP-пинга: tg://proxy?…,
+    socks5://user:pass@host:port, http://host:port или сырой host:port[:user:pass].
+    Мусор («Auto IP Rotation: off» и пр.) → None."""
+    px = (px or "").strip()
+    if not px:
+        return None
+    if "proxy?" in px:                       # tg://proxy?server=…&port=…
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(px).query)
+        server = (q.get("server") or [None])[0]
+        port = (q.get("port") or [None])[0]
+        if server and port and str(port).isdigit():
+            return (server, int(port))
+        return None
+    rest = px.split("://", 1)[1] if "://" in px else px
+    rest = rest.split("@")[-1]               # отбросить user:pass@
+    parts = rest.split(":")
+    if len(parts) >= 2 and parts[0] and parts[1].isdigit():
+        return (parts[0], int(parts[1]))
+    return None
+
+
+def _usable(px: str | None) -> bool:
+    """Прокси не только валиден, но и РАБОЧ для нашего клиента: tg:// — только
+    telethon-совместимый (dd/hex-секрет, не faketls ee…); socks/http — парсится.
+    Иначе аккаунт молча уходит напрямую (общий IP пачки → бан)."""
+    from channels.telegram import parse_mtproxy, parse_proxy_str
+    px = (px or "").strip()
+    if not px:
+        return False
+    if "proxy?" in px:
+        return parse_mtproxy(px) is not None
+    return parse_proxy_str(px) is not None
+
+
+async def _ping_or_none(hp: tuple[str, int] | None) -> int | None:
+    return await ping(hp[0], hp[1]) if hp else None
+
+
+async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
+    """САМО-ЛЕЧЕНИЕ прокси прогреваемых аккаунтов (бесплатно, пока греются).
+
+    Для каждого подходящего аккаунта (по умолчанию — статус 'warming', с сессией,
+    НЕ родной): пингует его текущий прокси. Живой и рабочий → помечает proxy_alive=1.
+    Мёртвый/мусорный/непроверяемый → подставляет живой telethon-совместимый прокси
+    из бесплатного пула (round-robin по мин. пингу). Если в пуле пусто — чистит
+    мусор и ставит proxy_alive=0, чтобы прогрев не коннектился через битый IP.
+    Возвращает {checked, alive_kept, healed, no_pool}."""
+    from channels.telegram import parse_mtproxy
+    database.init_db()
+    with database.get_conn() as conn:
+        live = conn.execute(
+            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
+        ).fetchall()
+        live = [(p["server"], p["port"], p["secret"]) for p in live
+                if parse_mtproxy(_mt_link(p["server"], p["port"], p["secret"]))]
+        where = "tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0"
+        if warming_only:
+            where += " AND status='warming'"
+        params: list = []
+        if ids:
+            qm = ",".join("?" * len(ids))
+            where += f" AND id IN ({qm})"
+            params.extend(ids)
+        accs = [(a["id"], a["proxy"] or "") for a in
+                conn.execute(f"SELECT id, proxy FROM accounts WHERE {where}", params).fetchall()]
+
+    # пингуем текущие прокси всех аккаунтов разом
+    pings = await asyncio.gather(*[_ping_or_none(_hostport(px)) for _, px in accs])
+
+    alive_kept = healed = no_pool = 0
+    rr = 0
+    with database.get_conn() as conn:
+        for (aid, px), ms in zip(accs, pings):
+            good = _usable(px) and ms is not None
+            if good:
+                conn.execute(
+                    "UPDATE accounts SET proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
+                    (aid,),
+                )
+                alive_kept += 1
+            elif live:
+                s, p, sec = live[rr % len(live)]
+                rr += 1
+                conn.execute(
+                    "UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
+                    (_mt_link(s, p, sec), aid),
+                )
+                healed += 1
+            else:
+                # пула нет — чистим битый прокси и глушим (прогрев пропустит, не пойдёт напрямую)
+                conn.execute(
+                    "UPDATE accounts SET proxy=NULL, proxy_alive=0, proxy_checked_at=datetime('now') WHERE id=?",
+                    (aid,),
+                )
+                no_pool += 1
+    print(f"[heal] проверено:{len(accs)} живых-оставлено:{alive_kept} подставлено-бесплатных:{healed} без-пула:{no_pool}")
+    return {"checked": len(accs), "alive_kept": alive_kept, "healed": healed, "no_pool": no_pool}
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="AXIOM пул MTProto-прокси")
     p.add_argument("--refresh", action="store_true", help="собрать+проверить+раздать")
+    p.add_argument("--heal", action="store_true", help="проверить прокси прогреваемых и заменить битые на живые бесплатные")
+    p.add_argument("--all", action="store_true", help="с --heal: лечить не только 'warming', а все не-родные с сессией")
     p.add_argument("--target", type=int, default=TARGET_ALIVE)
+    p.add_argument("--ids", help="сузить раздачу на конкретные id аккаунтов, через запятую")
     args = p.parse_args()
-    if args.refresh:
-        import json
-        print(json.dumps(asyncio.run(refresh(args.target)), ensure_ascii=False))
+    ids = [int(x) for x in args.ids.split(",") if x.strip().isdigit()] if args.ids else None
+    import json
+    if args.heal:
+        print(json.dumps(asyncio.run(heal(ids=ids, warming_only=not args.all)), ensure_ascii=False))
+    elif args.refresh:
+        print(json.dumps(asyncio.run(refresh(args.target, ids=ids)), ensure_ascii=False))
     else:
-        print(json.dumps({"assigned": assign()}, ensure_ascii=False))
+        print(json.dumps({"assigned": assign(ids=ids)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -1711,6 +1711,8 @@ async function loadCoverage(){
 }
 async function viewChatCatalog(v){
   CHATCAT=await api("/api/chatcat");
+  let niches=[];try{niches=await api("/api/niches");}catch(e){}
+  const nicheOpts=niches.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join("");
   v.innerHTML=`<div class="ttoolbar">
       <input id="cc-target" class="grow" placeholder="@username или ссылка чата">
       <button class="primary" id="cc-add">➕ Добавить чат</button>
@@ -1718,9 +1720,31 @@ async function viewChatCatalog(v){
       <button id="cc-inv">🔄 Инвентаризация</button>
       <span class="hint" id="cc-inv-msg">Каталог отдельно от CRM. «Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
     </div>
+    <div class="ttoolbar" style="margin-top:-4px">
+      <b class="sub" style="align-self:center">🔍 Авто-поиск чатов:</b>
+      ${niches.length?`<select id="cc-disc-niche" title="искать по ключам ниши">${nicheOpts}</select>`:""}
+      <input id="cc-disc-q" placeholder="или свой запрос (напр. ипотека сочи)" style="min-width:220px">
+      <input id="cc-disc-min" type="number" min="0" placeholder="мин. участников" style="width:130px" title="отсекать мелкие чаты">
+      <label class="sub" style="align-self:center"><input id="cc-disc-groups" type="checkbox"> только группы</label>
+      <button class="primary" id="cc-disc">🔍 Найти чаты</button>
+      <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
+    </div>
     <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
     <div id="cc-body"></div>`;
   loadCoverage();
+  $("#cc-disc").onclick=async()=>{
+    const b=$("#cc-disc"),m=$("#cc-disc-msg");
+    const q=($("#cc-disc-q").value||"").trim();
+    const body={min_members:+($("#cc-disc-min").value||0),groups_only:$("#cc-disc-groups").checked};
+    if(q)body.query=q; else if($("#cc-disc-niche"))body.niche_id=+$("#cc-disc-niche").value;
+    else{m.textContent="создай нишу или впиши запрос";return;}
+    b.disabled=true;b.textContent="ищу… (до ~2 мин)";m.textContent="аккаунт прогоняет поиск по ключам с паузами…";
+    try{const r=await api("/api/chatcat/discover",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
+      else{const s=r.summary||{};m.innerHTML=`✅ найдено ${s.found||0}, добавлено <b>${s.added||0}</b>, обновлено ${s.updated||0}, отсеяно ${s.skipped||0}. Обновляю…`;setTimeout(route,1200);}
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="🔍 Найти чаты";
+  };
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openChat(r.id),200);};

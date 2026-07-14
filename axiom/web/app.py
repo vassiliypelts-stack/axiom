@@ -1916,6 +1916,35 @@ def chatcat_import(payload: dict = Body(...)) -> JSONResponse:
         }, status_code=500)
 
 
+@app.post("/api/chatcat/discover")
+def chatcat_discover(payload: dict = Body(default={})) -> JSONResponse:
+    """Авто-поиск чатов по нише/запросу (channels.chat_discover) → в каталог со статусом 'new'.
+    Синхронно (несколько поисковых запросов с паузами ~1-2 мин), возвращает сводку."""
+    niche_id = payload.get("niche_id")
+    query = (payload.get("query") or "").strip()
+    if not niche_id and not query:
+        return JSONResponse({"error": "нужна ниша или поисковый запрос"}, status_code=400)
+    args = ["channels.chat_discover"]
+    if query:
+        args += ["--query", query]
+    else:
+        args += ["--niche", str(int(niche_id))]
+    if payload.get("min_members"):
+        args += ["--min-members", str(int(payload["min_members"]))]
+    if payload.get("groups_only"):
+        args += ["--groups-only"]
+    res = _run_capture(args, timeout=300)
+    summary = None
+    for line in reversed((res.get("output") or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                summary = json.loads(line); break
+            except Exception:  # noqa: BLE001
+                pass
+    return JSONResponse({"ok": res.get("ok"), "summary": summary, "output": res.get("output")})
+
+
 # ---- Ниши и прослушка чатов по ключам (лиды по нишам) --------------------- #
 @app.get("/api/niches")
 def niches_list() -> JSONResponse:

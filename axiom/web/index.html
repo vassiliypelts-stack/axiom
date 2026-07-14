@@ -1727,6 +1727,7 @@ async function viewChatCatalog(v){
       <input id="cc-disc-min" type="number" min="0" placeholder="мин. участников" style="width:130px" title="отсекать мелкие чаты">
       <label class="sub" style="align-self:center"><input id="cc-disc-groups" type="checkbox"> только группы</label>
       <button class="primary" id="cc-disc">🔍 Найти чаты</button>
+      <button id="cc-bio" title="достать из bio собранных лидов ссылки на другие/закрытые чаты">🔗 Скан ссылок из bio</button>
       <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
     </div>
     <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
@@ -1744,6 +1745,15 @@ async function viewChatCatalog(v){
       else{const s=r.summary||{};m.innerHTML=`✅ найдено ${s.found||0}, добавлено <b>${s.added||0}</b>, обновлено ${s.updated||0}, отсеяно ${s.skipped||0}. Обновляю…`;setTimeout(route,1200);}
     }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
     b.disabled=false;b.textContent="🔍 Найти чаты";
+  };
+  $("#cc-bio").onclick=async()=>{
+    const b=$("#cc-bio"),m=$("#cc-disc-msg");
+    b.disabled=true;b.textContent="сканирую bio… (до ~2 мин)";m.textContent="достаю ссылки из bio собранных лидов и резолвлю чаты…";
+    try{const r=await api("/api/chatcat/bio_scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+      if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
+      else{const s=r.summary||{};m.innerHTML=`✅ из ${s.scanned||0} bio: добавлено публичных <b>${s.added||0}</b>, приватных ${s.private_added||0}, обновлено ${s.updated||0}. Обновляю…`;setTimeout(route,1200);}
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="🔗 Скан ссылок из bio";
   };
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});

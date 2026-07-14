@@ -1658,6 +1658,18 @@ def _run_capture(args: list[str], timeout: int = 240) -> dict:
     return {"ok": r.returncode == 0, "output": out.strip() or "(пусто)"}
 
 
+def _last_json(output: str | None) -> dict | None:
+    """Последняя JSON-строка вывода модуля (модули печатают сводку json.dumps в конце)."""
+    for line in reversed((output or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except Exception:  # noqa: BLE001
+                pass
+    return None
+
+
 @app.post("/api/parse/run")
 def parse_run(payload: dict = Body(...)) -> JSONResponse:
     target = (payload.get("target") or "").strip()
@@ -1934,15 +1946,18 @@ def chatcat_discover(payload: dict = Body(default={})) -> JSONResponse:
     if payload.get("groups_only"):
         args += ["--groups-only"]
     res = _run_capture(args, timeout=300)
-    summary = None
-    for line in reversed((res.get("output") or "").splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                summary = json.loads(line); break
-            except Exception:  # noqa: BLE001
-                pass
-    return JSONResponse({"ok": res.get("ok"), "summary": summary, "output": res.get("output")})
+    return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
+                         "output": res.get("output")})
+
+
+@app.post("/api/chatcat/bio_scan")
+def chatcat_bio_scan(payload: dict = Body(default={})) -> JSONResponse:
+    """Bio-скан ссылок (channels.bio_links): достаёт из bio лидов ссылки на другие/закрытые
+    чаты и заносит их в каталог. Синхронно (резолвы с паузами), возвращает сводку."""
+    limit = int(payload.get("limit") or 500)
+    res = _run_capture(["channels.bio_links", "--limit", str(limit)], timeout=300)
+    return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
+                         "output": res.get("output")})
 
 
 # ---- Ниши и прослушка чатов по ключам (лиды по нишам) --------------------- #

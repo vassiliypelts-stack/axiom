@@ -33,6 +33,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetChannelRecommendationsRequest
 from telethon.tl.types import Channel
 
+from channels.chat_keywords import _target
 from channels.telegram import _build_client
 from db import database
 
@@ -65,7 +66,7 @@ def _seed_chats(chat_id: int | None, favorites: bool, niche_id: int | None) -> l
         where += " AND status IN ('analyzed','joined')"
     with database.get_conn() as conn:
         rows = conn.execute(
-            f"SELECT id, title, username, tg_chat_id, topic FROM chats WHERE {where} "
+            f"SELECT id, title, username, tg_chat_id, kind, topic FROM chats WHERE {where} "
             f"AND status NOT IN ('skip','banned') ORDER BY COALESCE(favorite,0) DESC, "
             f"COALESCE(members_count,0) DESC LIMIT ?", (*params, MAX_SEEDS)
         ).fetchall()
@@ -73,9 +74,12 @@ def _seed_chats(chat_id: int | None, favorites: bool, niche_id: int | None) -> l
 
 
 async def _recommend(client, seed: dict) -> list[Channel]:
-    """Похожие на затравку. FloodWait — ждём и повторяем один раз."""
-    ref = seed.get("username") or seed.get("tg_chat_id")
-    ent = await client.get_entity(ref)
+    """Похожие на затравку. FloodWait — ждём и повторяем один раз.
+
+    Резолвим через общий `chat_keywords._target`: голый int Telethon'у давать нельзя —
+    он гадает тип и принимает id супергруппы за PeerUser, из-за чего ВСЕ затравки без
+    @username молча уходили в [skip]."""
+    ent = await client.get_entity(_target(seed))
     if not isinstance(ent, Channel):
         return []   # рекомендации есть только у каналов/супергрупп
     try:
@@ -152,7 +156,10 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
                     if groups_only and not c.megagroup:
                         skipped += 1
                         continue
-                    if min_members and (members or 0) < min_members:
+                    # ВАЖНО: у Channel из рекомендаций participants_count обычно None
+                    # (счётчик живёт в ChannelFull). Считать None за 0 нельзя — тогда
+                    # --min-members отсекает ВСЁ подряд. Неизвестно ≠ мало: пропускаем.
+                    if min_members and members is not None and members < min_members:
                         skipped += 1
                         continue
                     res, new_id = _upsert(c, seed.get("topic"), seed.get("title") or "?")
@@ -163,9 +170,10 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
                             new_ids.append(new_id)
                     else:
                         updated += 1
-                    if c.username or c.id:
-                        next_wave.append({"title": c.title, "username": c.username,
-                                          "tg_chat_id": c.id, "topic": seed.get("topic")})
+                    # kind обязателен: по нему _target выбирает PeerChannel vs PeerChat
+                    next_wave.append({"title": c.title, "username": c.username,
+                                      "tg_chat_id": c.id, "kind": _kind(c),
+                                      "topic": seed.get("topic")})
                     if added >= max_new:
                         print(f"[стоп] потолок {max_new} новых чатов за прогон")
                         break

@@ -60,9 +60,15 @@ async def _backfill_chats(client, limit: int) -> dict:
         try:
             e = await client.get_entity(ch["username"])
         except FloodWaitError as ex:
+            # ждём РАДИ ЭТОЙ записи — значит её и повторяем, а не проскакиваем дальше
             print(f"[floodwait] жду {ex.seconds}с")
             await asyncio.sleep(ex.seconds + 5)
-            continue
+            try:
+                e = await client.get_entity(ch["username"])
+            except Exception as ex2:  # noqa: BLE001
+                failed += 1
+                print(f"[skip] @{ch['username']}: {str(ex2)[:70]}")
+                continue
         except Exception as ex:  # noqa: BLE001
             failed += 1
             print(f"[skip] @{ch['username']}: {str(ex)[:70]}")
@@ -91,8 +97,12 @@ async def _backfill_chats(client, limit: int) -> dict:
         if i < len(rows) - 1:
             await asyncio.sleep(random.uniform(*RESOLVE_PAUSE))
     with database.get_conn() as conn:
+        # условие ОДИН В ОДИН с выборкой кандидатов выше, иначе «осталось» считает и то,
+        # что мы никогда не возьмём (skip/banned, в т.ч. помеченные дублями), и цифра
+        # навсегда залипает — оператор жмёт «Дозаполнить» впустую
         left = conn.execute("SELECT COUNT(*) FROM chats WHERE tg_chat_id IS NULL "
-                            "AND username IS NOT NULL AND username<>''").fetchone()[0]
+                            "AND username IS NOT NULL AND username<>'' "
+                            "AND COALESCE(status,'') NOT IN ('skip','banned')").fetchone()[0]
     return {"candidates": len(rows), "filled": filled, "failed": failed, "left": left}
 
 

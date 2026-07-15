@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import anthropic
 from pydantic import BaseModel
@@ -43,6 +44,14 @@ OPENAI_COMPAT: dict[str, tuple[str, str]] = {
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
 }
 HTTP_TIMEOUT = 120.0
+_RETRIES = 3          # попыток на запрос к OpenAI-совместимому провайдеру
+_RETRY_PAUSE = 3.0    # база линейного бэкоффа между попытками, сек
+
+# Каким режимом провайдер отдаёт структурированный ответ (см. structured()).
+#   json_schema — строгая схема проверяется на стороне API (OpenAI, Gemini);
+#   json_object — API умеет лишь «верни любой JSON», схему объясняем в промпте.
+# DeepSeek на json_schema отвечает 400 «This response_format type is unavailable now».
+STRUCTURED_MODE: dict[str, str] = {"deepseek": "json_object"}
 
 
 def split(spec: str) -> tuple[str, str]:
@@ -157,16 +166,38 @@ def _to_openai(system: str | None, messages: list[dict]) -> list[dict]:
 
 
 def _compat_post(prov: str, body: dict, timeout: float | None = None) -> dict:
+    """POST к OpenAI-совместимому провайдеру с ретраями на ПРЕХОДЯЩИХ сбоях.
+
+    Ретраи нужны не для красоты: на прогоне 478 чатов 65 (каждый седьмой!) остались без
+    AI-разметки из-за разовых ConnectTimeout до api.deepseek.com — сеть моргнула, чат
+    молча ушёл без темы и вердикта. Повторяем только то, что имеет смысл повторять:
+    таймауты/обрывы сети и 429/5xx. На 401/402/400 (ключ, деньги, кривой запрос)
+    повтор бесполезен — падаем сразу, чтобы причина была видна.
+    """
     import httpx
     base, env = OPENAI_COMPAT[prov]
     key = _compat_key(prov)
     if not key:
         raise RuntimeError(f"нет {env} в .env — нужен для провайдера «{prov}»")
-    r = httpx.post(f"{base}/chat/completions", json=body,
-                   headers={"Authorization": f"Bearer {key}"}, timeout=timeout or HTTP_TIMEOUT)
-    if r.status_code >= 400:
+    last: Exception | None = None
+    for attempt in range(_RETRIES):
+        try:
+            r = httpx.post(f"{base}/chat/completions", json=body,
+                           headers={"Authorization": f"Bearer {key}"},
+                           timeout=timeout or HTTP_TIMEOUT)
+        except Exception as e:  # noqa: BLE001  — сеть: таймаут/обрыв/DNS
+            last = e
+            if attempt == _RETRIES - 1:
+                raise
+            time.sleep(_RETRY_PAUSE * (attempt + 1))   # линейный бэкофф: 3с, 6с
+            continue
+        if r.status_code < 400:
+            return r.json()
+        if r.status_code in (429, 500, 502, 503, 504) and attempt < _RETRIES - 1:
+            time.sleep(_RETRY_PAUSE * (attempt + 1))
+            continue
         raise RuntimeError(f"{prov} {r.status_code}: {r.text[:300]}")
-    return r.json()
+    raise last or RuntimeError(f"{prov}: не удалось выполнить запрос")
 
 
 def _compat_content(data: dict) -> str:
@@ -209,12 +240,26 @@ def structured(spec: str, system: str | None, messages: list[dict],
             **({"system": system} if system else {}), messages=messages,
             output_format=output_format, **kw))
         return resp.parsed_output
+    schema = json_schema(output_format)
+    if STRUCTURED_MODE.get(prov, "json_schema") == "json_object":
+        # DeepSeek строгую схему не принимает («This response_format type is unavailable
+        # now») — умеет только «верни JSON». Формат диктуем ШАБЛОНОМ ОТВЕТА, а не самой
+        # JSON-схемой: на схему модель охотно отвечает... этой же схемой (ловили на живом
+        # прогоне). Слово «json» в промпте для этого режима обязательно — иначе пустота.
+        props = schema.get("properties", {})
+        tmpl = {k: f"<{(v.get('description') or k)}>" for k, v in props.items()}
+        system = ((system + "\n\n") if system else "") + (
+            "Верни РОВНО один json-объект и ничего больше — без пояснений и без ```.\n"
+            "Ниже ключи и что класть в каждый; подставь ЗНАЧЕНИЯ вместо <…>, "
+            "саму подсказку не повторяй:\n" + json.dumps(tmpl, ensure_ascii=False, indent=1))
+        rf = {"type": "json_object"}
+    else:
+        rf = {"type": "json_schema", "json_schema": {
+            "name": output_format.__name__, "strict": True, "schema": schema}}
     data = _compat_post(prov, {
         "model": model, "max_tokens": max_tokens,
         "messages": _to_openai(system, messages),
-        "response_format": {"type": "json_schema", "json_schema": {
-            "name": output_format.__name__, "strict": True,
-            "schema": json_schema(output_format)}},
+        "response_format": rf,
     }, timeout)
     raw = _compat_content(data)
     try:
@@ -226,6 +271,10 @@ def structured(spec: str, system: str | None, messages: list[dict],
             return output_format(**json.loads(s))
         except json.JSONDecodeError:
             raise RuntimeError(f"{prov} вернул не JSON: {raw[:200]}") from e
+    except Exception as e:  # noqa: BLE001 — pydantic: не хватило поля / не тот тип
+        # без сырого ответа в тексте ошибки причину не найти: «1 validation error for X»
+        # ничего не говорит о том, ЧТО именно прислала модель
+        raise RuntimeError(f"{prov} вернул JSON не по схеме ({e}); ответ: {raw[:200]}") from e
 
 
 def json_schema(model: type[BaseModel]) -> dict:

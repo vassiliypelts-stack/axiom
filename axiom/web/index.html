@@ -443,6 +443,16 @@ function smartTable(mount,cfg){
     st.order.splice(insertAt,0,c.key);
   });
   const colByKey=k=>allCols.find(c=>c.key===k);
+  // Текст ячейки как его ВИДИТ человек: рендер → снять теги → чистый текст.
+  // Нужен фильтрам: в ячейке «🟢 жив» (из session_state), а в r.session_alive лежит 1/0/null —
+  // фильтр по сырому полю не найдёт ничего по слову «жив». Атрибуты (title и пр.) отсекаются
+  // вместе с тегами — ищем только по видимому, не по подсказкам.
+  const _sb=document.createElement("div");
+  const cellText=(r,c)=>{
+    if(!c||!c.render)return String(r&&c?(r[c.key]??""):"");
+    try{_sb.innerHTML=c.render(r);}catch(e){return String(r[c.key]??"");}
+    return (_sb.textContent||"").replace(/\s+/g," ").trim();
+  };
   const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
   const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters,pageSize:st.pageSize}));
   const wrap=document.createElement("div");
@@ -484,7 +494,9 @@ function smartTable(mount,cfg){
     const cols=visCols();
     let rows=cfg.rows.slice();
     if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
-    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(fv)rows=rows.filter(r=>String(r[k]??"").toLowerCase().includes(fv));});
+    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(!fv)return;
+      const c=colByKey(k);   // ищем и по видимому тексту («жив»), и по сырому полю («1») — что удобнее
+      rows=rows.filter(r=>cellText(r,c).toLowerCase().includes(fv)||String(r[k]??"").toLowerCase().includes(fv));});
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
     if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
@@ -892,9 +904,7 @@ async function viewAgents(v){
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
   $("#ab-identity").onclick=()=>{
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
-    const style=prompt("Одна инструкция для ИИ на всю пачку (стиль/легенда bio), напр. «риелтор из Сочи, дружелюбный тон». Можно оставить пустым — bio возьмётся из резервного пула:","");
-    if(style===null)return;   // отмена
-    bulk({action:"identity",bio_style:style},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (имя+ник+bio+фото+приватность, каждому своё)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+    showIdentityDialog([...selAcc],bulk);
   };
   $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
@@ -1002,6 +1012,43 @@ async function showInspectModal(id,label){
     mbox.innerHTML=ms.length?ms.map(m=>`<div style="display:flex;justify-content:${m.out?'flex-end':'flex-start'};margin:3px 0">
       <div style="max-width:80%;padding:6px 10px;border-radius:10px;font-size:13px;background:${m.out?'var(--accent-soft)':'var(--panel)'};border:1px solid var(--border)">${esc(m.text)}</div></div>`).join(''):'<div class="hint">пусто</div>';
   }));
+}
+// Диалог «✨ Оформить»: инструкция для ИИ + история прошлых + примеры готовых bio.
+// Раньше был системный prompt() — там не видно, что уже задавал, и удачную формулировку
+// приходилось вспоминать по памяти.
+async function showIdentityDialog(ids,bulk){
+  let hist=[],samples=[];
+  try{const r=await api("/api/accounts/bio_styles");if(r&&r.ok){hist=r.history||[];samples=r.samples||[];}}catch(e){}
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  const histHtml=hist.length?`<div class="sub" style="margin:12px 0 6px">🕘 Последние инструкции — жми, чтобы подставить:</div>
+    ${hist.slice(0,3).map(s=>`<div class="id-h" data-s="${esc(s)}" style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px;cursor:pointer;font-size:13px" title="подставить в поле">${esc(s)}</div>`).join("")}
+    ${hist.length>3?`<div class="sub" id="id-more" style="cursor:pointer;font-size:12px;margin-top:2px">показать ещё ${hist.length-3} →</div><div id="id-rest" style="display:none">${hist.slice(3).map(s=>`<div class="id-h" data-s="${esc(s)}" style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin:4px 0 0;cursor:pointer;font-size:13px">${esc(s)}</div>`).join("")}</div>`:""}`
+    :`<div class="sub" style="margin:12px 0 6px">🕘 История пуста — эта инструкция станет первой.</div>`;
+  const smpHtml=samples.length?`<details style="margin-top:12px"><summary class="sub" style="cursor:pointer">💬 Что ИИ выдавал по прошлым инструкциям (${samples.length})</summary>
+    <div style="margin-top:6px">${samples.map(s=>`<div style="padding:6px 10px;border-left:2px solid var(--border);margin-bottom:5px;font-size:12px"><b>${esc(s.label||"—")}</b><br><span class="sub">${esc(s.bio||"")}</span></div>`).join("")}</div></details>`:"";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:560px;width:92%;padding:20px;max-height:88vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">✨ Оформить (${ids.length} акк.)</b><button class="id-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">Одна инструкция для ИИ на всю пачку (стиль/легенда bio), напр. «риелтор из Сочи, дружелюбный тон». Можно оставить пустым — bio возьмётся из резервного пула.</div>
+    <input id="id-style" style="width:100%;padding:8px 10px;font-size:14px" placeholder="напр. риелтор из Сочи, дружелюбный тон">
+    ${histHtml}${smpHtml}
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:14px"><button class="id-close">Отмена</button><button class="primary" id="id-go">Оформить</button></div>
+  </div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove(), inp=modal.querySelector("#id-style");
+  modal.querySelectorAll(".id-close").forEach(b=>b.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  const bindHist=()=>modal.querySelectorAll(".id-h").forEach(d=>d.onclick=()=>{inp.value=d.dataset.s;inp.focus();});
+  bindHist();
+  const more=modal.querySelector("#id-more");
+  if(more)more.onclick=()=>{modal.querySelector("#id-rest").style.display="block";more.style.display="none";bindHist();};
+  inp.focus();
+  inp.onkeydown=e=>{if(e.key==="Enter")modal.querySelector("#id-go").click();};
+  modal.querySelector("#id-go").onclick=async()=>{
+    const style=inp.value.trim();
+    close();
+    await bulk({action:"identity",bio_style:style},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (имя+ник+bio+фото+приватность, каждому своё)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+  };
 }
 function showProxyDistDialog(ids,bulk){
   const modal=document.createElement("div");
@@ -1759,12 +1806,71 @@ async function loadCoverage(){
     const msg=$("#cc-join-msg");msg.textContent="бойцы заходят в чаты по-человечески, с паузами — подожди…";
     try{const r=await api("/api/chats/join",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({per,favorites:fav})});
       if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
-      else{msg.innerHTML=`✅ вступили в <b>${r.joined||0}</b> чат(ов), не удалось ${r.failed||0}. Обновляю покрытие…`;}
+      else{msg.innerHTML=`✅ вступили в <b>${r.joined||0}</b> чат(ов)${r.pending?`, 📨 заявок на одобрение: <b>${r.pending}</b> (ждут админа — это не ошибка)`:""}${r.failed?", не удалось "+r.failed:""}. Обновляю покрытие…`;}
     }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
     jb.disabled=false;jb.textContent="🚀 Разослать армию по чатам";
     loadCoverage();
   };
 }
+// Вердикт = решение ХОЗЯИНА (годен ли чат в работу). НЕ путать со status — тот про
+// стадию робота (new→analyzed→joined). Раньше оси были склеены, и «analyzed» ошибочно
+// читали как «одобрен», хотя это лишь «робот прочитал».
+const CHAT_VERDICT={"годен":"✅ годен","не годен":"🚫 не годен","на проверку":"🤔 на проверку","мёртвый":"💀 мёртвый"};
+const CHAT_VERDICT_CLS={"годен":"active","не годен":"stop","на проверку":"nurture","мёртвый":"stop"};
+let CC_SCAN_TIMER=null;
+
+// Сводка «сколько чего» над таблицей — видно на глаз, что каталог ещё не разобран.
+function ccRenderVerdictSummary(){
+  // NB: CHATCAT объявлена через `let` — свойства window она НЕ создаёт, поэтому
+  // обращаемся к ней напрямую (проверка window.CHATCAT молча ломала бы отрисовку).
+  const box=$("#cc-verdict-sum"); if(!box||!CHATCAT||!CHATCAT.length)return;
+  const rows=CHATCAT, n=rows.length;
+  const scanned=rows.filter(r=>r.last_scanned_at).length;
+  const cnt={};rows.forEach(r=>{if(r.verdict)cnt[r.verdict]=(cnt[r.verdict]||0)+1;});
+  const undecided=rows.filter(r=>!r.verdict).length;
+  const parts=Object.keys(CHAT_VERDICT).filter(k=>cnt[k]).map(k=>
+    `<span class="badge b-${CHAT_VERDICT_CLS[k]}">${CHAT_VERDICT[k]}: ${cnt[k]}</span>`);
+  if(undecided)parts.push(`<span class="badge b-nurture">без вердикта: ${undecided}</span>`);
+  box.innerHTML=`<span style="display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px">
+    <b>Всего ${n}</b> · проверено сканом <b>${scanned}</b> (${n?Math.round(scanned/n*100):0}%) — ${parts.join(" ")}</span>`;
+}
+
+function ccScanPoll(){
+  clearInterval(CC_SCAN_TIMER);
+  const el=()=>$("#cc-scan-prog");
+  CC_SCAN_TIMER=setInterval(async()=>{
+    if(!el()){clearInterval(CC_SCAN_TIMER);return;}
+    let p;try{p=await api("/api/chatcat/scan_progress");}catch(e){return;}
+    if(!p||!p.total){el().textContent="";return;}
+    const pct=Math.round((p.done||0)/p.total*100);
+    const tail=`✅ ${p.ok||0} · 💀 мёртвых ${p.dead||0} · ⚠ сбоев ${p.err||0}`;
+    if(p.running){el().innerHTML=`<b>${p.done||0}/${p.total}</b> (${pct}%) — ${tail} · идёт…`;}
+    else{el().innerHTML=`<span style="color:var(--green)">готово: ${p.done||0}/${p.total} — ${tail}</span>`;
+      clearInterval(CC_SCAN_TIMER);setTimeout(route,800);}
+  },3000);
+}
+
+function ccScanWire(){
+  const msg=t=>{const e=$("#cc-scan-prog");if(e)e.innerHTML=t;};
+  const start=async(body,btn)=>{
+    const b=$(btn);b.disabled=true;
+    const r=await api("/api/chatcat/scan_all",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    b.disabled=false;
+    if(r.error){msg('<span style="color:#c0392b">'+esc(r.error)+'</span>');return;}
+    if(!r.workers){msg('<span style="color:#c0392b">нет живых рабочих аккаунтов — иду главным. Проверь живость в «Аккаунтах»</span>');}
+    msg(`запустил: ${r.queued} чатов силами ${r.workers||1} аккаунт(ов)…`);
+    ccScanPoll();
+  };
+  $("#cc-scanall").onclick=()=>{
+    const n=(CHATCAT||[]).filter(r=>!r.last_scanned_at).length;
+    if(!confirm(`Проверить ${n} непроверенных чатов рабочими аккаунтами?\n\nТолько чтение, без вступления. Идёт в фоне с паузами — можно закрыть страницу.`))return;
+    start({},"#cc-scanall");
+  };
+  $("#cc-scanfav").onclick=()=>start({favorites:true},"#cc-scanfav");
+  $("#cc-scanstop").onclick=async()=>{await api("/api/chatcat/scan_stop",{method:"POST"});msg("⏹ останавливаю — воркеры дочитывают текущий чат…");};
+  ccScanPoll();
+}
+
 async function viewChatCatalog(v){
   CHATCAT=await api("/api/chatcat");
   let niches=[];try{niches=await api("/api/niches");}catch(e){}
@@ -1786,18 +1892,45 @@ async function viewChatCatalog(v){
       <button class="primary" id="cc-disc">🔍 Найти чаты</button>
       <button id="cc-bio" title="достать из bio собранных лидов ссылки на другие/закрытые чаты">🔗 Скан ссылок из bio</button>
       <button id="cc-sim" title="взять рекомендации Telegram от уже найденных чатов — каталог растёт вширь">♊ Похожие чаты</button>
+      <select id="cc-sim-seed" title="от каких чатов плясать (затравка)">
+        <option value="analyzed">от изученных чатов</option>
+        <option value="favorites">от ⭐ избранных</option>
+        <option value="niche">от чатов выбранной ниши</option>
+      </select>
       <label class="sub" style="align-self:center" title="кругов размножения: находки круга приводят соседей на следующем">×<input id="cc-sim-depth" type="number" min="1" max="4" value="1" style="width:44px"> круга</label>
       <label class="sub" style="align-self:center" title="сразу после находки армия вступит в новые чаты (человекоподобно, с паузами). Действует на все три кнопки. 0 = только заносить в каталог"><input id="cc-join-now" type="checkbox"> и сразу вступить по <input id="cc-join-per" type="number" min="1" max="15" value="2" style="width:44px"> чата/акк</label>
       <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
     </div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b style="font-size:13px">📊 Проверка чатов</b>
+        <button class="primary" id="cc-scanall" title="Пройти по всем непроверенным чатам рабочими аккаунтами: участники, активность, «могу писать», админы. Несуществующие пометит «мёртвый»">📊 Проверить все новые</button>
+        <button id="cc-scanfav" title="Только избранные ⭐ — быстро и безопасно">⭐ Только избранные</button>
+        <button id="cc-scanstop" title="Мягкая остановка: воркеры дочитают текущий чат и выйдут">⏹ Стоп</button>
+        <span id="cc-scan-prog" class="hint"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Идёт <b>рабочими</b> аккаунтами (живыми, не родными) — твой главный номер не под ударом. Скан только читает, не вступает. Паузы между чатами человекоподобные, FloodWait переживает: чат вернётся в очередь к другому аккаунту. Пока не проверишь — в таблице ниже прочерки, и «Могу писать» неизвестно.</div>
+      <div id="cc-verdict-sum" style="margin-top:8px"></div></div>
+    <div id="cc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
+      <b style="font-size:13px">Аппрув (<span id="cv-cnt">0</span>):</b>
+      <button id="cv-selall" title="выделить все строки, что видны после фильтра/поиска">☑ Выделить видимые</button>
+      <button id="cv-selnone">☐ Снять</button>
+      <span style="width:1px;height:18px;background:var(--border)"></span>
+      <button id="cv-good" title="Годен — рассылка и прослушка берут только такие чаты">✅ Годен</button>
+      <button id="cv-bad" title="Не годен — флудилка/не та тема, убрать из работы">🚫 Не годен</button>
+      <button id="cv-maybe" title="Вернуться позже">🤔 На проверку</button>
+      <button id="cv-clear" title="Снять вердикт">✖ Снять вердикт</button>
+      <span class="hint" id="cv-msg">Вердикт — это ТВОЁ решение, отдельно от статуса робота. ИИ ставит предварительный (🤖), твой всегда главнее и не перетирается.</span></div>
     <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
     <div id="cc-body"></div>`;
   loadCoverage();
+  ccScanWire();
+  ccRenderVerdictSummary();
   // «и сразу вступить» — общий для поиска / bio-скана / похожих
   const ccJoin=()=>$("#cc-join-now")&&$("#cc-join-now").checked?+($("#cc-join-per").value||2):0;
   const joinNote=s=>{const j=s&&s.join;if(!j)return"";
     if(j.ok===false)return` <span style="color:#c0392b">вступление: ${esc(j.error||"не вышло")}</span>`;
-    return ` 🚀 вступили в <b>${j.joined||0}</b>${j.failed?", не удалось "+j.failed:""}`;};
+    return ` 🚀 вступили в <b>${j.joined||0}</b>${j.pending?", 📨 заявок "+j.pending:""}${j.failed?", не удалось "+j.failed:""}`;};
   $("#cc-disc").onclick=async()=>{
     const b=$("#cc-disc"),m=$("#cc-disc-msg");
     const q=($("#cc-disc-q").value||"").trim();
@@ -1827,8 +1960,14 @@ async function viewChatCatalog(v){
     const b=$("#cc-sim"),m=$("#cc-disc-msg");
     const depth=+($("#cc-sim-depth").value||1);
     const body={depth,min_members:+($("#cc-disc-min").value||0),groups_only:$("#cc-disc-groups").checked,join:ccJoin()};
-    if($("#cc-disc-niche"))body.niche_id=+$("#cc-disc-niche").value;   // затравка — чаты этой ниши
-    if(!confirm(`Размножение по похожим: возьму чаты каталога за затравку и спрошу у Telegram соседей, ${depth} круг(а).\n${depth>1?"Больше кругов = сильно дольше и шире (до 500 новых чатов).\n":""}${body.join?"Плюс армия сразу вступит в найденное.\n":""}Продолжить?`))return;
+    // затравка: раньше niche_id уходил ВСЕГДА, и путь по умолчанию давал 0 затравок
+    const seed=$("#cc-sim-seed").value, seedTxt={analyzed:"изученных чатов",favorites:"⭐ избранных",niche:"чатов выбранной ниши"}[seed];
+    if(seed==="favorites")body.favorites=true;
+    else if(seed==="niche"){
+      if(!$("#cc-disc-niche")){m.textContent="сначала создай нишу — или выбери другую затравку";return;}
+      body.niche_id=+$("#cc-disc-niche").value;
+    }
+    if(!confirm(`Размножение по похожим: возьму за затравку ${seedTxt} и спрошу у Telegram соседей, ${depth} круг(а).\n${depth>1?"Больше кругов = сильно дольше и шире (до 500 новых чатов).\n":""}${body.join?"Плюс армия сразу вступит в найденное.\n":""}Продолжить?`))return;
     b.disabled=true;b.textContent=body.join?"размножаю и вступаю… (до ~30 мин)":"размножаю… (до ~15 мин)";
     m.textContent="беру рекомендации TG от найденных чатов с паузами…";
     try{const r=await api("/api/chatcat/similar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -1862,25 +2001,48 @@ async function viewChatCatalog(v){
     b.disabled=false;b.textContent="🔄 Инвентаризация";
     if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';return;}
     route();};
+  const selChat=new Set();
+  let ccFiltered=CHATCAT.slice();
+  const updCvCnt=()=>{const c=$("#cv-cnt");if(c)c.textContent=selChat.size;};
   smartTable($("#cc-body"),{
     tableKey:"chatcat",
     rows:CHATCAT,searchKeys:["title","username","topic","city","kind","can_write"],
-    groupOptions:[{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
-    groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):val,
+    onDraw:rows=>{ccFiltered=rows;},
+    groupOptions:[{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
+    groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):k==="verdict"?(CHAT_VERDICT[val]||"без вердикта"):val,
     onRowClick:openChat,
     columns:[
+      {key:"sel",label:"",render:r=>`<input type="checkbox" class="cc-sel" data-id="${r.id}" onclick="event.stopPropagation()" ${selChat.has(r.id)?"checked":""}>`},
       {key:"favorite",label:"⭐",render:r=>`<button class="cc-fav" data-id="${r.id}" onclick="event.stopPropagation()" title="избранный чат — слушать в первую очередь (только ⭐)" style="border:none;background:none;cursor:pointer;font-size:16px;padding:0;line-height:1">${r.favorite?"⭐":"☆"}</button>`},
+      {key:"verdict",label:"Вердикт",render:r=>{
+        if(!r.verdict)return '<span class="no" title="решение ещё не принято — проверь сканом и одобри">—</span>';
+        const src=r.verdict_src==='ai'?' 🤖':r.verdict_src==='скан'?' 🔎':'';
+        const tip=r.verdict==='мёртвый'?('чат не существует: '+(r.scan_error||''))
+          :r.verdict_src==='ai'?'предварительно от ИИ — подтверди своим решением'
+          :r.verdict_src==='человек'?('твоё решение от '+(r.verdict_at||'')):'';
+        return `<span class="badge b-${CHAT_VERDICT_CLS[r.verdict]||'nurture'}" title="${esc(tip)}">${CHAT_VERDICT[r.verdict]||esc(r.verdict)}${src}</span>`;}},
       {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
       {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
       {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
       {key:"topic",label:"Тема",cls:"sub",render:r=>esc(r.topic)||"—"},
       {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—"},
-      {key:"can_write",label:"Могу писать",render:r=>r.can_write?`<span class="badge b-${r.can_write==='да'?'active':(r.can_write==='заблокирован'||r.can_write==='только админы'||r.can_write==='ограничено')?'stop':'nurture'}">${esc(r.can_write)}</span>`:"—"},
+      {key:"can_write",label:"Могу писать",render:r=>{
+        if(!r.can_write)return '<span class="no" title="чат ещё не проанализирован — жми «📊 Проверить чаты»">— не проверен</span>';
+        const stop=["заблокирован","только админы","ограничено"].includes(r.can_write);
+        const tip=r.can_write==='заблокирован'?'админы закрыли рот ЛИЧНО тебе — рассылка отсюда не пойдёт'
+          :r.can_write==='только админы'?'писать разрешено только админам'
+          :r.can_write==='нужно одобрение'?'вступление только по заявке с одобрением админа'
+          :r.can_write==='не вступил'?'ты не в чате — сначала вступи':'';
+        return `<span class="badge b-${r.can_write==='да'?'active':stop?'stop':'nurture'}" title="${esc(tip)}">${esc(r.can_write)}</span>`;}},
       {key:"members_visible",label:"Участники видны",cls:"sub",render:r=>esc(r.members_visible)||"—"},
       {key:"activity",label:"Активность",cls:"sub",render:r=>esc(r.activity)||"—"},
       {key:"admins_count",label:"Админы",cls:"mono",render:r=>r.admins_count||0},
-      {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='analyzed'?'active':r.status==='joined'?'won':'nurture'}">${esc(CHAT_ST[r.status]||r.status)}</span>`},
+      {key:"status",label:"Статус робота",render:r=>{
+        const b=`<span class="badge b-${r.status==='analyzed'?'active':r.status==='joined'?'won':'nurture'}" title="стадия конвейера — НЕ значит «одобрен». Одобрение — в колонке «Вердикт»">${esc(CHAT_ST[r.status]||r.status)}</span>`;
+        const s=r.last_scanned_at?`<br><span class="mono" style="font-size:10px;opacity:.7" title="когда последний раз сканировали">🔎 ${fmt(r.last_scanned_at)}</span>`
+          :'<br><span class="no" style="font-size:10px">не сканирован</span>';
+        return b+s;}},
     ],
     emptyText:"Чатов нет. «Инвентаризация» подтянет твои чаты, или добавь @username вручную → «Анализ».",
   });
@@ -1890,6 +2052,25 @@ async function viewChatCatalog(v){
     b.textContent=nv?"⭐":"☆";if(row)row.favorite=nv;
     await api(`/api/chatcat/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({favorite:nv})});
   });
+  // ── аппрув: выбор строк + массовый вердикт ──
+  $("#cc-body").addEventListener("change",(e)=>{
+    const cb=e.target.closest(".cc-sel");
+    if(cb){const id=+cb.dataset.id;if(cb.checked)selChat.add(id);else selChat.delete(id);updCvCnt();}
+  });
+  const syncCvDom=()=>{$("#cc-body").querySelectorAll(".cc-sel").forEach(cb=>cb.checked=selChat.has(+cb.dataset.id));updCvCnt();};
+  $("#cv-selall").onclick=()=>{ccFiltered.forEach(r=>selChat.add(r.id));syncCvDom();$("#cv-msg").textContent=`выделено ${ccFiltered.length} (видимых после фильтра)`;};
+  $("#cv-selnone").onclick=()=>{selChat.clear();syncCvDom();$("#cv-msg").textContent="выделение снято";};
+  const setVerdict=async(verdict,label)=>{
+    if(!selChat.size){$("#cv-msg").textContent="ничего не выбрано";return;}
+    const r=await api("/api/chatcat/verdict",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids:[...selChat],verdict})});
+    if(r.error){$("#cv-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    $("#cv-msg").innerHTML=`<span style="color:var(--green)">${label}: ${r.updated} чат(ов)</span>`;
+    setTimeout(route,900);
+  };
+  $("#cv-good").onclick=()=>setVerdict("годен","✅ одобрено");
+  $("#cv-bad").onclick=()=>setVerdict("не годен","🚫 отклонено");
+  $("#cv-maybe").onclick=()=>setVerdict("на проверку","🤔 отложено");
+  $("#cv-clear").onclick=()=>setVerdict("","вердикт снят");
 }
 function renderChatAgents(agents){
   if(!agents||!agents.length)return '<div class="no">пока нет — «🔄 Инвентаризация» или «🚀 Разослать армию по чатам»</div>';
@@ -1908,7 +2089,9 @@ function renderChatAdmins(admins){
 async function openChat(id){
   const c=await api(`/api/chatcat/${id}`);
   $("#dr-title").textContent=c.title||c.username||("Чат #"+id);
-  const STO=[["new","новый"],["analyzed","проанализирован"],["queued","в очереди (вступить)"],["joined","вступил"],["skip","пропуск"]];
+  // 'queued' убран: его никто не писал и не читал — мёртвое значение, только путало.
+  const STO=[["new","новый"],["analyzed","проанализирован"],["joined","вступил"],["skip","пропуск"]];
+  const VDO=[["","— не решено —"],["годен","✅ годен"],["не годен","🚫 не годен"],["на проверку","🤔 на проверку"],["мёртвый","💀 мёртвый"]];
   $("#dr-body").innerHTML=`
     <div class="ttoolbar" style="margin:0 0 10px"><button class="primary" id="cc-scan">📊 Анализ (чтение)</button>
       ${c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">открыть в TG ↗</a>`:""}</div>
@@ -1920,7 +2103,11 @@ async function openChat(id){
     <div class="row2"><div class="field"><label>Можно выгрузить целиком</label><div class="v">${c.can_export_all?esc(c.can_export_all):"—"}${c.can_export_all==='частично'?' <span class="sub">(>10k — остальных добираем комментаторами)</span>':""}</div></div>
       <div class="field"></div></div>
     <div class="row2"><div class="field"><label>Тип</label><div class="v">${esc(c.kind)||"—"}${c.in_account==='yes'?' · <span class="badge b-active">в моём аккаунте</span>':""}</div></div>
-      <div class="field"><label>Статус</label><select data-k="status">${STO.map(([k,l])=>`<option value="${k}" ${k===c.status?"selected":""}>${l}</option>`).join("")}</select></div></div>
+      <div class="field"><label>Статус робота <span class="sub">(стадия, не одобрение)</span></label><select data-k="status">${STO.map(([k,l])=>`<option value="${k}" ${k===c.status?"selected":""}>${l}</option>`).join("")}</select></div></div>
+    <div class="row2"><div class="field"><label>✔ Вердикт <span class="sub">(твоё решение — рассылка берёт только «годен»)</span></label>
+        <select data-k="verdict">${VDO.map(([k,l])=>`<option value="${k}" ${k===(c.verdict||"")?"selected":""}>${l}</option>`).join("")}</select>
+        ${c.verdict_src?`<div class="sub" style="margin-top:4px">поставил: ${c.verdict_src==='ai'?'🤖 ИИ (предварительно — подтверди своим)':c.verdict_src==='скан'?'🔎 скан':'👤 ты'} ${c.verdict_at?'· '+fmt(c.verdict_at):''}</div>`:""}</div>
+      <div class="field">${c.scan_error?`<label>⚠ Ошибка скана</label><div class="v sub" style="color:#c0392b">${esc(c.scan_error)}</div>`:""}</div></div>
     ${c.summary?`<div class="field"><label>🧠 AI-описание чата</label><div class="v" style="white-space:pre-wrap;background:var(--panel2);padding:8px;border-radius:6px">${esc(c.summary)}</div></div>`:""}
     <div class="row2"><div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
       <div class="field"><label>Город</label><input data-k="city" value="${esc(c.city||"")}"></div></div>

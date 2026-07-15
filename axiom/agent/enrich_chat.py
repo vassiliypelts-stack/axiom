@@ -1,19 +1,20 @@
 """AI-обогащение чата: «что это за чат, о чём» — по выборке его сообщений.
 
-Дополняет каталог чатов (Backlog-P0): Claude по названию + выборке недавних сообщений
+Дополняет каталог чатов (Backlog-P0): модель по названию + выборке недавних сообщений
 определяет тематику/нишу (короткий тег для группировки) и человекочитаемое описание,
 чтобы оператор с одного взгляда понимал, стоит ли работать чат. Дёшево — на runtime-модели
-(Haiku по умолчанию, config.MODEL). Без ANTHROPIC_API_KEY — тихо ничего не делает.
+(config.MODEL, по умолчанию Haiku; можно поставить DeepSeek/Gemini — см. agent/llm.py).
+Без ключа провайдера — тихо ничего не делает.
 
 Вызывается из channels/chat_scan.py сразу после анализа (там уже есть выборка сообщений)
 и из веб-эндпоинта /api/chatcat/{id}/enrich.
 """
 from __future__ import annotations
 
-import anthropic
 from pydantic import BaseModel, Field
 
 import config
+from agent import llm
 from db import database
 
 
@@ -35,22 +36,15 @@ SYSTEM = (
 )
 
 
-def _client() -> anthropic.Anthropic:
-    return anthropic.Anthropic()
-
-
 def classify(title: str | None, sample: list[str]) -> ChatProfile:
     """Одна синхронная классификация. sample — тексты недавних сообщений чата."""
     body = "\n".join(f"  • {s}" for s in sample[:60] if s)
     ctx = f"Название чата: {title or '—'}\n\nВыборка сообщений ({len(sample)} шт.):\n{body}"
-    resp = _client().messages.parse(
-        model=config.MODEL,
-        max_tokens=400,
-        system=SYSTEM,
+    return llm.structured(
+        config.MODEL, system=SYSTEM,
         messages=[{"role": "user", "content": ctx}],
-        output_format=ChatProfile,
+        output_format=ChatProfile, max_tokens=400,
     )
-    return resp.parsed_output
 
 
 def save(chat_id: int, p: ChatProfile) -> None:
@@ -70,7 +64,7 @@ def save(chat_id: int, p: ChatProfile) -> None:
 
 def enrich(chat_id: int, title: str | None, sample: list[str]) -> ChatProfile | None:
     """Классифицировать и сохранить. Без ключа или без сырья — None (не ошибка)."""
-    if not config.ANTHROPIC_API_KEY or not sample:
+    if not llm.available(config.MODEL) or not sample:
         return None
     p = classify(title, sample)
     save(chat_id, p)

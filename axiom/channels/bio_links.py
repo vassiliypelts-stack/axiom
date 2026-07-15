@@ -59,7 +59,7 @@ def _kind(e) -> str:
     return "группа"
 
 
-async def run(limit: int) -> None:
+async def run(limit: int, join: int = 0) -> None:
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute(
@@ -80,6 +80,7 @@ async def run(limit: int) -> None:
     print(f"[bio-scan] из {len(rows)} bio: публичных {len(publics)}, приватных {len(invites)}")
 
     added = updated = priv_added = 0
+    new_ids: list[int] = []
 
     # приватные инвайты — резолвить без вступления нельзя, кладём как ссылку на обзор
     with database.get_conn() as conn:
@@ -87,11 +88,12 @@ async def run(limit: int) -> None:
             ex = conn.execute("SELECT id FROM chats WHERE link=?", (link,)).fetchone()
             if ex:
                 continue
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO chats (title, link, kind, status, notes) "
                 "VALUES (?,?,?, 'new', 'из bio-скана: приватный, требует вступления')",
                 (link, link, "приватный"),
             )
+            new_ids.append(cur.lastrowid)
             priv_added += 1
 
     # публичные — резолвим (это чат/канал?), тянем участников/tg_id → в каталог
@@ -122,28 +124,38 @@ async def run(limit: int) -> None:
                     )
                     updated += 1
                 else:
-                    conn.execute(
+                    cur = conn.execute(
                         "INSERT INTO chats (title, username, link, kind, members_count, tg_chat_id, "
                         "status, notes) VALUES (?,?,?,?,?,?, 'new', 'из bio-скана')",
                         (getattr(e, "title", None) or uname, uname, f"https://t.me/{uname}",
                          _kind(e), members, tg_id),
                     )
+                    new_ids.append(cur.lastrowid)
                     added += 1
             await asyncio.sleep(0.4)  # антибан: дозируем резолвы
     finally:
         await client.disconnect()
 
-    print(json.dumps({
+    summary = {
         "ok": True, "scanned": len(rows), "public_found": len(publics), "private_found": len(invites),
         "added": added, "updated": updated, "private_added": priv_added,
-    }, ensure_ascii=False))
+    }
+    if join and new_ids:
+        # для приватных +hash вступление — единственный способ вообще узнать, что это за чат
+        from channels import chat_join
+        print(f"[join] вступаю в {len(new_ids)} новых чат(ов), до {join} на аккаунт…")
+        summary["join"] = await chat_join.run(per=join, favorites=False, only_id=None,
+                                              chat_ids=new_ids)
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="AXIOM bio-скан ссылок → каталог чатов")
     p.add_argument("--limit", type=int, default=500, help="сколько контактов с bio просканировать")
+    p.add_argument("--join", type=int, default=0, metavar="N",
+                   help="сразу вступить армией в найденное: до N новых чатов на аккаунт (0 = не вступать)")
     args = p.parse_args()
-    asyncio.run(run(args.limit))
+    asyncio.run(run(args.limit, join=args.join))
 
 
 if __name__ == "__main__":

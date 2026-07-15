@@ -12,6 +12,7 @@ from __future__ import annotations
 import random
 
 import config
+from agent import llm
 
 # Резервные «живые» bio на случай отсутствия ключа/ошибки сети. Нейтральные —
 # не продающие (рекламное bio само по себе подозрительно для антиспама).
@@ -33,11 +34,9 @@ def generate_bio(role: str | None = None, label: str | None = None,
     """Короткое человеческое bio (≤70 симв.) под аккаунт. Никогда не бросает —
     при любой проблеме возвращает осмысленный шаблон."""
     role = (role or "").strip().lower()
-    if not config.ANTHROPIC_API_KEY:
+    if not llm.available(config.AGENT_MODEL):
         return _fallback(role)
     try:
-        import anthropic
-
         hint = ", ".join(x for x in [
             f"роль: {role}" if role else "",
             f"имя/ярлык: {label}" if label else "",
@@ -47,9 +46,8 @@ def generate_bio(role: str | None = None, label: str | None = None,
         # таймаут: SDK по умолчанию ждёт до 600с (10 мин) — при подвисшей сети это
         # молча вешало ВЕСЬ массовый прогон (bio генерится синхронно в цикле по
         # аккаунтам, без него следующие 19 аккаунтов просто не доходили до очереди).
-        msg = anthropic.Anthropic(timeout=15.0).messages.create(
-            model=config.AGENT_MODEL,
-            max_tokens=60,
+        text = llm.text(
+            config.AGENT_MODEL,
             system=(
                 "Ты пишешь КОРОТКОЕ человеческое bio для Telegram-профиля, строго до 70 символов. "
                 "Живая обычная фраза от первого лица, по-русски, разговорно. БЕЗ хэштегов, БЕЗ "
@@ -57,9 +55,9 @@ def generate_bio(role: str | None = None, label: str | None = None,
                 "или вовсе без него. Верни ТОЛЬКО текст bio одной строкой, без кавычек."
             ),
             messages=[{"role": "user", "content": f"Сделай bio. Данные: {hint}"}],
+            max_tokens=60, timeout=15.0,
         )
-        text = "".join(getattr(b, "text", "") for b in msg.content).strip()
-        text = text.strip().strip('"«»').splitlines()[0].strip()
+        text = text.strip().strip('"«»').splitlines()[0].strip() if text.strip() else ""
         return text[:70] if text else _fallback(role)
     except Exception:  # noqa: BLE001 — фича не должна падать из-за сети/ключа
         return _fallback(role)

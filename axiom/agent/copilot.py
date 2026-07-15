@@ -5,18 +5,8 @@
 """
 from __future__ import annotations
 
-import anthropic
-
 import config
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
-    return _client
+from agent import llm
 
 
 _SYSTEM = (
@@ -53,13 +43,7 @@ def suggest(step: str, context: str = "") -> str:
     user = f"Шаг визарда: {step}.\n{instr}"
     if context.strip():
         user += f"\n\nКонтекст кампании (что уже известно):\n{context.strip()}"
-    resp = _get_client().messages.create(
-        model=config.MODEL,
-        max_tokens=800,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": user}],
-    )
-    parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-    text = "\n".join(parts).strip()
+    text = llm.text(config.MODEL, system=_SYSTEM,
+                    messages=[{"role": "user", "content": user}], max_tokens=800)
     text = text.replace("**", "").replace("##", "").replace("---", "")
-    return text or "(пусто)"
+    return text.strip() or "(пусто)"

@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import anthropic
 from pydantic import BaseModel, Field
 
 import config
@@ -41,16 +40,6 @@ class Reply(BaseModel):
         "или КП одно/не приложено. Выбирай по типу собеседника; не отправляй в первое касание.",
     )
     notes: str = Field(description="Короткая заметка для книжки/CRM")
-
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()  # читает ANTHROPIC_API_KEY из окружения
-    return _client
 
 
 def generate_reply(
@@ -104,22 +93,18 @@ def generate_reply(
     else:
         system += "\n\nКП файлом НЕ приложено — send_kp всегда оставляй false."
 
-    # adaptive thinking есть только у 4.6+/Opus. На Haiku 4.5 параметр не передаём
-    # (он бы дал ошибку и лишний расход). Короткие реплики SDR в нём не нуждаются.
+    # adaptive thinking есть только у Anthropic 4.6+/Opus. На Haiku 4.5 и у чужих
+    # провайдеров параметр не передаём (дал бы ошибку и лишний расход). Короткие
+    # реплики SDR в нём не нуждаются.
+    from agent import llm
     kwargs: dict = {}
-    if "haiku" not in config.AGENT_MODEL:
+    if llm.is_anthropic(config.AGENT_MODEL) and "haiku" not in config.AGENT_MODEL:
         kwargs["thinking"] = {"type": "adaptive"}
 
-    from agent import llm
-    response = llm.call(lambda c: c.messages.parse(
-        model=config.AGENT_MODEL,
-        max_tokens=1000,
-        system=system,
-        messages=history,
-        output_format=Reply,
-        **kwargs,
-    ))
-    return response.parsed_output
+    return llm.structured(
+        config.AGENT_MODEL, system=system, messages=history,
+        output_format=Reply, max_tokens=1000, **kwargs,
+    )
 
 
 def _demo() -> None:
@@ -142,7 +127,8 @@ def _demo() -> None:
 
 
 if __name__ == "__main__":
-    if not config.ANTHROPIC_API_KEY:
-        print("Нет ANTHROPIC_API_KEY в .env — заполни и запусти снова.")
+    from agent import llm as _llm
+    if not _llm.available(config.AGENT_MODEL):
+        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — заполни и запусти снова.")
     else:
         _demo()

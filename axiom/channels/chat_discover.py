@@ -53,7 +53,7 @@ def _keywords_for_niche(niche_id: int) -> tuple[str, list[str]]:
 
 
 async def run(niche_id: int | None, query: str | None, min_members: int,
-              groups_only: bool, limit: int = PER_QUERY) -> None:
+              groups_only: bool, limit: int = PER_QUERY, join: int = 0) -> None:
     import random
 
     database.init_db()
@@ -71,6 +71,7 @@ async def run(niche_id: int | None, query: str | None, min_members: int,
     await client.start()
 
     seen: set[int] = set()
+    new_ids: list[int] = []
     found = added = updated = skipped = 0
     topic = niche_name or None
     try:
@@ -107,21 +108,29 @@ async def run(niche_id: int | None, query: str | None, min_members: int,
                         )
                         updated += 1
                     else:
-                        conn.execute(
+                        cur = conn.execute(
                             "INSERT INTO chats (title, username, link, kind, members_count, "
                             "tg_chat_id, topic, status) VALUES (?,?,?,?,?,?,?, 'new')",
                             (c.title, c.username, link, _kind(c), members, c.id, topic),
                         )
+                        new_ids.append(cur.lastrowid)
                         added += 1
             if i < len(queries) - 1:
                 await asyncio.sleep(random.uniform(*QUERY_PAUSE))
     finally:
         await client.disconnect()
 
-    print(json.dumps({
+    summary = {
         "ok": True, "niche": niche_name or query, "queries": len(queries),
         "found": found, "added": added, "updated": updated, "skipped": skipped,
-    }, ensure_ascii=False))
+    }
+    if join and new_ids:
+        # вступаем СРАЗУ в только что найденное, чужой сессией-армией (не сессией поиска)
+        from channels import chat_join
+        print(f"[join] вступаю в {len(new_ids)} новых чат(ов), до {join} на аккаунт…")
+        summary["join"] = await chat_join.run(per=join, favorites=False, only_id=None,
+                                              chat_ids=new_ids)
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 def main() -> None:
@@ -130,10 +139,12 @@ def main() -> None:
     p.add_argument("--query", default=None, help="явный поисковый запрос (вместо ниши)")
     p.add_argument("--min-members", type=int, default=0, help="отсекать чаты меньше N участников")
     p.add_argument("--groups-only", action="store_true", help="только супергруппы (где можно писать), без каналов")
+    p.add_argument("--join", type=int, default=0, metavar="N",
+                   help="сразу вступить армией в найденное: до N новых чатов на аккаунт (0 = не вступать)")
     args = p.parse_args()
     if not args.niche and not args.query:
         p.error("нужен --niche <id> или --query <текст>")
-    asyncio.run(run(args.niche, args.query, args.min_members, args.groups_only))
+    asyncio.run(run(args.niche, args.query, args.min_members, args.groups_only, join=args.join))
 
 
 if __name__ == "__main__":

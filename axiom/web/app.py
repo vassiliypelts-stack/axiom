@@ -373,6 +373,15 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         if queued:
             _spawn("channels.proxy_check", "--ids", ",".join(str(i) for i in queued))
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_proxy": skipped})
+    if action == "session_check":
+        with database.get_conn() as conn:
+            rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
+                                "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            _spawn("channels.session_check", "--ids", ",".join(str(i) for i in queued))
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
     if action == "proxy_pool_assign":
         with database.get_conn() as conn:
             rows = conn.execute(
@@ -1068,6 +1077,19 @@ def accounts_health() -> JSONResponse:
     """Проверка всех аккаунтов через @SpamBot (фоном). Результат — в spam_status карточек."""
     _spawn("channels.health")
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/accounts/session_check_all")
+def accounts_session_check_all() -> JSONResponse:
+    """Живость TG-сессий всех подключённых аккаунтов (фоном) → колонка «Живость»."""
+    database.init_db()
+    with database.get_conn() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM accounts "
+                         "WHERE tg_session IS NOT NULL AND tg_session<>''").fetchone()["c"]
+    if not n:
+        return JSONResponse({"error": "нет ни одного подключённого аккаунта"}, status_code=400)
+    _spawn("channels.session_check")
+    return JSONResponse({"ok": True, "queued": n})
 
 
 # ---- Календарь (встречи / КЭВ) -------------------------------------------- #
@@ -1928,6 +1950,13 @@ def chatcat_import(payload: dict = Body(...)) -> JSONResponse:
         }, status_code=500)
 
 
+def _join_arg(payload: dict) -> list[str]:
+    """Общий флаг «сразу вступить в найденное» для discover/bio_scan/similar.
+    Клампим как в /api/chats/join — вступления это самый банируемый шаг."""
+    n = int(payload.get("join") or 0)
+    return ["--join", str(min(n, 15))] if n > 0 else []
+
+
 @app.post("/api/chatcat/discover")
 def chatcat_discover(payload: dict = Body(default={})) -> JSONResponse:
     """Авто-поиск чатов по нише/запросу (channels.chat_discover) → в каталог со статусом 'new'.
@@ -1945,7 +1974,9 @@ def chatcat_discover(payload: dict = Body(default={})) -> JSONResponse:
         args += ["--min-members", str(int(payload["min_members"]))]
     if payload.get("groups_only"):
         args += ["--groups-only"]
-    res = _run_capture(args, timeout=300)
+    join = _join_arg(payload)
+    args += join
+    res = _run_capture(args, timeout=1500 if join else 300)
     return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
                          "output": res.get("output")})
 
@@ -1955,7 +1986,65 @@ def chatcat_bio_scan(payload: dict = Body(default={})) -> JSONResponse:
     """Bio-скан ссылок (channels.bio_links): достаёт из bio лидов ссылки на другие/закрытые
     чаты и заносит их в каталог. Синхронно (резолвы с паузами), возвращает сводку."""
     limit = int(payload.get("limit") or 500)
-    res = _run_capture(["channels.bio_links", "--limit", str(limit)], timeout=300)
+    join = _join_arg(payload)
+    res = _run_capture(["channels.bio_links", "--limit", str(limit), *join],
+                       timeout=1500 if join else 300)
+    return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
+                         "output": res.get("output")})
+
+
+@app.post("/api/chatcat/similar")
+def chatcat_similar(payload: dict = Body(default={})) -> JSONResponse:
+    """Размножение каталога по похожим чатам (channels.chat_similar): рекомендации TG от
+    уже найденных чатов. Синхронно; глубже 1 круга — заметно дольше, отсюда большой таймаут."""
+    args = ["channels.chat_similar"]
+    if payload.get("chat_id"):
+        args += ["--chat", str(int(payload["chat_id"]))]
+    elif payload.get("favorites"):
+        args += ["--favorites"]
+    elif payload.get("niche_id"):
+        args += ["--niche", str(int(payload["niche_id"]))]
+    depth = max(1, min(int(payload.get("depth") or 1), 4))
+    args += ["--depth", str(depth)]
+    if payload.get("min_members"):
+        args += ["--min-members", str(int(payload["min_members"]))]
+    if payload.get("groups_only"):
+        args += ["--groups-only"]
+    if payload.get("max_new"):
+        args += ["--max-new", str(int(payload["max_new"]))]
+    args += _join_arg(payload)
+    res = _run_capture(args, timeout=1800 if payload.get("join") else 900)
+    return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
+                         "output": res.get("output")})
+
+
+@app.post("/api/leads/segment")
+def leads_segment(payload: dict = Body(default={})) -> JSONResponse:
+    """Сегментация базы по сферам (agent.segment): правила по тегам бесплатно,
+    остаток — дешёвой моделью. Трогает только контакты без сегмента."""
+    args = ["agent.segment", "--limit", str(max(1, min(int(payload.get("limit") or 300), 2000)))]
+    if payload.get("rules_only"):
+        args += ["--rules-only"]
+    if payload.get("renorm"):
+        args += ["--renorm"]
+    res = _run_capture(args, timeout=1800)
+    return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
+                         "output": res.get("output")})
+
+
+@app.post("/api/maintenance/backfill")
+def maintenance_backfill(payload: dict = Body(default={})) -> JSONResponse:
+    """Бэкфилл старых записей (channels.backfill): tg_chat_id у чатов (чинит связку
+    «в каком чате найден» в досье) и аватары лидов. Идемпотентно — трогает только пустое."""
+    args = ["channels.backfill"]
+    if payload.get("chats"):
+        args += ["--chats"]
+    if payload.get("photos"):
+        args += ["--photos"]
+    if len(args) == 1:
+        return JSONResponse({"error": "нечего дозаполнять: укажи chats и/или photos"}, status_code=400)
+    args += ["--limit", str(max(1, min(int(payload.get("limit") or 200), 1000)))]
+    res = _run_capture(args, timeout=1800)
     return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),
                          "output": res.get("output")})
 
@@ -2004,17 +2093,16 @@ def niche_delete(nid: int) -> JSONResponse:
 
 @app.post("/api/niche/{nid}/enrich")
 def niche_enrich(nid: int) -> JSONResponse:
-    """Обогатить ключевые слова ниши через Claude Haiku (генерирует новые ключи)."""
-    if not config.ANTHROPIC_API_KEY:
-        return JSONResponse({"error": "нет ANTHROPIC_API_KEY в .env"}, status_code=400)
+    """Обогатить ключевые слова ниши моделью из config.MODEL (генерирует новые ключи)."""
+    from agent import llm
+    if not llm.available(config.MODEL):
+        return JSONResponse({"error": f"нет ключа под модель «{config.MODEL}» в .env"},
+                            status_code=400)
 
     with database.get_conn() as conn:
         niche = conn.execute("SELECT * FROM niches WHERE id=?", (nid,)).fetchone()
         if not niche:
             return JSONResponse({"error": "ниша не найдена"}, status_code=404)
-
-    import anthropic
-    client = anthropic.Anthropic()
 
     current_keys = (niche["keywords"] or "").split(",")
     current_keys = [k.strip() for k in current_keys if k.strip()]
@@ -2028,12 +2116,8 @@ def niche_enrich(nid: int) -> JSONResponse:
 Ответ: просто список через запятую, без нумерации."""
 
     try:
-        resp = client.messages.create(
-            model=config.MODEL,
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        new_keys_raw = "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        new_keys_raw = llm.text(config.MODEL, system=None,
+                                messages=[{"role": "user", "content": prompt}], max_tokens=400)
         new_keys = [k.strip() for k in new_keys_raw.split(",") if k.strip()][:15]
 
         all_keys = set(current_keys + new_keys)
@@ -2106,8 +2190,9 @@ def hit_to_lead(hid: int, payload: dict = Body(default={})) -> JSONResponse:
                 (h["tg_user_id"], cid, h["chat_id"], h["chat_title"], h["text"],
                  h["source_msg_id"], h["ts"]),
             )
+    from agent import llm
     score = None
-    if payload.get("auto_enrich", True) and config.ANTHROPIC_API_KEY:
+    if payload.get("auto_enrich", True) and llm.available(config.MODEL):
         try:
             from agent.enrich_person import _posts_for, _save, enrich_person
             with database.get_conn() as conn:
@@ -2163,8 +2248,10 @@ def target_leads() -> JSONResponse:
 @app.post("/api/contact/{cid}/enrich_now")
 def contact_enrich_now(cid: int) -> JSONResponse:
     """Досчитать/пересчитать AI-скоринг для конкретного контакта прямо сейчас (синхронно)."""
-    if not config.ANTHROPIC_API_KEY:
-        return JSONResponse({"error": "нет ANTHROPIC_API_KEY в .env"}, status_code=400)
+    from agent import llm
+    if not llm.available(config.MODEL):
+        return JSONResponse({"error": f"нет ключа под модель «{config.MODEL}» в .env"},
+                            status_code=400)
     from agent.enrich_person import _posts_for, _save, enrich_person
     with database.get_conn() as conn:
         row = conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone()
@@ -2220,9 +2307,11 @@ def keywords_run(payload: dict = Body(default={})) -> JSONResponse:
 # ---- Визард запуска кампании: копайлот + загрузка телефонов ЦА ------------- #
 @app.post("/api/copilot")
 def copilot(payload: dict = Body(...)) -> JSONResponse:
-    """Подсказка от Claude по шагу визарда (Haiku, дёшево)."""
-    if not config.ANTHROPIC_API_KEY:
-        return JSONResponse({"error": "нет ANTHROPIC_API_KEY в .env"}, status_code=400)
+    """Подсказка по шагу визарда от config.MODEL (по умолчанию Haiku, дёшево)."""
+    from agent import llm
+    if not llm.available(config.MODEL):
+        return JSONResponse({"error": f"нет ключа под модель «{config.MODEL}» в .env"},
+                            status_code=400)
     step = (payload.get("step") or "").strip()
     context = payload.get("context") or ""
     try:

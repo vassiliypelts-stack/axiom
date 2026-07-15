@@ -680,6 +680,22 @@ async function viewDashboard(v){
 const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
 const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
 const ACC_KIND={own:"🏠 Родной",sim:"📱 Своя симка",bought:"🛒 Купленный"};
+// Живость TG-сессии (channels/session_check.py). Порядок = порядок в сводке.
+const ACC_LIVE={alive:"🟢 живых",revoked:"🔴 сессия слетела",banned:"⛔ бан",noconn:"⚪ нет связи"};
+// Сводка «сколько живых / мёртвых» над таблицей аккаунтов.
+function accLiveSummary(rows){
+  const conn=rows.filter(r=>r.tg_connected);
+  if(!conn.length)return '<span class="hint">нет подключённых аккаунтов</span>';
+  const n={};conn.forEach(r=>{const s=r.session_state;if(ACC_LIVE[s])n[s]=(n[s]||0)+1;});
+  const unchecked=conn.filter(r=>!ACC_LIVE[r.session_state]).length;
+  const parts=Object.keys(ACC_LIVE).filter(k=>n[k]).map(k=>{
+    const cls=k==='alive'?'b-active':(k==='noconn'?'b-nurture':'b-stop');
+    return `<span class="badge ${cls}">${ACC_LIVE[k]}: ${n[k]}</span>`;});
+  if(unchecked)parts.push(`<span class="badge b-nurture">⚪ не проверено: ${unchecked}</span>`);
+  const nosess=rows.length-conn.length;
+  if(nosess)parts.push(`<span class="hint">без сессии: ${nosess}</span>`);
+  return `<span style="display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center">из ${conn.length} подключённых — ${parts.join(" ")}</span>`;
+}
 // Анти-бан: страна по коду номера (длинные префиксы раньше коротких: 77=KZ перед 7=RU)
 function tgPhoneCountry(phone){
   const d=(phone||"").replace(/\D/g,"");
@@ -713,6 +729,14 @@ async function viewAgents(v){
       <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">🫀 Живость аккаунтов</b>
+        <button class="primary" id="a-sess" title="Реальный вход каждой сессией в Telegram (get_me) — покажет, кто ещё наш, у кого сессия слетела и кого забанили. Колонка «Живость» ниже">🫀 Проверить живость всех</button>
+        <span id="a-sess-sum">${accLiveSummary(a)}</span>
+        <span class="hint" id="a-sess-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «⚪ нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🔥 Автопрогрев</b>
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="wa-auto"> в фоне, ступень каждые</label>
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
@@ -731,6 +755,7 @@ async function viewAgents(v){
       <span style="width:1px;height:18px;background:var(--border)"></span>
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">🛡 Проверить выбранные</button>
+      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — 🟢 жив / 🔴 сессия слетела / ⛔ бан в колонке «Живость»">🫀 Проверить живость</button>
       <button id="ab-invent">📋 Инвентаризация чатов</button>
       <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">✨ Оформить (имя+ник+bio+фото+приватность)</button>
       <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
@@ -749,6 +774,12 @@ async function viewAgents(v){
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
     await api("/api/health",{method:"POST"});
     setTimeout(()=>{b.disabled=false;b.textContent="🛡 Проверить аккаунты (@SpamBot)";route();},15000);};
+  $("#a-sess").onclick=async()=>{const b=$("#a-sess"),m=$("#a-sess-msg");b.disabled=true;b.textContent="проверяю…";
+    const r=await api("/api/accounts/session_check_all",{method:"POST"});
+    if(r.error){b.disabled=false;b.textContent="🫀 Проверить живость всех";
+      m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    m.textContent=`каждая из ${r.queued} сессий реально входит в Telegram — это ~минута, потом обновлю сам`;
+    setTimeout(()=>{b.disabled=false;b.textContent="🫀 Проверить живость всех";route();},60000);};
   $("#a-add").onclick=async()=>{
     const body={label:$("#a-label").value,phone:$("#a-phone").value,username:$("#a-user").value.replace(/^@/,""),
       role:$("#a-role").value,status:$("#a-status").value,daily_limit:$("#a-limit").value};
@@ -778,8 +809,8 @@ async function viewAgents(v){
     tableKey:"agents",
     rows:a,searchKeys:["label","phone","username","role"],
     onDraw:rows=>{accFiltered=rows;},
-    groupOptions:[{key:"protected",label:"родной/боевой"},{key:"role",label:"роль"},{key:"status",label:"статус"}],
-    groupFmt:(k,val)=>k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):(ACC_ST[val]||val),
+    groupOptions:[{key:"protected",label:"родной/боевой"},{key:"role",label:"роль"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
+    groupFmt:(k,val)=>k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
@@ -794,6 +825,17 @@ async function viewAgents(v){
           :(r.spam_status&&r.spam_status!=='unknown'?` <span class="badge b-stop" title="@SpamBot: ${esc(r.spam_status)}">SB⚠</span>`:'');
         const conn=r.tg_connected?'':` <button class="acc-login" data-id="${r.id}" data-phone="${esc(r.phone||'')}" data-label="${esc(r.label||r.username||('#'+r.id))}" style="font-size:11px;padding:2px 8px">🔌 Подключить</button>`;
         return tg+" "+wa+spam+conn;}},
+      {key:"session_alive",label:"Живость",render:r=>{
+        if(!r.tg_connected)return '<span class="no" title="аккаунт не подключён — сессии нет. Жми «🔌 Подключить» в колонке «Подключение»">нет сессии</span>';
+        const when=r.session_checked_at?`проверено ${fmt(r.session_checked_at)}`:'';
+        const why=r.session_reason?` · ${r.session_reason}`:'';
+        const tip=esc(when+why);
+        if(r.session_state==='alive')return `<span class="badge b-active" title="${tip}">🟢 жив</span>`;
+        if(r.session_state==='banned')return `<span class="badge b-stop" title="${tip}">⛔ бан</span>`;
+        if(r.session_state==='revoked')return `<span class="badge b-stop" title="${tip}">🔴 сессия слетела</span>`;
+        if(r.session_state==='noconn')return `<span class="badge b-nurture" title="не достучались ни через прокси, ни напрямую — про сессию не судим. ${tip}">⚪ нет связи</span>`;
+        return '<span class="badge b-nurture" title="ещё не проверялся — нажми «🫀 Проверить живость всех»">⚪ не проверен</span>';
+      }},
       {key:"kind",label:"Тип",cls:"sub",render:r=>`${r.protected?'🏠 ':''}${ACC_KIND[r.kind]||(r.kind?esc(r.kind):'<span class="no">—</span>')}`},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
       {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`},
@@ -846,6 +888,7 @@ async function viewAgents(v){
   $("#ab-selnative").onclick=()=>{selAcc.clear();const native=accFiltered.filter(r=>r.protected);native.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🏠 выделено родных: ${native.length}`;};
   $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
+  $("#ab-sess-check").onclick=()=>bulk({action:"session_check"},r=>`🫀 проверяю живость ${r.queued} сессий в фоне (~минута)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — колонка «Живость» обновится, обнови страницу`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
   $("#ab-identity").onclick=()=>{
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
@@ -1421,12 +1464,25 @@ async function viewContacts(v){
   await loadContacts();
   v.innerHTML=`<div class="ttoolbar">
       <button class="primary" id="ct-new">➕ Контакт</button>
+      <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать базу</button>
       <span class="grow"></span>
-      <span class="hint">Физлица (директора/риелторы). Клик — карточка с историей и контекстом для агента.</span>
+      <span class="hint" id="ct-seg-msg">Физлица (директора/риелторы). Клик — карточка с историей и контекстом для агента.</span>
     </div><div id="ct-body"></div>`;
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
+  $("#ct-seg").onclick=async()=>{
+    const b=$("#ct-seg"),m=$("#ct-seg-msg");
+    if(!confirm("Разложу базу по сферам из фиксированного словаря.\n\nСначала бесплатные правила по тегам, остаток — дешёвой моделью (копейки).\nТрогаю только тех, у кого сегмента ещё нет. Продолжить?"))return;
+    b.disabled=true;b.textContent="сегментирую…";m.textContent="правила по тегам, потом модель для остатка…";
+    try{const r=await api("/api/leads/segment",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:500})});
+      if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
+      else{const s=r.summary||{};
+        const top=(s.top||[]).map(x=>`${esc(x.segment)}: ${x.n}`).join(", ");
+        m.innerHTML=`✅ правилами <b>${s.by_rules||0}</b>, моделью ${s.by_llm||0}${s.failed?", ошибок "+s.failed:""}. ${top?"Сферы — "+top:""} Фильтр по сферам — в «Целевых лидах».`;}
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="🗂 Сегментировать базу";
+  };
   smartTable($("#ct-body"),{
     tableKey:"contacts",
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
@@ -1718,6 +1774,7 @@ async function viewChatCatalog(v){
       <button class="primary" id="cc-add">➕ Добавить чат</button>
       <button id="cc-import">📤 Импортировать</button>
       <button id="cc-inv">🔄 Инвентаризация</button>
+      <button id="cc-backfill" title="дозаполнить tg_chat_id у старых чатов и аватары лидов — чинит связку «в каком чате найден» в досье">🧩 Дозаполнить</button>
       <span class="hint" id="cc-inv-msg">Каталог отдельно от CRM. «Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
     </div>
     <div class="ttoolbar" style="margin-top:-4px">
@@ -1728,32 +1785,72 @@ async function viewChatCatalog(v){
       <label class="sub" style="align-self:center"><input id="cc-disc-groups" type="checkbox"> только группы</label>
       <button class="primary" id="cc-disc">🔍 Найти чаты</button>
       <button id="cc-bio" title="достать из bio собранных лидов ссылки на другие/закрытые чаты">🔗 Скан ссылок из bio</button>
+      <button id="cc-sim" title="взять рекомендации Telegram от уже найденных чатов — каталог растёт вширь">♊ Похожие чаты</button>
+      <label class="sub" style="align-self:center" title="кругов размножения: находки круга приводят соседей на следующем">×<input id="cc-sim-depth" type="number" min="1" max="4" value="1" style="width:44px"> круга</label>
+      <label class="sub" style="align-self:center" title="сразу после находки армия вступит в новые чаты (человекоподобно, с паузами). Действует на все три кнопки. 0 = только заносить в каталог"><input id="cc-join-now" type="checkbox"> и сразу вступить по <input id="cc-join-per" type="number" min="1" max="15" value="2" style="width:44px"> чата/акк</label>
       <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
     </div>
     <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
     <div id="cc-body"></div>`;
   loadCoverage();
+  // «и сразу вступить» — общий для поиска / bio-скана / похожих
+  const ccJoin=()=>$("#cc-join-now")&&$("#cc-join-now").checked?+($("#cc-join-per").value||2):0;
+  const joinNote=s=>{const j=s&&s.join;if(!j)return"";
+    if(j.ok===false)return` <span style="color:#c0392b">вступление: ${esc(j.error||"не вышло")}</span>`;
+    return ` 🚀 вступили в <b>${j.joined||0}</b>${j.failed?", не удалось "+j.failed:""}`;};
   $("#cc-disc").onclick=async()=>{
     const b=$("#cc-disc"),m=$("#cc-disc-msg");
     const q=($("#cc-disc-q").value||"").trim();
-    const body={min_members:+($("#cc-disc-min").value||0),groups_only:$("#cc-disc-groups").checked};
+    const body={min_members:+($("#cc-disc-min").value||0),groups_only:$("#cc-disc-groups").checked,join:ccJoin()};
     if(q)body.query=q; else if($("#cc-disc-niche"))body.niche_id=+$("#cc-disc-niche").value;
     else{m.textContent="создай нишу или впиши запрос";return;}
-    b.disabled=true;b.textContent="ищу… (до ~2 мин)";m.textContent="аккаунт прогоняет поиск по ключам с паузами…";
+    b.disabled=true;b.textContent=body.join?"ищу и вступаю… (до ~20 мин)":"ищу… (до ~2 мин)";
+    m.textContent=body.join?"поиск по ключам, потом армия зайдёт в найденное с паузами…":"аккаунт прогоняет поиск по ключам с паузами…";
     try{const r=await api("/api/chatcat/discover",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
-      else{const s=r.summary||{};m.innerHTML=`✅ найдено ${s.found||0}, добавлено <b>${s.added||0}</b>, обновлено ${s.updated||0}, отсеяно ${s.skipped||0}. Обновляю…`;setTimeout(route,1200);}
+      else{const s=r.summary||{};m.innerHTML=`✅ найдено ${s.found||0}, добавлено <b>${s.added||0}</b>, обновлено ${s.updated||0}, отсеяно ${s.skipped||0}.${joinNote(s)} Обновляю…`;setTimeout(route,1200);}
     }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
     b.disabled=false;b.textContent="🔍 Найти чаты";
   };
   $("#cc-bio").onclick=async()=>{
     const b=$("#cc-bio"),m=$("#cc-disc-msg");
-    b.disabled=true;b.textContent="сканирую bio… (до ~2 мин)";m.textContent="достаю ссылки из bio собранных лидов и резолвлю чаты…";
-    try{const r=await api("/api/chatcat/bio_scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
+    const jn=ccJoin();
+    b.disabled=true;b.textContent=jn?"сканирую и вступаю… (до ~20 мин)":"сканирую bio… (до ~2 мин)";
+    m.textContent=jn?"достаю ссылки из bio; в приватные +hash чаты вступление — единственный способ их раскрыть…":"достаю ссылки из bio собранных лидов и резолвлю чаты…";
+    try{const r=await api("/api/chatcat/bio_scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({join:jn})});
       if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
-      else{const s=r.summary||{};m.innerHTML=`✅ из ${s.scanned||0} bio: добавлено публичных <b>${s.added||0}</b>, приватных ${s.private_added||0}, обновлено ${s.updated||0}. Обновляю…`;setTimeout(route,1200);}
+      else{const s=r.summary||{};m.innerHTML=`✅ из ${s.scanned||0} bio: добавлено публичных <b>${s.added||0}</b>, приватных ${s.private_added||0}, обновлено ${s.updated||0}.${joinNote(s)} Обновляю…`;setTimeout(route,1200);}
     }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
     b.disabled=false;b.textContent="🔗 Скан ссылок из bio";
+  };
+  $("#cc-sim").onclick=async()=>{
+    const b=$("#cc-sim"),m=$("#cc-disc-msg");
+    const depth=+($("#cc-sim-depth").value||1);
+    const body={depth,min_members:+($("#cc-disc-min").value||0),groups_only:$("#cc-disc-groups").checked,join:ccJoin()};
+    if($("#cc-disc-niche"))body.niche_id=+$("#cc-disc-niche").value;   // затравка — чаты этой ниши
+    if(!confirm(`Размножение по похожим: возьму чаты каталога за затравку и спрошу у Telegram соседей, ${depth} круг(а).\n${depth>1?"Больше кругов = сильно дольше и шире (до 500 новых чатов).\n":""}${body.join?"Плюс армия сразу вступит в найденное.\n":""}Продолжить?`))return;
+    b.disabled=true;b.textContent=body.join?"размножаю и вступаю… (до ~30 мин)":"размножаю… (до ~15 мин)";
+    m.textContent="беру рекомендации TG от найденных чатов с паузами…";
+    try{const r=await api("/api/chatcat/similar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
+      else{const s=r.summary||{};
+        if(s.ok===false){m.innerHTML='<span style="color:#c0392b">'+esc(s.error||"не вышло")+'</span>';}
+        else{const cr=(s.circles||[]).map(c=>`круг ${c.depth}: +${c.added}`).join(", ");
+          m.innerHTML=`✅ от ${s.seeds||0} затравок: найдено ${s.found||0}, добавлено <b>${s.added||0}</b>, обновлено ${s.updated||0}, отсеяно ${s.skipped||0}${cr?" ("+esc(cr)+")":""}.${joinNote(s)} Обновляю…`;setTimeout(route,1500);}}
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="♊ Похожие чаты";
+  };
+  $("#cc-backfill").onclick=async()=>{
+    const b=$("#cc-backfill"),m=$("#cc-inv-msg");
+    if(!confirm("Дозаполню то, чего не хватает у старых записей:\n• tg_chat_id у чатов с @username (без него в досье не видно, в каком чате найден человек)\n• аватары лидов\n\nТрогает только пустое, повторный запуск безопасен. До ~10 мин. Продолжить?"))return;
+    b.disabled=true;b.textContent="дозаполняю…";m.textContent="резолвлю чаты и качаю фото с паузами — это долго, не закрывай вкладку…";
+    try{const r=await api("/api/maintenance/backfill",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chats:true,photos:true,limit:300})});
+      if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — '+esc((r.output||"").slice(-300))+'</span>';}
+      else{const s=r.summary||{},c=s.chats||{},p=s.photos||{};
+        m.innerHTML=`✅ чаты: дозаполнено <b>${c.filled||0}</b> из ${c.candidates||0}${c.left?", осталось "+c.left+" (жми ещё раз)":""}; фото: скачано <b>${p.downloaded||0}</b>${p.no_photo?", без аватара "+p.no_photo:""}. Обновляю…`;
+        setTimeout(route,1500);}
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="🧩 Дозаполнить";
   };
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});

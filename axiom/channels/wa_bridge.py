@@ -224,8 +224,9 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8100)
     args = p.parse_args()
-    if not config.ANTHROPIC_API_KEY:
-        print("Нет ANTHROPIC_API_KEY в .env — агент не сможет отвечать.")
+    from agent import llm
+    if not llm.available(config.AGENT_MODEL):
+        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — агент не сможет отвечать.")
         return
     database.init_db()
     import uvicorn

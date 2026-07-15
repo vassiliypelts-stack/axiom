@@ -28,10 +28,18 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # кредитов (agent/llm.py). Пример в .env: ANTHROPIC_API_KEYS=sk-ant-...,sk-ant-...
 ANTHROPIC_API_KEYS = os.getenv("ANTHROPIC_API_KEYS", "")
 # Обогащение (массово, дёшево) — Haiku.
+# МУЛЬТИ-МОДЕЛЬНОСТЬ: можно указать «провайдер:модель» и платить копейки за массовые
+# задачи (agent/llm.py). Провайдер по умолчанию — anthropic, т.е. голое имя = Claude.
+#   AXIOM_MODEL=claude-haiku-4-5            → Claude Haiku (как сейчас)
+#   AXIOM_MODEL=deepseek:deepseek-chat      → DeepSeek (нужен DEEPSEEK_API_KEY)
+#   AXIOM_MODEL=gemini:gemini-flash-latest  → Gemini (нужен GEMINI_API_KEY)
 MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
 # Диалоги агента (где делаются деньги) — можно умнее/дороже: claude-opus-4-8 или
 # claude-sonnet-4-6. По умолчанию = MODEL (Haiku). Переключить через .env: AXIOM_AGENT_MODEL.
 AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
+# Ключ DeepSeek (platform.deepseek.com) — дешёвая модель на массовое обогащение.
+# Gemini берёт ключ из GEMINI_API_KEY (см. ниже, он же для авто-фото).
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 # --- БД ---
 DB_PATH = BASE_DIR / "data" / "axiom.db"

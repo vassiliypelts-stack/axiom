@@ -466,8 +466,9 @@ def _make_sender(client: TelegramClient):
 #  Точки входа                                                                 #
 # --------------------------------------------------------------------------- #
 async def _main(outreach: int | None, listen: bool, scheduler: bool = False) -> None:
-    if not config.ANTHROPIC_API_KEY:
-        print("Нет ANTHROPIC_API_KEY в .env — агент не сможет отвечать.")
+    from agent import llm
+    if not llm.available(config.AGENT_MODEL):
+        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — агент не сможет отвечать.")
         return
     database.init_db()
     client = _build_client()

@@ -7,20 +7,24 @@
 `confidence` — честная достоверность (мало данных → ниже), чтобы не выдавать догадку
 за факт (как «достоверность 85% по профилю» на карточках Дениса).
 
-Запуск (нужен ANTHROPIC_API_KEY в .env):
+Модель — config.MODEL через agent/llm.py: можно посадить на дешёвого провайдера
+(DeepSeek/Gemini), Batch API при этом недоступен — идём обычным путём.
+
+Запуск (нужен ключ провайдера в .env):
     python -m agent.enrich_person --id 5
     python -m agent.enrich_person --limit 30            # все, у кого есть сырьё, но нет досье
-    python -m agent.enrich_person --limit 200 --batch   # пачкой через Batch API (−50%)
+    python -m agent.enrich_person --limit 200 --batch   # пачкой через Batch API (−50%, только Anthropic)
 """
 from __future__ import annotations
 
 import argparse
 import base64
 
-import anthropic
 from pydantic import BaseModel, Field
 
 import config
+from agent import llm
+from agent.segment import SEGMENTS, SegmentName
 from db import database
 
 AVATAR_DIR = config.BASE_DIR / "data" / "avatars"  # этап 4: фото аватара для vision
@@ -36,7 +40,10 @@ class PersonProfile(BaseModel):
     psychotype: str = Field(description="Тип принятия решений/психотип кратко (рациональный/эмоциональный/статусный и т.п.).")
     comm_style: str = Field(description="Как с ним лучше общаться (тон, длина, на 'ты'/'вы', что заходит).")
     best_time: str = Field(description="Когда вероятнее активен/на связи (по времени сообщений), если можно понять. Иначе ''.")
-    segment: str = Field(description="Сфера/сегмент одним словом-двумя: IT/бизнес/маркетинг/недвижимость/финансы/… ")
+    # словарь общий с agent/segment.py — иначе сегменты в базе разъедутся и по ним
+    # нельзя будет ни фильтровать, ни группировать
+    segment: SegmentName = Field(description="Сфера деятельности — РОВНО одно значение из "
+                                             "списка. Не уверен → «другое».")
     score: float = Field(description="Насколько это релевантный лид-цель, 0.0..1.0 (как 0.90 у Дениса).", ge=0, le=1)
     quotes: str = Field(description="1-3 показательные ДОСЛОВНЫЕ цитаты из его сообщений через « | ».")
     rec_message: str = Field(description="ОДНО готовое персональное первое сообщение (крючок), 1-2 фразы, без воды.")
@@ -44,16 +51,6 @@ class PersonProfile(BaseModel):
                                 "признаки статуса/настроения (с оговоркой «по фото»). Если фото нет — ''.")
     summary: str = Field(description="1-2 фразы досье для CRM.")
     confidence: float = Field(description="Достоверность портрета 0.0..1.0: мало сообщений/обрывочно → ниже.", ge=0, le=1)
-
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
-    return _client
 
 
 SYSTEM = (
@@ -64,7 +61,8 @@ SYSTEM = (
     "Цель — понять боли/желания человека и дать ОДНО точное первое сообщение, от которого "
     "он захочет ответить (не спам, не «партянка» — живо и по делу). "
     "Если приложено фото аватара — кратко опиши в photo_analysis дресс-код, примерный возраст и "
-    "признаки статуса, обязательно с оговоркой «по фото» (это догадка, не факт). Фото нет — photo_analysis=''."
+    "признаки статуса, обязательно с оговоркой «по фото» (это догадка, не факт). Фото нет — photo_analysis=''. "
+    "segment — РОВНО одно значение из списка: " + ", ".join(SEGMENTS) + "; не уверен → «другое»."
 )
 
 
@@ -116,14 +114,11 @@ def _user_content(ctx: str, tg_user_id: int | None):
 
 def enrich_person(contact: dict, posts: list) -> PersonProfile:
     ctx = _build_context(contact, posts)
-    resp = _get_client().messages.parse(
-        model=config.MODEL,
-        max_tokens=900,
-        system=SYSTEM,
+    return llm.structured(
+        config.MODEL, system=SYSTEM,
         messages=[{"role": "user", "content": _user_content(ctx, contact.get("tg_user_id"))}],
-        output_format=PersonProfile,
+        output_format=PersonProfile, max_tokens=900,
     )
-    return resp.parsed_output
 
 
 def _save(contact_id: int, p: PersonProfile) -> None:
@@ -160,23 +155,20 @@ def _targets(cid: int | None, tag: str | None, limit: int) -> list:
         ).fetchall()
 
 
-def _profile_schema() -> dict:
-    s = PersonProfile.model_json_schema()
-    s["additionalProperties"] = False
-    s["required"] = list(s.get("properties", {}).keys())
-    return s
-
-
 def run_batch(rows: list) -> None:
-    """Те же запросы пачкой через Batch API (−50%). Сырьё (посты) тянем синхронно из БД."""
+    """Те же запросы пачкой через Batch API (−50%). Сырьё (посты) тянем синхронно из БД.
+    Batch есть только у Anthropic — вызывать при llm.supports_batch(config.MODEL)."""
     import json
     import time
 
+    import anthropic
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
     from anthropic.types.messages.batch_create_params import Request
 
-    client = _get_client()
-    schema = _profile_schema()
+    # батч живёт долго (поллинг) — берём первый ключ и держим одного клиента
+    client = anthropic.Anthropic(api_key=llm.keys()[0])
+    schema = llm.json_schema(PersonProfile)
+    model = llm.split(config.MODEL)[1]
     reqs: list = []
     skipped = 0
     with database.get_conn() as conn:
@@ -191,7 +183,7 @@ def run_batch(rows: list) -> None:
                 Request(
                     custom_id=f"c{c['id']}",
                     params=MessageCreateParamsNonStreaming(
-                        model=config.MODEL,
+                        model=model,
                         max_tokens=900,
                         system=SYSTEM,
                         messages=[{"role": "user", "content": _user_content(ctx, c.get("tg_user_id"))}],
@@ -234,6 +226,10 @@ def run(cid: int | None, tag: str | None, limit: int, batch: bool = False) -> No
     if not rows:
         print("нечего профилировать (нет лидов с сырьём в tg_user_posts)")
         return
+    if batch and not llm.supports_batch(config.MODEL):
+        print(f"[инфо] Batch API есть только у Anthropic, а модель — «{config.MODEL}». "
+              f"Иду обычным путём (по одному).")
+        batch = False
     if batch:
         run_batch(rows)
         return
@@ -260,10 +256,10 @@ def main() -> None:
     p.add_argument("--id", type=int, default=None, help="профилировать один контакт по id")
     p.add_argument("--tag", default=None, help="фильтр по тегу")
     p.add_argument("--limit", type=int, default=30, help="сколько взять в пачку")
-    p.add_argument("--batch", action="store_true", help="через Batch API (−50%%, асинхронно)")
+    p.add_argument("--batch", action="store_true", help="через Batch API (−50%%, асинхронно, только Anthropic)")
     args = p.parse_args()
-    if not config.ANTHROPIC_API_KEY:
-        print("Нет ANTHROPIC_API_KEY в .env")
+    if not llm.available(config.MODEL):
+        print(f"Нет ключа под модель «{config.MODEL}» — проверь .env")
         return
     run(args.id, args.tag, args.limit, args.batch)
 

@@ -13,10 +13,10 @@ from __future__ import annotations
 import argparse
 import re
 
-import anthropic
 from pydantic import BaseModel, Field
 
 import config
+from agent import llm
 from db import database
 
 
@@ -29,15 +29,6 @@ class Enrichment(BaseModel):
     hook: str = Field(description="ОДНА короткая персональная зацепка (1 фраза) для первого холодного сообщения от поставщика ИИ-автоматизации. Конкретная, не вода.")
     summary: str = Field(description="1-2 фразы досье для CRM.")
 
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
-    return _client
 
 
 def _first_url(text: str | None) -> str | None:
@@ -155,35 +146,30 @@ def enrich_contact(contact: dict) -> tuple[Enrichment, dict | None]:
     dd = dadata_lookup(contact.get("name"), contact.get("city"))
     site = fetch_site(_first_url(contact.get("notes")))
     ctx = _build_context(contact, dd, site)
-    resp = _get_client().messages.parse(
-        model=config.MODEL,
-        max_tokens=600,  # карточка короткая: специализация + зацепка + 1-2 фразы досье
-        system=SYSTEM,
+    out = llm.structured(
+        config.MODEL, system=SYSTEM,
         messages=[{"role": "user", "content": ctx}],
         output_format=Enrichment,
+        max_tokens=600,  # карточка короткая: специализация + зацепка + 1-2 фразы досье
     )
-    return resp.parsed_output, dd
-
-
-def _enrichment_schema() -> dict:
-    """JSON-schema модели Enrichment для structured outputs в Batch API."""
-    s = Enrichment.model_json_schema()
-    s["additionalProperties"] = False
-    s["required"] = list(s.get("properties", {}).keys())
-    return s
+    return out, dd
 
 
 def run_batch(rows: list) -> None:
     """Обогащение через Batch API: те же запросы асинхронно, −50% к цене.
-    DaData/сайт тянем синхронно (это не Claude), а вызовы Claude уходят пачкой."""
+    DaData/сайт тянем синхронно (это не модель), а вызовы модели уходят пачкой.
+    Batch есть только у Anthropic — вызывать при llm.supports_batch(config.MODEL)."""
     import json
     import time
 
+    import anthropic
     from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
     from anthropic.types.messages.batch_create_params import Request
 
-    client = _get_client()
-    schema = _enrichment_schema()
+    # батч живёт долго (поллинг до часа) — берём первый ключ и держим одного клиента
+    client = anthropic.Anthropic(api_key=llm.keys()[0])
+    schema = llm.json_schema(Enrichment)
+    model = llm.split(config.MODEL)[1]
     reqs: list = []
     dd_map: dict[int, dict | None] = {}
     print(f"готовлю батч на {len(rows)} лид(ов): тяну ЕГРЮЛ/сайты…")
@@ -197,7 +183,7 @@ def run_batch(rows: list) -> None:
             Request(
                 custom_id=f"c{c['id']}",
                 params=MessageCreateParamsNonStreaming(
-                    model=config.MODEL,
+                    model=model,
                     max_tokens=600,
                     system=SYSTEM,
                     messages=[{"role": "user", "content": ctx}],
@@ -282,6 +268,10 @@ def run(cid: int | None, tag: str | None, limit: int, no_llm: bool = False,
     if not rows:
         print("нечего обогащать")
         return
+    if batch and not no_llm and not llm.supports_batch(config.MODEL):
+        print(f"[инфо] Batch API есть только у Anthropic, а модель — «{config.MODEL}». "
+              f"Иду обычным путём (по одному).")
+        batch = False
     if batch and not no_llm:
         run_batch(rows)
         return
@@ -315,8 +305,8 @@ def main() -> None:
     p.add_argument("--hooks-all", dest="hooks_all", action="store_true",
                    help="дозалить хуки ВСЕМ без зацепки (в т.ч. без ФИО директора)")
     args = p.parse_args()
-    if not args.no_llm and not config.ANTHROPIC_API_KEY:
-        print("Нет ANTHROPIC_API_KEY в .env")
+    if not args.no_llm and not llm.available(config.MODEL):
+        print(f"Нет ключа под модель «{config.MODEL}» — проверь .env")
         return
     run(args.id, args.tag, args.limit, args.no_llm, args.batch, args.hooks, args.hooks_all)
 

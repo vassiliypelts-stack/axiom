@@ -48,19 +48,26 @@ def _joinable_accounts(only_id: int | None):
     return accs
 
 
-def _candidate_chats(favorites: bool):
+def _candidate_chats(favorites: bool, chat_ids: list[int] | None = None):
     """Чаты каталога, куда можно вступить: публичные (@) или с инвайт-ссылкой.
     Избранные — вперёд, дальше по числу участников. status skip/joined-целиком не режем:
-    членство пер-аккаунт проверяем отдельно (в чат могут войти несколько аккаунтов)."""
+    членство пер-аккаунт проверяем отдельно (в чат могут войти несколько аккаунтов).
+    chat_ids — сузить до конкретных чатов (напр. только что найденных авто-поиском)."""
+    if chat_ids is not None and not chat_ids:
+        return []
     with database.get_conn() as conn:
         sql = ("SELECT id, title, username, link FROM chats "
                "WHERE COALESCE(status,'') NOT IN ('skip','banned') "
                "AND ((username IS NOT NULL AND username<>'') OR (link LIKE '%t.me/+%') "
                "OR (link LIKE '%joinchat%'))")
+        params: list = []
         if favorites:
             sql += " AND COALESCE(favorite,0)=1"
+        if chat_ids:
+            sql += f" AND id IN ({','.join('?' * len(chat_ids))})"
+            params += list(chat_ids)
         sql += " ORDER BY COALESCE(favorite,0) DESC, COALESCE(members_count,0) DESC, id"
-        return [dict(r) for r in conn.execute(sql).fetchall()]
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def _already() -> set[tuple[int, int]]:
@@ -188,26 +195,26 @@ async def _join_one(acc: dict, chats: list[dict], report: dict) -> None:
             pass
 
 
-async def run(per: int, favorites: bool, only_id: int | None) -> None:
+async def run(per: int, favorites: bool, only_id: int | None,
+              chat_ids: list[int] | None = None) -> dict:
+    """Возвращает сводку (не печатает) — чтобы модули-искатели могли вызвать вступление
+    у себя внутри и вложить этот отчёт в свою сводку. Печать — в main()."""
     database.init_db()
     accs = _joinable_accounts(only_id)
     if not accs:
-        print(json.dumps({"ok": False, "error": "нет годных аккаунтов (нужны active/warming с сессией)"},
-                         ensure_ascii=False))
-        return
-    chats = _candidate_chats(favorites)
+        return {"ok": False, "error": "нет годных аккаунтов (нужны active/warming с сессией)"}
+    chats = _candidate_chats(favorites, chat_ids)
     if not chats:
-        print(json.dumps({"ok": False, "error": "нет чатов-кандидатов в каталоге"
-                          + (" среди избранных" if favorites else "")}, ensure_ascii=False))
-        return
+        return {"ok": False, "error": "нет чатов-кандидатов в каталоге"
+                + (" среди избранных" if favorites else "")}
     plan = _plan(accs, chats, per)
     report: dict = {}
     # аккаунты идут параллельно (разные IP/сессии), внутри аккаунта — по одному с паузой
     await asyncio.gather(*[_join_one(a, plan[a["id"]], report) for a in accs])
     total_joined = sum(len(r["joined"]) for r in report.values())
     total_failed = sum(len(r["failed"]) for r in report.values())
-    print(json.dumps({"ok": True, "accounts": len(accs), "joined": total_joined,
-                      "failed": total_failed, "report": report}, ensure_ascii=False))
+    return {"ok": True, "accounts": len(accs), "joined": total_joined,
+            "failed": total_failed, "report": report}
 
 
 def main() -> None:
@@ -215,8 +222,11 @@ def main() -> None:
     p.add_argument("--per", type=int, default=3, help="макс новых чатов на один аккаунт за заход")
     p.add_argument("--favorites", action="store_true", help="только ⭐ избранные чаты")
     p.add_argument("--id", type=int, default=None, dest="acc_id", help="только один аккаунт по id")
+    p.add_argument("--chats", default=None, help="только эти каталожные чаты (id через запятую)")
     args = p.parse_args()
-    asyncio.run(run(args.per, args.favorites, args.acc_id))
+    ids = [int(x) for x in args.chats.split(",") if x.strip()] if args.chats else None
+    res = asyncio.run(run(args.per, args.favorites, args.acc_id, ids))
+    print(json.dumps(res, ensure_ascii=False))
 
 
 if __name__ == "__main__":

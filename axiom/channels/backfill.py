@@ -27,6 +27,12 @@ from db import database
 
 RESOLVE_PAUSE = (0.6, 1.4)   # антибан: дозируем резолвы сущностей
 PHOTO_PAUSE = (0.5, 1.2)     # антибан: дозируем скачивания фото
+# FloodWait дольше — не ждём, а выходим (как MAX_FLOOD_SKIP в chat_join).
+# Ловили вживую 16.07: после ~280 резолвов подряд Telegram выдал FloodWait 82169с (22.8ч),
+# и прогон послушно уснул на сутки. Резолв тысяч @username с ОДНОГО аккаунта упирается в
+# суточный лимит — это нормальная реакция Telegram, а не сбой: надо выйти, сказать
+# оператору правду и продолжить порциями/позже.
+MAX_FLOOD_WAIT = 600
 
 
 def _mark_photos_from_disk() -> int:
@@ -54,13 +60,24 @@ _RESOLVABLE = ("tg_chat_id IS NULL AND username IS NOT NULL AND username<>'' "
                "AND COALESCE(status,'') NOT IN ('skip','banned')")
 
 
+class FloodStop(Exception):
+    """Telegram сказал ждать слишком долго — прогон надо прекратить, а не спать сутки."""
+
+    def __init__(self, seconds: int):
+        self.seconds = seconds
+        super().__init__(f"FloodWait {seconds}с")
+
+
 async def _resolve(client, username: str):
-    """Сущность по @username. FloodWait — ждём и повторяем ЭТУ ЖЕ запись (ради неё и ждали).
-    None = не резолвится (чат удалён/переименован)."""
+    """Сущность по @username. Короткий FloodWait — ждём и повторяем ЭТУ ЖЕ запись (ради неё
+    и ждали). Длинный — FloodStop наверх: аккаунт упёрся в лимит, дальше идти бессмысленно.
+    None = чат не резолвится (удалён/переименован)."""
     for attempt in (1, 2):
         try:
             return await client.get_entity(username)
         except FloodWaitError as ex:
+            if ex.seconds > MAX_FLOOD_WAIT:
+                raise FloodStop(ex.seconds) from ex
             if attempt == 2:
                 return None
             print(f"[floodwait] жду {ex.seconds}с")
@@ -81,8 +98,16 @@ async def _backfill_chats(client, limit: int) -> dict:
             (limit,)
         ).fetchall()]
         filled = failed = 0
+        flood: int | None = None
         for i, ch in enumerate(rows):
-            e = await _resolve(client, ch["username"])
+            try:
+                e = await _resolve(client, ch["username"])
+            except FloodStop as fs:
+                # аккаунт упёрся в суточный лимит: выходим, сохранив сделанное
+                flood = fs.seconds
+                print(f"[стоп] Telegram просит ждать {fs.seconds}с ({fs.seconds // 3600}ч) — "
+                      f"аккаунт упёрся в лимит резолвов. Дозаполнено {filled}, продолжи позже.")
+                break
             tg_id = getattr(e, "id", None) if e else None
             if not tg_id:
                 failed += 1
@@ -113,7 +138,12 @@ async def _backfill_chats(client, limit: int) -> dict:
         left = conn.execute(f"SELECT COUNT(*) FROM chats WHERE {_RESOLVABLE}").fetchone()[0]
     finally:
         conn.close()
-    return {"candidates": len(rows), "filled": filled, "failed": failed, "left": left}
+    out = {"candidates": len(rows), "filled": filled, "failed": failed, "left": left}
+    if flood:
+        out["flood_wait"] = flood
+        out["note"] = (f"Telegram ограничил аккаунт на {flood // 3600}ч — дозаполнено {filled}, "
+                       f"остальное позже (лимит резолвов на аккаунт за сутки)")
+    return out
 
 
 async def _backfill_photos(client, limit: int) -> dict:
@@ -126,10 +156,16 @@ async def _backfill_photos(client, limit: int) -> dict:
         ).fetchall()]
     got: set[int] = set()
     nophoto = failed = 0
+    flood: int | None = None
     for i, ct in enumerate(rows):
         try:
             u = await client.get_entity(int(ct["tg_user_id"]))
         except FloodWaitError as ex:
+            if ex.seconds > MAX_FLOOD_WAIT:
+                flood = ex.seconds   # аккаунт упёрся в лимит — выходим, а не спим сутки
+                print(f"[стоп] Telegram просит ждать {ex.seconds}с ({ex.seconds // 3600}ч) — "
+                      f"скачано {len(got)}, продолжи позже.")
+                break
             print(f"[floodwait] жду {ex.seconds}с")
             await asyncio.sleep(ex.seconds + 5)
             continue
@@ -147,7 +183,11 @@ async def _backfill_photos(client, limit: int) -> dict:
     if got:
         with database.get_conn() as conn:
             database.mark_photos_by_tg(conn, got)
-    return {"candidates": len(rows), "downloaded": len(got), "no_photo": nophoto, "failed": failed}
+    out = {"candidates": len(rows), "downloaded": len(got), "no_photo": nophoto, "failed": failed}
+    if flood:
+        out["flood_wait"] = flood
+        out["note"] = f"Telegram ограничил аккаунт на {flood // 3600}ч — остальное позже"
+    return out
 
 
 async def run(do_chats: bool, do_photos: bool, limit: int) -> None:

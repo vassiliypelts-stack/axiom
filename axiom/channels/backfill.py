@@ -47,62 +47,72 @@ def _mark_photos_from_disk() -> int:
         ).fetchone()[0]
 
 
-async def _backfill_chats(client, limit: int) -> dict:
-    """chats без tg_chat_id, но с @username → резолвим сущность → дозаполняем id."""
-    with database.get_conn() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT id, title, username FROM chats WHERE tg_chat_id IS NULL "
-            "AND username IS NOT NULL AND username<>'' AND COALESCE(status,'') NOT IN ('skip','banned') "
-            "ORDER BY COALESCE(favorite,0) DESC, COALESCE(members_count,0) DESC, id LIMIT ?", (limit,)
-        ).fetchall()]
-    filled = failed = 0
-    for i, ch in enumerate(rows):
+# Кого вообще можно дозаполнить. Одно условие на выборку кандидатов И на счётчик
+# «осталось»: когда они разъезжались, «осталось» считало в том числе skip/banned
+# (включая помеченные дублями ниже) — цифра залипала, и оператор жал «Дозаполнить» впустую.
+_RESOLVABLE = ("tg_chat_id IS NULL AND username IS NOT NULL AND username<>'' "
+               "AND COALESCE(status,'') NOT IN ('skip','banned')")
+
+
+async def _resolve(client, username: str):
+    """Сущность по @username. FloodWait — ждём и повторяем ЭТУ ЖЕ запись (ради неё и ждали).
+    None = не резолвится (чат удалён/переименован)."""
+    for attempt in (1, 2):
         try:
-            e = await client.get_entity(ch["username"])
+            return await client.get_entity(username)
         except FloodWaitError as ex:
-            # ждём РАДИ ЭТОЙ записи — значит её и повторяем, а не проскакиваем дальше
+            if attempt == 2:
+                return None
             print(f"[floodwait] жду {ex.seconds}с")
             await asyncio.sleep(ex.seconds + 5)
-            try:
-                e = await client.get_entity(ch["username"])
-            except Exception as ex2:  # noqa: BLE001
-                failed += 1
-                print(f"[skip] @{ch['username']}: {str(ex2)[:70]}")
-                continue
         except Exception as ex:  # noqa: BLE001
-            failed += 1
-            print(f"[skip] @{ch['username']}: {str(ex)[:70]}")
-            await asyncio.sleep(random.uniform(*RESOLVE_PAUSE))
-            continue
-        tg_id = getattr(e, "id", None)
-        if not tg_id:
-            failed += 1
-            continue
-        members = getattr(e, "participants_count", None)
-        with database.get_conn() as conn:
-            # чат с таким tg_chat_id мог уже быть заведён отдельной записью — не плодим дубль
-            dup = conn.execute("SELECT id FROM chats WHERE tg_chat_id=? AND id<>?",
-                               (tg_id, ch["id"])).fetchone()
-            if dup:
-                print(f"[дубль] @{ch['username']} → чат #{dup['id']} уже с этим tg_chat_id, помечаю skip")
-                conn.execute("UPDATE chats SET status='skip', notes=COALESCE(notes,'')||' | дубль #'||? "
-                             "WHERE id=?", (dup["id"], ch["id"]))
+            print(f"[skip] @{username}: {str(ex)[:70]}")
+            return None
+    return None
+
+
+async def _backfill_chats(client, limit: int) -> dict:
+    """chats без tg_chat_id, но с @username → резолвим сущность → дозаполняем id."""
+    conn = database.get_conn()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT id, title, username FROM chats WHERE {_RESOLVABLE} "
+            f"ORDER BY COALESCE(favorite,0) DESC, COALESCE(members_count,0) DESC, id LIMIT ?",
+            (limit,)
+        ).fetchall()]
+        filled = failed = 0
+        for i, ch in enumerate(rows):
+            e = await _resolve(client, ch["username"])
+            tg_id = getattr(e, "id", None) if e else None
+            if not tg_id:
                 failed += 1
             else:
-                conn.execute(
-                    "UPDATE chats SET tg_chat_id=?, members_count=COALESCE(members_count,?) WHERE id=?",
-                    (tg_id, members, ch["id"]),
-                )
-                filled += 1
-        if i < len(rows) - 1:
-            await asyncio.sleep(random.uniform(*RESOLVE_PAUSE))
-    with database.get_conn() as conn:
-        # условие ОДИН В ОДИН с выборкой кандидатов выше, иначе «осталось» считает и то,
-        # что мы никогда не возьмём (skip/banned, в т.ч. помеченные дублями), и цифра
-        # навсегда залипает — оператор жмёт «Дозаполнить» впустую
-        left = conn.execute("SELECT COUNT(*) FROM chats WHERE tg_chat_id IS NULL "
-                            "AND username IS NOT NULL AND username<>'' "
-                            "AND COALESCE(status,'') NOT IN ('skip','banned')").fetchone()[0]
+                members = getattr(e, "participants_count", None)
+                # `with conn` коммитит, НЕ закрывая: коммит на каждой записи тут
+                # принципиален — проход идёт десятки минут и может оборваться (уже ловили
+                # тихую смерть фонового прогона), одна транзакция на 1800 чатов означала
+                # бы потерю всей работы разом.
+                with conn:
+                    # такой tg_chat_id мог уже быть у другой записи — не плодим дубль
+                    dup = conn.execute("SELECT id FROM chats WHERE tg_chat_id=? AND id<>?",
+                                       (tg_id, ch["id"])).fetchone()
+                    if dup:
+                        print(f"[дубль] @{ch['username']} → чат #{dup['id']} уже с этим "
+                              f"tg_chat_id, помечаю skip")
+                        conn.execute("UPDATE chats SET status='skip', "
+                                     "notes=COALESCE(notes,'')||' | дубль #'||? WHERE id=?",
+                                     (dup["id"], ch["id"]))
+                        failed += 1
+                    else:
+                        conn.execute("UPDATE chats SET tg_chat_id=?, "
+                                     "members_count=COALESCE(members_count,?) WHERE id=?",
+                                     (tg_id, members, ch["id"]))
+                        filled += 1
+            if i < len(rows) - 1:
+                await asyncio.sleep(random.uniform(*RESOLVE_PAUSE))
+        left = conn.execute(f"SELECT COUNT(*) FROM chats WHERE {_RESOLVABLE}").fetchone()[0]
+    finally:
+        conn.close()
     return {"candidates": len(rows), "filled": filled, "failed": failed, "left": left}
 
 

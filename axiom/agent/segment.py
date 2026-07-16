@@ -207,8 +207,13 @@ def run(limit: int, rules_only: bool, renorm: bool) -> None:
     left: list[dict] = []
     with database.get_conn() as conn:
         for c in rows:
-            # при renorm старое вольное значение — тоже подсказка для правил
-            src = " ".join(x for x in [c.get("tags"), c.get("notes"), c.get("bio"),
+            # ТОЛЬКО поля, описывающие самого человека. notes СПЕЦИАЛЬНО не берём:
+            # туда enrich_person дописывает «Досье: …» — текст ПРО его запросы, а не про
+            # его сферу. Иначе маркетолог, который в досье «ищет квартиру», уезжает в
+            # «недвижимость» (правило стоит первым). Мутные случаи пусть решает модель:
+            # она в _context() видит и notes, и темы чатов, и понимает разницу.
+            # При renorm старое вольное значение — законная подсказка (это был сегмент).
+            src = " ".join(x for x in [c.get("tags"), c.get("bio"),
                                        c.get("segment") if renorm else None] if x)
             seg = guess_by_rules(src)
             if seg:

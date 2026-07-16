@@ -128,7 +128,11 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
     client = _build_client()
     await client.start()
 
+    # затравки помечаем виденными и по tg_chat_id, и по @username: у части чатов
+    # tg_chat_id ещё не заполнен (см. channels/backfill.py), и без username-ключа
+    # Telegram вернул бы их же в рекомендациях соседа как «находку»
     seen: set[int] = {s["tg_chat_id"] for s in seeds if s.get("tg_chat_id")}
+    seen_names: set[str] = {s["username"].lower() for s in seeds if s.get("username")}
     new_ids: list[int] = []
     found = added = updated = skipped = 0
     circles: list[dict] = []
@@ -147,9 +151,12 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
                     print(f"[skip] «{seed.get('title')}»: {e}")
                     continue
                 for c in sims:
-                    if c.id in seen:
+                    uname = (c.username or "").lower()
+                    if c.id in seen or (uname and uname in seen_names):
                         continue
                     seen.add(c.id)
+                    if uname:
+                        seen_names.add(uname)
                     found += 1
                     c_found += 1
                     members = getattr(c, "participants_count", None)

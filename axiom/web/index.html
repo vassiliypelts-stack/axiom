@@ -257,6 +257,10 @@
   tr:last-child td{border-bottom:none;}
   tbody tr:hover td{background:var(--row-hov);}
   tbody tr.clk{cursor:pointer;}
+  /* «рабочий» аккаунт (сессия+прокси живы) — зелёная заливка строки + левая метка */
+  tbody tr.row-ready td{background:var(--green-soft);}
+  tbody tr.row-ready:hover td{background:color-mix(in srgb,var(--green) 22%,var(--panel));}
+  tbody tr.row-ready td:first-child{box-shadow:inset 3px 0 0 var(--green);}
   .grouphdr td{background:var(--accent-soft);color:var(--accent-ink);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
   .name{font-weight:600;}
   .sub{color:var(--muted);font-size:12px;}
@@ -519,7 +523,7 @@ function smartTable(mount,cfg){
     const head=`<tr>${cols.map(c=>`<th data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
     const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
     const cell=(r,c)=>`<td class="${c.cls||""}"${w(c.key)}>${c.render?c.render(r):esc(r[c.key])}</td>`;
-    const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""}" data-id="${r.id}">${cols.map(c=>cell(r,c)).join("")}</tr>`;
+    const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""} ${cfg.rowClass?(cfg.rowClass(r)||""):""}" data-id="${r.id}">${cols.map(c=>cell(r,c)).join("")}</tr>`;
     let body="";
     if(st.group){
       const groups={};rows.forEach(r=>{const g=r[st.group]||"—";(groups[g]=groups[g]||[]).push(r);});
@@ -821,6 +825,9 @@ async function viewAgents(v){
     tableKey:"agents",
     rows:a,searchKeys:["label","phone","username","role"],
     onDraw:rows=>{accFiltered=rows;},
+    // Зелёная подсветка «рабочих» — с кем можно работать прямо сейчас: подключён,
+    // сессия жива, прокси жив, не забанен. Видно на глаз, кого пускать в бой.
+    rowClass:r=>(r.tg_connected&&r.session_state==='alive'&&r.proxy_alive===1&&r.status!=='banned')?"row-ready":"",
     groupOptions:[{key:"protected",label:"родной/боевой"},{key:"role",label:"роль"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
     groupFmt:(k,val)=>k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
     onRowClick:openAgent,
@@ -2642,6 +2649,7 @@ function renderCampList(mount,camps){
           <button class="cl-prog" data-id="${c.id}">📋 Прогресс</button>
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
           <button class="cl-warm" data-id="${c.id}">🔥 Прогрев</button>
+          <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go" data-id="${c.id}">▶ Запустить</button>
           <button class="cl-del" data-id="${c.id}">✕</button>
@@ -2759,6 +2767,16 @@ function renderCampList(mount,camps){
         else{m.textContent=`прогрев запущен (${r.warming} акк.) — идёт в фоне, ступень обновится через несколько минут`;}};
     };
     render();
+  });
+  mount.querySelectorAll(".cl-test").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id;
+    if(!confirm("🧪 Тестовый заход.\nШлёт первое сообщение ТОЛЬКО на твои тест-номера (is_test) — боевую базу не трогает, прогрев аккаунта не важен.\nПроверь, как приходит и как агент ведёт диалог. Запустить тест?"))return;
+    const t=b.textContent;b.textContent="…";
+    try{const r=await api(`/api/campaign/${id}/test`,{method:"POST"});
+      if(r.error){alert(r.error);}
+      else{alert(`✅ Тест пошёл на ${r.test_targets} свой(их) номер(а). Проверь Telegram — сообщение придёт с паузой. Ответь себе, чтобы проверить, как агент ведёт диалог.`);}
+    }catch(e){alert("ошибка запуска теста");}
+    b.textContent=t;
   });
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;
@@ -3447,7 +3465,7 @@ async function refreshNotif(){
   const b=$("#bell-badge");
   if(unseen>0){b.textContent=unseen>99?"99+":unseen;b.style.display="";}else b.style.display="none";
 }
-const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",warm_ready:"🌡",info:"ℹ️"};
+const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}

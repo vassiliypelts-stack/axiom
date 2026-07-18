@@ -236,6 +236,44 @@ def _days_since(ts: str | None) -> int | None:
     return max(0, (datetime.utcnow() - dt).days)
 
 
+_BIO_STYLE_KEY = "bio_style_history"     # app_settings: JSON-список последних инструкций (новые — первыми)
+_BIO_STYLE_KEEP = 10                     # храним с запасом, в диалоге показываем 3
+
+
+def _bio_style_history() -> list[str]:
+    with database.get_conn() as conn:
+        raw = database.get_setting(conn, _BIO_STYLE_KEY, "[]")
+    try:
+        items = json.loads(raw or "[]")
+    except (ValueError, TypeError):       # руками покорёженное значение — не роняем пульт из-за истории
+        return []
+    return [str(x) for x in items if isinstance(x, str) and x.strip()][:_BIO_STYLE_KEEP]
+
+
+def _bio_style_remember(style: str) -> None:
+    """Инструкцию — в начало истории, дубли убираем (повтор темы не должен вытеснять остальные)."""
+    style = (style or "").strip()
+    if not style:
+        return
+    items = [style] + [s for s in _bio_style_history() if s.strip().lower() != style.lower()]
+    with database.get_conn() as conn:
+        database.set_setting(conn, _BIO_STYLE_KEY, json.dumps(items[:_BIO_STYLE_KEEP], ensure_ascii=False))
+
+
+@app.get("/api/accounts/bio_styles")
+def bio_styles() -> JSONResponse:
+    """Для диалога «✨ Оформить»: прошлые инструкции + примеры того, что ИИ по ним выдал."""
+    database.init_db()
+    with database.get_conn() as conn:
+        samples = [
+            {"label": r["label"], "bio": r["description"]}
+            for r in conn.execute(
+                "SELECT label, description FROM accounts WHERE description IS NOT NULL "
+                "AND TRIM(description)<>'' ORDER BY id DESC LIMIT 5")
+        ]
+    return JSONResponse({"ok": True, "history": _bio_style_history(), "samples": samples})
+
+
 @app.get("/api/accounts")
 def accounts_list() -> JSONResponse:
     import phone_geo
@@ -349,6 +387,8 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
                                 "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
         queued = [r["id"] for r in rows]
         skipped = len(ids) - len(queued)
+        if queued and bio_style:
+            _bio_style_remember(bio_style)
         if queued:
             _spawn("channels.identity", "--ids", ",".join(str(i) for i in queued), "--bio-style", bio_style)
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
@@ -1028,10 +1068,63 @@ def _proxy_scheduler() -> None:
         time.sleep(60)
 
 
+def _startup_account_report() -> None:
+    """При старте сервера (в т.ч. после включения ПК): пересчитать готовность аккаунтов
+    к прогреву БЫСТРО — по флагам из БД, без сетевых пингов — и, если есть проблемные
+    (в статусе 'прогрев', но гейт warming_accounts их не пропустит), положить сводку в
+    колокольчик. Так Василий сразу видит «раздай прокси / перелогинь», а не гадает,
+    почему часть аккаунтов не греется. Дедуп: одинаковую сводку в течение 15 минут не
+    дублируем — иначе рестарты сервера засыпали бы ленту."""
+    import time
+    try:
+        with database.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT tg_session, proxy, proxy_alive, protected, session_state, session_alive "
+                "FROM accounts WHERE status='warming'").fetchall()
+            no_sess = no_proxy = dead_proxy = dead_sess = ready = 0
+            for r in rows:
+                if not (r["tg_session"] or "").strip():
+                    no_sess += 1; continue
+                if r["protected"]:
+                    continue                        # родной — прогрев его не трогает, не проблема
+                if not (r["proxy"] or "").strip():
+                    no_proxy += 1; continue
+                if r["proxy_alive"] == 0:
+                    dead_proxy += 1; continue
+                if r["session_state"] == "revoked" or r["session_alive"] == 0:
+                    dead_sess += 1; continue        # gate пустит (tg_session есть), но прогрев не пройдёт
+                ready += 1
+            problems = no_proxy + dead_proxy + no_sess + dead_sess
+            sig = f"{ready}|{no_proxy}|{dead_proxy}|{no_sess}|{dead_sess}"
+            prev_sig = database.get_setting(conn, "startup_report_sig", "")
+            prev_ts = float(database.get_setting(conn, "startup_report_ts", "0") or 0)
+            warm_auto = database.get_setting(conn, "warm_auto", "off")
+            fresh = (time.time() - prev_ts) > 900   # 15 минут
+            if problems and (sig != prev_sig or fresh):
+                parts = []
+                if no_proxy:   parts.append(f"без прокси: {no_proxy}")
+                if dead_proxy: parts.append(f"прокси мёртв: {dead_proxy}")
+                if dead_sess:  parts.append(f"сессия слетела: {dead_sess}")
+                if no_sess:    parts.append(f"нет сессии: {no_sess}")
+                if warm_auto != "on":
+                    parts.append("⚠ автопрогрев ВЫКЛ")
+                database.add_event(
+                    conn, "warm_check",
+                    f"На прогрев готовы {ready}, с проблемами {problems}",
+                    "; ".join(parts) + ". Раздай прокси / перелогинь — эти аккаунты не греются.",
+                    level="warn")
+            database.set_setting(conn, "startup_report_sig", sig)
+            database.set_setting(conn, "startup_report_ts", str(time.time()))
+            print(f"[startup] прогрев готовы={ready} проблемные={problems} ({sig}) warm_auto={warm_auto}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup report] {e}")
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
     database.init_db()
+    _startup_account_report()   # быстрая сводка готовности → колокольчик (до запуска прогрева)
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
@@ -1736,6 +1829,23 @@ def chatcat_list() -> JSONResponse:
     return JSONResponse([dict(r) for r in rows])
 
 
+@app.get("/api/chatcat/scan_progress")
+def chatcat_scan_progress() -> JSONResponse:
+    """Прогресс массового скана для пульта.
+
+    ВАЖНО: объявлен ДО /api/chatcat/{chat_id} — FastAPI матчит роуты по порядку, и
+    динамический {chat_id} проглотил бы «scan_progress», пытаясь привести его к int.
+    """
+    with database.get_conn() as conn:
+        raw = database.get_setting(conn, "chatscan_progress", None)
+    if not raw:
+        return JSONResponse({"running": False})
+    try:
+        return JSONResponse(json.loads(raw))
+    except ValueError:
+        return JSONResponse({"running": False})
+
+
 @app.get("/api/chatcat/{chat_id}")
 def chatcat_detail(chat_id: int) -> JSONResponse:
     database.init_db()
@@ -1780,16 +1890,102 @@ def chatcat_create(payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/chatcat/{chat_id}/update")
 def chatcat_update(chat_id: int, payload: dict = Body(...)) -> JSONResponse:
     sets, vals = [], []
-    for k in ("title", "topic", "city", "notes", "status", "link", "can_write", "favorite"):
+    for k in ("title", "topic", "city", "notes", "status", "link", "can_write", "favorite", "verdict"):
         if k in payload:
             v = (1 if payload.get(k) else 0) if k == "favorite" else (payload.get(k) or None)
             sets.append(f"{k}=?"); vals.append(v)
     if not sets:
         return JSONResponse({"ok": True})
+    if "verdict" in payload:   # вердикт из карточки ставит человек — метим источник
+        sets += ["verdict_src='человек'", "verdict_at=datetime('now')"]
     vals.append(chat_id)
     with database.get_conn() as conn:
         conn.execute(f"UPDATE chats SET {', '.join(sets)} WHERE id=?", vals)
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/chatcat/scan_all")
+def chatcat_scan_all(payload: dict = Body(...)) -> JSONResponse:
+    """Массовый скан каталога рабочими аккаунтами (фоном). Заполняет участников,
+    активность, «могу писать», админов; несуществующие чаты помечает вердиктом «мёртвый»."""
+    database.init_db()
+    favorites = bool(payload.get("favorites"))
+    rescan = bool(payload.get("rescan"))
+    limit = payload.get("limit")
+    args = ["channels.chat_scan_all"]
+    if favorites:
+        args.append("--favorites")
+    if rescan:
+        args.append("--rescan")
+    if limit:
+        args += ["--limit", str(int(limit))]
+    with database.get_conn() as conn:
+        where = "last_scanned_at IS NULL AND " if not rescan else ""
+        fav = "AND COALESCE(favorite,0)=1" if favorites else ""
+        n = conn.execute(
+            f"SELECT COUNT(*) c FROM chats WHERE {where}"
+            f"(username IS NOT NULL AND username<>'' OR link IS NOT NULL AND link<>'') "
+            f"AND (verdict IS NULL OR verdict<>'мёртвый') {fav}"
+        ).fetchone()["c"]
+        workers = conn.execute(
+            "SELECT COUNT(*) c FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND COALESCE(protected,0)=0 AND session_alive=1 AND COALESCE(status,'')<>'banned'"
+        ).fetchone()["c"]
+        database.set_setting(conn, "chatscan_stop", "0")
+    if not n:
+        return JSONResponse({"error": "нечего сканировать — всё уже просканировано"}, status_code=400)
+    _spawn(*args)
+    return JSONResponse({"ok": True, "queued": n, "workers": workers})
+
+
+@app.post("/api/chatcat/scan_stop")
+def chatcat_scan_stop() -> JSONResponse:
+    """Мягкая остановка: воркеры дочитывают текущий чат и выходят."""
+    with database.get_conn() as conn:
+        database.set_setting(conn, "chatscan_stop", "1")
+    return JSONResponse({"ok": True, "stopped": True})
+
+
+@app.post("/api/chatcat/verdict")
+def chatcat_verdict(payload: dict = Body(...)) -> JSONResponse:
+    """Массовый аппрув: пометить выбранные чаты годными/негодными. Решение человека
+    приоритетнее ИИ — помечаем verdict_src='человек', чтобы ИИ его потом не перетёр."""
+    ids = []
+    for x in (payload.get("ids") or []):
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    verdict = (payload.get("verdict") or "").strip()
+    if not ids:
+        return JSONResponse({"error": "не выбран ни один чат"}, status_code=400)
+    if verdict not in ("годен", "не годен", "на проверку", "мёртвый", ""):
+        return JSONResponse({"error": "плохой вердикт"}, status_code=400)
+    qm = ",".join("?" * len(ids))
+    with database.get_conn() as conn:
+        if verdict == "":     # снять вердикт
+            conn.execute(f"UPDATE chats SET verdict=NULL, verdict_src=NULL, verdict_at=NULL "
+                         f"WHERE id IN ({qm})", ids)
+        else:
+            conn.execute(f"UPDATE chats SET verdict=?, verdict_src='человек', "
+                         f"verdict_at=datetime('now') WHERE id IN ({qm})", (verdict, *ids))
+    return JSONResponse({"ok": True, "updated": len(ids), "verdict": verdict})
+
+
+@app.post("/api/chatcat/{chat_id}/enrich")
+def chatcat_enrich(chat_id: int) -> JSONResponse:
+    """Переобогатить чат ИИ (тема/город/описание/предварительный вердикт) без полного
+    пересканирования. Раньше этот роут был обещан в докстроке agent/enrich_chat.py,
+    но его не существовало — обогатить можно было только полным ре-сканом."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT username, link FROM chats WHERE id=?", (chat_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "чат не найден"}, status_code=404)
+    target = row["username"] or row["link"]
+    if not target:
+        return JSONResponse({"error": "у чата нет ни @username, ни ссылки"}, status_code=400)
+    res = _run_capture(["channels.chat_scan", "--target", target, "--id", str(chat_id)], timeout=180)
+    return JSONResponse(res)
 
 
 @app.post("/api/chatcat/inventory")
@@ -1849,6 +2045,9 @@ def coverage() -> JSONResponse:
 def chatcat_delete(chat_id: int) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (chat_id,))
+        # account_chats тоже чистим: раньше связки «аккаунт↔чат» оставались сиротами
+        # после удаления чата и завышали «покрытие» (/api/coverage) несуществующими чатами.
+        conn.execute("DELETE FROM account_chats WHERE chat_id=?", (chat_id,))
         conn.execute("DELETE FROM chats WHERE id=?", (chat_id,))
     return JSONResponse({"ok": True})
 
@@ -3223,6 +3422,32 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
         cwd=str(BASE_DIR.parent),
     )
     return JSONResponse({"ok": True, "launched": limit})
+
+
+@app.post("/api/campaign/{cid}/test")
+def campaign_test(cid: int) -> JSONResponse:
+    """Тестовый заход: шлёт ТОЛЬКО на свои тест-номера (is_test=1), в обход гейта прогрева.
+    Отдельная кнопка «Тест» — проверить скрипт живьём на себе перед боевым запуском."""
+    import subprocess
+    import sys
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT name, message_template FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        if not (row["message_template"] or "").strip():
+            return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        n_test = conn.execute("SELECT COUNT(*) FROM contacts WHERE COALESCE(is_test,0)=1 "
+                              "AND status='new'").fetchone()[0]
+        if not n_test:
+            return JSONResponse({"error": "нет тест-номеров (is_test=1, статус new). Добавь свои "
+                                          "номера в тест-контакты кампании."}, status_code=400)
+        database.add_event(conn, "campaign_test", f"🧪 Тест кампании «{row['name']}»",
+                           "отправка только на свои тест-номера", level="good", campaign_id=cid)
+    subprocess.Popen(
+        [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", "10", "--test"],
+        cwd=str(BASE_DIR.parent),
+    )
+    return JSONResponse({"ok": True, "test_targets": n_test})
 
 
 @app.post("/api/campaign/{cid}/delete")

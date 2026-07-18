@@ -23,6 +23,8 @@ from channels.proxy_find import _alive
 from channels.telegram import build_client
 from db import database
 
+_PARALLEL = 8      # сколько прокси проверяем одновременно (см. коммент в run())
+
 
 def _targets(ids: list[int] | None) -> list[dict]:
     with database.get_conn() as conn:
@@ -71,8 +73,17 @@ async def run(ids: list[int] | None) -> None:
         return
     results: dict[int, bool] = {}
 
+    # Пачками, а не все разом: на 38 одновременных коннектов половина живых прокси
+    # отваливалась по таймауту и красилась в 🔴 — при перепроверке те же оживали.
+    # Ложный «мёртв» хуже медленной проверки: по нему выключают рабочий аккаунт.
+    sem = asyncio.Semaphore(_PARALLEL)
+
     async def _one(a: dict) -> None:
-        alive = await _check_one(a)
+        async with sem:
+            alive = await _check_one(a)
+            if not alive:            # прежде чем красить в 🔴 — второй шанс, вдруг просто моргнуло
+                await asyncio.sleep(1)
+                alive = await _check_one(a)
         results[a["id"]] = alive
         with database.get_conn() as conn:
             conn.execute(

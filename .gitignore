@@ -1,5 +1,10 @@
 # Секреты — НИКОГДА не коммитить
 .env
+# ...и любые его копии/бэкапы: .env.backup, .env.bak, .env.local, .env.2026-07-15 и т.п.
+# Голое «.env» их НЕ ловит — .env.backup с ключами уже лежал untracked и уехал бы
+# в историю от одного «git add .».
+.env.*
+!.env.example
 *.session
 *.session-journal
 twoFA.txt
@@ -9,6 +14,11 @@ axiom/google_token.json
 # Купленные TG-аккаунты (tdata, .json с api/proxy, 2FA, .exe) — СЕКРЕТЫ
 ТГ Аккуанты(portable)/
 АККАУНТ ТГ 2025новые_08_07/
+АККАУНТЫ ТГ/
+# Бэкапы БД (axiom.db.bak-*, *.db.bak) — те же секреты (сессии/2FA), что и в самой базе.
+# Шаблон *.db их не ловит: имя оканчивается не на .db.
+axiom/data/*.bak*
+axiom/data/*.db.bak*
 
 # Python
 __pycache__/
@@ -19,6 +29,11 @@ venv/
 # Данные и артефакты (тестовая БД, выгрузки, excel)
 axiom/data/*.db
 axiom/*.db
+# SQLite в режиме WAL держит свежие транзакции в -wal/-shm рядом с базой. Шаблон «*.db»
+# их НЕ ловит (имя axiom.db-wal), и они уже висели untracked — а внутри те же секреты,
+# что и в базе: tg-сессии и 2FA-пароли аккаунтов.
+axiom/data/*.db-*
+axiom/*.db-*
 axiom/data/logs/
 # Рантайм-логи прогонов (телефоны/ID лидов) и списки чатов-целей (приватные инвайты) — не код
 axiom/data/*.log

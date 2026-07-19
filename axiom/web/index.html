@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AXIOM — пульт</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%2300B4D8'/%3E%3Cstop offset='1' stop-color='%23CCFF00'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M13 53 L32 11 L51 53' stroke='url(%23g)' stroke-width='6' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M35 21 L24 37 L30 37 L27 50 L41 31 L33 31 L37 21 Z' fill='%23CCFF00'/%3E%3C/svg%3E">
 <script>document.documentElement.dataset.theme=localStorage.getItem("axiom_theme")||"dark";</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -52,7 +53,7 @@
   body{margin:0;color:var(--text);-webkit-font-smoothing:antialiased;
     background:var(--bg);background-image:var(--body-grad);
     transition:background-color .35s,color .35s;
-    font:14px/1.55 "Segoe UI",-apple-system,system-ui,Roboto,Helvetica,Arial,sans-serif;}
+    font:14px/1.55 "Manrope","Segoe UI",-apple-system,system-ui,Roboto,Helvetica,Arial,sans-serif;}
   .app{display:flex;min-height:100vh;position:relative;z-index:1;}
   /* атмосфера (как в макете): свечение + блюпринт-сетка + зерно */
   .atmo{position:fixed;inset:0;pointer-events:none;z-index:0;}
@@ -82,7 +83,9 @@
   nav a:hover{background:var(--panel2);color:var(--text);}
   nav a.active{background:var(--accent-soft);color:var(--accent-ink);font-weight:600;}
   nav a.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--accent);}
-  nav a .ic{width:20px;text-align:center;font-size:16px;filter:grayscale(.2);}
+  nav a .ic{width:20px;height:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--nav-link);}
+  nav a .ic svg{width:20px;height:20px;display:block;}
+  nav a.active .ic{color:var(--accent-ink);}
   nav a .cnt{margin-left:auto;background:var(--panel2);border:1px solid var(--border);border-radius:20px;
     font-size:11px;padding:1px 8px;color:var(--muted);}
   /* Заголовки групп меню (сворачиваемые, как в Битрикс24) */
@@ -117,14 +120,17 @@
   main{padding:26px 30px;flex:1;max-width:1320px;width:100%;}
 
   button,.btn{background:var(--panel);color:var(--text);border:1px solid var(--border);
-    padding:8px 14px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:500;
-    box-shadow:var(--shadow-sm);transition:border-color .12s,background .12s,color .12s;}
+    padding:10px 16px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:500;
+    min-height:36px;box-shadow:var(--shadow-sm);transition:border-color .12s,background .12s,color .12s;}
   button:hover,.btn:hover{border-color:var(--border-hov);background:var(--panel2);}
   button.primary{background:var(--primary-bg);color:var(--primary-txt);border-color:var(--primary-bg);font-weight:600;}
   button.primary:hover{background:var(--primary-hov);border-color:var(--primary-hov);color:var(--primary-txt);}
   button:disabled{opacity:.55;cursor:default;}
+  @media(pointer:coarse){button,.btn{min-height:44px;padding:12px 18px;}}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px;}
+  .node,:any-link{cursor:pointer;}
   input,select,textarea{background:var(--panel);color:var(--text);border:1px solid var(--border);
-    padding:8px 11px;border-radius:9px;font-size:13px;outline:none;font-family:inherit;transition:border-color .12s,box-shadow .12s;}
+    padding:10px 12px;border-radius:9px;font-size:13px;outline:none;font-family:inherit;transition:border-color .12s,box-shadow .12s;}
   input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
   textarea{resize:vertical;width:100%;line-height:1.5;}
 
@@ -344,17 +350,25 @@
   .notif .ni .who{font-weight:600;font-size:13px;}
   .notif .ni .msg{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .notif .ni .tm{color:var(--muted);font-size:11px;white-space:nowrap;}
+  /* ---- Skeleton loader ---- */
+  @keyframes skel-pulse{0%,100%{opacity:.06}50%{opacity:.15}}
+  .skel-wrap{padding:26px 30px;max-width:860px;display:flex;flex-direction:column;gap:16px;}
+  .skel{border-radius:var(--radius);background:var(--text);animation:skel-pulse 1.6s ease-in-out infinite;}
+  .skel-hdr{height:28px;width:240px;}
+  .skel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;}
+  .skel-card{height:100px;}
+  .skel-row{height:18px;width:100%;}
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid var(--bg);}
   ::-webkit-scrollbar-thumb:hover{background:var(--border-hov);}
 </style>
 </head>
 <body>
-<div class="atmo glow"></div><div class="atmo grid"></div><div class="atmo grain"></div>
+<div class="atmo glow" aria-hidden="true"></div><div class="atmo grid" aria-hidden="true"></div><div class="atmo grain" aria-hidden="true"></div>
 <div class="app">
   <aside class="side">
     <div class="brand"><h1>AX<span class="ac">I</span>OM</h1><small>пульт оператора</small></div>
-    <nav id="nav"></nav>
+    <nav id="nav" role="navigation" aria-label="Основное меню"></nav>
     <div class="foot">
       <div class="prof"><span class="dot"></span>@iivairf · онлайн</div>
       <div class="theme-pick" id="theme-pick" title="Тема оформления">
@@ -368,14 +382,14 @@
     <div class="topbar">
       <h2 id="title">Дашборд</h2>
       <div class="right"><span class="upd" id="upd">—</span>
-        <div class="bellwrap"><button id="bell" title="Уведомления">🔔<span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
-          <div class="notif" id="notif" style="display:none"></div></div>
-        <button id="refresh">⟳ Обновить</button></div>
+        <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления">🔔<span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
+          <div class="notif" id="notif" style="display:none" role="menu"></div></div>
+        <button id="refresh" aria-label="Обновить">⟳ Обновить</button></div>
     </div>
-    <main id="view"></main>
+    <main id="view" role="main" aria-live="polite"></main>
   </div>
 </div>
-<div class="drawer" id="drawer"><div class="dh"><b id="dr-title">Досье</b><button id="dr-close">✕</button></div><div class="db" id="dr-body"></div></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Досье"><div class="dh"><b id="dr-title">Досье</b><button id="dr-close" aria-label="Закрыть">✕</button></div><div class="db" id="dr-body"></div></div>
 
 <script>
 // ----------------------------------------------------------------- helpers
@@ -390,38 +404,50 @@ function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage
   applyTheme(localStorage.getItem("axiom_theme")||"dark");
   tp.addEventListener("click",e=>{const b=e.target.closest("button");if(b)applyTheme(b.dataset.t);});})();
 const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function fmt(ts){if(!ts)return"";const d=new Date(ts.replace(" ","T")+"Z");return isNaN(d)?ts:d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});}
+// Парсим и «наивный» UTC ('2026-07-18 11:47:00'), и ISO с таймзоной ('…T11:47:00+00:00').
+// Старый fmt слепо клеил 'Z' и на ISO-датах ломался (isNaN → показывал сырую строку).
+function parseTs(ts){if(!ts)return null;let s=String(ts).trim();if(s.indexOf("T")<0)s=s.replace(" ","T");
+  if(s.indexOf("T")>=0 && !/(Z|[+\-]\d\d:?\d\d)$/.test(s.slice(10)))s+="Z";
+  const d=new Date(s);return isNaN(d)?null:d;}
+function fmt(ts){const d=parseTs(ts);return d?d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):(ts||"");}
+function isToday(ts){const d=parseTs(ts);return !!d&&d.toDateString()===new Date().toDateString();}
+// Человеческая относительная дата: «сегодня 14:30» / «вчера 09:10» / «3 дн назад» / «12.07.26».
+function rel(ts){const d=parseTs(ts);if(!d)return"";const now=new Date(),day=86400000;
+  const hm=d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  if(d.toDateString()===now.toDateString())return"сегодня "+hm;
+  if(new Date(now-day).toDateString()===d.toDateString())return"вчера "+hm;
+  const days=Math.floor((now-d)/day);
+  if(days>=0&&days<7)return days+" дн назад";
+  return d.toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit",year:"2-digit"});}
 function statusBadge(s){return `<span class="badge b-${s}">${STATUS_RU[s]||s}</span>`;}
 function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</span>`;if(c.phone)return `<span class="sub mono">${esc(c.phone)}</span>`;return '<span class="no">—</span>';}
 
 const NAV_GROUPS=[
   {title:"",items:[
-    {id:"dashboard",ic:"📊",label:"Дашборд"},
-    {id:"orgchart",ic:"🏛️",label:"Структура"},
-    {id:"calendar",ic:"📅",label:"Календарь"},
+    {id:"dashboard",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>',label:"Дашборд"},
+    {id:"orgchart",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="6" height="5" rx="1"/><rect x="12" y="2" width="6" height="5" rx="1"/><rect x="7" y="13" width="6" height="5" rx="1"/><line x1="5" y1="7" x2="10" y2="13"/><line x1="15" y1="7" x2="10" y2="13"/></svg>',label:"Структура"},
+    {id:"calendar",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="16" height="14" rx="2"/><line x1="2" y1="8" x2="18" y2="8"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="14" y1="1" x2="14" y2="5"/></svg>',label:"Календарь"},
   ]},
   {title:"CRM",collapsible:true,items:[
-    {id:"leads",ic:"🎯",label:"Лиды (квал)"},
-    {id:"deals",ic:"💼",label:"Сделки"},
-    {id:"contacts",ic:"👤",label:"Контакты"},
-    {id:"companies",ic:"🏢",label:"Компании"},
+    {id:"leads",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="5"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Лиды (квал)"},
+    {id:"deals",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="16" height="12" rx="2"/><path d="M7 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>',label:"Сделки"},
+    {id:"contacts",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="6" r="3.5"/><path d="M3 18c0-4 3.1-6 7-6s7 2 7 6"/></svg>',label:"Контакты"},
+    {id:"companies",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="8" width="6" height="10"/><rect x="12" y="4" width="6" height="14"/><line x1="4" y1="11" x2="6" y2="11"/><line x1="4" y1="14" x2="6" y2="14"/><line x1="14" y1="7" x2="16" y2="7"/><line x1="14" y1="10" x2="16" y2="10"/><line x1="14" y1="13" x2="16" y2="13"/><line x1="14" y1="16" x2="16" y2="16"/></svg>',label:"Компании"},
   ]},
   {title:"Лидген",collapsible:true,items:[
-    {id:"campaigns",ic:"🎯",label:"Кампании"},
-    {id:"hits",ic:"🔎",label:"Запросы"},
-    {id:"chats",ic:"💬",label:"Диалоги"},
+    {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/><path d="M14 10h2a2 2 0 010 4h-2z"/><path d="M7 13.5v1.5a2 2 0 004 0v-.5"/></svg>',label:"Кампании"},
+    {id:"hits",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="6"/><line x1="13" y1="13" x2="18" y2="18"/></svg>',label:"Запросы"},
+    {id:"chats",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 9a7 7 0 00-7-7H8a7 7 0 000 14h2l4 3v-3a7 7 0 003-4z"/><circle cx="8.5" cy="9" r="1" fill="currentColor"/><circle cx="11.5" cy="9" r="1" fill="currentColor"/><circle cx="14.5" cy="9" r="1" fill="currentColor"/></svg>',label:"Диалоги"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
-    {id:"agents",ic:"📱",label:"Аккаунты"},
-    {id:"chatcat",ic:"📡",label:"Чаты"},
-    {id:"proxy",ic:"🛡️",label:"Прокси"},
-    {id:"parser",ic:"🛰️",label:"Парсинг"},
-  ]},
-  {title:"Агенты",collapsible:true,items:[
-    {id:"aiagents",ic:"🤖",label:"ИИ-агенты"},
+    {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
+    {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты"},
+    {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
+    {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
   ]},
 ];
-const NAV=NAV_GROUPS.flatMap(g=>g.items).concat([{id:"projects",ic:"📁",label:"Проекты"}]);
+// «ИИ-агенты» слиты в «Структуру»: должность сама несёт аккаунт/задачу/промпт.
+const NAV=NAV_GROUPS.flatMap(g=>g.items).concat([{id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"}]);
 let STATE={contacts:[],stats:null};
 let PROJECT_SEL=null; // выбранный проект (фильтрует кампании)
 
@@ -497,6 +523,7 @@ function smartTable(mount,cfg){
   const draw=()=>{
     const cols=visCols();
     let rows=cfg.rows.slice();
+    if(cfg.prefilter)rows=rows.filter(cfg.prefilter);   // внешние быстрые чипы (избранные/годные/…)
     if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
     Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(!fv)return;
       const c=colByKey(k);   // ищем и по видимому тексту («жив»), и по сырому полю («1») — что удобнее
@@ -520,7 +547,7 @@ function smartTable(mount,cfg){
     } else { pager.style.display="none"; pager.innerHTML=""; }
     rows=paged;
     const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
-    const head=`<tr>${cols.map(c=>`<th data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
+    const head=`<tr>${cols.map(c=>`<th scope="col" data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
     const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
     const cell=(r,c)=>`<td class="${c.cls||""}"${w(c.key)}>${c.render?c.render(r):esc(r[c.key])}</td>`;
     const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""} ${cfg.rowClass?(cfg.rowClass(r)||""):""}" data-id="${r.id}">${cols.map(c=>cell(r,c)).join("")}</tr>`;
@@ -534,7 +561,7 @@ function smartTable(mount,cfg){
       });
     } else body=rows.map(rowHtml).join("");
     if(!rows.length)body=`<tr><td colspan="${cols.length}" class="empty">${cfg.emptyText||"Ничего не найдено"}</td></tr>`;
-    wrap.querySelector("#st-tbl").innerHTML=`<table><thead>${head}${filtRow}</thead><tbody>${body}</tbody></table>`;
+    wrap.querySelector("#st-tbl").innerHTML=`<table role="grid"><thead>${head}${filtRow}</thead><tbody>${body}</tbody></table>`;
     wrap.querySelectorAll("thead tr:first-child th").forEach(th=>th.onclick=e=>{if(e.target.classList.contains("rsz"))return;const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
     wrap.querySelectorAll(".cf").forEach(inp=>{inp.onclick=e=>e.stopPropagation();
       inp.oninput=()=>{const k=inp.dataset.k,pos=inp.selectionStart;st.colFilters[k]=inp.value;persist();draw();
@@ -553,6 +580,7 @@ function smartTable(mount,cfg){
   wrap.querySelector("#st-filt").onclick=()=>{st.showFilters=!st.showFilters;draw();};
   wrap.querySelector("#st-ps").onchange=e=>{st.pageSize=+e.target.value;st.page=0;persist();draw();};
   drawPicker();draw();
+  return {redraw:draw, wrap};   // ручка наружу: перерисовать без пересборки страницы
 }
 function tagsCell(r){
   const chips=(r.tags||[]).map(t=>`<span class="tag">${esc(t)} <x data-id="${r.id}" data-t="${esc(t)}">✕</x></span>`).join("");
@@ -778,6 +806,8 @@ async function viewAgents(v){
       <button id="ab-proxy-pool" title="Бесплатный MTProto из общего пула — сразу выбранным, включая тех, у кого прокси уже помечен мёртвым (заменит на свежий с минимальным пингом)">🆓 Бесплатный прокси (пул)</button>
       <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
       <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
+      <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">➕ Зарегистрировать номер (hero-sms)</button>
+      <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">🛡 Защитить (2FA+номер)</button>
       <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет 🟢 живой / 🔴 мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
@@ -927,6 +957,9 @@ async function viewAgents(v){
       ?'<span style="color:#c0392b">⚠ '+esc(r.error)+'</span>'
       :`<span style="color:var(--green)">✅ ключ рабочий — баланс ${esc(r.balance)} ${esc(r.currency)} (user_id ${esc(r.user_id)})</span>`;
   };
+  // Регистрация нового номера НЕ требует выделенных строк — создаёт новые аккаунты.
+  $("#ab-sms-reg").onclick=()=>showSmsRegisterDialog();
+  $("#ab-protect").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProtectDialog([...selAcc],bulk);};
   $("#ab-limit-go").onclick=()=>{const l=+$("#ab-limit").value;if(!l){$("#ab-msg").textContent="введи лимит";return;}bulk({action:"limit",daily_limit:l},r=>`✏️ лимит ${r.daily_limit} у ${r.updated}`);};
   $("#ab-status-go").onclick=()=>{const s=$("#ab-status").value;if(!s){$("#ab-msg").textContent="выбери статус";return;}bulk({action:"status",status:s},r=>`статус «${ACC_ST[r.status]||r.status}» у ${r.updated}`);};
 }
@@ -996,8 +1029,10 @@ async function showInspectModal(id,label){
     const un=d.unread?` <span class="badge b-stop">${d.unread}</span>`:'';
     const pre=d.last_out?'→ ':'';
     const link=d.username?` <a class="ext" href="https://t.me/${esc(d.username)}" target="_blank" onclick="event.stopPropagation()">↗</a>`:'';
-    return `<div class="insp-dlg" data-peer="${d.peer_id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
-      <div style="font-weight:600;font-size:13px">${ico} ${esc(d.title)}${link}${un}</div>
+    const fresh=isToday(d.last_date);
+    const dt=d.last_date?`<span style="font-size:11px;white-space:nowrap;margin-left:8px;${fresh?'color:var(--green);font-weight:600':'color:var(--muted)'}">${fresh?'🟢 ':''}${rel(d.last_date)}</span>`:'';
+    return `<div class="insp-dlg" data-peer="${d.peer_id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer${fresh?';border-color:var(--green)':''}">
+      <div style="display:flex;align-items:center;gap:4px"><span style="font-weight:600;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${ico} ${esc(d.title)}${link}${un}</span>${dt}</div>
       <div class="hint" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(pre+(d.last_text||''))||'—'}</div>
       <div class="insp-msgs" style="display:none;margin-top:8px"></div></div>`;
   };
@@ -1016,8 +1051,12 @@ async function showInspectModal(id,label){
     const mr=await api(`/api/account/${id}/dialog_messages?peer=${el.dataset.peer}`);
     if(mr.error){mbox.innerHTML='<div style="color:#c0392b">⚠ '+esc(mr.error)+'</div>';return;}
     const ms=(mr.messages||[]);
-    mbox.innerHTML=ms.length?ms.map(m=>`<div style="display:flex;justify-content:${m.out?'flex-end':'flex-start'};margin:3px 0">
-      <div style="max-width:80%;padding:6px 10px;border-radius:10px;font-size:13px;background:${m.out?'var(--accent-soft)':'var(--panel)'};border:1px solid var(--border)">${esc(m.text)}</div></div>`).join(''):'<div class="hint">пусто</div>';
+    mbox.innerHTML=ms.length?ms.map(m=>{
+      const who=m.out?('🤖 '+(label||'аккаунт')):(m.sender||'собеседник');   // кто писал: наш аккаунт vs собеседник
+      const meta=`<div class="hint" style="font-size:10px;margin:1px 3px;text-align:${m.out?'right':'left'}">${esc(who)}${m.date?' · '+rel(m.date):''}</div>`;
+      return `<div style="display:flex;flex-direction:column;align-items:${m.out?'flex-end':'flex-start'};margin:5px 0">
+        <div style="max-width:82%;padding:6px 10px;border-radius:10px;font-size:13px;background:${m.out?'var(--accent-soft)':'var(--panel)'};border:1px solid var(--border)">${esc(m.text)}</div>${meta}</div>`;
+    }).join(''):'<div class="hint">пусто</div>';
   }));
 }
 // Диалог «✨ Оформить»: инструкция для ИИ + история прошлых + примеры готовых bio.
@@ -1036,8 +1075,14 @@ async function showIdentityDialog(ids,bulk){
     <div style="margin-top:6px">${samples.map(s=>`<div style="padding:6px 10px;border-left:2px solid var(--border);margin-bottom:5px;font-size:12px"><b>${esc(s.label||"—")}</b><br><span class="sub">${esc(s.bio||"")}</span></div>`).join("")}</div></details>`:"";
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:560px;width:92%;padding:20px;max-height:88vh;overflow:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">✨ Оформить (${ids.length} акк.)</b><button class="id-close">✕</button></div>
-    <div class="sub" style="margin-bottom:10px">Одна инструкция для ИИ на всю пачку (стиль/легенда bio), напр. «риелтор из Сочи, дружелюбный тон». Можно оставить пустым — bio возьмётся из резервного пула.</div>
+    <div class="sub" style="margin-bottom:10px">Бриф/легенда bio на всю пачку, напр. «риелтор из Сочи, дружелюбный тон». Жми «Показать варианты» — увидишь примеры, отметь удачные, и каждому аккаунту достанется свой из выбранных. Без выбора — ИИ сам напишет каждому по брифу.</div>
     <input id="id-style" style="width:100%;padding:8px 10px;font-size:14px" placeholder="напр. риелтор из Сочи, дружелюбный тон">
+    <div class="ttoolbar" style="margin-top:8px">
+      <input id="id-link" style="flex:1;padding:7px 10px;font-size:13px" placeholder="ссылка в bio (необязательно), напр. t.me/mychannel">
+      <button id="id-gen">🧬 Показать варианты</button>
+    </div>
+    <label class="sub" style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer" title="снести текущее фото и поставить новое лицо из пула data/faces (по полу имени)"><input type="checkbox" id="id-refphoto"> 🖼 заменить фото на новое из пула лиц (снести старые)</label>
+    <div id="id-variants" style="margin-top:8px"></div>
     ${histHtml}${smpHtml}
     <div class="ttoolbar" style="justify-content:flex-end;margin-top:14px"><button class="id-close">Отмена</button><button class="primary" id="id-go">Оформить</button></div>
   </div>`;
@@ -1050,11 +1095,25 @@ async function showIdentityDialog(ids,bulk){
   const more=modal.querySelector("#id-more");
   if(more)more.onclick=()=>{modal.querySelector("#id-rest").style.display="block";more.style.display="none";bindHist();};
   inp.focus();
-  inp.onkeydown=e=>{if(e.key==="Enter")modal.querySelector("#id-go").click();};
+  // ── генератор вариантов bio с превью ──
+  const gen=modal.querySelector("#id-gen"),vbox=modal.querySelector("#id-variants"),linkI=modal.querySelector("#id-link");
+  gen.onclick=async()=>{
+    gen.disabled=true;const t=gen.textContent;gen.textContent="генерю…";
+    try{const r=await api("/api/accounts/bio_variants",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({brief:inp.value.trim(),link:linkI.value.trim(),count:6})});
+      const vs=(r&&r.variants)||[];
+      vbox.innerHTML=vs.length?`<div class="sub" style="margin:2px 0 6px">Отметь удачные — их раздам по аккаунтам (каждому свой). Ничего не отметишь — ИИ напишет каждому сам.</div>`+
+        vs.map(v=>`<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:4px;cursor:pointer"><input type="checkbox" class="id-v" data-b="${esc(v)}" checked style="margin-top:3px"><span style="font-size:13px">${esc(v)} <span class="sub">(${v.length})</span></span></label>`).join("")
+        :`<div class="sub" style="color:#c0392b">не удалось сгенерить — проверь ключ модели</div>`;
+    }catch(e){vbox.innerHTML='<div class="sub" style="color:#c0392b">ошибка генерации</div>';}
+    gen.disabled=false;gen.textContent=t;
+  };
+  inp.onkeydown=e=>{if(e.key==="Enter")gen.click();};
   modal.querySelector("#id-go").onclick=async()=>{
     const style=inp.value.trim();
+    const bios=[...modal.querySelectorAll(".id-v:checked")].map(c=>c.dataset.b);
+    const refresh_photo=modal.querySelector("#id-refphoto").checked;
     close();
-    await bulk({action:"identity",bio_style:style},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне (имя+ник+bio+фото+приватность, каждому своё)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат появится в 🔔 через 1-2 мин`);
+    await bulk({action:"identity",bio_style:style,bios,refresh_photo},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне${r.bio_pool?` (bio из ${r.bio_pool} выбранных, каждому свой)`:" (имя+ник+bio+фото+приватность, каждому своё)"}${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат в 🔔 через 1-2 мин`);
   };
 }
 function showProxyDistDialog(ids,bulk){
@@ -1083,6 +1142,103 @@ const PROXY6_VERSIONS=[
   [6,"IPv6 — самый дешёвый, не все сервисы принимают"],
   [5,"MTProto — для Telegram MTProxy, не для этого сценария"],
 ];
+// Саморегистрация TG-номера через hero-sms. Read-only витрина: баланс + выбор страны
+// с ценой/наличием. Сама регистрация (getNumber) тратит деньги — за отдельной кнопкой
+// с подтверждением. ТЗ: axiom/ТЗ_саморегистрация_TG_hero-sms.md.
+async function showSmsRegisterDialog(){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;padding:20px;max-height:88vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">➕ Зарегистрировать номер (hero-sms)</b><button class="sm-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">Свежий TG-номер: номер и 2FA под нашим контролем с нулевой секунды. Тратит деньги только по кнопке «Зарегистрировать». Свежак идёт СРАЗУ на прогрев, не в рассылку.</div>
+    <div id="sm-bal" class="sub" style="margin-bottom:10px">загружаю баланс и страны…</div>
+    <div class="field"><label>Страна</label><select id="sm-country" style="width:100%" disabled><option>…</option></select></div>
+    <div class="field"><label>Сколько номеров</label><input id="sm-qty" type="number" min="1" max="10" value="1" style="width:100%"></div>
+    <div id="sm-est" class="sub" style="margin:8px 0"></div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:12px"><button class="sm-close">Отмена</button><button class="primary" id="sm-go" disabled>Зарегистрировать</button></div>
+    <div id="sm-msg" style="margin-top:8px;font-size:13px"></div></div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelectorAll(".sm-close").forEach(b=>b.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  const sel=modal.querySelector("#sm-country"), est=modal.querySelector("#sm-est"),
+        qty=modal.querySelector("#sm-qty"), go=modal.querySelector("#sm-go");
+  let bal=0, CS=[];
+  const recalc=()=>{
+    const c=CS.find(x=>x.code==sel.value); if(!c)return;
+    const n=Math.max(1,+qty.value||1), sum=(c.cost*n);
+    const enough=sum<=bal;
+    est.innerHTML=`Итого ≈ <b>$${sum.toFixed(2)}</b> за ${n} шт (по $${c.cost} · в наличии ${c.count}). `+
+      (enough?`<span style="color:var(--green)">баланса хватает ($${bal.toFixed(2)})</span>`
+             :`<span style="color:#c0392b">не хватает баланса: $${bal.toFixed(2)}</span>`);
+    go.disabled=!enough||!c.count;
+  };
+  try{
+    const r=await api("/api/sms/countries");
+    if(!r.ok){modal.querySelector("#sm-bal").innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error||"hero-sms недоступен")+'</span>';return;}
+    bal=r.balance; CS=r.countries||[];
+    modal.querySelector("#sm-bal").innerHTML=`💰 Баланс hero-sms: <b>$${bal.toFixed(2)}</b> · стран с номерами: ${r.available}`;
+    const avail=CS.filter(c=>c.count>0);
+    sel.innerHTML=avail.map(c=>`<option value="${c.code}">${esc(c.label)} — $${c.cost} (в наличии ${c.count})</option>`).join("");
+    sel.disabled=false;
+    sel.onchange=recalc; qty.oninput=recalc; recalc();
+  }catch(e){modal.querySelector("#sm-bal").innerHTML='<span style="color:#c0392b">ошибка загрузки: '+esc(e.message)+'</span>';}
+  go.onclick=async()=>{
+    const c=CS.find(x=>x.code==sel.value); if(!c)return;
+    const n=Math.max(1,+qty.value||1);
+    if(!confirm(`Зарегистрировать ${n} номер(ов) в стране «${c.label}» за ≈ $${(c.cost*n).toFixed(2)}?\n\nЭто СПИШЕТ деньги с баланса hero-sms и создаст аккаунты.`))return;
+    go.disabled=true; go.textContent="регистрирую…";
+    const r=await api("/api/sms/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({country:c.code,qty:n})});
+    if(r&&r.ok){modal.querySelector("#sm-msg").innerHTML=`<span style="color:var(--green)">✅ ${esc(r.msg||"запущено")}</span>`;}
+    else{modal.querySelector("#sm-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не удалось")+'</span>';go.disabled=false;go.textContent="Зарегистрировать";}
+  };
+}
+// Защита купленных аккаунтов от реклейма: 2FA (бесплатно, сразу) + опционально смена
+// номера на свой через hero-sms (платно, только для аккаунтов 24+ч, иначе Telegram
+// отказывает fresh-локом — модуль сам это учитывает, деньги не тратятся впустую).
+async function showProtectDialog(ids,bulk){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;padding:20px;max-height:88vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">🛡 Защитить от реклейма (${ids.length} акк.)</b><button class="pr-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">Слой 1 — 2FA-пароль: продавец с SMS-кодом больше не войдёт. Бесплатно, сразу.<br>
+      Слой 2 — смена номера на свой: продавец отвязывается полностью, даже 7-дневный сброс ему недоступен. Только для аккаунтов 24+ часа под нами (иначе Telegram откажет) — платно (hero-sms).</div>
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer"><input type="checkbox" id="pr-phone"> Также сменить номер (слой 2)</label>
+    <div id="pr-country-wrap" style="display:none">
+      <div id="pr-bal" class="sub" style="margin-bottom:8px">загружаю страны…</div>
+      <div class="field"><label>Страна нового номера</label><select id="pr-country" style="width:100%" disabled><option>…</option></select></div>
+    </div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:14px"><button class="pr-close">Отмена</button><button class="primary" id="pr-go">Защитить</button></div>
+    <div id="pr-msg" style="margin-top:8px;font-size:13px"></div></div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelectorAll(".pr-close").forEach(b=>b.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  const phoneChk=modal.querySelector("#pr-phone"), wrap=modal.querySelector("#pr-country-wrap"),
+        sel=modal.querySelector("#pr-country");
+  let CS=[];
+  phoneChk.onchange=async()=>{
+    wrap.style.display=phoneChk.checked?"block":"none";
+    if(phoneChk.checked&&!CS.length){
+      try{
+        const r=await api("/api/sms/countries");
+        if(!r.ok){modal.querySelector("#pr-bal").innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error||"hero-sms недоступен")+'</span>';return;}
+        CS=(r.countries||[]).filter(c=>c.count>0);
+        modal.querySelector("#pr-bal").innerHTML=`💰 Баланс hero-sms: <b>$${r.balance.toFixed(2)}</b>`;
+        sel.innerHTML=CS.map(c=>`<option value="${c.code}">${esc(c.label)} — $${c.cost} (в наличии ${c.count})</option>`).join("");
+        sel.disabled=false;
+      }catch(e){modal.querySelector("#pr-bal").innerHTML='<span style="color:#c0392b">ошибка: '+esc(e.message)+'</span>';}
+    }
+  };
+  modal.querySelector("#pr-go").onclick=async()=>{
+    const withPhone=phoneChk.checked;
+    const country=withPhone?sel.value:null;
+    if(withPhone&&!confirm(`Слой 2 включён — за КАЖДЫЙ аккаунт, готовый к смене (24+ч, 2FA уже стоит), спишутся деньги с hero-sms за новый номер. Остальные получат только 2FA. Продолжить?`))return;
+    const go=modal.querySelector("#pr-go"); go.disabled=true; go.textContent="запускаю…";
+    await bulk({action:"protect",country},r=>`🛡 защищаю ${r.queued} акк. в фоне: 2FA всем${r.phone_change?" + смена номера у готовых (24+ч)":""}${r.skipped_not_eligible?` · пропущено (нет живой сессии): ${r.skipped_not_eligible}`:""} — статус в 🔔 и колонке «Прогресс»`);
+    close();
+  };
+}
 function showProxy6BuyDialog(ids,bulk){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
@@ -1163,18 +1319,29 @@ async function viewAiAgents(v){
 let ORG_TAB="chart";
 function setOrgTab(){["chart","members"].forEach(t=>{const b=$("#ot-"+t);if(b)b.classList.toggle("primary",ORG_TAB===t);});}
 async function viewOrgChart(v){
-  v.innerHTML=`<p class="sub" style="margin-top:0">Оргструктура: отделы и сотрудники внутри — живые люди и виртуальные ИИ-агенты. Чтобы видеть, какая у тебя команда и кто за что отвечает.</p>
-    <div class="ttoolbar"><button id="ot-chart" class="primary">🏛️ Схема</button><button id="ot-members">👥 Сотрудники</button></div>
+  v.innerHTML=`<p class="sub" style="margin-top:0">Оргструктура и роли в одном месте (раздел «ИИ-агенты» слит сюда): заводишь отделы и должности, каждой должности назначаешь аккаунт-исполнителя из списка — по умолчанию 🟢 живые, галочка «показать все» раскроет остальных. Для ИИ-роли тут же задача и промпт.</p>
+    <div class="ttoolbar"><button id="ot-chart" class="primary">🏛️ Схема</button><button id="ot-members">👥 Должности (таблица)</button></div>
     <div id="ot-body" style="margin-top:12px"></div>`;
   $("#ot-chart").onclick=()=>{ORG_TAB="chart";setOrgTab();renderOrgBody();};
   $("#ot-members").onclick=()=>{ORG_TAB="members";setOrgTab();renderOrgBody();};
   setOrgTab();renderOrgBody();
 }
+let ORG_ACCOUNTS=[], ORG_AGENTS=[];   // общие данные для формы/таблицы оргструктуры
+function isAccLive(a){return a&&a.session_alive===1&&a.status!=='banned';}  // «живой» аккаунт
+function accMark(a){return a.session_alive===1?'🟢':(a.session_alive===0?'🔴':'⚪');}
+// Выпадающий аккаунтов: по умолчанию только живые; showAll — все. Текущий выбранный
+// показываем всегда, даже если он не живой и фильтр включён (чтобы не «пропал»).
+function orgAccOptions(selId,showAll){
+  let list=showAll?ORG_ACCOUNTS:ORG_ACCOUNTS.filter(isAccLive);
+  if(selId&&!list.some(a=>String(a.id)===String(selId))){const cur=ORG_ACCOUNTS.find(a=>String(a.id)===String(selId));if(cur)list=[cur,...list];}
+  return `<option value="">— аккаунт не назначен —</option>`+list.map(a=>`<option value="${a.id}" ${String(selId)===String(a.id)?'selected':''}>${accMark(a)} ${esc(a.label||a.username||('#'+a.id))}${a.phone?(' · '+esc(a.phone)):''}</option>`).join('');
+}
+function orgTaskOptions(sel){return `<option value="">— задача —</option>`+Object.entries(AI_TASKS).map(([k,l])=>`<option value="${k}" ${sel===k?'selected':''}>${l}</option>`).join('');}
 async function renderOrgBody(){
   const body=$("#ot-body");if(!body)return;
-  const agents=await api("/api/aiagents");
+  [ORG_AGENTS,ORG_ACCOUNTS]=await Promise.all([api("/api/aiagents"),api("/api/accounts")]);
   if(ORG_TAB==="members"){await renderOrgMembers(body);return;}
-  await renderOrgChartTab(body,agents);
+  await renderOrgChartTab(body,ORG_AGENTS);
 }
 function orgKindOpts(m){
   return `<option value="human" ${(!m||m.kind==='human')?'selected':''}>👤 живой человек</option><option value="agent" ${m&&m.kind==='agent'?'selected':''}>🤖 ИИ-агент</option>`;
@@ -1185,35 +1352,46 @@ function orgAgentOpts(agents,m){
 function orgParentOpts(depts,selId,excludeId){
   return `<option value="">— без родителя (верхний уровень) —</option>`+depts.filter(d=>d.id!==excludeId).map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?"selected":""}>${esc(d.name)}</option>`).join("");
 }
-function orgMemberFormHtml(deptId,agents,m){
+function orgMemberFormHtml(deptId,m){
   const id=m?m.id:"";
   const isAgent=m&&m.kind==='agent';
+  const accId=(m&&m.account_id)||"";
   return `<div class="row2">
-      <div class="field"><label>Тип</label><select class="om-kind">${orgKindOpts(m)}</select></div>
-      <div class="field om-agentwrap" style="${isAgent?'':'display:none'}"><label>ИИ-агент</label><select class="om-agent">${orgAgentOpts(agents,m)}</select></div>
+      <div class="field"><label>Тип должности</label><select class="om-kind">${orgKindOpts(m)}</select></div>
+      <div class="field"><label>Роль / должность</label><input class="om-role" value="${esc((m&&m.role)||'')}" placeholder="Менеджер по продажам"></div>
     </div>
-    <div class="row2"><div class="field"><label>Имя${isAgent?' (пусто = имя агента)':''}</label><input class="om-name" value="${esc((m&&m.name)||'')}" placeholder="${isAgent?'':'Никита Хрупин'}"></div>
-      <div class="field"><label>Роль/должность</label><input class="om-role" value="${esc((m&&m.role)||'')}" placeholder="Менеджер по продажам"></div></div>
-    <div class="row2"><div class="field"><label>Телефон</label><input class="om-phone" value="${esc((m&&m.phone)||'')}"></div>
+    <div class="row2"><div class="field"><label>Имя</label><input class="om-name" value="${esc((m&&m.name)||'')}" placeholder="Никита / Нетворкер Аня"></div>
+      <div class="field"><label>🔑 Аккаунт-исполнитель &nbsp;<label style="font-weight:400;font-size:12px"><input type="checkbox" class="om-acc-all"> показать все</label></label>
+        <select class="om-acc">${orgAccOptions(accId,false)}</select>
+        <div class="hint" style="margin-top:3px">по умолчанию — 🟢 живые. Галочка «показать все» покажет и 🔴 мёртвые/⚪ непроверенные.</div></div></div>
+    <div class="om-agentwrap" style="${isAgent?'':'display:none'}">
+      <div class="field"><label>Задача ИИ-роли</label><select class="om-task">${orgTaskOptions(m&&(m.task||m.agent_task))}</select></div>
+      <div class="field"><label>Промпт (характер / как ведёт диалог под задачу)</label><textarea class="om-prompt" rows="4" placeholder="Ты ведёшь нетворкинг от лица…">${esc((m&&m.prompt)||'')}</textarea></div>
+    </div>
+    <div class="om-humanwrap row2" style="${isAgent?'display:none':''}"><div class="field"><label>Телефон</label><input class="om-phone" value="${esc((m&&m.phone)||'')}"></div>
       <div class="field"><label>Email</label><input class="om-email" value="${esc((m&&m.email)||'')}"></div></div>
-    <label style="display:inline-flex;align-items:center;gap:6px;margin:4px 0 10px"><input type="checkbox" class="om-access" ${m&&m.needs_access?"checked":""}> нужен доступ в пульт (пока просто пометка на будущее)</label>
+    <label style="display:inline-flex;align-items:center;gap:6px;margin:4px 0 10px"><input type="checkbox" class="om-access" ${m&&m.needs_access?"checked":""}> нужен доступ в пульт (пометка на будущее)</label>
     <div><button class="primary om-save" data-dept="${deptId}" data-id="${id}">💾 ${m?'сохранить':'добавить'}</button> <button class="om-cancel">отмена</button> <span class="hint om-msg"></span></div>`;
 }
 function wireOrgMemberForm(wrap){
   const kindSel=wrap.querySelector(".om-kind");
-  kindSel.onchange=()=>{wrap.querySelector(".om-agentwrap").style.display=kindSel.value==="agent"?"":"none";};
+  const toggle=()=>{const ag=kindSel.value==="agent";
+    const aw=wrap.querySelector(".om-agentwrap");if(aw)aw.style.display=ag?"":"none";
+    const hw=wrap.querySelector(".om-humanwrap");if(hw)hw.style.display=ag?"none":"";};
+  kindSel.onchange=toggle;
+  const accSel=wrap.querySelector(".om-acc"), accAll=wrap.querySelector(".om-acc-all");
+  accAll.onchange=()=>{const cur=accSel.value;accSel.innerHTML=orgAccOptions(cur,accAll.checked);};
   wrap.querySelector(".om-cancel").onclick=()=>{wrap.style.display="none";wrap.innerHTML="";};
   wrap.querySelector(".om-save").onclick=async()=>{
-    const btn=wrap.querySelector(".om-save");
+    const btn=wrap.querySelector(".om-save"), ag=kindSel.value==="agent";
+    const gv=s=>{const el=wrap.querySelector(s);return el?el.value:null;};
+    const deptSel=wrap.querySelector(".om-dept");   // в таблице отдел выбирается тут, в схеме — фиксирован
     const body={
-      id:btn.dataset.id||null, department_id:+btn.dataset.dept,
-      kind:kindSel.value,
-      name:wrap.querySelector(".om-name").value,
-      role:wrap.querySelector(".om-role").value,
-      phone:wrap.querySelector(".om-phone").value,
-      email:wrap.querySelector(".om-email").value,
+      id:btn.dataset.id||null, department_id:deptSel?+deptSel.value:+btn.dataset.dept, kind:kindSel.value,
+      name:gv(".om-name"), role:gv(".om-role"), account_id:accSel.value||null,
+      task:ag?(gv(".om-task")||null):null, prompt:ag?(gv(".om-prompt")||null):null,
+      phone:ag?null:gv(".om-phone"), email:ag?null:gv(".om-email"),
       needs_access:wrap.querySelector(".om-access").checked,
-      ai_agent_id:kindSel.value==="agent"?(wrap.querySelector(".om-agent").value||null):null,
     };
     const r=await api("/api/org/member",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(r.error){wrap.querySelector(".om-msg").textContent=r.error;return;}
@@ -1222,11 +1400,13 @@ function wireOrgMemberForm(wrap){
 }
 function orgMemberChip(m){
   const ic=m.kind==='agent'?'🤖':'👤';
-  const sub=[m.role, m.kind==='agent'?(AI_TASKS[m.agent_task]||''):null].filter(Boolean).join(" · ");
-  return `<div class="card" data-id="${m.id}" style="padding:8px 10px;min-width:170px">
-    <div style="font-weight:600">${ic} ${esc(m.name||'без имени')}</div>
+  const sub=[m.role, m.kind==='agent'?(AI_TASKS[m.task||m.agent_task]||''):null].filter(Boolean).join(" · ");
+  const acc=m.account_id?`<div class="hint" style="margin-top:2px">${m.account_alive===1?'🟢':(m.account_alive===0?'🔴':'⚪')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}</div>`
+    :'<div class="hint" style="margin-top:2px;color:var(--muted)">аккаунт не назначен</div>';
+  return `<div class="card" data-id="${m.id}" style="padding:8px 10px;min-width:180px">
+    <div style="font-weight:600">${ic} ${esc(m.name||m.role||'без имени')}</div>
     ${sub?`<div class="hint">${esc(sub)}</div>`:""}
-    ${m.phone?`<div class="hint">${esc(m.phone)}</div>`:""}
+    ${acc}
     ${m.needs_access?'<span class="badge b-active" style="margin-top:4px;display:inline-block">🔑 нужен доступ</span>':''}
     <div class="ttoolbar" style="margin:6px 0 0"><button class="om-edit" data-id="${m.id}">✏️</button><button class="om-del" data-id="${m.id}">🗑</button></div>
   </div>`;
@@ -1287,7 +1467,7 @@ async function renderOrgChartTab(body,agents){
     if(!wrap)return;
     const show=wrap.style.display==="none";
     wrap.style.display=show?"block":"none";
-    if(show){wrap.innerHTML=orgMemberFormHtml(b.dataset.id,agents,null);wireOrgMemberForm(wrap);}
+    if(show){wrap.innerHTML=orgMemberFormHtml(b.dataset.id,null);wireOrgMemberForm(wrap);}
   });
   treeEl.querySelectorAll(".om-edit").forEach(b=>b.onclick=()=>{
     const mid=b.dataset.id;
@@ -1296,7 +1476,7 @@ async function renderOrgChartTab(body,agents){
     if(!member)return;
     const wrap=treeEl.querySelector(`.od-mform[data-id="${deptId}"]`);
     if(!wrap)return;
-    wrap.style.display="block";wrap.innerHTML=orgMemberFormHtml(deptId,agents,member);
+    wrap.style.display="block";wrap.innerHTML=orgMemberFormHtml(deptId,member);
     wireOrgMemberForm(wrap);
     wrap.scrollIntoView({behavior:"smooth",block:"center"});
   });
@@ -1306,22 +1486,45 @@ async function renderOrgChartTab(body,agents){
     renderOrgBody();
   });
 }
+function orgDeptField(depts,selId){
+  return `<div class="field"><label>Отдел</label><select class="om-dept">${depts.map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?'selected':''}>${esc(d.name)}</option>`).join("")}</select></div>`;
+}
 async function renderOrgMembers(body){
-  const items=await api("/api/org/members");
-  body.innerHTML=`<table><thead><tr>
-      <th></th><th>Имя</th><th>Роль</th><th>Отдел</th><th>Телефон</th><th>Email</th><th>Доступ</th><th></th>
+  const [items,tree]=await Promise.all([api("/api/org/members"),api("/api/org/tree")]);
+  const depts=(tree.departments||[]);
+  const accCell=m=>m.account_id?`${m.account_alive===1?'🟢':(m.account_alive===0?'🔴':'⚪')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
+  body.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div style="font-weight:700;margin-bottom:8px">➕ Новая должность</div>
+      ${depts.length?`<div id="om-addform"></div>`:'<div class="hint">Сначала создай отдел на вкладке «🏛️ Схема» (кнопка вверху).</div>'}
+    </div>
+    <table><thead><tr>
+      <th></th><th>Имя / должность</th><th>Роль</th><th>Отдел</th><th>🔑 Аккаунт</th><th>Задача</th><th></th>
     </tr></thead><tbody>${items.length?items.map(m=>`<tr data-id="${m.id}">
       <td>${m.kind==='agent'?'🤖':'👤'}</td>
       <td>${esc(m.name||'—')}</td>
       <td>${esc(m.role||'—')}</td>
       <td>${esc(m.department_name||'—')}</td>
-      <td>${esc(m.phone||'—')}</td>
-      <td>${esc(m.email||'—')}</td>
-      <td>${m.needs_access?'🔑 да':'—'}</td>
-      <td><button class="omt-del" data-id="${m.id}">🗑</button></td>
-    </tr>`).join(""):'<tr><td colspan="8" class="empty">Сотрудников нет — добавь на вкладке «Схема».</td></tr>'}</tbody></table>`;
+      <td>${accCell(m)}</td>
+      <td class="sub">${m.kind==='agent'?esc(AI_TASKS[m.task||m.agent_task]||m.task||'—'):'—'}</td>
+      <td><button class="omt-edit" data-id="${m.id}">✏️</button> <button class="omt-del" data-id="${m.id}">🗑</button></td>
+    </tr>`).join(""):'<tr><td colspan="7" class="empty">Должностей нет — добавь формой выше.</td></tr>'}</tbody></table>
+    <div id="om-editform"></div>`;
+  if(depts.length){
+    const af=$("#om-addform");
+    af.innerHTML=orgDeptField(depts,depts[0].id)+orgMemberFormHtml(depts[0].id,null);
+    wireOrgMemberForm(af);
+    const cancel=af.querySelector(".om-cancel");if(cancel)cancel.style.display="none";  // в add-режиме отмена не нужна
+  }
+  body.querySelectorAll(".omt-edit").forEach(b=>b.onclick=()=>{
+    const m=items.find(x=>String(x.id)===String(b.dataset.id));if(!m)return;
+    const ef=$("#om-editform");
+    ef.innerHTML=`<div class="card" style="margin-top:12px;background:var(--panel2)"><div style="font-weight:700;margin-bottom:8px">✏️ Редактировать: ${esc(m.name||m.role||'должность')}</div><div class="om-editwrap">${orgDeptField(depts,m.department_id)+orgMemberFormHtml(m.department_id,m)}</div></div>`;
+    wireOrgMemberForm(ef.querySelector(".om-editwrap"));
+    ef.scrollIntoView({behavior:"smooth",block:"center"});
+  });
   body.querySelectorAll(".omt-del").forEach(b=>b.onclick=async()=>{
-    if(!confirm("Удалить сотрудника?"))return;
+    if(!confirm("Удалить должность?"))return;
     await api(`/api/org/member/${b.dataset.id}/delete`,{method:"POST"});
     renderOrgBody();
   });
@@ -1626,6 +1829,11 @@ async function openAgent(id){
   const roleOpts=Object.entries(ROLE_RU).filter(([k])=>k).map(([k,v])=>`<option value="${k}" ${k===a.role?"selected":""}>${esc(v)}</option>`).join("");
   const stOpts=Object.entries(ACC_ST).map(([k,v])=>`<option value="${k}" ${k===a.status?"selected":""}>${esc(v)}</option>`).join("");
   const kindOpts=`<option value="">— не задан —</option>`+Object.entries(ACC_KIND).map(([k,v])=>`<option value="${k}" ${k===a.kind?"selected":""}>${esc(v)}</option>`).join("");
+  // Отчёт прогрева: прогревался ли СЕГОДНЯ + что именно делал (по событиям warm_run).
+  const warmedToday=isToday(a.last_warm_at), warmRuns=(a.warm_runs||[]);
+  const warmReport=`<div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px">
+    <div style="font-weight:600;color:${warmedToday?'var(--green)':'var(--muted)'}">${warmedToday?'🟢 Сегодня прогревался':'⚪ Сегодня не прогревался'}${a.last_warm_at?` · последний раз ${rel(a.last_warm_at)}`:' · ещё ни разу'} · стадия ${a.warm_stage||0}/14</div>
+    ${warmRuns.length?warmRuns.map(w=>`<div class="hint" style="margin-top:3px">• ${esc(w.text)} <span style="opacity:.65">(${rel(w.ts)})</span></div>`).join(''):'<div class="hint" style="margin-top:3px">отчётов пока нет — запусти «Прогреть сейчас», и здесь появится, что аккаунт делал</div>'}</div>`;
   $("#dr-body").innerHTML=`
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px">
       ${ava}
@@ -1653,6 +1861,7 @@ async function openAgent(id){
       <div class="hint" style="margin-top:4px">«Найти бесплатный» проверит публичные SOCKS5 на доступ к Telegram и подставит живой (для теста; для боя — платный мобильный).</div>
       <pre id="ag-proxy-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🔥 Прогрев</label>
+      ${warmReport}
       <div class="hint" style="margin-bottom:6px">Нужно: статус «прогрев» + TG✓ (подключён) + рабочий прокси. Один заход = одна стадия (всего ~14).</div>
       <button id="ag-warm-now">🔥 Прогреть сейчас (с логом)</button>
       <pre id="ag-warm-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:240px;overflow:auto;font-size:12px"></pre></div>
@@ -1825,6 +2034,31 @@ async function loadCoverage(){
 const CHAT_VERDICT={"годен":"✅ годен","не годен":"🚫 не годен","на проверку":"🤔 на проверку","мёртвый":"💀 мёртвый"};
 const CHAT_VERDICT_CLS={"годен":"active","не годен":"stop","на проверку":"nurture","мёртвый":"stop"};
 let CC_SCAN_TIMER=null;
+let CC_TABLE=null;                     // ручка таблицы чатов — обновлять без пересборки страницы
+let CC_FILTER={fav:false,good:false,canwrite:false,notrash:false};  // быстрые чипы-фильтры
+
+// Тихо обновить данные чатов и перерисовать ТОЛЬКО таблицу — без route(), чтобы страница
+// не прыгала под пользователем (частая жалоба: скан заканчивался и сбрасывал прокрутку/фильтр).
+async function ccRefreshInPlace(){
+  let fresh;try{fresh=await api("/api/chatcat");}catch(e){return;}
+  CHATCAT.length=0;CHATCAT.push(...fresh);   // мутируем НА МЕСТЕ — smartTable держит ссылку на этот массив
+  if(CC_TABLE)CC_TABLE.redraw();
+  ccRenderVerdictSummary();
+}
+
+// Быстрые чипы-фильтры над таблицей чатов: избранные / годные / могу писать / без мусора.
+function ccFilterWire(){
+  const paint=()=>document.querySelectorAll(".ccf").forEach(b=>{
+    const on=CC_FILTER[b.dataset.f];
+    b.style.background=on?"var(--accent)":"";b.style.color=on?"#fff":"";b.style.fontWeight=on?"600":"";});
+  const apply=()=>{if(CC_TABLE)CC_TABLE.redraw();paint();
+    const h=$("#ccf-hint");if(h){const on=Object.keys(CC_FILTER).filter(k=>CC_FILTER[k]);
+      h.textContent=on.length?`показаны только: ${on.map(k=>({fav:"⭐избранные",good:"✅годные",canwrite:"✍️могу писать",notrash:"без мусора"}[k])).join(" + ")}`
+        :"кликай — фильтры складываются. Звёздочку ставь в таблице, первый столбец.";}};
+  document.querySelectorAll(".ccf").forEach(b=>b.onclick=()=>{CC_FILTER[b.dataset.f]=!CC_FILTER[b.dataset.f];apply();});
+  const clr=$("#ccf-clear");if(clr)clr.onclick=()=>{Object.keys(CC_FILTER).forEach(k=>CC_FILTER[k]=false);apply();};
+  paint();
+}
 
 // Сводка «сколько чего» над таблицей — видно на глаз, что каталог ещё не разобран.
 function ccRenderVerdictSummary(){
@@ -1851,9 +2085,13 @@ function ccScanPoll(){
     if(!p||!p.total){el().textContent="";return;}
     const pct=Math.round((p.done||0)/p.total*100);
     const tail=`✅ ${p.ok||0} · 💀 мёртвых ${p.dead||0} · ⚠ сбоев ${p.err||0}`;
-    if(p.running){el().innerHTML=`<b>${p.done||0}/${p.total}</b> (${pct}%) — ${tail} · идёт…`;}
-    else{el().innerHTML=`<span style="color:var(--green)">готово: ${p.done||0}/${p.total} — ${tail}</span>`;
-      clearInterval(CC_SCAN_TIMER);setTimeout(route,800);}
+    // Пока идёт — трогаем ТОЛЬКО строку прогресса (мелкий текст), таблицу не дёргаем,
+    // чтобы можно было спокойно читать. Обновим её один раз, когда скан закончится.
+    if(p.running){el().innerHTML=`<b>${p.done||0}/${p.total}</b> (${pct}%) — ${tail} · идёт… `
+        +`<button id="cc-scan-peek" style="font-size:11px;padding:1px 6px">подтянуть сейчас</button>`;
+      const pk=$("#cc-scan-peek");if(pk)pk.onclick=ccRefreshInPlace;}
+    else{el().innerHTML=`<span style="color:var(--green)">✅ готово: ${p.done||0}/${p.total} — ${tail}</span>`;
+      clearInterval(CC_SCAN_TIMER);ccRefreshInPlace();}
   },3000);
 }
 
@@ -1929,10 +2167,21 @@ async function viewChatCatalog(v){
       <button id="cv-clear" title="Снять вердикт">✖ Снять вердикт</button>
       <span class="hint" id="cv-msg">Вердикт — это ТВОЁ решение, отдельно от статуса робота. ИИ ставит предварительный (🤖), твой всегда главнее и не перетирается.</span></div>
     <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
+    <div class="card" style="margin:0 0 10px;background:var(--panel2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px">
+      <b style="font-size:13px">Показать:</b>
+      <button class="ccf" data-f="fav" title="только помеченные ⭐ (звёздочка в первой колонке)">⭐ Избранные</button>
+      <button class="ccf" data-f="good" title="вердикт «годен» — ты или ИИ отметили как хороший">✅ Годные</button>
+      <button class="ccf" data-f="canwrite" title="можно писать (мы внутри и не заблокированы)">✍️ Могу писать</button>
+      <button class="ccf" data-f="notrash" title="спрятать мёртвые и «не годен»">🙈 Без мусора</button>
+      <span style="width:1px;height:18px;background:var(--border)"></span>
+      <button id="ccf-clear" title="сбросить быстрые фильтры">✖ Сброс</button>
+      <span class="hint" id="ccf-hint">кликай — фильтры складываются (⭐ + ✅ = избранные И годные). Звёздочку ставь в таблице, первый столбец.</span>
+    </div>
     <div id="cc-body"></div>`;
   loadCoverage();
   ccScanWire();
   ccRenderVerdictSummary();
+  ccFilterWire();
   // «и сразу вступить» — общий для поиска / bio-скана / похожих
   const ccJoin=()=>$("#cc-join-now")&&$("#cc-join-now").checked?+($("#cc-join-per").value||2):0;
   const joinNote=s=>{const j=s&&s.join;if(!j)return"";
@@ -2011,9 +2260,15 @@ async function viewChatCatalog(v){
   const selChat=new Set();
   let ccFiltered=CHATCAT.slice();
   const updCvCnt=()=>{const c=$("#cv-cnt");if(c)c.textContent=selChat.size;};
-  smartTable($("#cc-body"),{
+  CC_TABLE=smartTable($("#cc-body"),{
     tableKey:"chatcat",
     rows:CHATCAT,searchKeys:["title","username","topic","city","kind","can_write"],
+    prefilter:r=>{
+      if(CC_FILTER.fav && !r.favorite)return false;
+      if(CC_FILTER.good && r.verdict!=='годен')return false;
+      if(CC_FILTER.canwrite && r.can_write!=='да')return false;
+      if(CC_FILTER.notrash && (r.verdict==='мёртвый'||r.verdict==='не годен'))return false;
+      return true;},
     onDraw:rows=>{ccFiltered=rows;},
     groupOptions:[{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
     groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):k==="verdict"?(CHAT_VERDICT[val]||"без вердикта"):val,
@@ -3161,7 +3416,9 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,aiagents:viewAiAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
+// #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
+if(location.hash==="#aiagents")location.hash="orgchart";
 
 let NAV_COLLAPSE={};try{NAV_COLLAPSE=JSON.parse(localStorage.getItem("axiom_nav_collapse")||"{}");}catch(e){}
 let NAV_ORDER=null;try{NAV_ORDER=JSON.parse(localStorage.getItem("axiom_nav_order")||"null");}catch(e){}
@@ -3500,7 +3757,7 @@ async function route(){
   const id=(location.hash||"#dashboard").slice(1);
   const nav=NAV.find(n=>n.id===id)||NAV[0];
   renderNav(nav.id);$("#title").textContent=nav.label;
-  const v=$("#view");v.innerHTML='<div class="sub">Загрузка…</div>';
+  const v=$("#view");v.innerHTML='<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:70%"></div></div>';
   try{await (VIEWS[nav.id]||viewDashboard)(v);}catch(e){v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`;}
   $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
   refreshNotif();

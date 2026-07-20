@@ -488,6 +488,7 @@ function smartTable(mount,cfg){
       <label class="hint" style="display:inline-flex;align-items:center;gap:4px">на странице
         <select id="st-ps">${[10,20,50,100].map(n=>`<option value="${n}" ${n===st.pageSize?"selected":""}>${n}</option>`).join("")}</select></label>
       <span class="hint" id="st-cnt"></span>
+      <button id="st-csv" title="CSV текущей таблицы" style="font-size:11px">CSV</button>
     </div>
     <div id="st-pick" class="card" style="display:none;margin-bottom:10px"></div>
     <div id="st-tbl"></div>
@@ -570,6 +571,23 @@ function smartTable(mount,cfg){
     bindTags(wrap);
   };
   wrap.querySelector("#st-q").oninput=e=>{st.q=e.target.value;st.page=0;draw();};
+  wrap.querySelector("#st-csv").onclick=()=>{
+    const cols=visCols();
+    let rows=cfg.rows.slice();
+    if(cfg.prefilter)rows=rows.filter(cfg.prefilter);
+    if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
+    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(!fv)return;
+      const c=colByKey(k);rows=rows.filter(r=>cellText(r,c).toLowerCase().includes(fv)||String(r[k]??"").toLowerCase().includes(fv));});
+    const sep="\t";
+    const hdr=cols.map(c=>c.label).join(sep);
+    const bdy=rows.map(r=>cols.map(c=>{
+      const v=c.render?cellText(r,c):String(r[c.key]??"");
+      return v.includes(sep)||v.includes('"')?'"'+v.replace(/"/g,'""')+'"':v;
+    }).join(sep)).join("\n");
+    const blob=new Blob(["﻿"+hdr+"\n"+bdy],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+    a.download=(cfg.tableKey||"export")+".csv";a.click();URL.revokeObjectURL(a.href);
+  };
   if(cfg.groupOptions)wrap.querySelector("#st-g").onchange=e=>{st.group=e.target.value;st.page=0;draw();};
   wrap.querySelector("#st-cols").onclick=()=>{st.showPicker=!st.showPicker;drawPicker();};
   wrap.querySelector("#st-filt").onclick=()=>{st.showFilters=!st.showFilters;draw();};
@@ -3329,6 +3347,8 @@ async function viewProxy(v){
     <div class="ttoolbar" style="margin:0">
       <input id="px-all" class="grow" placeholder="socks5://user:pass@host:port — применить сразу ко всем">
       <button id="px-all-btn">Применить ко всем</button>
+      <span style="width:1px;height:20px;background:var(--border)"></span>
+      <button id="px-proxy6">🛒 Купить Proxy6</button>
     </div>
   </div>
   <div id="px-tbl"></div>`;
@@ -3379,6 +3399,14 @@ async function viewProxy(v){
     if(!confirm("Применить этот прокси ко ВСЕМ аккаунтам?"))return;
     await api("/api/accounts/proxy_all",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proxy:val})});
     route();
+  };
+  $("#px-proxy6").onclick=()=>{
+    const ids=a.filter(x=>x.phone||x.country).map(x=>x.id);
+    showProxy6BuyDialog(ids,async(body,okMsg)=>{
+      const r=await api("/api/accounts/bulk",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,...body})});
+      if(r.error){alert(r.error);return;}
+      alert(okMsg(r));route();
+    });
   };
 }
 

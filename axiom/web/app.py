@@ -1196,9 +1196,16 @@ def _proxy_scheduler() -> None:
                     database.set_setting(conn, "proxy_last_run_ts", str(time.time()))
                     database.set_setting(conn, "proxy_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
                 res = subprocess.run([sys.executable, "-m", "channels.proxy_pool", "--refresh"],
-                                     cwd=str(BASE_DIR.parent), timeout=300, env=env,
+                                     cwd=str(BASE_DIR.parent), timeout=600, env=env,
                                      capture_output=True, text=True, encoding="utf-8", errors="replace")
                 _log_run("proxy_scheduler", res)
+                # после обновления — подлечить прокси прогреваемых аккаунтов
+                try:
+                    subprocess.run([sys.executable, "-m", "channels.proxy_pool", "--heal"],
+                                   cwd=str(BASE_DIR.parent), timeout=600, env=env,
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as e:  # noqa: BLE001
             print(f"[proxy scheduler] {e}")
         # --- авто-прогрев (одна ступень по расписанию) ---

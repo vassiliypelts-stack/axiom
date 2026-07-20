@@ -1,0 +1,144 @@
+<h2>🏛️ Оргструктура — прототип схемы</h2>
+<p class="subtitle">Как это будет выглядеть в AXIOM: визуальное дерево, отделы, сотрудники, пул ресурсов</p>
+
+<style>
+/* Орг-дерево */
+.org-tree{display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px 0;position:relative}
+.org-levels{display:flex;gap:28px;justify-content:center;flex-wrap:wrap;width:100%}
+
+/* Карточки сотрудника */
+.m-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:8px;min-width:170px}
+.m-card:hover{border-color:var(--accent);box-shadow:0 0 0 2px rgba(91,108,255,.15)}
+.m-card .ic{font-size:18px;width:22px;text-align:center}
+.m-card .content{flex:1}
+.m-card .name{font-weight:600;font-size:13px}
+.m-card .role{font-size:11px;color:var(--muted)}
+.m-card .acc-tag{font-size:10px;background:var(--bg);padding:1px 6px;border-radius:3px;margin-left:4px;color:var(--muted)}
+.m-card .type-badge{font-size:10px;padding:1px 7px;border-radius:4px;font-weight:500}
+.m-card .type-badge.human{background:rgba(75,192,120,.15);color:#4bc078}
+.m-card .type-badge.agent{background:rgba(91,108,255,.15);color:#5b6cff}
+
+/* Заголовок отдела */
+.dept{display:flex;flex-direction:column;align-items:center;gap:6px}
+.dept::before{content:'';width:2px;height:10px;background:var(--border)}
+.dept-header{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-weight:700;font-size:12px;text-align:center;width:100%;box-sizing:border-box}
+.dept-header .desc{font-weight:400;font-size:10px;color:var(--muted)}
+.dept-members{display:flex;flex-direction:column;gap:5px;width:100%}
+
+/* Root */
+.org-root{text-align:center;margin-bottom:4px}
+.org-root .root-card{background:linear-gradient(135deg,#5b6cff,#7c5cff);color:#fff;padding:10px 24px;border-radius:10px;font-weight:700;font-size:14px;display:inline-block}
+.org-root .root-sub{color:var(--muted);font-size:11px;margin-top:2px}
+
+/* Пул ресурсов */
+.pool{margin-top:20px;padding:14px;border:1px dashed var(--border);border-radius:10px;background:var(--panel2)}
+.pool-title{font-size:13px;font-weight:600;margin-bottom:8px}
+.pool-grid{display:flex;flex-wrap:wrap;gap:5px}
+.pool-chip{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:11px;display:flex;align-items:center;gap:4px}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.dot.green{background:#4bc078}
+.dot.yellow{background:#ffc832}
+.dot.red{background:#ff5c5c}
+</style>
+
+<div style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap">
+  <button class="mock-button">➕ Отдел</button>
+  <button class="mock-button">➕ Сотрудника</button>
+  <button class="mock-button">🔄 Синхр.</button>
+  <button class="mock-button">👥 Таблица</button>
+</div>
+
+<div class="org-tree">
+  <div class="org-root">
+    <div class="root-card">🧑‍💼 Василий — CEO</div>
+    <div class="root-sub">Основатель AXIOM</div>
+  </div>
+
+  <div class="org-levels">
+    <!-- Отдел 1 -->
+    <div class="dept">
+      <div class="dept-header">📞 Продажи<div class="desc">Сочи / Краснодар</div></div>
+      <div class="dept-members">
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">👤</span>
+          <div class="content"><div class="name">Анна <span class="acc-tag">+7 988 *** **12</span></div><div class="role">Руководитель продаж</div></div>
+          <span class="type-badge human">живой</span>
+        </div>
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">🤖</span>
+          <div class="content"><div class="name">Нетворкер Сочи <span class="acc-tag">@agent_smm</span></div><div class="role">ИИ-прогрев</div></div>
+          <span class="type-badge agent">ИИ</span>
+        </div>
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">👤</span>
+          <div class="content"><div class="name">Михаил</div><div class="role">Менеджер продаж</div></div>
+          <span class="type-badge human">живой</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Отдел 2 -->
+    <div class="dept">
+      <div class="dept-header">🌐 Нетворкинг<div class="desc">ТГ-каналы / парсинг</div></div>
+      <div class="dept-members">
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">🤖</span>
+          <div class="content"><div class="name">Парсер ТГ <span class="acc-tag">+7 999 *** **45</span></div><div class="role">Сбор ЦА</div></div>
+          <span class="type-badge agent">ИИ</span>
+        </div>
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">🤖</span>
+          <div class="content"><div class="name">Тёплый обзвон <span class="acc-tag">+7 999 *** **67</span></div><div class="role">Дожим</div></div>
+          <span class="type-badge agent">ИИ</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Отдел 3 -->
+    <div class="dept">
+      <div class="dept-header">🔥 Тёплые контакты<div class="desc">Дожим / созвоны</div></div>
+      <div class="dept-members">
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">👤</span>
+          <div class="content"><div class="name">Мария</div><div class="role">Лид-менеджер</div></div>
+          <span class="type-badge human">живой</span>
+        </div>
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">🤖</span>
+          <div class="content"><div class="name">Напоминалка <span class="acc-tag">@reminder_bot</span></div><div class="role">Авто-напоминания</div></div>
+          <span class="type-badge agent">ИИ</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Отдел 4 -->
+    <div class="dept">
+      <div class="dept-header">⚙️ Админ<div class="desc">Инфраструктура</div></div>
+      <div class="dept-members">
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">👤</span>
+          <div class="content"><div class="name">Денис</div><div class="role">DevOps</div></div>
+          <span class="type-badge human">живой</span>
+        </div>
+        <div class="m-card" onclick="toggleSelect(this)">
+          <span class="ic">🤖</span>
+          <div class="content"><div class="name">Мониторинг <span class="acc-tag">@monitor_bot</span></div><div class="role">Проверка здоровья</div></div>
+          <span class="type-badge agent">ИИ</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="pool">
+  <div class="pool-title">📦 Ресурсы (авто-импорт из раздела «Ресурсы»)</div>
+  <div class="pool-grid">
+    <span class="pool-chip"><span class="dot green"></span> +7 988 *** **12 → привязан к Анне</span>
+    <span class="pool-chip"><span class="dot green"></span> @agent_smm → привязан к Нетворкеру</span>
+    <span class="pool-chip"><span class="dot green"></span> +7 999 *** **45 → привязан к Парсеру</span>
+    <span class="pool-chip"><span class="dot green"></span> +7 999 *** **67 → привязан к Обзвону</span>
+    <span class="pool-chip"><span class="dot yellow"></span> +7 999 *** **90 → непривязан</span>
+    <span class="pool-chip"><span class="dot yellow"></span> @backup_bot → непривязан</span>
+  </div>
+  <p style="font-size:11px;color:var(--muted);margin:8px 0 0">🔄 Аккаунты из Ресурсов подтягиваются автоматически. Непривязанные можно назначить на должность кликом.</p>
+</div>

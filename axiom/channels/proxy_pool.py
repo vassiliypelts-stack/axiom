@@ -1,12 +1,20 @@
-"""Пул бесплатных MTProto-прокси для AXIOM (времянка).
+"""Пул бесплатных MTProto-прокси для AXIOM.
 
-Собирает свежие MTProto-прокси из публичных TG-каналов, проверяет TCP-пингом,
-держит 8-10 живых, раздаёт аккаунтам прокси с минимальным пингом, выкидывает
-дохлые и добирает свежие, если живых осталось мало.
+Собирает свежие MTProto-прокси из публичных TG-каналов, проверяет их
+РЕАЛЬНЫМ подключением через Telethon (не просто TCP-пинг — а live-тест:
+создаёт клиента, логинится, выходит), держит пул только реально работающих,
+раздаёт аккаунтам с минимальным пингом.
 
-⚠️ Бесплатные публичные прокси нестабильны и не идеальны для прогретых
-аккаунтов (общий IP, оператор видит метаданные). На боевую — платные (proxy6).
-MTProto-прокси работают ТОЛЬКО для Telegram (WhatsApp нужен SOCKS5).
+Фильтрует faketls (секреты ee...) на этапе сбора — Telethon их не тянет,
+хранить и проверять бессмысленно. Алгоритм:
+  1) Собрать прокси из каналов-доноров
+  2) Отсеять faketls (заведомо несовместимые с Telethon)
+  3) Быстрый TCP-пинг всех (отсеять мёртвые сервера)
+  4) TCP-alive → реальный тест через Telethon (connect + get_me)
+  5) Статус 'alive' ставят только те, кто прошёл Telethon-тест
+  6) Раздать аккаунтам лучшие (мин. пинг среди Telethon-живых)
+
+Авто-обновление (раз в сутки): см. планировщик в веб-пульте.
 
 Запуск:
     python -m channels.proxy_pool --refresh          # собрать+проверить+раздать
@@ -20,17 +28,33 @@ import re
 import time
 from urllib.parse import parse_qs, urlparse
 
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
+
 from db import database
 
 # Каналы-источники (можно дополнять).
-PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto"]
-TARGET_ALIVE = 10          # сколько живых держим в пуле
+PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "MTProxy"]
+TARGET_ALIVE = 10          # сколько реально живых держим в пуле
 MIN_ALIVE_BEFORE_REFILL = 2
-PING_TIMEOUT = 4.0
+PING_TIMEOUT = 4.0         # TCP-пинг: таймаут на коннект (сек)
+TELETHON_TEST_TIMEOUT = 8.0  # Telethon-тест: таймаут на всю попытку (сек)
+
+
+def _is_telethon_compatible(secret: str) -> bool:
+    """Telethon поддерживает только «чистый» (32 hex) или «секьюрный» dd-секрет
+    (dd+32 hex). Faketls (ee…) и битые — не поддерживает. Проверка по той же
+    логике, что parse_mtproxy в telegram.py."""
+    s = secret.lower().strip()
+    is_hex = all(c in "0123456789abcdef" for c in s)
+    return bool(is_hex and (len(s) == 32 or (s.startswith("dd") and len(s) == 34)))
 
 
 def parse_proxies_from_text(text: str | None) -> list[tuple[str, int, str]]:
-    """Достаёт (server, port, secret) из строки/текста с tg://proxy / t.me/proxy ссылками."""
+    """Достаёт (server, port, secret) из текста с tg://proxy / t.me/proxy ссылками.
+    Фильтрует faketls (секреты ee...) — Telethon их не поддерживает,
+    хранить и проверять бессмысленно."""
     out: list[tuple[str, int, str]] = []
     if not text:
         return out
@@ -40,6 +64,8 @@ def parse_proxies_from_text(text: str | None) -> list[tuple[str, int, str]]:
         port = (q.get("port") or [None])[0]
         secret = (q.get("secret") or [None])[0]
         if server and port and secret:
+            if not _is_telethon_compatible(secret):
+                continue  # ee... и битые — Telethon не умеет, не храним
             try:
                 out.append((server, int(port), secret))
             except ValueError:
@@ -80,8 +106,9 @@ async def harvest(client, per_channel: int = 80) -> list[tuple[str, int, str]]:
     return list(found)
 
 
-async def ping(server: str, port: int) -> int | None:
-    """TCP-пинг до сервера в мс (или None, если недоступен)."""
+async def ping_tcp(server: str, port: int) -> int | None:
+    """Быстрый TCP-пинг (сек). Отсеивает откровенно мёртвые сервера ДО
+    дорогого Telethon-теста. Возвращает пинг в мс или None, если недоступен."""
     t0 = time.monotonic()
     try:
         fut = asyncio.open_connection(server, port)
@@ -93,6 +120,42 @@ async def ping(server: str, port: int) -> int | None:
             pass
         return int((time.monotonic() - t0) * 1000)
     except Exception:  # noqa: BLE001
+        return None
+
+
+async def telethon_test(server: str, port: int, secret: str,
+                        api_id: int, api_hash: str) -> int | None:
+    """РЕАЛЬНАЯ проверка прокси: создаёт Telethon-клиента с этим прокси,
+    логинится (get_me), выходит. Если прокси реально работает с Telethon —
+    возвращает пинг (мс). Если нет — None.
+
+    Дороже TCP-пинга (~3-8 сек на прокси), зато даёт 100% гарантию."""
+    from channels.telegram import parse_mtproxy
+    proxy_link = _mt_link(server, port, secret)
+    mt = parse_mtproxy(proxy_link)
+    if not mt:
+        return None  # faketls/битый — telethon не потянет
+    t0 = time.monotonic()
+    try:
+        client = TelegramClient(
+            StringSession(), api_id, api_hash,
+            connection=ConnectionTcpMTProxyRandomizedIntermediate,
+            proxy=mt,
+        )
+        await asyncio.wait_for(client.connect(), timeout=TELETHON_TEST_TIMEOUT)
+        if not await client.is_user_authorized():
+            # Прокси работает (коннект есть), но сессия пустая — это ок,
+            # нас интересует что коннект через прокси состоялся.
+            await client.disconnect()
+            return int((time.monotonic() - t0) * 1000)
+        # Даже если есть авторизация — не шлём get_me, disconnect и ок
+        await client.disconnect()
+        return int((time.monotonic() - t0) * 1000)
+    except Exception:  # noqa: BLE001
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
 
@@ -110,34 +173,84 @@ def _mt_link(server: str, port: int, secret: str) -> str:
 
 
 async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None) -> dict:
+    import config
     from channels.telegram import _build_client
     database.init_db()
     client = _build_client()
     await client.start()
 
-    # 1) собрать свежие
+    # 1) собрать свежие (уже отфильтрованы от faketls на этапе parse)
     fresh = await harvest(client)
     await client.disconnect()
     with database.get_conn() as conn:
         _store_harvested(conn, fresh, "+".join("@" + c for c in PROXY_CHANNELS))
+        # Тестируем ВСЕ прокси в БД (и новые, и старые — вдруг ожили)
         rows = conn.execute("SELECT id, server, port, secret FROM proxies").fetchall()
 
-    # 2) пропинговать всё (живых сортируем по пингу)
-    results = await asyncio.gather(*[ping(r["server"], r["port"]) for r in rows])
+    if not rows:
+        print("[refresh] в БД нет прокси — нечего проверять")
+        return {"alive": 0, "harvested": len(fresh), "assigned": 0}
+
+    # 2) БЫСТРЫЙ TCP-пинг всех прокси — отсеять мёртвые сервера (дёшево)
+    tcp_results = await asyncio.gather(*[ping_tcp(r["server"], r["port"]) for r in rows])
+
+    # 3) TELEITHON-ТЕСТ: только те, кто прошёл TCP-пинг И совместим с Telethon
+    telethon_candidates = []
+    telethon_indices = []
+    for i, r in enumerate(rows):
+        if tcp_results[i] is not None and _is_telethon_compatible(r["secret"]):
+            telethon_candidates.append(r)
+            telethon_indices.append(i)
+
+    api_id = int(config.TG_API_ID)
+    api_hash = config.TG_API_HASH
+
+    if telethon_candidates:
+        print(f"[refresh] Telethon-тест: {len(telethon_candidates)} кандидатов...")
+        tl_results = await asyncio.gather(*[
+            telethon_test(r["server"], r["port"], r["secret"], api_id, api_hash)
+            for r in telethon_candidates
+        ])
+    else:
+        tl_results = []
+
+    # 4) Записать статусы в БД
+    tl_idx = 0
     alive = 0
     with database.get_conn() as conn:
-        for r, ms in zip(rows, results):
-            if ms is None:
-                conn.execute("UPDATE proxies SET status='dead', ping_ms=NULL, checked_at=datetime('now') WHERE id=?", (r["id"],))
+        for i, r in enumerate(rows):
+            if i in telethon_indices:
+                tl_ping = tl_results[tl_idx]
+                tl_idx += 1
+                if tl_ping is not None:
+                    conn.execute(
+                        "UPDATE proxies SET status='alive', ping_ms=?, checked_at=datetime('now') WHERE id=?",
+                        (tl_ping, r["id"]),
+                    )
+                    alive += 1
+                else:
+                    conn.execute(
+                        "UPDATE proxies SET status='dead', ping_ms=NULL, checked_at=datetime('now') WHERE id=?",
+                        (r["id"],),
+                    )
+            elif tcp_results[i] is not None:
+                # TCP жив, но faketls — не совместим, помечаем dead
+                conn.execute(
+                    "UPDATE proxies SET status='dead', ping_ms=?, checked_at=datetime('now') WHERE id=?",
+                    (tcp_results[i], r["id"]),
+                )
             else:
-                alive += 1
-                conn.execute("UPDATE proxies SET status='alive', ping_ms=?, checked_at=datetime('now') WHERE id=?", (ms, r["id"]))
-        # подчистить дохлых сверх запаса (оставим последние, чтобы не пухло)
+                conn.execute(
+                    "UPDATE proxies SET status='dead', ping_ms=NULL, checked_at=datetime('now') WHERE id=?",
+                    (r["id"],),
+                )
+        # подчистить дохлых сверх запаса
         conn.execute(
             "DELETE FROM proxies WHERE status='dead' AND id NOT IN "
             "(SELECT id FROM proxies WHERE status='dead' ORDER BY added_at DESC LIMIT 20)"
         )
-    print(f"[refresh] живых прокси: {alive}")
+
+    print(f"[refresh] Telethon-совместимых живых: {alive} из {len(rows)}")
     assigned = assign(ids=ids)
     return {"alive": alive, "harvested": len(fresh), "assigned": assigned}
 
@@ -214,27 +327,25 @@ def _usable(px: str | None) -> bool:
     return parse_proxy_str(px) is not None
 
 
-async def _ping_or_none(hp: tuple[str, int] | None) -> int | None:
-    return await ping(hp[0], hp[1]) if hp else None
-
-
 async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
-    """САМО-ЛЕЧЕНИЕ прокси прогреваемых аккаунтов (бесплатно, пока греются).
+    """САМО-ЛЕЧЕНИЕ прокси прогреваемых аккаунтов.
 
-    Для каждого подходящего аккаунта (по умолчанию — статус 'warming', с сессией,
-    НЕ родной): пингует его текущий прокси. Живой и рабочий → помечает proxy_alive=1.
-    Мёртвый/мусорный/непроверяемый → подставляет живой telethon-совместимый прокси
-    из бесплатного пула (round-robin по мин. пингу). Если в пуле пусто — чистит
-    мусор и ставит proxy_alive=0, чтобы прогрев не коннектился через битый IP.
+    Для каждого подходящего аккаунта: проверяет его текущий прокси РЕАЛЬНЫМ
+    Telethon-подключением. Живой → proxy_alive=1. Мёртвый → подставляет живой
+    из пула (Telethon-проверенный). Если пула нет — чистит и ставит proxy_alive=0.
     Возвращает {checked, alive_kept, healed, no_pool}."""
-    from channels.telegram import parse_mtproxy
+    import config
     database.init_db()
+    api_id = int(config.TG_API_ID)
+    api_hash = config.TG_API_HASH
+
     with database.get_conn() as conn:
-        live = conn.execute(
+        # Пул Telethon-живых прокси для подстановки
+        pool = conn.execute(
             "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
         ).fetchall()
-        live = [(p["server"], p["port"], p["secret"]) for p in live
-                if parse_mtproxy(_mt_link(p["server"], p["port"], p["secret"]))]
+        pool = [(p["server"], p["port"], p["secret"]) for p in pool]
+
         where = "tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0"
         if warming_only:
             where += " AND status='warming'"
@@ -243,40 +354,77 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
             qm = ",".join("?" * len(ids))
             where += f" AND id IN ({qm})"
             params.extend(ids)
-        accs = [(a["id"], a["proxy"] or "") for a in
-                conn.execute(f"SELECT id, proxy FROM accounts WHERE {where}", params).fetchall()]
+        accs_raw = conn.execute(
+            f"SELECT id, label, proxy FROM accounts WHERE {where}", params
+        ).fetchall()
+        accs = [(a["id"], a["label"] or f"#{a['id']}", a["proxy"] or "") for a in accs_raw]
 
-    # пингуем текущие прокси всех аккаунтов разом
-    pings = await asyncio.gather(*[_ping_or_none(_hostport(px)) for _, px in accs])
+    if not accs:
+        print("[heal] нет аккаунтов для проверки")
+        return {"checked": 0, "alive_kept": 0, "healed": 0, "no_pool": 0}
+
+    # Telethon-тест текущих прокси аккаунтов
+    print(f"[heal] проверяю {len(accs)} аккаунтов через Telethon...")
+    results = await asyncio.gather(*[
+        _test_account_proxy(aid, label, px, api_id, api_hash)
+        for aid, label, px in accs
+    ])
 
     alive_kept = healed = no_pool = 0
     rr = 0
     with database.get_conn() as conn:
-        for (aid, px), ms in zip(accs, pings):
-            good = _usable(px) and ms is not None
-            if good:
+        for (aid, label, px), ok in zip(accs, results):
+            if ok:
                 conn.execute(
                     "UPDATE accounts SET proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
                     (aid,),
                 )
                 alive_kept += 1
-            elif live:
-                s, p, sec = live[rr % len(live)]
+                print(f"  [{label}] прокси жив")
+            elif pool:
+                s, p, sec = pool[rr % len(pool)]
                 rr += 1
                 conn.execute(
                     "UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
                     (_mt_link(s, p, sec), aid),
                 )
                 healed += 1
+                print(f"  [{label}] прокси мёртв → заменён на {s}:{p}")
             else:
-                # пула нет — чистим битый прокси и глушим (прогрев пропустит, не пойдёт напрямую)
                 conn.execute(
                     "UPDATE accounts SET proxy=NULL, proxy_alive=0, proxy_checked_at=datetime('now') WHERE id=?",
                     (aid,),
                 )
                 no_pool += 1
-    print(f"[heal] проверено:{len(accs)} живых-оставлено:{alive_kept} подставлено-бесплатных:{healed} без-пула:{no_pool}")
+                print(f"  [{label}] прокси мёртв, пула нет — очищен")
+    print(f"[heal] проверено:{len(accs)} живых-оставлено:{alive_kept} подставлено:{healed} без-пула:{no_pool}")
     return {"checked": len(accs), "alive_kept": alive_kept, "healed": healed, "no_pool": no_pool}
+
+
+async def _test_account_proxy(aid: int, label: str, proxy_raw: str,
+                               api_id: int, api_hash: str) -> bool:
+    """Проверить прокси аккаунта через Telethon. True — работает."""
+    if not proxy_raw:
+        return False
+    from channels.telegram import parse_mtproxy
+    mt = parse_mtproxy(proxy_raw)
+    if not mt:
+        return False  # faketls/несовместимый
+    try:
+        client = TelegramClient(
+            StringSession(), api_id, api_hash,
+            connection=ConnectionTcpMTProxyRandomizedIntermediate,
+            proxy=mt,
+        )
+        await asyncio.wait_for(client.connect(), timeout=TELETHON_TEST_TIMEOUT)
+        await client.disconnect()
+        return True
+    except Exception:  # noqa: BLE001
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
 
 def main() -> None:

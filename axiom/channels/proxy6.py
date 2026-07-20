@@ -19,9 +19,9 @@ import urllib.request
 
 import config
 
-# Официальный домен API (не proxy6.net!) — см. https://proxy6.net/ru/developers.
-# Формат: https://px6.link/api/{ключ}/{метод}/?{параметры}
-BASE = "https://px6.link/api"
+# Официальный домен API — см. https://px6.net/ru/developers
+# Формат: https://px6.net/api/{ключ}/{метод}/?{параметры}
+BASE = "https://px6.net/api"
 
 # «Тип прокси» в терминах Proxy6 — это version (IP-версия/технология), а не протокол
 # (протокол http/socks — отдельный параметр type, для нас всегда socks, см. buy()).

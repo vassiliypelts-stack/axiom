@@ -212,28 +212,40 @@ def sms_countries() -> JSONResponse:
 
 @app.post("/api/sms/register")
 def sms_register(payload: dict = Body(default={})) -> JSONResponse:
-    """Купить номера через hero-sms и создать аккаунты в БД.
-    ТРАТИТ ДЕНЬГИ: get_number() за каждый номер — реальная покупка."""
+    """Купить номера через hero-sms + опционально прокси через Proxy6 + создать аккаунты.
+    ТРАТИТ ДЕНЬГИ: get_number() + proxy6.buy() за каждый номер."""
     from channels.phone_register import buy_and_save
     from channels.sms_hero import SmsHeroError
 
     country = payload.get("country")
     qty = int(payload.get("qty") or 1)
     label = (payload.get("label") or "").strip()
+    proxy_period = int(payload.get("proxy_period") or 0)
+    proxy_version = int(payload.get("proxy_version") or 4)
 
     if not country:
         return JSONResponse({"ok": False, "error": "выбери страну"}, status_code=400)
     if qty < 1 or qty > 10:
         return JSONResponse({"ok": False, "error": "от 1 до 10 номеров за раз"}, status_code=400)
+    if proxy_period and proxy_period < 7:
+        return JSONResponse({"ok": False, "error": "прокси минимум на 7 дней"}, status_code=400)
 
     try:
-        created = buy_and_save(int(country), qty, label)
+        created = buy_and_save(int(country), qty, label, proxy_period, proxy_version)
     except SmsHeroError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+    proxy_note = ""
+    if proxy_period:
+        with_proxy = sum(1 for a in created if a.get("proxy"))
+        if with_proxy:
+            proxy_note = f" + {with_proxy} прокси на {proxy_period} дн"
+        if with_proxy < len(created):
+            proxy_note += f" (без прокси: {len(created) - with_proxy} — проверь PROXY6_API_KEY и страну)"
+
     return JSONResponse({
         "ok": True,
-        "msg": f"Куплено {len(created)} номеров. Аккаунты созданы (status=warming). Подключи их через 🔌 Подключить.",
+        "msg": f"Куплено {len(created)} номеров{proxy_note}. Подключи через 🔌 Подключить.",
         "accounts": created,
     })
 

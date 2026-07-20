@@ -1153,34 +1153,42 @@ const PROXY6_VERSIONS=[
   [6,"IPv6 — самый дешёвый, не все сервисы принимают"],
   [5,"MTProto — для Telegram MTProxy, не для этого сценария"],
 ];
-// Саморегистрация TG-номера через hero-sms. Read-only витрина: баланс + выбор страны
-// с ценой/наличием. Сама регистрация (getNumber) тратит деньги — за отдельной кнопкой
-// с подтверждением. ТЗ: axiom/ТЗ_саморегистрация_TG_hero-sms.md.
+// Саморегистрация TG-номера через hero-sms + Proxy6 прокси.
 async function showSmsRegisterDialog(){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;padding:20px;max-height:88vh;overflow:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">Зарегистрировать номер (hero-sms)</b><button class="sm-close">✕</button></div>
-    <div class="sub" style="margin-bottom:10px">Свежий TG-номер: номер и 2FA под нашим контролем с нулевой секунды. Тратит деньги только по кнопке «Зарегистрировать». Свежак идёт СРАЗУ на прогрев, не в рассылку.</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">➕ Купить номер + прокси</b><button class="sm-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">Покупается свежий TG-номер (hero-sms) + SOCKS5-прокси той же страны (Proxy6) на N дней. Всё под контролем с нуля.</div>
     <div id="sm-bal" class="sub" style="margin-bottom:10px">загружаю баланс и страны…</div>
-    <div class="field"><label>Страна</label><select id="sm-country" style="width:100%" disabled><option>…</option></select></div>
+    <div class="field"><label>Страна номера</label><select id="sm-country" style="width:100%" disabled><option>…</option></select></div>
     <div class="field"><label>Сколько номеров</label><input id="sm-qty" type="number" min="1" max="10" value="1" style="width:100%"></div>
+    <div class="field"><label>Прокси SOCKS5</label>
+      <select id="sm-proxy" style="width:100%">
+        <option value="0">— без прокси (назначу позже) —</option>
+        <option value="7" selected>Купить на 7 дней (рекомендую для старта)</option>
+        <option value="14">Купить на 14 дней</option>
+        <option value="30">Купить на 30 дней</option>
+      </select>
+      <div class="hint" style="margin-top:4px">Резидентный SOCKS5 той же страны, что номер. Если PROXY6_API_KEY не задан — покупается только номер.</div></div>
     <div id="sm-est" class="sub" style="margin:8px 0"></div>
-    <div class="ttoolbar" style="justify-content:flex-end;margin-top:12px"><button class="sm-close">Отмена</button><button class="primary" id="sm-go" disabled>Зарегистрировать</button></div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:12px"><button class="sm-close">Отмена</button><button class="primary" id="sm-go" disabled>Купить</button></div>
     <div id="sm-msg" style="margin-top:8px;font-size:13px"></div></div>`;
   document.body.appendChild(modal);
   const close=()=>modal.remove();
   modal.querySelectorAll(".sm-close").forEach(b=>b.onclick=close);
   modal.onclick=e=>{if(e.target===modal)close();};
   const sel=modal.querySelector("#sm-country"), est=modal.querySelector("#sm-est"),
-        qty=modal.querySelector("#sm-qty"), go=modal.querySelector("#sm-go");
+        qty=modal.querySelector("#sm-qty"), go=modal.querySelector("#sm-go"),
+        proxySel=modal.querySelector("#sm-proxy");
   let bal=0, CS=[];
   const recalc=()=>{
     const c=CS.find(x=>x.code==sel.value); if(!c)return;
     const n=Math.max(1,+qty.value||1), sum=(c.cost*n);
     const enough=sum<=bal;
-    est.innerHTML=`Итого ≈ <b>$${sum.toFixed(2)}</b> за ${n} шт (по $${c.cost} · в наличии ${c.count}). `+
-      (enough?`<span style="color:var(--green)">баланса хватает ($${bal.toFixed(2)})</span>`
+    est.innerHTML=`Номер: <b>$${sum.toFixed(2)}</b> за ${n} шт (по $${c.cost})`+
+      (proxySel.value>0?` + прокси <b>~$${(2*n).toFixed(2)}</b> (по ~$2, точная цена при покупке)`:'')+
+      `. `+(enough?`<span style="color:var(--green)">баланса хватает ($${bal.toFixed(2)})</span>`
              :`<span style="color:#c0392b">не хватает баланса: $${bal.toFixed(2)}</span>`);
     go.disabled=!enough||!c.count;
   };
@@ -1192,20 +1200,22 @@ async function showSmsRegisterDialog(){
     const avail=CS.filter(c=>c.count>0);
     sel.innerHTML=avail.map(c=>`<option value="${c.code}">${esc(c.label)} — $${c.cost} (в наличии ${c.count})</option>`).join("");
     sel.disabled=false;
-    sel.onchange=recalc; qty.oninput=recalc; recalc();
+    sel.onchange=recalc; qty.oninput=recalc; proxySel.onchange=recalc; recalc();
   }catch(e){modal.querySelector("#sm-bal").innerHTML='<span style="color:#c0392b">ошибка загрузки: '+esc(e.message)+'</span>';}
   go.onclick=async()=>{
     const c=CS.find(x=>x.code==sel.value); if(!c)return;
     const n=Math.max(1,+qty.value||1);
-    if(!confirm(`Купить ${n} номер(ов) в стране «${c.label}» за ≈ $${(c.cost*n).toFixed(2)}?\n\nЭто СПИШЕТ деньги с баланса hero-sms и создаст аккаунты status=warming. Их надо будет подключить через 🔌 Подключить.`))return;
+    const pp=+proxySel.value;
+    const ppNote=pp?` + прокси ${pp} дн`:"";
+    if(!confirm(`Купить ${n} номер(ов) в «${c.label}» за ~$${(c.cost*n).toFixed(2)}${ppNote}?\n\nСПИШЕТ деньги с hero-sms${pp?" + Proxy6":""}.`))return;
     go.disabled=true; go.textContent="покупаю…";
-    const r=await api("/api/sms/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({country:c.code,qty:n})});
+    const r=await api("/api/sms/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({country:c.code,qty:n,proxy_period:pp})});
     if(r&&r.ok){
       modal.querySelector("#sm-msg").innerHTML=`<span style="color:var(--green)">✅ ${esc(r.msg||"куплено")}</span>`;
       setTimeout(()=>{close();route();},2000);
     } else {
       modal.querySelector("#sm-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не удалось")+'</span>';
-      go.disabled=false; go.textContent="Зарегистрировать";
+      go.disabled=false; go.textContent="Купить";
     }
   };
 }

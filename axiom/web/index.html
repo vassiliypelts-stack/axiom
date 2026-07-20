@@ -129,6 +129,7 @@
   @media(pointer:coarse){button,.btn{min-height:44px;padding:12px 18px;}}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px;}
   .node,:any-link{cursor:pointer;}
+  .a-fill{font-size:11px;padding:4px 10px}
   input,select,textarea{background:var(--panel);color:var(--text);border:1px solid var(--border);
     padding:10px 12px;border-radius:9px;font-size:13px;outline:none;font-family:inherit;transition:border-color .12s,box-shadow .12s;}
   input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
@@ -420,6 +421,9 @@ const NAV_GROUPS=[
     {id:"orgchart",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="6" height="5" rx="1"/><rect x="12" y="2" width="6" height="5" rx="1"/><rect x="7" y="13" width="6" height="5" rx="1"/><line x1="5" y1="7" x2="10" y2="13"/><line x1="15" y1="7" x2="10" y2="13"/></svg>',label:"Структура"},
     {id:"calendar",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="16" height="14" rx="2"/><line x1="2" y1="8" x2="18" y2="8"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="14" y1="1" x2="14" y2="5"/></svg>',label:"Календарь"},
   ]},
+  {title:"Проекты",collapsible:true,items:[
+    {id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"},
+  ]},
   {title:"CRM",collapsible:true,items:[
     {id:"leads",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="5"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Лиды (квал)"},
     {id:"deals",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="16" height="12" rx="2"/><path d="M7 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>',label:"Сделки"},
@@ -440,7 +444,7 @@ const NAV_GROUPS=[
   ]},
 ];
 // «ИИ-агенты» слиты в «Структуру»: должность сама несёт аккаунт/задачу/промпт.
-const NAV=NAV_GROUPS.flatMap(g=>g.items).concat([{id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"}]);
+const NAV=NAV_GROUPS.flatMap(g=>g.items);
 let STATE={contacts:[],stats:null};
 let PROJECT_SEL=null; // выбранный проект (фильтрует кампании)
 
@@ -779,6 +783,9 @@ async function viewAgents(v){
         <select id="a-status"><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
         <input id="a-limit" type="number" value="15" title="лимит/день" style="max-width:90px">
         <button class="primary" id="a-add">Добавить аккаунт</button>
+        <span style="width:1px;height:18px;background:var(--border);margin:0 4px"></span>
+        <span class="hint">быстро:</span>
+        <button class="a-fill" data-phones="+77027417272,+79881678180,+79137876067">📋 3 номера</button>
       </div></div>
     <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">Проверить аккаунты (@SpamBot)</button>
       <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
@@ -843,6 +850,15 @@ async function viewAgents(v){
     const r=await api("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(r.error){alert(r.error);return;}route();
   };
+  let _fillIdx=0;
+  document.querySelectorAll(".a-fill").forEach(b=>b.onclick=()=>{
+    const phones=b.dataset.phones.split(",");
+    if(_fillIdx>=phones.length)_fillIdx=0;
+    $("#a-phone").value=phones[_fillIdx];
+    $("#a-label").value="";
+    $("#a-label").focus();
+    _fillIdx++;
+  });
   // ── автопрогрев: глобальные настройки + запуск всех в фоне ──
   api("/api/warmup/settings").then(s=>{const c=$("#wa-auto"),i=$("#wa-int"),m=$("#wa-msg");
     if(c)c.checked=!!s.auto; if(i)i.value=s.interval_h||24;

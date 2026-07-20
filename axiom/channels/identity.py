@@ -24,8 +24,26 @@ from channels.ru_names import make_label, sample_unique
 from db import database
 
 
+def _take_bio_pool() -> list[str]:
+    """Одноразовый пул bio, выбранный оператором в превью (настройка bio_pool_pending).
+    Забираем и сразу очищаем — чтобы следующая упаковка без выбора шла как обычно."""
+    import json
+    with database.get_conn() as conn:
+        raw = database.get_setting(conn, "bio_pool_pending", "") or ""
+        if raw:
+            database.set_setting(conn, "bio_pool_pending", "")
+    try:
+        pool = [b.strip() for b in json.loads(raw) if isinstance(b, str) and b.strip()] if raw else []
+    except Exception:  # noqa: BLE001
+        pool = []
+    random.shuffle(pool)   # чтобы порядок раздачи не совпадал с порядком аккаунтов
+    return pool
+
+
 async def run(ids: list[int], bio_style: str) -> None:
     database.init_db()
+    bio_pool = _take_bio_pool()   # если оператор выбрал варианты в превью — берём их
+    pool_i = 0
     # само-лечение прокси перед пушем в Telegram: иначе логин идёт через мёртвый
     # прокси и валится «Server closed the connection» — оформление молча не
     # применяется (имя/био/фото не записываются). Сбой лечения не рушит пакет.
@@ -51,8 +69,12 @@ async def run(ids: list[int], bio_style: str) -> None:
             if (acc.get("tg_name") or "").strip():
                 name = acc["tg_name"].strip()
             label = make_label(name, acc.get("phone"))
-            # bio: держим существующее; генерим только если пусто ИЛИ задан новый стиль (канва)
-            if bio_style or not (acc.get("description") or "").strip():
+            # bio: приоритет — выбранный оператором пул (каждому свой, по кругу);
+            # иначе держим существующее; иначе генерим по стилю (или из резервного пула)
+            if bio_pool:
+                bio = bio_pool[pool_i % len(bio_pool)]
+                pool_i += 1
+            elif bio_style or not (acc.get("description") or "").strip():
                 bio = generate_bio(role=acc.get("role"), label=name, description=bio_style or None)
             else:
                 bio = acc["description"]

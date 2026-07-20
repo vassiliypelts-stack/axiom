@@ -160,8 +160,12 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
     if force:
         try:
             me = await client.get_me()
-            if not (me.username or "").strip():
-                from channels.ru_names import make_username_base
+            from channels.ru_names import make_username_base, translit
+            cur = (me.username or "").strip().lower()
+            want = (translit((full_name or "").split()[0]) or "").lower() if full_name else ""
+            # Ставим/МЕНЯЕМ ник, если его нет ИЛИ он не отражает имя персоны (напр. ник
+            # от продавца «xk_9271» при имени «Василий»). Имя и ник должны совпадать.
+            if want and (not cur or want not in cur):
                 from telethon.tl.functions.account import CheckUsernameRequest, UpdateUsernameRequest
                 base = make_username_base(full_name, acc.get("phone"))
                 candidate = None
@@ -175,10 +179,12 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
                             break
                     except Exception:  # noqa: BLE001 — занят/невалиден — пробуем следующий вариант
                         continue
-                if candidate:
+                if candidate and candidate.lower() != cur:
                     await client(UpdateUsernameRequest(username=candidate))
                     done.append(f"ник @{candidate}")
                     print(f"  профиль: поставил ник @{candidate}")
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE accounts SET username=? WHERE id=?", (candidate, acc["id"]))
         except Exception as e:  # noqa: BLE001
             print(f"  [username] {e}")
     # био из описания агента
@@ -199,6 +205,19 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
             from pathlib import Path
             p = Path(config.DB_PATH).parent / "avatars" / acc["avatar"]
             if p.exists():
+                # При force СНАЧАЛА сносим ВСЕ старые фото — иначе на аккаунте копится
+                # мешанина из разных людей (Telegram добавляет новое поверх старых, а
+                # не заменяет). Должно остаться ровно одно согласованное лицо.
+                if force:
+                    try:
+                        old = await client.get_profile_photos("me")
+                        if old:
+                            from telethon.tl.functions.photos import DeletePhotosRequest
+                            await client(DeletePhotosRequest(id=list(old)))
+                            done.append(f"снял старых фото ({len(old)})")
+                            print(f"  профиль: удалил {len(old)} старых фото")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  [avatar/del] {e}")
                 existing = await client.get_profile_photos("me", limit=1)
                 if force or not existing:
                     from telethon.tl.functions.photos import UploadProfilePhotoRequest
@@ -358,23 +377,27 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
     if stage == 0:
         await _setup_profile(client, acc)
 
+    # Считаем, что реально сделали — для отчёта в карточке аккаунта («что делал сегодня»).
+    joined = reads = reacts = stories = sent_total = 0
+
     # 2) вступаем в каналы (по плану, по чуть-чуть)
     for ch in random.sample(CHANNELS, min(plan["channels"], len(CHANNELS))):
         try:
             await client(JoinChannelRequest(ch))
+            joined += 1
             print(f"  вступил в @{ch}")
         except Exception as e:  # noqa: BLE001
             print(f"  [канал @{ch}] {e}")
         await asyncio.sleep(random.uniform(5, 15))
 
     # 3) читаем ленту (прокрутил, прочитал последние сообщения)
-    await _read_feed(client, plan.get("read", 8))
+    reads = await _read_feed(client, plan.get("read", 8))
 
     # 4) лайкаем посты (реакции в каналах/группах)
-    await _react_feed(client, plan.get("react", 0))
+    reacts = await _react_feed(client, plan.get("react", 0))
 
     # 4b) смотрим сторис из ленты (ещё живее)
-    await _view_stories(client, plan.get("react", 1))
+    stories = await _view_stories(client, plan.get("react", 1))
 
     # 5) лёгкая переписка со «своими» (якоря + другие прогреваемые) — только если по плану есть ЛС
     targets = [a for a in anchors] + [p for p in peers if p["id"] != acc["id"]]
@@ -391,7 +414,9 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
         except Exception as e:  # noqa: BLE001
             print(f"  [цель {peer}] {e}")
             continue
-        left -= await _send_chatter(client, ent, 1, label=peer)
+        s = await _send_chatter(client, ent, 1, label=peer)
+        left -= s
+        sent_total += s
 
     # 6) опционально: вплести немного реальной ЦА (анти-бан, выкл по умолчанию)
     if ca_mix and stage >= 5:
@@ -399,14 +424,26 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
 
     new_stage = stage + 1
     activate = new_stage >= READY_STAGE
+    who = acc.get("label") or acc.get("phone") or f"#{acc['id']}"
+    # Человекочитаемый отчёт «что сделал за прогон» — его показывает карточка аккаунта,
+    # чтобы было видно: прогрев реально работал, а не «нажал кнопку и тишина».
+    parts = []
+    if joined:      parts.append(f"вступил в {joined} канал(а)")
+    if reads:       parts.append(f"прочитал ленту ({reads})")
+    if reacts:      parts.append(f"лайкнул {reacts}")
+    if stories:     parts.append(f"глянул {stories} сторис")
+    if sent_total:  parts.append(f"написал {sent_total} сообщ.")
+    summary = ", ".join(parts) if parts else "зашёл онлайн (без активных действий в этот раз)"
     with database.get_conn() as conn:
         database.bump_warm(conn, acc["id"], new_stage, activate=activate)
+        database.add_event(conn, "warm_run", f"🔥 Прогрев: {who}",
+                           f"стадия {stage}→{new_stage}: {summary}",
+                           level="info", account_id=acc["id"])
         if activate:
-            who = acc.get("label") or acc.get("phone") or f"#{acc['id']}"
             database.add_event(conn, "warm_ready", f"🌡 Аккаунт прогрет: {who}",
                                "переведён в «активен» — можно ставить в рассылку",
                                level="good", account_id=acc["id"])
-    print(f"  стадия → {new_stage}{' · ГОТОВ (active)' if activate else ''}")
+    print(f"  стадия → {new_stage} · {summary}{' · ГОТОВ (active)' if activate else ''}")
     await client.disconnect()
 
 

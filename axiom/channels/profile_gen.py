@@ -61,3 +61,51 @@ def generate_bio(role: str | None = None, label: str | None = None,
         return text[:70] if text else _fallback(role)
     except Exception:  # noqa: BLE001 — фича не должна падать из-за сети/ключа
         return _fallback(role)
+
+
+def generate_bio_variants(brief: str | None, count: int = 6, link: str | None = None,
+                          gender: str | None = None) -> list[str]:
+    """N РАЗНЫХ вариантов bio под бриф оператора — для превью в пульте (оператор
+    выбирает удачные до упаковки). Одним запросом к модели (дёшево). Пусто/ошибка —
+    отдаём резервный пул, чтобы кнопка всегда что-то показывала.
+    link — если задан, дописывается к каждому варианту (напр. ссылка на канал)."""
+    count = max(1, min(count, 12))
+    brief = (brief or "").strip()
+    link = (link or "").strip()
+    # запас под ссылку: если она есть, сам текст режем короче, чтобы влезть в 70
+    body_limit = 70 - (len(link) + 1) if link else 70
+    body_limit = max(20, body_limit)
+
+    if not llm.available(config.AGENT_MODEL):
+        base = _FALLBACK[""]
+        out = [(v[:body_limit] + (" " + link if link else "")) for v in base]
+        return (out * ((count // len(out)) + 1))[:count]
+    try:
+        g = "" if not gender else (", мужчина" if gender == "male" else ", женщина")
+        text = llm.text(
+            config.AGENT_MODEL,
+            system=(
+                f"Ты пишешь КОРОТКИЕ человеческие bio для Telegram-профиля, строго до {body_limit} "
+                "символов КАЖДОЕ. Живая обычная фраза от первого лица, по-русски, разговорно. "
+                "БЕЗ хэштегов, БЕЗ канцелярита, без признаков ИИ, без кавычек. Вербуй доверие "
+                "естественностью, не рекламой. Верни РОВНО "
+                f"{count} РАЗНЫХ вариантов, каждый с новой строки, без нумерации и пояснений."
+            ),
+            messages=[{"role": "user", "content":
+                       f"Бриф/легенда аккаунта{g}: {brief or 'обычный живой человек'}.\n"
+                       f"Дай {count} разных bio."}],
+            max_tokens=400, timeout=30.0,
+        )
+        lines = [l.strip().strip('"«»-–•').strip() for l in (text or "").splitlines()]
+        lines = [l[:body_limit] for l in lines if l and len(l) > 2]
+        # дедуп с сохранением порядка
+        seen: set[str] = set()
+        uniq = [l for l in lines if not (l.lower() in seen or seen.add(l.lower()))]
+        if not uniq:
+            uniq = _FALLBACK[""][:]
+        if link:
+            uniq = [f"{l} {link}" for l in uniq]
+        return uniq[:count]
+    except Exception:  # noqa: BLE001
+        base = _FALLBACK[""]
+        return [(v + (" " + link if link else "")) for v in base][:count]

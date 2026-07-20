@@ -143,7 +143,15 @@ def _seed_accounts(conn) -> None:
 # --------------------------------------------------------------------------- #
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(INDEX_HTML)
+    # no-cache: пульт — один файл, который часто правится. Без этого браузер держит
+    # СТАРЫЙ index.html из кэша и крутит старый скрипт (жалоба: «страница сама
+    # перезагружается каждые ~20с» — это был авто-рефреш из давно удалённой версии,
+    # живший в кэше). Заставляем браузер каждый раз брать свежую версию.
+    return FileResponse(INDEX_HTML, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 # ---- Дашборд -------------------------------------------------------------- #
@@ -184,6 +192,41 @@ def stats() -> JSONResponse:
                       "hits_new": hits_new, "msg_out": msg_out, "msg_in": msg_in},
         "tasks": {"meetings": meetings, "upcoming": upcoming},
     })
+
+
+@app.get("/api/sms/countries")
+def sms_countries() -> JSONResponse:
+    """hero-sms: баланс + страны с ценой/наличием для tg. READ-ONLY, денег не тратит —
+    нужно, чтобы в UI выбрать страну перед регистрацией. Ключ наружу не отдаём."""
+    from channels.sms_hero import SmsHeroError, balance, countries
+    try:
+        bal = balance()
+        cs = countries("tg")
+        # средняя цена в наличии — прикинуть, на сколько номеров хватит баланса
+        avail = [c for c in cs if c["count"] > 0]
+        return JSONResponse({"ok": True, "balance": bal, "countries": cs,
+                             "available": len(avail)})
+    except SmsHeroError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@app.post("/api/sms/register")
+def sms_register(payload: dict = Body(default={})) -> JSONResponse:
+    """Саморегистрация номера через hero-sms — ПЛАТНЫЙ шаг (getNumber резервирует номер
+    и списывает деньги). Пока НЕ включён: реальная регистрация свежего TG-номера требует
+    гео-совпадающего мобильного/резидентного прокси (наш пул — бесплатный MTProto, его
+    Telegram часто отклоняет для регистрации), а также согласованной страны. Поэтому
+    эндпоинт денег НЕ тратит — возвращает, что нужно решить, чтобы не спалить баланс/номер
+    впустую. Реализация регистрации — channels/phone_register.py (следующий этап ТЗ)."""
+    country = payload.get("country")
+    qty = int(payload.get("qty") or 1)
+    return JSONResponse({
+        "ok": False,
+        "error": (f"Регистрация ещё не включена (Этап 2 ТЗ). Витрина/выбор страны работают, "
+                  f"но реальная покупка номера требует: 1) гео-прокси под страну (наш пул — "
+                  f"MTProto, для рег-ции Telegram ненадёжен); 2) твоего подтверждения страны "
+                  f"(выбрано: {country}, кол-во: {qty}). Денег не потратил."),
+    }, status_code=400)
 
 
 @app.get("/api/proxy6/whoami")
@@ -272,6 +315,19 @@ def bio_styles() -> JSONResponse:
                 "AND TRIM(description)<>'' ORDER BY id DESC LIMIT 5")
         ]
     return JSONResponse({"ok": True, "history": _bio_style_history(), "samples": samples})
+
+
+@app.post("/api/accounts/bio_variants")
+def bio_variants(payload: dict = Body(default={})) -> JSONResponse:
+    """Генератор вариантов bio для превью в диалоге «Оформить»: оператор задаёт бриф,
+    видит N вариантов, отмечает удачные — они уйдут пулом в упаковку (каждому свой)."""
+    from channels.profile_gen import generate_bio_variants
+    brief = (payload.get("brief") or "").strip()
+    link = (payload.get("link") or "").strip()
+    count = max(1, min(int(payload.get("count") or 6), 12))
+    gender = (payload.get("gender") or "").strip() or None
+    variants = generate_bio_variants(brief, count=count, link=link or None, gender=gender)
+    return JSONResponse({"ok": True, "variants": variants})
 
 
 @app.get("/api/accounts")
@@ -382,16 +438,47 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"ok": True, "checking": len(ids)})
     if action == "identity":
         bio_style = (payload.get("bio_style") or "").strip()
+        # выбранные оператором в превью варианты bio (пул) — каждому аккаунту достаётся
+        # СВОЙ из пула (без повторов пока хватает), чтобы не было одинаковых профилей.
+        bios = [b.strip() for b in (payload.get("bios") or []) if isinstance(b, str) and b.strip()]
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
                                 "AND tg_session IS NOT NULL AND tg_session<>''", ids).fetchall()
-        queued = [r["id"] for r in rows]
+            queued = [r["id"] for r in rows]
+            # пул кладём в настройку — identity его заберёт и очистит (одноразово)
+            database.set_setting(conn, "bio_pool_pending",
+                                 json.dumps(bios, ensure_ascii=False) if bios else "")
+            # заменить фото на новое из пула лиц: чистим avatar → ensure_avatar подберёт
+            # новое (пул лиц в приоритете) и снесёт старые фото в Telegram
+            if payload.get("refresh_photo") and queued:
+                conn.execute(f"UPDATE accounts SET avatar=NULL WHERE id IN "
+                             f"({','.join('?' * len(queued))})", queued)
         skipped = len(ids) - len(queued)
         if queued and bio_style:
             _bio_style_remember(bio_style)
         if queued:
             _spawn("channels.identity", "--ids", ",".join(str(i) for i in queued), "--bio-style", bio_style)
-        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped,
+                             "bio_pool": len(bios)})
+    if action == "protect":
+        # 2FA (сразу) + смена номера на свой (если аккаунту 24+ч и 2FA уже стоит) —
+        # см. channels/account_protect.py. Деньги за смену номера тратятся только у
+        # готовых кандидатов, модуль сам решает, кому ещё рано (fresh-лок Telegram).
+        country = payload.get("country")
+        country = int(country) if country not in (None, "") else None
+        with database.get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM accounts WHERE id IN ({qm}) AND session_alive=1 "
+                "AND tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0", ids).fetchall()
+        queued = [r["id"] for r in rows]
+        skipped = len(ids) - len(queued)
+        if queued:
+            args = ["channels.account_protect", "--ids", ",".join(str(i) for i in queued)]
+            if country is not None:
+                args += ["--country", str(country)]
+            _spawn(*args)
+        return JSONResponse({"ok": True, "queued": len(queued), "skipped_not_eligible": skipped,
+                             "phone_change": country is not None})
     if action == "proxy6_buy":
         import phone_geo
         period = int(payload.get("period") or 30)
@@ -514,8 +601,11 @@ def org_tree() -> JSONResponse:
     with database.get_conn() as conn:
         depts = conn.execute("SELECT * FROM departments ORDER BY sort_order, id").fetchall()
         members = conn.execute(
-            "SELECT m.*, ag.name AS agent_name, ag.task AS agent_task "
+            "SELECT m.*, ag.name AS agent_name, ag.task AS agent_task, "
+            "acc.label AS account_label, acc.username AS account_username, "
+            "acc.session_alive AS account_alive, acc.status AS account_status "
             "FROM org_members m LEFT JOIN ai_agents ag ON ag.id=m.ai_agent_id "
+            "LEFT JOIN accounts acc ON acc.id=m.account_id "
             "ORDER BY m.sort_order, m.id"
         ).fetchall()
     by_dept: dict[int, list] = {}
@@ -581,9 +671,12 @@ def org_members_list() -> JSONResponse:
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute(
-            "SELECT m.*, d.name AS department_name, ag.name AS agent_name, ag.task AS agent_task "
+            "SELECT m.*, d.name AS department_name, ag.name AS agent_name, ag.task AS agent_task, "
+            "acc.label AS account_label, acc.username AS account_username, acc.phone AS account_phone, "
+            "acc.session_alive AS account_alive, acc.status AS account_status "
             "FROM org_members m LEFT JOIN departments d ON d.id=m.department_id "
-            "LEFT JOIN ai_agents ag ON ag.id=m.ai_agent_id ORDER BY d.sort_order, m.id"
+            "LEFT JOIN ai_agents ag ON ag.id=m.ai_agent_id "
+            "LEFT JOIN accounts acc ON acc.id=m.account_id ORDER BY d.sort_order, m.id"
         ).fetchall()
     items = [dict(r) for r in rows]
     for x in items:
@@ -604,25 +697,29 @@ def org_member_save(payload: dict = Body(...)) -> JSONResponse:
     phone = (payload.get("phone") or "").strip() or None
     email = (payload.get("email") or "").strip() or None
     ai_agent_id = payload.get("ai_agent_id") or None
+    # Слияние: должность сама несёт аккаунт-исполнителя и (для ИИ) задачу/промпт.
+    account_id = payload.get("account_id") or None
+    task = (payload.get("task") or "").strip() or None
+    prompt = (payload.get("prompt") or "").strip() or None
     needs_access = 1 if payload.get("needs_access") else 0
     notes = (payload.get("notes") or "").strip() or None
-    if kind == "agent" and not ai_agent_id:
-        return JSONResponse({"error": "для виртуального сотрудника выбери ИИ-агента"}, status_code=400)
-    if kind == "human" and not name:
-        return JSONResponse({"error": "нужно имя сотрудника"}, status_code=400)
+    if not name and not role:
+        return JSONResponse({"error": "нужно имя или название должности"}, status_code=400)
     with database.get_conn() as conn:
         if mid:
             conn.execute(
                 "UPDATE org_members SET department_id=?, kind=?, name=?, role=?, phone=?, email=?, "
-                "ai_agent_id=?, needs_access=?, notes=? WHERE id=?",
-                (department_id, kind, name, role, phone, email, ai_agent_id, needs_access, notes, int(mid)),
+                "ai_agent_id=?, account_id=?, task=?, prompt=?, needs_access=?, notes=? WHERE id=?",
+                (department_id, kind, name, role, phone, email, ai_agent_id, account_id, task,
+                 prompt, needs_access, notes, int(mid)),
             )
             new_id = int(mid)
         else:
             cur = conn.execute(
                 "INSERT INTO org_members (department_id, kind, name, role, phone, email, ai_agent_id, "
-                "needs_access, notes) VALUES (?,?,?,?,?,?,?,?,?)",
-                (department_id, kind, name, role, phone, email, ai_agent_id, needs_access, notes),
+                "account_id, task, prompt, needs_access, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (department_id, kind, name, role, phone, email, ai_agent_id, account_id, task,
+                 prompt, needs_access, notes),
             )
             new_id = cur.lastrowid
     return JSONResponse({"ok": True, "id": new_id})
@@ -648,6 +745,10 @@ def account_detail(acc_id: int) -> JSONResponse:
         d["chats_count"] = conn.execute(
             "SELECT COUNT(*) c FROM chats WHERE joined_by=? AND in_account='yes'", (acc_id,)
         ).fetchone()["c"]
+        # последние отчёты прогрева — карточка показывает «что делал и когда»
+        d["warm_runs"] = [dict(r) for r in conn.execute(
+            "SELECT text, ts FROM events WHERE account_id=? AND type='warm_run' "
+            "ORDER BY id DESC LIMIT 6", (acc_id,))]
     return JSONResponse(d)
 
 

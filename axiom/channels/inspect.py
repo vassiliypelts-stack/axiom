@@ -84,10 +84,15 @@ async def dialog_messages(acc: dict, peer: int, limit: int = 40) -> dict:
             text = m.message or ("[медиа]" if m.media else "")
             if not text:
                 continue
+            # Кто писал: для исходящих — сам аккаунт; иначе имя отправителя (в группах разные).
+            snd = getattr(m, "sender", None)
+            sender = (getattr(snd, "first_name", None) or getattr(snd, "title", None)
+                      or getattr(snd, "username", None)) if snd is not None else None
             out.append({
                 "id": m.id,
                 "out": bool(m.out),
                 "text": text,
+                "sender": sender,
                 "date": m.date.isoformat() if m.date else None,
             })
         out.reverse()

@@ -176,6 +176,30 @@ def build_client(session, proxy_raw: str | None = None,
     return TelegramClient(session, aid, ahash, **kwargs)
 
 
+def client_for_account(acc_id: int | None):
+    """(клиент, acc_id) для аккаунта из БД; acc_id=None → главный аккаунт из .env.
+
+    Общий помощник: раньше каждый модуль строил клиента сам и по умолчанию лез в
+    главный аккаунт (_build_client), из-за чего массовые задачи гоняли весь трафик
+    через личный номер и рисковали поймать на него FloodWait. Через этот вход работу
+    можно раскидать по рабочим аккаунтам.
+    """
+    if acc_id is None:
+        return _build_client(), None
+    from db import database
+    with database.get_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not acc:
+        raise RuntimeError(f"аккаунт #{acc_id} не найден")
+    acc = dict(acc)
+    if not acc.get("tg_session"):
+        raise RuntimeError(f"у аккаунта #{acc_id} нет TG-сессии — подключи его (🔌 Подключить)")
+    from telethon.sessions import StringSession
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                          acc.get("api_id"), acc.get("api_hash"))
+    return client, acc_id
+
+
 def _build_client() -> TelegramClient:
     if not config.TG_API_ID or not config.TG_API_HASH:
         raise RuntimeError("Заполни TG_API_ID и TG_API_HASH в .env (получить на my.telegram.org)")

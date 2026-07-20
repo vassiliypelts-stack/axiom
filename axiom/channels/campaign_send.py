@@ -42,13 +42,17 @@ def _channels(channel: str | None) -> list[str]:
     return [c.strip() for c in (channel or "").split(",") if c.strip()]
 
 
-def _audience(tag: str | None, channel: str, cap: int):
-    """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram."""
+def _audience(tag: str | None, channel: str, cap: int, test: bool = False):
+    """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram.
+    test=True — ТОЛЬКО тестовые (is_test=1): «кнопка Тест» шлёт исключительно на свои
+    номера, боевой аудитории коснуться не может даже при большом лимите."""
     where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
     params: list = []
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
     if "telegram" in _channels(channel):
         where += " AND has_tg IN ('yes','unknown')"
+    if test:
+        where += " AND COALESCE(is_test,0)=1"
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
@@ -152,7 +156,7 @@ def _pick(live: list[dict], rr: int) -> dict | None:
     return avail[rr % len(avail)]
 
 
-async def run(cid: int, limit: int) -> None:
+async def run(cid: int, limit: int, test: bool = False) -> None:
     camp = _load_campaign(cid)
     if not camp:
         print(f"кампания #{cid} не найдена")
@@ -166,10 +170,13 @@ async def run(cid: int, limit: int) -> None:
         print("режим мультиканала: TG-достижимым шлём сейчас; WhatsApp-only контакты "
               "дождутся подключения WA-моста.")
     cap = min(limit, camp["daily_limit"] or limit)
-    rows = _audience(camp["audience_tag"], camp["channel"], cap)
+    rows = _audience(camp["audience_tag"], camp["channel"], cap, test=test)
     if not rows:
-        print("аудитория пуста — некому слать")
+        print("тест: нет тест-контактов (is_test=1) в аудитории" if test
+              else "аудитория пуста — некому слать")
         return
+    if test:
+        print(f"[ТЕСТ] шлём только на свои номера (is_test=1): {len(rows)} шт.")
     if not _parts(camp["message_template"], ""):
         print("пустой шаблон сообщения — нечего слать")
         return
@@ -200,7 +207,9 @@ async def run(cid: int, limit: int) -> None:
     skipped_warm: list[str] = []
     for s in senders:
         acc = s["acc"]
-        if acc and acc.get("status") != "active":
+        # В тест-режиме гейт прогрева НЕ применяем: тест уходит только на свои номера
+        # (is_test), бана быть не может, а проверить скрипт надо ДО окончания прогрева.
+        if not test and acc and acc.get("status") != "active":
             skipped_warm.append(f"{s['label']} ({acc.get('status')})")
             print(f"[{s['label']}] ⏳ пропуск: не прогрет (статус {acc.get('status')}). "
                   f"Холодную шлём только с 'active' — заверши прогрев или переведи в 'active' вручную.")
@@ -338,8 +347,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Отправка кампании AXIOM")
     p.add_argument("cid", type=int, help="id кампании")
     p.add_argument("--limit", type=int, default=3, help="сколько контактов взять в этот заход")
+    p.add_argument("--test", action="store_true",
+                   help="тест-режим: слать ТОЛЬКО на свои номера (is_test=1), в обход гейта прогрева")
     args = p.parse_args()
-    asyncio.run(run(args.cid, args.limit))
+    asyncio.run(run(args.cid, args.limit, test=args.test))
 
 
 if __name__ == "__main__":

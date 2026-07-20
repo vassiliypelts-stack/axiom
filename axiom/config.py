@@ -54,6 +54,13 @@ TG_SESSION = os.getenv("TG_SESSION", "axiom_session")
 TG_STRING_SESSION = os.getenv("TG_STRING_SESSION", "")
 TG_PROXY = os.getenv("TG_PROXY", "")
 
+# --- Инбокс-бот (личный): пишешь боту задачу/лида/заметку → ИИ разбирает (agent/inbox.py) ---
+INBOX_BOT_TOKEN = os.getenv("INBOX_BOT_TOKEN", "")   # токен бота от @BotFather
+INBOX_BOT_OWNER = os.getenv("INBOX_BOT_OWNER", "")   # ТВОЙ telegram user id — принимаем только от тебя
+
+# --- hero-sms.com: SMS-активация для саморегистрации TG-номеров (см. ТЗ_саморегистрация_TG_hero-sms.md) ---
+HERO_SMS_API_KEY = os.getenv("HERO_SMS_API_KEY", "")
+
 # --- Антибан ---
 DAILY_FIRST_MESSAGES = int(os.getenv("DAILY_FIRST_MESSAGES", "15"))
 

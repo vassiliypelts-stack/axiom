@@ -46,6 +46,47 @@ def _avatars_dir() -> Path:
     return d
 
 
+# Курируемый пул реальных лиц (отобраны вручную Василием, data/faces/{male,female}).
+# Приоритетнее стока/ИИ: ставим ОДНО правдоподобное лицо под пол, а не случайного из
+# Pexels. Так у аккаунта постоянное лицо, и оно заведомо годное (без водяных знаков).
+_FACES_DIR = Path(config.DB_PATH).parent / "faces"
+
+
+def _from_pool(gender: str) -> bytes | None:
+    d = _FACES_DIR / gender
+    if not d.exists():
+        return None
+    files = [p for p in d.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+    if not files:
+        return None
+    p = random.choice(files)
+    try:
+        return _crop_top_square(p.read_bytes())   # квадрат под аватар Telegram
+    except Exception:  # noqa: BLE001
+        return p.read_bytes()
+
+
+# Куратор-пул реальных лиц, отобранных вручную (data/faces/male|female). Приоритетнее
+# стока/ИИ: ставим ОДНО правдоподобное лицо, а не случайного разного человека каждый раз.
+_FACES_DIR = Path(config.DB_PATH).parent / "faces"
+
+
+def _from_pool(gender: str) -> bytes | None:
+    """Случайное лицо нужного пола из курируемого пула (или None, если пула нет)."""
+    d = _FACES_DIR / gender
+    if not d.exists():
+        return None
+    files = [p for p in d.iterdir()
+             if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+    if not files:
+        return None
+    p = random.choice(files)
+    try:
+        return _crop_top_square(p.read_bytes())   # квадрат под аватар, как у стока
+    except Exception:  # noqa: BLE001 — не JPEG/битый: отдаём как есть
+        return p.read_bytes()
+
+
 def _crop_top_square(data: bytes) -> bytes:
     """Центрированная обрезка до квадрата (без реального распознавания лица —
     жёсткий кроп от верхнего края иногда резал подбородок на некоторых фото)."""
@@ -162,7 +203,10 @@ def _from_gemini(gender: str) -> bytes | None:
 
 
 def generate_photo(gender: str) -> tuple[bytes, str] | None:
-    """Случайно сток или ИИ (какой ключ задан), с фолбэком на другой при неудаче."""
+    """Приоритет — курируемый пул лиц (data/faces); иначе сток/ИИ (какой ключ задан)."""
+    pool = _from_pool(gender)
+    if pool:
+        return pool, "пул лиц"
     sources: list[tuple[str, "callable"]] = []
     if config.PEXELS_API_KEY:
         sources.append(("сток", _from_pexels))

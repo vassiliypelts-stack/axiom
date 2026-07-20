@@ -32,6 +32,26 @@ _FEMALE_FIRST = {n.split()[0] for n in NAMES[20:]}
 # ниже ошибочно примет их за женские) — «Никита» и т.п.
 _MALE_A_ENDING = {"никита", "илья", "фома", "кузьма", "лука", "савва", "данила", "гаврила"}
 
+# Женские имена НА СОГЛАСНУЮ/«ь» — суффиксная эвристика (женское = -а/-я) их не ловит,
+# и они молча падали в мужское по умолчанию. Самое частое — «Любовь».
+_FEMALE_CONSONANT = {"любовь", "нинель", "адель", "эсфирь", "юдифь", "рахиль", "суламифь"}
+
+_CYRILLIC = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+
+
+def _gender_by_surname(surname: str | None) -> str | None:
+    """Пол по русской фамилии — надёжный сигнал для формата «Имя Фамилия» (купленные
+    аккаунты): -ова/-ева/-ина/-ская → жен., -ов/-ев/-ин/-ский → муж. Женские окончания
+    проверяем ПЕРВЫМИ: «Машков-а» содержит «Машков», иначе бы сматчился мужской суффикс."""
+    s = "".join(ch for ch in (surname or "") if ch.isalpha()).lower()
+    if len(s) < 3 or s[0] not in _CYRILLIC:
+        return None
+    if s.endswith(("ова", "ева", "ёва", "ина", "ына", "ская", "цкая")):
+        return "female"
+    if s.endswith(("ов", "ев", "ёв", "ин", "ын", "ский", "цкий")):
+        return "male"
+    return None
+
 
 def gender_of(full_name: str | None) -> str | None:
     """«Дмитрий Кузнецов» -> 'male' по первому имени из пула NAMES (для персон аккаунтов).
@@ -53,9 +73,16 @@ def gender_of(full_name: str | None) -> str | None:
     low = first.lower()
     if low in _MALE_A_ENDING:
         return "male"
-    if low[-1] in ("а", "я") and low[0] in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя":
+    if low in _FEMALE_CONSONANT:
         return "female"
-    if low[0] in "абвгдеёжзийклмнопрстуфхцчшщъыьэюя":
+    # фамилия надёжнее суффикса имени: «Любовь Машкова» (Машкова → жен.), «Пётр Ильиных»
+    if len(tokens) > 1:
+        by_sur = _gender_by_surname(tokens[-1])
+        if by_sur:
+            return by_sur
+    if low[-1] in ("а", "я") and low[0] in _CYRILLIC:
+        return "female"
+    if low[0] in _CYRILLIC:
         return "male"
     return None  # не кириллица (латиница/иное) — не гадаем
 

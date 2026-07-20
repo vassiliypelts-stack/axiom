@@ -140,6 +140,17 @@ _EXTRA_ACCOUNT_COLS = {
     # Пароль ОБЯЗАН лежать здесь — забыли пароль = потеряли аккаунт при первом же релогине.
     "tg_2fa": "TEXT",
     "tg_2fa_set_at": "TEXT",              # когда поставили (NULL = 2FA не наша/не ставили)
+    # Саморегистрация через SMS-сервис (channels/phone_register.py, ТЗ hero-sms).
+    "reg_source": "TEXT",                 # откуда аккаунт: hero-sms | bought | own
+    "reg_activation_id": "TEXT",          # id активации у SMS-сервиса (для разбора/возвратов)
+    "reg_cost": "REAL",                   # сколько стоила активация, $ (для экономики/ROI)
+    # Защита купленных аккаунтов от реклейма (channels/account_protect.py):
+    # 2FA закрывает вход по SMS сразу; смена номера на свой — единственное, что
+    # полностью отвязывает продавца (см. память account-reclaim-2fa).
+    "protect_stage": "TEXT",              # NULL | phone_pending | phone_ok
+    "protect_phone_activation_id": "TEXT",  # id активации hero-sms на НОВЫЙ номер, пока смена не завершена
+    "protect_last_try_at": "TEXT",        # когда последний раз пробовали сменить номер (троттлинг retry)
+    "protect_note": "TEXT",               # человекочитаемый статус/причина последнего исхода
 }
 
 
@@ -177,6 +188,16 @@ _EXTRA_CHAT_COLS = {
 }
 
 
+# Слияние «Структуры» и «ИИ-агентов» (2026-07): должность теперь сама несёт аккаунт-
+# исполнителя + (для ИИ) задачу и промпт — раньше это жило на отдельной сущности ai_agents,
+# из-за чего приходилось прыгать между двумя разделами.
+_EXTRA_ORG_MEMBER_COLS = {
+    "account_id": "INTEGER",   # аккаунт-исполнитель (accounts.id) прямо на должности
+    "task": "TEXT",            # задача ИИ-роли (leadgen|networking|inviting|…) — было в ai_agents
+    "prompt": "TEXT",          # характер/инструкция ИИ-роли — было в ai_agents
+}
+
+
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
     for col, typ in _EXTRA_CONTACT_COLS.items():
@@ -204,6 +225,11 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         for col, typ in _EXTRA_CHAT_COLS.items():
             if col not in chat:
                 conn.execute(f"ALTER TABLE chats ADD COLUMN {col} {typ}")
+    om = {r["name"] for r in conn.execute("PRAGMA table_info(org_members)")}
+    if om:
+        for col, typ in _EXTRA_ORG_MEMBER_COLS.items():
+            if col not in om:
+                conn.execute(f"ALTER TABLE org_members ADD COLUMN {col} {typ}")
 
 
 def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
@@ -358,6 +384,42 @@ def _backfill_account_geo(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_org_agents(conn: sqlite3.Connection) -> None:
+    """Слияние «ИИ-агентов» в оргструктуру: должность сама несёт аккаунт/задачу/промпт.
+    Идемпотентно — гоняется при каждом старте, повторно ничего не создаёт (маркер —
+    ссылка org_members.ai_agent_id)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(org_members)")}
+    if "account_id" not in cols:
+        return
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_agents'").fetchone():
+        return
+    # 1) должностям-агентам дозаполняем аккаунт/задачу/промпт из связанного ai_agent
+    conn.execute(
+        "UPDATE org_members SET "
+        "account_id=COALESCE(account_id,(SELECT account_id FROM ai_agents WHERE id=org_members.ai_agent_id)), "
+        "task=COALESCE(task,(SELECT task FROM ai_agents WHERE id=org_members.ai_agent_id)), "
+        "prompt=COALESCE(prompt,(SELECT prompt FROM ai_agents WHERE id=org_members.ai_agent_id)) "
+        "WHERE kind='agent' AND ai_agent_id IS NOT NULL"
+    )
+    # 2) осиротевшие ИИ-агенты (не привязаны ни к одной должности) → заводим должность,
+    #    чтобы при слиянии ничего не потерялось
+    orphans = conn.execute(
+        "SELECT * FROM ai_agents WHERE COALESCE(active,1)=1 AND id NOT IN "
+        "(SELECT ai_agent_id FROM org_members WHERE ai_agent_id IS NOT NULL)"
+    ).fetchall()
+    if orphans:
+        dept = conn.execute("SELECT id FROM departments ORDER BY sort_order, id LIMIT 1").fetchone()
+        dept_id = dept["id"] if dept else conn.execute(
+            "INSERT INTO departments (name, description) VALUES ('ИИ-агенты','Виртуальные роли')"
+        ).lastrowid
+        for a in orphans:
+            conn.execute(
+                "INSERT INTO org_members (department_id, kind, name, role, ai_agent_id, "
+                "account_id, task, prompt) VALUES (?, 'agent', ?, ?, ?, ?, ?, ?)",
+                (dept_id, a["name"], a["task"] or "", a["id"], a["account_id"], a["task"], a["prompt"]),
+            )
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
@@ -367,6 +429,7 @@ def init_db() -> None:
         _seed_default_niche(conn)
         _migrate_companies(conn)
         _migrate_deals(conn)
+        _migrate_org_agents(conn)
         _backfill_account_geo(conn)
         # членство армии в чатах: подтягиваем уже вступленные (chats.joined_by) в
         # account_chats, чтобы отчёт покрытия сразу отражал реальность

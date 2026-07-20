@@ -25,9 +25,15 @@ def _unknown(_: str) -> str:
 # --- Заглушки провайдеров. Заменяются реальными при подключении адаптеров. ---
 
 def check_telegram(phone: str) -> str:
-    """TG: Telethon ImportContacts → есть user_id или нет.
-    Реализуется в channels/telegram.py (нужны api_id/api_hash + аккаунт)."""
-    raise NotImplementedError("Подключи Telethon-адаптер (channels/telegram.py)")
+    """TG-пробив живёт в channels/phone_resolve.py — используй ЕГО, не этот интерфейс.
+
+    Почему не здесь: сигнатура Provider — (phone) -> str, по одному номеру за вызов.
+    Безопасный массовый пробив так не сделать: нужны пачки, ротация рабочих аккаунтов,
+    дневной потолок на аккаунт, паузы и удаление контакта сразу после пробива. Всё это
+    в phone_resolve, и он же кладёт в карточку личность (tg_user_id/@username/фото/bio),
+    а не только 'yes'/'no'.
+    """
+    raise NotImplementedError("Массовый TG-пробив: python -m channels.phone_resolve")
 
 
 def check_whatsapp(phone: str) -> str:
@@ -59,9 +65,16 @@ def run_checker(
         for row in rows:
             phone = row["phone"]
             res = {"has_tg": _safe(tg, phone), "has_wa": _safe(wa, phone), "has_max": _safe(mx, phone)}
+            # NULLIF(?,'unknown') + COALESCE: «не знаю» НЕ затирает уже известное.
+            # Раньше прогон с неподключёнными провайдерами (а они по умолчанию заглушки!)
+            # проставлял 'unknown' всем подряд и стирал реальные результаты — например
+            # 193 has_wa='yes' и метки из importer/import_2gis. Незнание — не факт.
             conn.execute(
-                "UPDATE contacts SET has_tg=?, has_wa=?, has_max=?, checked_at=datetime('now'), "
-                "updated_at=datetime('now') WHERE id=?",
+                "UPDATE contacts SET "
+                "has_tg=COALESCE(NULLIF(?,'unknown'),has_tg), "
+                "has_wa=COALESCE(NULLIF(?,'unknown'),has_wa), "
+                "has_max=COALESCE(NULLIF(?,'unknown'),has_max), "
+                "checked_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
                 (res["has_tg"], res["has_wa"], res["has_max"], row["id"]),
             )
             checked += 1

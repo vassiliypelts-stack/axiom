@@ -107,6 +107,11 @@ async def _set_one(acc: dict) -> tuple[bool, str]:
             pass
 
 
+# Публичное имя для переиспользования из account_protect.py (слой 1 защиты купленных
+# аккаунтов) — _set_one исторически приватный, но логика ровно та же, дублировать вредно.
+set_one = _set_one
+
+
 async def run(ids: list[int] | None, dry: bool) -> None:
     database.init_db()
     accs = _targets(ids)

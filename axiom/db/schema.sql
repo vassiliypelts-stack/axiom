@@ -163,7 +163,9 @@ CREATE TABLE IF NOT EXISTS chats (
     activity       TEXT,                      -- оценка активности (сообщений/день и т.п.)
     status         TEXT DEFAULT 'new',        -- new|analyzed|queued|joined|skip
     joined_by      INTEGER,                   -- accounts.id, кто вступил
-    can_write      TEXT,                      -- да|только админы|ограничено|заблокирован|не вступил|неизвестно
+    can_write      TEXT,                      -- могу ли Я слать текст: да|только админы|заблокирован|
+                                              -- не вступил|нужно одобрение|неизвестно. «заблокирован» =
+                                              -- личный мут (banned_rights), см. chat_scan.can_write
     members_visible TEXT,                     -- да|нет (виден ли список участников)
     in_account     TEXT,                      -- yes = чат уже есть в личном аккаунте (инвентаризация)
     city           TEXT,                      -- город (для фильтра)
@@ -270,6 +272,21 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT
 );
 
+-- Инбокс: то, что ты надиктовал/написал личному боту, ИИ разобрал (agent/inbox.py).
+-- Лиды уходят в contacts, заметки к лиду — в contacts.agent_context; ЗДЕСЬ живут
+-- задачи/напоминания и свободные заметки — у них есть срок и признак «сделано»,
+-- чего в events (лента колокольчика) нет.
+CREATE TABLE IF NOT EXISTS inbox_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT DEFAULT 'task',   -- task | note
+    text        TEXT,
+    due_at      TEXT,                  -- срок (ISO), если ИИ распознал «завтра в 15:00»
+    done        INTEGER DEFAULT 0,
+    contact_id  INTEGER,               -- к кому относится, если понятно
+    raw         TEXT,                  -- исходное сообщение (на случай разбора вручную)
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 -- Пул бесплатных MTProto-прокси (собираются из TG-каналов, авто-замена дохлых).
 CREATE TABLE IF NOT EXISTS proxies (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,7 +338,10 @@ CREATE TABLE IF NOT EXISTS org_members (
     role          TEXT,                     -- должность/роль
     phone         TEXT,
     email         TEXT,
-    ai_agent_id   INTEGER REFERENCES ai_agents(id),  -- для kind='agent'
+    ai_agent_id   INTEGER REFERENCES ai_agents(id),  -- для kind='agent' (наследие; данные слиты в поля ниже)
+    account_id    INTEGER,                  -- аккаунт-исполнитель прямо на должности (слияние со «Структурой»)
+    task          TEXT,                     -- задача ИИ-роли (leadgen|networking|inviting|…)
+    prompt        TEXT,                     -- характер/инструкция ИИ-роли
     needs_access  INTEGER DEFAULT 0,        -- нужен ли доступ в пульт (пока просто пометка на будущее)
     notes         TEXT,
     sort_order    INTEGER DEFAULT 0,

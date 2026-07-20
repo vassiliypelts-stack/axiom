@@ -17,9 +17,10 @@ import argparse
 import asyncio
 import json
 
-from telethon.tl.types import User
+from telethon.sessions import StringSession
+from telethon.tl.types import PeerChannel, PeerChat, User
 
-from channels.telegram import _build_client
+from channels.telegram import _build_client, build_client
 from db import database
 
 
@@ -47,12 +48,48 @@ def _display_name(u: User) -> str:
     return name or (u.username and f"@{u.username}") or str(u.id)
 
 
+def _target(ch) -> object:
+    """Что скармливать Telethon. Публичный — «@username». Закрытый — PeerChannel(tg_chat_id),
+    а НЕ голый int: от голого числа Telethon гадает тип и принимает id супергруппы за
+    PeerUser («Could not find the input entity»). И уж точно не ch["id"] — это номер строки
+    в нашем каталоге, для Telegram он пустой звук."""
+    if ch["username"]:
+        return "@" + ch["username"]
+    if (ch["kind"] or "") in ("супергруппа", "канал"):
+        return PeerChannel(ch["tg_chat_id"])
+    return PeerChat(ch["tg_chat_id"])
+
+
+async def _client_for(acc_id: int | None):
+    """Клиент того аккаунта, который вступил в чат. Закрытый чат читается ТОЛЬКО его
+    участником — главный аккаунт из .env туда не вхож, сколько id ему ни давай."""
+    if not acc_id:
+        return None, None
+    with database.get_conn() as conn:
+        a = conn.execute("SELECT id, label, tg_session, proxy, api_id, api_hash, session_alive "
+                         "FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not a or not (a["tg_session"] or "").strip():
+        return None, f"#{acc_id}: нет сессии"
+    if a["session_alive"] == 0:
+        return None, f"#{acc_id} ({a['label']}): сессия слетела — нужен релогин"
+    try:
+        cl = build_client(StringSession(a["tg_session"]), a["proxy"], a["api_id"], a["api_hash"])
+        await cl.connect()
+        if not await cl.is_user_authorized():
+            await cl.disconnect()
+            return None, f"#{acc_id} ({a['label']}): сессия не авторизована"
+        return cl, None
+    except Exception as e:  # noqa: BLE001
+        return None, f"#{acc_id} ({a['label']}): не подключился — {str(e)[:60]}"
+
+
 async def run(limit: int, only_fav: bool = False) -> None:
     database.init_db()
     with database.get_conn() as conn:
         niches = _load_niches(conn)
-        sql = ("SELECT id, title, username, kw_last_id FROM chats "
-               "WHERE ((username IS NOT NULL AND username<>'') OR in_account='yes')")
+        sql = ("SELECT id, title, username, tg_chat_id, kind, joined_by, kw_last_id FROM chats "
+               "WHERE ((username IS NOT NULL AND username<>'') "
+               "OR (in_account='yes' AND tg_chat_id IS NOT NULL))")
         if only_fav:
             sql += " AND COALESCE(favorite,0)=1"   # слушаем только избранные (лучшие) чаты
         chats = conn.execute(sql).fetchall()
@@ -63,11 +100,26 @@ async def run(limit: int, only_fav: bool = False) -> None:
                if only_fav else "нет чатов в каталоге для прослушки")
         print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False)); return
 
-    client = _build_client()
-    await client.start()
+    main_client = _build_client()
+    await main_client.start()
+    owned: dict[int, object] = {}      # aid → клиент аккаунта-участника (по одному на аккаунт)
     scanned = hits = 0
+    skipped: list[str] = []
     for ch in chats:
-        target = ("@" + ch["username"]) if ch["username"] else ch["id"]
+        # Публичный читаем главным аккаунтом; закрытый — только тем, кто в нём состоит.
+        client = main_client
+        if not ch["username"]:
+            aid = ch["joined_by"]
+            if aid not in owned:
+                owned[aid], err = await _client_for(aid)
+                if err:
+                    skipped.append(f"{(ch['title'] or '')[:24]} — {err}")
+            client = owned.get(aid)
+            if client is None:
+                if not ch["joined_by"]:
+                    skipped.append(f"{(ch['title'] or '')[:24]} — не вступил ни один аккаунт")
+                continue
+        target = _target(ch)
         last_id = ch["kw_last_id"] or 0
         max_id = last_id
         try:
@@ -101,11 +153,20 @@ async def run(limit: int, only_fav: bool = False) -> None:
                 with database.get_conn() as conn:
                     conn.execute("UPDATE chats SET kw_last_id=? WHERE id=?", (max_id, ch["id"]))
         except Exception as e:  # noqa: BLE001
-            print(f"[kw] {target}: {e}")
+            print(f"[kw] {(ch['title'] or target)}: {e}")
         await asyncio.sleep(1.5)  # антибан-пауза между чатами
 
-    await client.disconnect()
-    print(json.dumps({"ok": True, "scanned_chats": scanned, "hits_new": hits}, ensure_ascii=False))
+    await main_client.disconnect()
+    for cl in owned.values():
+        if cl is not None:
+            try:
+                await cl.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    for s in skipped:
+        print(f"[kw] пропущен: {s}")
+    print(json.dumps({"ok": True, "scanned_chats": scanned, "hits_new": hits,
+                      "skipped": skipped}, ensure_ascii=False))
 
 
 def main() -> None:

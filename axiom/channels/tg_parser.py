@@ -41,7 +41,7 @@ from telethon.tl.types import Channel, ChannelParticipantsAdmins, User
 
 import config
 from channels.ru_names import gender_of
-from channels.telegram import _build_client
+from channels.telegram import _build_client, client_for_account
 from db import database
 
 # Антибан: пауза между «тяжёлыми» вызовами и порции участников.
@@ -246,10 +246,17 @@ async def search_chats(client, query: str, limit: int) -> None:
 
 
 async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
-              harvest: bool = False, days: int = HARVEST_DAYS) -> None:
+              harvest: bool = False, days: int = HARVEST_DAYS,
+              account_id: int | None = None) -> None:
+    """account_id=None — главный аккаунт из .env; иначе рабочий аккаунт по id.
+
+    ⚠️ Парсинг резолвит username'ы, а ResolveUsername — самый лимитируемый вызов TG.
+    Массовый сбор главным аккаунтом ведёт к FloodWait на сутки (проверено на живом:
+    @iivairf словил 22.6 ч). Для любых пачек передавай --account рабочего аккаунта.
+    """
     database.init_db()
-    client = _build_client()
-    await client.start()
+    client, _ = client_for_account(account_id)
+    await client.connect()
     me = await client.get_me()
     print(f"Подключён как @{me.username or me.id}; цель: {target}")
 

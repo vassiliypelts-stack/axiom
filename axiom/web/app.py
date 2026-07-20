@@ -753,6 +753,21 @@ def org_member_delete(mid: int) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/org/unlinked-accounts")
+def org_unlinked_accounts() -> JSONResponse:
+    """Аккаунты из resources, не привязанные к org_members — для пула ресурсов."""
+    database.init_db()
+    with database.get_conn() as conn:
+        linked = {r["account_id"] for r in conn.execute(
+            "SELECT account_id FROM org_members WHERE account_id IS NOT NULL"
+        ).fetchall()}
+        rows = conn.execute(
+            "SELECT id, label, username, phone, session_alive, status FROM accounts ORDER BY id"
+        ).fetchall()
+    items = [dict(r) for r in rows if r["id"] not in linked]
+    return JSONResponse(items)
+
+
 @app.get("/api/account/{acc_id}")
 def account_detail(acc_id: int) -> JSONResponse:
     database.init_db()

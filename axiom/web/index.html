@@ -354,6 +354,48 @@
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid var(--bg);}
   ::-webkit-scrollbar-thumb:hover{background:var(--border-hov);}
+
+  /* ---- Оргструктура: визуальная org-диаграмма ---- */
+  .org-chart{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 20px;overflow-x:auto}
+  .org-chart .root-card{background:linear-gradient(135deg,#5b6cff,#7c5cff);color:#fff;padding:8px 22px;border-radius:10px;font-weight:700;font-size:14px;text-align:center;border:0;white-space:nowrap}
+  .org-chart .root-card .rsub{font-weight:400;font-size:11px;color:rgba(255,255,255,.75);margin-top:1px}
+  .org-chart .root-line{width:2px;height:10px;background:var(--border)}
+  .org-levels{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;width:100%;position:relative}
+  .org-levels::before{content:'';position:absolute;top:0;left:10%;width:80%;height:2px;background:var(--border)}
+  .org-dept{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:160px;max-width:220px;position:relative}
+  .org-dept::before{content:'';width:2px;height:10px;background:var(--border)}
+  .org-dept-hdr{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;text-align:center;width:100%;box-sizing:border-box;position:relative}
+  .org-dept-hdr .dsub{font-weight:400;font-size:10px;color:var(--muted);margin-top:1px}
+  .org-dept-hdr .dtools{position:absolute;right:4px;top:4px;display:none;gap:2px}
+  .org-dept-hdr:hover .dtools{display:flex}
+  .org-dept-hdr .dtools button{background:none;border:0;cursor:pointer;font-size:11px;padding:1px 4px;color:var(--muted);border-radius:3px}
+  .org-dept-hdr .dtools button:hover{background:var(--bg);color:var(--text)}
+  .org-dept-members{display:flex;flex-direction:column;gap:4px;width:100%}
+  .org-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;transition:all .12s;display:flex;align-items:center;gap:6px;position:relative}
+  .org-card:hover{border-color:var(--accent);box-shadow:0 0 0 2px rgba(91,108,255,.12);background:var(--bg)}
+  .org-card .oic{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+  .org-card .oinfo{flex:1;min-width:0;line-height:1.3}
+  .org-card .oiname{font-weight:600;font-size:12px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+  .org-card .oirole{font-size:10px;color:var(--muted)}
+  .org-card .oiacc{font-size:10px;color:var(--muted-lighter,var(--muted));background:var(--bg);padding:0 4px;border-radius:3px;white-space:nowrap}
+  .org-card .obadge{font-size:9px;padding:1px 6px;border-radius:4px;font-weight:600;flex-shrink:0}
+  .org-card .obadge.human{background:rgba(75,192,120,.15);color:#4bc078}
+  .org-card .obadge.agent{background:rgba(91,108,255,.15);color:#5b6cff}
+  .org-card .ocard-tools{position:absolute;right:-2px;top:-2px;display:none;gap:1px}
+  .org-card:hover .ocard-tools{display:flex}
+  .org-card .ocard-tools button{background:var(--panel);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:10px;padding:1px 5px;color:var(--muted);line-height:1.4}
+  .org-card .ocard-tools button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .org-pool{margin-top:16px;padding:12px 14px;border:1px dashed var(--border);border-radius:10px;background:var(--panel2)}
+  .org-pool-title{font-size:13px;font-weight:600;margin-bottom:6px}
+  .org-pool-grid{display:flex;flex-wrap:wrap;gap:4px}
+  .org-pool-chip{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:2px 8px;font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;transition:all .1s}
+  .org-pool-chip:hover{border-color:var(--accent)}
+  .org-pool-chip .odot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .org-pool-chip .odot.green{background:#4bc078}
+  .org-pool-chip .odot.yellow{background:#ffc832}
+  .org-pool-chip .odot.red{background:#ff5c5c}
+  .org-mform-wrap{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
+  .org-mform-inner{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%;max-height:85vh;overflow-y:auto}
 </style>
 </head>
 <body>
@@ -1361,9 +1403,8 @@ async function viewAiAgents(v){
 let ORG_TAB="chart";
 function setOrgTab(){["chart","members"].forEach(t=>{const b=$("#ot-"+t);if(b)b.classList.toggle("primary",ORG_TAB===t);});}
 async function viewOrgChart(v){
-  v.innerHTML=`<p class="sub" style="margin-top:0">Оргструктура и роли в одном месте (раздел «ИИ-агенты» слит сюда): заводишь отделы и должности, каждой должности назначаешь аккаунт-исполнителя из списка — по умолчанию 🟢 живые, галочка «показать все» раскроет остальных. Для ИИ-роли тут же задача и промпт.</p>
-    <div class="ttoolbar"><button id="ot-chart" class="primary">🏛️ Схема</button><button id="ot-members">👥 Должности (таблица)</button></div>
-    <div id="ot-body" style="margin-top:12px"></div>`;
+  v.innerHTML=`<div class="ttoolbar" style="margin-bottom:8px"><button id="ot-chart" class="primary">🗺️ Схема</button><button id="ot-members">👥 Список</button></div>
+    <div id="ot-body" style="margin-top:8px"></div>`;
   $("#ot-chart").onclick=()=>{ORG_TAB="chart";setOrgTab();renderOrgBody();};
   $("#ot-members").onclick=()=>{ORG_TAB="members";setOrgTab();renderOrgBody();};
   setOrgTab();renderOrgBody();
@@ -1383,7 +1424,7 @@ async function renderOrgBody(){
   const body=$("#ot-body");if(!body)return;
   [ORG_AGENTS,ORG_ACCOUNTS]=await Promise.all([api("/api/aiagents"),api("/api/accounts")]);
   if(ORG_TAB==="members"){await renderOrgMembers(body);return;}
-  await renderOrgChartTab(body,ORG_AGENTS);
+  await renderOrgChart(body,ORG_AGENTS);
 }
 function orgKindOpts(m){
   return `<option value="human" ${(!m||m.kind==='human')?'selected':''}>👤 живой человек</option><option value="agent" ${m&&m.kind==='agent'?'selected':''}>🤖 ИИ-агент</option>`;
@@ -1427,7 +1468,7 @@ function wireOrgMemberForm(wrap){
   wrap.querySelector(".om-save").onclick=async()=>{
     const btn=wrap.querySelector(".om-save"), ag=kindSel.value==="agent";
     const gv=s=>{const el=wrap.querySelector(s);return el?el.value:null;};
-    const deptSel=wrap.querySelector(".om-dept");   // в таблице отдел выбирается тут, в схеме — фиксирован
+    const deptSel=wrap.querySelector(".om-dept");
     const body={
       id:btn.dataset.id||null, department_id:deptSel?+deptSel.value:+btn.dataset.dept, kind:kindSel.value,
       name:gv(".om-name"), role:gv(".om-role"), account_id:accSel.value||null,
@@ -1453,81 +1494,183 @@ function orgMemberChip(m){
     <div class="ttoolbar" style="margin:6px 0 0"><button class="om-edit" data-id="${m.id}">✏️</button><button class="om-del" data-id="${m.id}">🗑</button></div>
   </div>`;
 }
-async function renderOrgChartTab(body,agents){
-  const data=await api("/api/org/tree");
-  const depts=data.departments||[];
-  body.innerHTML=`
-    <div class="card" style="margin-bottom:16px">
-      <div style="font-weight:700;margin-bottom:10px">Новый отдел</div>
-      <div class="row2"><div class="field"><label>Название</label><input id="od-name" placeholder="Продажи Сочи"></div>
-        <div class="field"><label>Родительский отдел</label><select id="od-parent">${orgParentOpts(depts,null,null)}</select></div></div>
-      <div class="field"><label>Зона ответственности</label><input id="od-desc" placeholder="Прогрев и рассылка по агентствам Сочи"></div>
-      <button class="primary" id="od-add">Создать отдел</button> <span class="hint" id="od-msg"></span>
+
+// ─── Новая визуальная org-диаграмма (дерево) ────────────────────────────────
+function orgCardHtml(m){
+  const ic=m.kind==='agent'?'🤖':'👤';
+  const badge=m.kind==='agent'?'agent':'human';
+  const badgeLabel=m.kind==='agent'?'ИИ':'живой';
+  const accStr=m.account_id?`<span class="oiacc">${m.account_alive===1?'🟢':'⚪'} ${esc(m.account_label||m.account_username||'#'+m.account_id)}</span>`:'';
+  return `<div class="org-card" data-id="${m.id}" data-dept="${m.department_id}">
+    <span class="oic">${ic}</span>
+    <div class="oinfo">
+      <div class="oiname">${esc(m.name||m.role||'без имени')} ${accStr}</div>
+      <div class="oirole">${esc(m.role||'')}${m.kind==='agent'&&(m.task||m.agent_task)?' · '+(AI_TASKS[m.task||m.agent_task]||m.task):''}</div>
     </div>
-    <div id="od-tree"></div>`;
-  $("#od-add").onclick=async()=>{
-    const name=$("#od-name").value.trim();if(!name){$("#od-msg").textContent="нужно название";return;}
-    const r=await api("/api/org/department",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name,description:$("#od-desc").value,parent_id:$("#od-parent").value||null})});
-    if(r.error){$("#od-msg").textContent=r.error;return;}
-    $("#od-name").value="";$("#od-desc").value="";$("#od-msg").textContent="";
-    renderOrgBody();
-  };
-  const treeEl=$("#od-tree");
-  if(!depts.length){treeEl.innerHTML='<div class="empty">Отделов нет — создай первый формой выше.</div>';return;}
-  const byParent={};depts.forEach(d=>{const p=d.parent_id||0;(byParent[p]=byParent[p]||[]).push(d);});
-  const renderDept=(d,depth)=>{
-    const kids=byParent[d.id]||[];
-    return `<div class="card" style="margin:${depth?'8px 0 8px '+(depth*24)+'px':'0 0 12px'};background:var(--panel2)">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
-        <div><b>🏛️ ${esc(d.name)}</b>${d.description?`<div class="sub" style="margin-top:2px">${esc(d.description)}</div>`:""}</div>
-        <div class="ttoolbar" style="margin:0">
-          <button class="od-addmember" data-id="${d.id}">сотрудник</button>
-          <button class="od-addsub" data-id="${d.id}">подотдел</button>
-          <button class="od-del" data-id="${d.id}">🗑</button>
-        </div>
-      </div>
-      <div class="od-members" data-id="${d.id}" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">
-        ${(d.members||[]).map(m=>orgMemberChip(m)).join("")||'<span class="hint">пока никого</span>'}
-      </div>
-      <div class="od-mform" data-id="${d.id}" style="display:none;margin-top:10px"></div>
-    </div>` + kids.map(k=>renderDept(k,depth+1)).join("");
-  };
-  treeEl.innerHTML=(byParent[0]||[]).map(d=>renderDept(d,0)).join("");
-  treeEl.querySelectorAll(".od-del").forEach(b=>b.onclick=async()=>{
-    if(!confirm("Удалить отдел?"))return;
-    const r=await api(`/api/org/department/${b.dataset.id}/delete`,{method:"POST"});
-    if(r.error){alert(r.error);return;}
-    renderOrgBody();
-  });
-  treeEl.querySelectorAll(".od-addsub").forEach(b=>b.onclick=()=>{
-    const sel=$("#od-parent");if(sel)sel.value=b.dataset.id;
-    $("#od-name").scrollIntoView({behavior:"smooth",block:"center"});$("#od-name").focus();
-  });
-  treeEl.querySelectorAll(".od-addmember").forEach(b=>b.onclick=()=>{
-    const wrap=treeEl.querySelector(`.od-mform[data-id="${b.dataset.id}"]`);
-    if(!wrap)return;
-    const show=wrap.style.display==="none";
-    wrap.style.display=show?"block":"none";
-    if(show){wrap.innerHTML=orgMemberFormHtml(b.dataset.id,null);wireOrgMemberForm(wrap);}
-  });
-  treeEl.querySelectorAll(".om-edit").forEach(b=>b.onclick=()=>{
-    const mid=b.dataset.id;
-    let member=null,deptId=null;
-    depts.forEach(d=>(d.members||[]).forEach(m=>{if(String(m.id)===String(mid)){member=m;deptId=d.id;}}));
-    if(!member)return;
-    const wrap=treeEl.querySelector(`.od-mform[data-id="${deptId}"]`);
-    if(!wrap)return;
-    wrap.style.display="block";wrap.innerHTML=orgMemberFormHtml(deptId,member);
-    wireOrgMemberForm(wrap);
-    wrap.scrollIntoView({behavior:"smooth",block:"center"});
-  });
-  treeEl.querySelectorAll(".om-del").forEach(b=>b.onclick=async()=>{
-    if(!confirm("Удалить сотрудника из отдела?"))return;
-    await api(`/api/org/member/${b.dataset.id}/delete`,{method:"POST"});
-    renderOrgBody();
-  });
+    <span class="obadge ${badge}">${badgeLabel}</span>
+    <div class="ocard-tools"><button class="oc-edit" data-id="${m.id}" title="редактировать">✏️</button><button class="oc-del" data-id="${m.id}" title="удалить">🗑</button></div>
+  </div>`;
 }
+
+function orgDeptHtml(d, depth, byParent){
+  const kids=byParent[d.id]||[];
+  const members=d.members||[];
+  const indentStyle=depth>0?'style="margin-left:'+(depth*28)+'px"':'';
+  return `<div class="org-dept" ${indentStyle}>
+    <div class="org-dept-hdr">
+      🏛️ ${esc(d.name)}${d.description?`<div class="dsub">${esc(d.description)}</div>`:''}
+      <div class="dtools">
+        <button class="od-addmember" data-id="${d.id}" title="добавить сотрудника">➕</button>
+        <button class="od-addsub" data-id="${d.id}" title="добавить подотдел">📂</button>
+        <button class="od-del" data-id="${d.id}" title="удалить отдел">🗑</button>
+      </div>
+    </div>
+    <div class="org-dept-members">
+      ${members.map(m=>orgCardHtml(m)).join('')}
+      ${!members.length?'<div class="hint" style="font-size:10px;text-align:center;padding:4px 0">нет сотрудников</div>':''}
+    </div>
+  </div>` + kids.map(k=>orgDeptHtml(k, depth+1, byParent)).join('');
+}
+
+async function renderOrgChart(body,agents){
+  const data=await api("/api/org/tree");
+  const unlinked=await api("/api/org/unlinked-accounts");
+  const depts=data.departments||[];
+  body.innerHTML='<div id="org-chart-mount"></div><div id="org-pool-mount"></div>';
+
+  // ── действие добавления отдела (форма в модалке) ──
+  function showAddDept(parentId){
+    const wrap=document.createElement('div'); wrap.className='org-mform-wrap';
+    wrap.innerHTML=`<div class="org-mform-inner">
+      <div style="font-weight:700;margin-bottom:10px">📂 Новый отдел${parentId?' (подотдел)':''}</div>
+      <div class="field"><label>Название</label><input id="modal-od-name" placeholder="Продажи Сочи"></div>
+      <div class="field"><label>Родительский отдел</label><select id="modal-od-parent">${orgParentOpts(depts,null,parentId||null)}</select></div>
+      <div class="field"><label>Зона ответственности</label><input id="modal-od-desc" placeholder="Прогрев и рассылка по агентствам"></div>
+      <div style="margin-top:10px"><button class="primary" id="modal-od-add">💾 Создать</button> <button class="modal-close">отмена</button> <span class="hint" id="modal-od-msg"></span></div>
+    </div>`;
+    document.body.appendChild(wrap);
+    wrap.querySelector('.modal-close').onclick=()=>wrap.remove();
+    wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
+    if(parentId){const sel=wrap.querySelector('#modal-od-parent');if(sel)sel.value=parentId;}
+    wrap.querySelector('#modal-od-add').onclick=async()=>{
+      const name=wrap.querySelector('#modal-od-name').value.trim();if(!name){wrap.querySelector('#modal-od-msg').textContent='нужно название';return;}
+      const r=await api('/api/org/department',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name,description:wrap.querySelector('#modal-od-desc').value,parent_id:wrap.querySelector('#modal-od-parent').value||null})});
+      if(r.error){wrap.querySelector('#modal-od-msg').textContent=r.error;return;}
+      wrap.remove();renderOrgBody();
+    };
+    wrap.querySelector('#modal-od-name').focus();
+  }
+
+  // ── орг-схема ──
+  const mount=$('#org-chart-mount');
+  if(!depts.length){
+    mount.innerHTML=`<div class="empty">Отделов нет. <button class="primary" id="chart-add-first-dept">➕ Создать первый отдел</button></div>`;
+    $('#chart-add-first-dept').onclick=()=>showAddDept(null);
+  }else{
+    // Строим дерево: группируем по parent_id
+    const byParent={};depts.forEach(d=>{const p=d.parent_id||0;(byParent[p]=byParent[p]||[]).push(d);});
+    const root=byParent[0]||[];
+    // Находим корень: первый отдел без parent (или виртуальный CEO)
+    const hasCeo=depts.some(d=>d.name.toLowerCase().includes('ceo')||d.name.toLowerCase().includes('василий'));
+    let html='<div class="org-chart">';
+    if(!hasCeo&&root.length>1){
+      // Показываем CEO-заглушку
+      html+=`<div class="root-card">🧑‍💼 Руководство<div class="rsub">${root.length} отдела</div></div><div class="root-line"></div>`;
+    }else if(hasCeo){
+      const ceoDept=depts.find(d=>d.name.toLowerCase().includes('ceo')||d.name.toLowerCase().includes('василий'));
+      html+=`<div class="root-card">🧑‍💼 ${esc(ceoDept.name)}<div class="rsub">${ceoDept.description||''}</div></div><div class="root-line"></div>`;
+    }
+    html+=`<div class="org-levels">${root.map(d=>orgDeptHtml(d,0,byParent)).join('')}</div></div>`;
+    mount.innerHTML=html;
+
+    // ── интерактив ──
+    mount.querySelectorAll('.od-del').forEach(b=>b.onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm('Удалить отдел?'))return;
+      const r=await api(`/api/org/department/${b.dataset.id}/delete`,{method:'POST'});
+      if(r.error){alert(r.error);return;}
+      renderOrgBody();
+    });
+    mount.querySelectorAll('.od-addsub').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();showAddDept(b.dataset.id);
+    });
+    mount.querySelectorAll('.od-addmember').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
+      const inner=document.createElement('div');inner.className='org-mform-inner';
+      inner.innerHTML=orgMemberFormHtml(b.dataset.id,null)+'<div><span class="hint">или нажми отмена</span></div>';
+      wrap.appendChild(inner);document.body.appendChild(wrap);
+      wireOrgMemberForm(inner);
+      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
+      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
+    });
+    mount.querySelectorAll('.oc-edit').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const mid=+b.dataset.id;
+      let member=null,deptId=null;
+      depts.forEach(d=>(d.members||[]).forEach(m=>{if(m.id===mid){member=m;deptId=d.id;}}));
+      if(!member)return;
+      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
+      const inner=document.createElement('div');inner.className='org-mform-inner';
+      inner.innerHTML=orgMemberFormHtml(deptId,member);
+      wrap.appendChild(inner);document.body.appendChild(wrap);
+      wireOrgMemberForm(inner);
+      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
+      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
+    });
+    mount.querySelectorAll('.oc-del').forEach(b=>b.onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm('Удалить сотрудника из отдела?'))return;
+      await api(`/api/org/member/${b.dataset.id}/delete`,{method:'POST'});
+      renderOrgBody();
+    });
+  }
+
+  // ── панель действий ──
+  const actions=document.createElement('div');
+  actions.style.cssText='display:flex;gap:8px;margin:10px 0 0;flex-wrap:wrap';
+  actions.innerHTML=`
+    <button class="primary" id="chart-add-dept">➕ Добавить отдел</button>
+    <button id="chart-sync-pool">🔄 Синхр. ресурсы</button>`;
+  mount.parentNode.insertBefore(actions,mount);
+  $('#chart-add-dept').onclick=()=>showAddDept(null);
+  $('#chart-sync-pool').onclick=()=>{renderOrgBody();};
+
+  // ── пул ресурсов ──
+  const poolMount=$('#org-pool-mount');
+  if(!unlinked||!unlinked.length){
+    poolMount.innerHTML='';
+  }else{
+    const dot=a=>`<span class="odot ${a.session_alive===1?'green':(a.session_alive===0?'red':'yellow')}"></span>`;
+    const label=a=>esc(a.label||a.username||a.phone||'#'+a.id);
+    poolMount.innerHTML=`<div class="org-pool">
+      <div class="org-pool-title">📦 Пул ресурсов — непривязанные аккаунты</div>
+      <div class="org-pool-grid">${unlinked.map(a=>`<span class="org-pool-chip" data-accid="${a.id}">${dot(a)} ${label(a)}${a.phone?(' · '+esc(a.phone)):''}</span>`).join('')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">аккаунты из раздела «Ресурсы», не назначенные ни на одну должность. Кликни — чтобы назначить.</div>
+    </div>`;
+    // Клик по непривязанному аккаунту — предложить создать должность
+    poolMount.querySelectorAll('.org-pool-chip').forEach(chip=>chip.onclick=async()=>{
+      const accId=+chip.dataset.accid;
+      const acc=unlinked.find(a=>a.id===accId);if(!acc)return;
+      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
+      const inner=document.createElement('div');inner.className='org-mform-inner';
+      const name=acc.label||acc.username||acc.phone||'#'+acc.id;
+      inner.innerHTML=`<div style="font-weight:700;margin-bottom:10px">📦 Назначить аккаунт на должность</div>
+        <div style="margin-bottom:10px">Аккаунт: <b>${esc(name)}</b>${acc.phone?(' · '+esc(acc.phone)):''}</div>`;
+      // Берём первый отдел для предвыбора
+      inner.innerHTML+=orgMemberFormHtml(depts.length?depts[0].id:null,{account_id:accId,kind:'agent'});
+      wrap.appendChild(inner);document.body.appendChild(wrap);
+      wireOrgMemberForm(inner);
+      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
+      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
+      // Подставляем аккаунт
+      const accSel=inner.querySelector('.om-acc');
+      if(accSel)accSel.value=String(accId);
+    });
+  }
+}
+
 function orgDeptField(depts,selId){
   return `<div class="field"><label>Отдел</label><select class="om-dept">${depts.map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?'selected':''}>${esc(d.name)}</option>`).join("")}</select></div>`;
 }
@@ -1538,7 +1681,7 @@ async function renderOrgMembers(body){
   body.innerHTML=`
     <div class="card" style="margin-bottom:14px">
       <div style="font-weight:700;margin-bottom:8px">Новая должность</div>
-      ${depts.length?`<div id="om-addform"></div>`:'<div class="hint">Сначала создай отдел на вкладке «🏛️ Схема» (кнопка вверху).</div>'}
+      ${depts.length?`<div id="om-addform"></div>`:'<div class="hint">Сначала создай отдел на вкладке «🗺️ Схема» (кнопка вверху).</div>'}
     </div>
     <table><thead><tr>
       <th></th><th>Имя / должность</th><th>Роль</th><th>Отдел</th><th>🔑 Аккаунт</th><th>Задача</th><th></th>

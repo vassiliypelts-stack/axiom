@@ -347,6 +347,7 @@
   .skel{border-radius:var(--radius);background:var(--text);animation:skel-pulse 1.6s ease-in-out infinite;}
   .skel-hdr{height:28px;width:240px;}
   .skel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px;}
+  .skel-table{display:flex;flex-direction:column;gap:12px;padding:16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);}
   .skel-card{height:100px;}
   .skel-row{height:18px;width:100%;}
   ::-webkit-scrollbar{width:10px;height:10px;}
@@ -373,7 +374,7 @@
     <div class="topbar">
       <h2 id="title">Дашборд</h2>
       <div class="right"><span class="upd" id="upd">—</span>
-        <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления">🔔<span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
+        <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 2a6 6 0 00-6 6v3l-1 3h14l-1-3V8a6 6 0 00-6-6z"/><path d="M7.5 16a2.5 2.5 0 005 0"/></svg><span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
           <div class="notif" id="notif" style="display:none" role="menu"></div></div>
         <button id="refresh" aria-label="Обновить">⟳ Обновить</button></div>
     </div>
@@ -557,11 +558,13 @@ function smartTable(mount,cfg){
     wrap.querySelectorAll(".cf").forEach(inp=>{inp.onclick=e=>e.stopPropagation();
       inp.oninput=()=>{const k=inp.dataset.k,pos=inp.selectionStart;st.colFilters[k]=inp.value;persist();draw();
         const ni=wrap.querySelector(`.cf[data-k="${k}"]`);if(ni){ni.focus();try{ni.setSelectionRange(pos,pos);}catch(e){}}};});
-    wrap.querySelectorAll(".rsz").forEach(h=>{h.onmousedown=e=>{e.preventDefault();e.stopPropagation();
-      const k=h.dataset.k,th=h.closest("th"),sx=e.pageX,sw=th.offsetWidth;
-      const mv=ev=>{const nw=Math.max(50,sw+ev.pageX-sx);st.widths[k]=nw;th.style.width=nw+"px";th.style.minWidth=nw+"px";};
-      const up=()=>{document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);persist();};
-      document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);};});
+    function resizeStart(e,k,th,sw,sx){e.preventDefault();e.stopPropagation();
+      const mv=ev=>{const cx=ev.touches?ev.touches[0].pageX:ev.pageX;const nw=Math.max(50,sw+cx-sx);st.widths[k]=nw;th.style.width=nw+"px";th.style.minWidth=nw+"px";};
+      const up=()=>{document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);document.removeEventListener("touchmove",mv);document.removeEventListener("touchend",up);persist();};
+      document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);document.addEventListener("touchmove",mv,{passive:true});document.addEventListener("touchend",up);}
+    wrap.querySelectorAll(".rsz").forEach(h=>{
+      h.onmousedown=e=>{const k=h.dataset.k,th=h.closest("th");resizeStart(e,k,th,th.offsetWidth,e.pageX);};
+      h.ontouchstart=e=>{const k=h.dataset.k,th=h.closest("th");resizeStart(e,k,th,th.offsetWidth,e.touches[0].pageX);};});
     if(cfg.onRowClick)wrap.querySelectorAll("tbody tr.clk").forEach(tr=>tr.onclick=e=>{if(e.target.closest(".tag,.tag-add,.tag x,a,input,select,button"))return;cfg.onRowClick(+tr.dataset.id);});
     bindTags(wrap);
   };
@@ -709,9 +712,12 @@ async function viewDashboard(v){
 
 const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
 const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
-const ACC_KIND={own:"🏠 Родной",sim:"📱 Своя симка",bought:"🛒 Купленный"};
+const ACC_KIND_IC={own:"house",sim:"sim",bought:"cart"};
+const ACC_KIND_LBL={own:"Родной",sim:"Своя симка",bought:"Купленный"};
+function kindIcon(k){return ACC_KIND_IC[k]?`<svg viewBox="0 0 20 20" width="16" height="16" style="vertical-align:-3px" fill="none" stroke="currentColor" stroke-width="1.8">${{house:'<path d="M10 2L3 8v10h5v-4h4v4h5V8z"/>',sim:'<rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="14" x2="12" y2="14"/>',cart:'<path d="M1 3h3l2 8h10l2-6H7"/><circle cx="8" cy="17" r="1.5"/><circle cx="15" cy="17" r="1.5"/>'}[ACC_KIND_IC[k]]}</svg>`:"";}
+const ACC_KIND={own:"Родной",sim:"Своя симка",bought:"Купленный"};
 // Живость TG-сессии (channels/session_check.py). Порядок = порядок в сводке.
-const ACC_LIVE={alive:"🟢 живых",revoked:"🔴 сессия слетела",banned:"⛔ бан",noconn:"⚪ нет связи"};
+const ACC_LIVE={alive:"живых",revoked:"сессия слетела",banned:"бан",noconn:"нет связи"};
 // Сводка «сколько живых / мёртвых» над таблицей аккаунтов.
 function accLiveSummary(rows){
   const conn=rows.filter(r=>r.tg_connected);
@@ -3739,11 +3745,18 @@ $("#bell").onclick=()=>{const box=$("#notif");const open=box.style.display==="no
   }else box.style.display="none";};
 document.addEventListener("click",e=>{if(!e.target.closest(".bellwrap"))$("#notif").style.display="none";});
 
+const SKELS={
+  dashboard:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:50%"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:70%"></div></div>',
+  agents:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:40%"></div><div class="skel skel-table"><div class="skel skel-row"></div><div class="skel skel-row"></div><div class="skel skel-row"></div><div class="skel skel-row"></div></div></div>',
+  deals:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid" style="grid-template-columns:repeat(5,1fr)"><div class="skel skel-card" style="height:300px"></div><div class="skel skel-card" style="height:300px"></div><div class="skel skel-card" style="height:300px"></div><div class="skel skel-card" style="height:300px"></div><div class="skel skel-card" style="height:300px"></div></div></div>',
+  orgchart:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:60%"></div><div class="skel-grid"><div class="skel skel-card" style="height:120px"></div><div class="skel skel-card" style="height:120px;width:70%"></div></div></div>',
+  default:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:60%"></div></div>',
+};
 async function route(){
   const id=(location.hash||"#dashboard").slice(1);
   const nav=NAV.find(n=>n.id===id)||NAV[0];
   renderNav(nav.id);$("#title").textContent=nav.label;
-  const v=$("#view");v.innerHTML='<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:70%"></div></div>';
+  const v=$("#view");v.innerHTML=SKELS[nav.id]||SKELS.default;
   try{await (VIEWS[nav.id]||viewDashboard)(v);}catch(e){v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`;}
   $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
   refreshNotif();

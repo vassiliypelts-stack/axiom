@@ -1110,6 +1110,36 @@ def proxies_auto_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "auto": auto == "on", "interval_h": interval_h})
 
 
+@app.get("/api/keywords/auto")
+def keywords_auto_get() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "auto": database.get_setting(conn, "kw_auto", "off") == "on",
+            "interval_min": int(database.get_setting(conn, "kw_interval_min", "60")),
+            "last_run": database.get_setting(conn, "kw_last_run", None),
+        })
+
+
+@app.post("/api/keywords/auto")
+def keywords_auto_set(payload: dict = Body(...)) -> JSONResponse:
+    auto = "on" if payload.get("auto") else "off"
+    interval_min = max(15, int(payload.get("interval_min") or 60))
+    with database.get_conn() as conn:
+        database.set_setting(conn, "kw_auto", auto)
+        database.set_setting(conn, "kw_interval_min", str(interval_min))
+    return JSONResponse({"ok": True, "auto": auto == "on", "interval_min": interval_min})
+
+
+@app.post("/api/keywords/listen_now")
+def keywords_listen_now() -> JSONResponse:
+    """Прослушать чаты по ключам СЕЙЧАС (фоновый процесс)."""
+    import subprocess
+    import sys
+    _spawn("channels.chat_keywords", "--listen")
+    return JSONResponse({"ok": True})
+
+
 LOG_DIR = config.DB_PATH.parent / "logs"
 
 
@@ -1166,6 +1196,22 @@ def _proxy_scheduler() -> None:
                 _log_run("warmup_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[warmup scheduler] {e}")
+        # --- авто-прослушка чатов по ключам (niches) ---
+        try:
+            with database.get_conn() as conn:
+                kauto = database.get_setting(conn, "kw_auto", "off")
+                kint = int(database.get_setting(conn, "kw_interval_min", "60"))
+                klast = database.get_setting(conn, "kw_last_run_ts", "0")
+            if kauto == "on" and (time.time() - float(klast or 0)) >= kint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "kw_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "kw_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                res = subprocess.run([sys.executable, "-m", "channels.chat_keywords", "--listen"],
+                                     cwd=str(BASE_DIR.parent), timeout=600, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("kw_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[kw scheduler] {e}")
         time.sleep(60)
 
 

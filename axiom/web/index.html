@@ -272,7 +272,7 @@
   .b-lost,.b-stop{color:var(--red);border-color:color-mix(in srgb,var(--red) 38%,transparent);background:color-mix(in srgb,var(--red) 14%,var(--panel));}
   .b-nurture{color:var(--muted);border-color:var(--border);background:var(--panel2);}
   .b-active{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent);background:color-mix(in srgb,var(--green) 15%,var(--panel));}
-  /* бейдж прогрева с прогресс-заливкой: «🔥 прогрев N/14 дн» */
+  /* бейдж прогрева с прогресс-заливкой: «прогрев N/14 дн» */
   .warmb{position:relative;display:inline-flex;align-items:center;border-radius:20px;overflow:hidden;
     border:1px solid color-mix(in srgb,var(--accent2) 45%,transparent);background:var(--panel2);min-width:120px;}
   .warmb .wb-fill{position:absolute;left:0;top:0;bottom:0;background:color-mix(in srgb,var(--accent2) 24%,transparent);transition:width .5s ease;}
@@ -428,12 +428,13 @@ const NAV_GROUPS=[
   ]},
   {title:"Лидген",collapsible:true,items:[
     {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/><path d="M14 10h2a2 2 0 010 4h-2z"/><path d="M7 13.5v1.5a2 2 0 004 0v-.5"/></svg>',label:"Кампании"},
-    {id:"hits",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="6"/><line x1="13" y1="13" x2="18" y2="18"/></svg>',label:"Запросы"},
     {id:"chats",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 9a7 7 0 00-7-7H8a7 7 0 000 14h2l4 3v-3a7 7 0 003-4z"/><circle cx="8.5" cy="9" r="1" fill="currentColor"/><circle cx="11.5" cy="9" r="1" fill="currentColor"/><circle cx="14.5" cy="9" r="1" fill="currentColor"/></svg>',label:"Диалоги"},
+  ]},
+  {title:"Досье",collapsible:true,items:[
+    {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
-    {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты"},
     {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
     {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
   ]},
@@ -759,9 +760,9 @@ async function viewAgents(v){
         <select id="a-role"><option value="sdr">SDR</option><option value="qualifier">Квалификатор</option><option value="closer">Переговорщик</option><option value="scheduler">Ассистент встреч</option></select>
         <select id="a-status"><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
         <input id="a-limit" type="number" value="15" title="лимит/день" style="max-width:90px">
-        <button class="primary" id="a-add">➕ Добавить аккаунт</button>
+        <button class="primary" id="a-add">Добавить аккаунт</button>
       </div></div>
-    <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">🛡 Проверить аккаунты (@SpamBot)</button>
+    <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">Проверить аккаунты (@SpamBot)</button>
       <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -773,11 +774,11 @@ async function viewAgents(v){
       <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «⚪ нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <b style="font-size:13px">🔥 Автопрогрев</b>
+        <b style="font-size:13px">Автопрогрев</b>
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="wa-auto"> в фоне, ступень каждые</label>
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
         <button id="wa-save">сохранить</button>
-        <button class="primary" id="wa-run">🔥 Прогреть всех сейчас</button>
+        <button class="primary" id="wa-run">Прогреть всех сейчас</button>
         <button id="wa-stop" title="Остановить текущий фоновый прогрев">⏹ Стоп</button>
         <span class="hint" id="wa-msg"></span>
       </div>
@@ -790,20 +791,20 @@ async function viewAgents(v){
       <button id="ab-selnative" title="выделить только родные (protected) номера">🏠 Выделить родных</button>
       <span style="width:1px;height:18px;background:var(--border)"></span>
       <button id="ab-warm">🔥 На прогрев</button>
-      <button id="ab-check">🛡 Проверить выбранные</button>
-      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — 🟢 жив / 🔴 сессия слетела / ⛔ бан в колонке «Живость»">🫀 Проверить живость</button>
-      <button id="ab-invent">📋 Инвентаризация чатов</button>
-      <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">✨ Оформить (имя+ник+bio+фото+приватность)</button>
+      <button id="ab-check">Проверить выбранные</button>
+      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — 🟢 жив / 🔴 сессия слетела / бан в колонке «Живость»">🫀 Проверить живость</button>
+      <button id="ab-invent">Инвентаризация чатов</button>
+      <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">Оформить (имя+ник+bio+фото+приватность)</button>
       <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
       <button id="ab-proxy-pool" title="Бесплатный MTProto из общего пула — сразу выбранным, включая тех, у кого прокси уже помечен мёртвым (заменит на свежий с минимальным пингом)">🆓 Бесплатный прокси (пул)</button>
       <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
       <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
-      <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">➕ Зарегистрировать номер (hero-sms)</button>
-      <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">🛡 Защитить (2FA+номер)</button>
+      <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
+      <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
       <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет 🟢 живой / 🔴 мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
-      <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">✏️ применить</button></span>
+      <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">применить</button></span>
       <span style="display:inline-flex;align-items:center;gap:6px">статус
         <select id="ab-status"><option value="">—</option><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
         <button id="ab-status-go">применить</button></span>
@@ -811,7 +812,7 @@ async function viewAgents(v){
     <div id="acc-tbl"></div>`;
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
     await api("/api/health",{method:"POST"});
-    setTimeout(()=>{b.disabled=false;b.textContent="🛡 Проверить аккаунты (@SpamBot)";route();},15000);};
+    setTimeout(()=>{b.disabled=false;b.textContent="Проверить аккаунты (@SpamBot)";route();},15000);};
   $("#a-sess").onclick=async()=>{const b=$("#a-sess"),m=$("#a-sess-msg");b.disabled=true;b.textContent="проверяю…";
     const r=await api("/api/accounts/session_check_all",{method:"POST"});
     if(r.error){b.disabled=false;b.textContent="🫀 Проверить живость всех";
@@ -833,7 +834,7 @@ async function viewAgents(v){
     $("#wa-msg").textContent="✓ сохранено · фон "+($("#wa-auto").checked?"включён":"выключен");};
   $("#wa-run").onclick=async()=>{const b=$("#wa-run");b.disabled=true;b.textContent="запускаю…";
     const r=await api("/api/warmup/run_now",{method:"POST"});
-    b.disabled=false;b.textContent="🔥 Прогреть всех сейчас";
+    b.disabled=false;b.textContent="Прогреть всех сейчас";
     if(r.error){$("#wa-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     $("#wa-msg").innerHTML='<span style="color:var(--green)">прогреваю '+r.warming+' акк.'+(r.skipped_no_proxy?` · без живого прокси пропущено: ${r.skipped_no_proxy}`:'')+' — прогресс обновится через пару минут (обнови страницу)</span>';};
   $("#wa-stop").onclick=async()=>{const b=$("#wa-stop");b.disabled=true;
@@ -872,7 +873,7 @@ async function viewAgents(v){
         const why=r.session_reason?` · ${r.session_reason}`:'';
         const tip=esc(when+why);
         if(r.session_state==='alive')return `<span class="badge b-active" title="${tip}">🟢 жив</span>`;
-        if(r.session_state==='banned')return `<span class="badge b-stop" title="${tip}">⛔ бан</span>`;
+        if(r.session_state==='banned')return `<span class="badge b-stop" title="${tip}">бан</span>`;
         if(r.session_state==='revoked')return `<span class="badge b-stop" title="${tip}">🔴 сессия слетела</span>`;
         if(r.session_state==='noconn')return `<span class="badge b-nurture" title="не достучались ни через прокси, ни напрямую — про сессию не судим. ${tip}">⚪ нет связи</span>`;
         return '<span class="badge b-nurture" title="ещё не проверялся — нажми «🫀 Проверить живость всех»">⚪ не проверен</span>';
@@ -882,7 +883,7 @@ async function viewAgents(v){
       {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`},
       {key:"warm_stage",label:"Прогрев",render:r=>{if(r.status!=='warming')return r.status==='active'?'<span class="badge b-active">✅ готов</span>':'<span class="no">—</span>';
         const st=r.warm_stage||0,pct=Math.round(st/14*100);
-        return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">🔥 прогрев ${st}/14 дн</span></span>`;}},
+        return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">прогрев ${st}/14 дн</span></span>`;}},
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>{
         if(!r.proxy)return '<span class="no">нет</span>';
         const pc=r.proxy_checked_at;
@@ -927,10 +928,10 @@ async function viewAgents(v){
   $("#ab-selnone").onclick=()=>{selAcc.clear();syncSelDom();$("#ab-msg").textContent="выделение снято";};
   $("#ab-selbattle").onclick=()=>{selAcc.clear();const battle=accFiltered.filter(r=>!r.protected);battle.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🪖 выделено боевых: ${battle.length} (родные не тронуты)`;};
   $("#ab-selnative").onclick=()=>{selAcc.clear();const native=accFiltered.filter(r=>r.protected);native.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🏠 выделено родных: ${native.length}`;};
-  $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`🔥 на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
-  $("#ab-check").onclick=()=>bulk({action:"check"},r=>`🛡 проверяю ${r.checking} — статус обновится через ~минуту`);
+  $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
+  $("#ab-check").onclick=()=>bulk({action:"check"},r=>`проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-sess-check").onclick=()=>bulk({action:"session_check"},r=>`🫀 проверяю живость ${r.queued} сессий в фоне (~минута)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — колонка «Живость» обновится, обнови страницу`);
-  $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`📋 инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
+  $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);
   $("#ab-identity").onclick=()=>{
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
     showIdentityDialog([...selAcc],bulk);
@@ -1051,7 +1052,7 @@ async function showInspectModal(id,label){
     }).join(''):'<div class="hint">пусто</div>';
   }));
 }
-// Диалог «✨ Оформить»: инструкция для ИИ + история прошлых + примеры готовых bio.
+// Диалог «Оформить»: инструкция для ИИ + история прошлых + примеры готовых bio.
 // Раньше был системный prompt() — там не видно, что уже задавал, и удачную формулировку
 // приходилось вспоминать по памяти.
 async function showIdentityDialog(ids,bulk){
@@ -1066,7 +1067,7 @@ async function showIdentityDialog(ids,bulk){
   const smpHtml=samples.length?`<details style="margin-top:12px"><summary class="sub" style="cursor:pointer">💬 Что ИИ выдавал по прошлым инструкциям (${samples.length})</summary>
     <div style="margin-top:6px">${samples.map(s=>`<div style="padding:6px 10px;border-left:2px solid var(--border);margin-bottom:5px;font-size:12px"><b>${esc(s.label||"—")}</b><br><span class="sub">${esc(s.bio||"")}</span></div>`).join("")}</div></details>`:"";
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:560px;width:92%;padding:20px;max-height:88vh;overflow:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">✨ Оформить (${ids.length} акк.)</b><button class="id-close">✕</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">Оформить (${ids.length} акк.)</b><button class="id-close">✕</button></div>
     <div class="sub" style="margin-bottom:10px">Бриф/легенда bio на всю пачку, напр. «риелтор из Сочи, дружелюбный тон». Жми «Показать варианты» — увидишь примеры, отметь удачные, и каждому аккаунту достанется свой из выбранных. Без выбора — ИИ сам напишет каждому по брифу.</div>
     <input id="id-style" style="width:100%;padding:8px 10px;font-size:14px" placeholder="напр. риелтор из Сочи, дружелюбный тон">
     <div class="ttoolbar" style="margin-top:8px">
@@ -1105,7 +1106,7 @@ async function showIdentityDialog(ids,bulk){
     const bios=[...modal.querySelectorAll(".id-v:checked")].map(c=>c.dataset.b);
     const refresh_photo=modal.querySelector("#id-refphoto").checked;
     close();
-    await bulk({action:"identity",bio_style:style,bios,refresh_photo},r=>`✨ оформляю ${r.queued} аккаунт(ов) в фоне${r.bio_pool?` (bio из ${r.bio_pool} выбранных, каждому свой)`:" (имя+ник+bio+фото+приватность, каждому своё)"}${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат в 🔔 через 1-2 мин`);
+    await bulk({action:"identity",bio_style:style,bios,refresh_photo},r=>`оформляю ${r.queued} аккаунт(ов) в фоне${r.bio_pool?` (bio из ${r.bio_pool} выбранных, каждому свой)`:" (имя+ник+bio+фото+приватность, каждому своё)"}${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — результат в 🔔 через 1-2 мин`);
   };
 }
 function showProxyDistDialog(ids,bulk){
@@ -1141,7 +1142,7 @@ async function showSmsRegisterDialog(){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;padding:20px;max-height:88vh;overflow:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">➕ Зарегистрировать номер (hero-sms)</b><button class="sm-close">✕</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">Зарегистрировать номер (hero-sms)</b><button class="sm-close">✕</button></div>
     <div class="sub" style="margin-bottom:10px">Свежий TG-номер: номер и 2FA под нашим контролем с нулевой секунды. Тратит деньги только по кнопке «Зарегистрировать». Свежак идёт СРАЗУ на прогрев, не в рассылку.</div>
     <div id="sm-bal" class="sub" style="margin-bottom:10px">загружаю баланс и страны…</div>
     <div class="field"><label>Страна</label><select id="sm-country" style="width:100%" disabled><option>…</option></select></div>
@@ -1192,7 +1193,7 @@ async function showProtectDialog(ids,bulk){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:520px;width:92%;padding:20px;max-height:88vh;overflow:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">🛡 Защитить от реклейма (${ids.length} акк.)</b><button class="pr-close">✕</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">Защитить от реклейма (${ids.length} акк.)</b><button class="pr-close">✕</button></div>
     <div class="sub" style="margin-bottom:10px">Слой 1 — 2FA-пароль: продавец с SMS-кодом больше не войдёт. Бесплатно, сразу.<br>
       Слой 2 — смена номера на свой: продавец отвязывается полностью, даже 7-дневный сброс ему недоступен. Только для аккаунтов 24+ часа под нами (иначе Telegram откажет) — платно (hero-sms).</div>
     <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer"><input type="checkbox" id="pr-phone"> Также сменить номер (слой 2)</label>
@@ -1277,7 +1278,7 @@ async function viewAiAgents(v){
   const taskOpts=a=>Object.entries(AI_TASKS).map(([k,l])=>`<option value="${k}" ${a&&a.task===k?"selected":""}>${l}</option>`).join("");
   v.innerHTML=`<p class="sub" style="margin-top:0">ИИ-агенты — роли с разными промптами и задачами (нетворкинг, лидген, инвайтинг…). Привяжи к аккаунту-исполнителю.</p>
     <div class="card" style="margin-bottom:16px">
-      <div style="font-weight:700;margin-bottom:10px">➕ Новый агент</div>
+      <div style="font-weight:700;margin-bottom:10px">Новый агент</div>
       <div class="row2"><div class="field"><label>Имя агента</label><input id="ai-name" placeholder="Нетворкер Аня"></div>
         <div class="field"><label>Задача</label><select id="ai-task">${taskOpts()}</select></div></div>
       <div class="field"><label>Аккаунт-исполнитель</label><select id="ai-acc">${accOpts()}</select></div>
@@ -1297,7 +1298,7 @@ async function viewAiAgents(v){
     <div class="field"><label>Аккаунт</label><select class="aie-acc" data-id="${a.id}">${accOpts(a)}</select></div>
     <div class="field"><label>Промпт</label><textarea class="aie-prompt" data-id="${a.id}" rows="4">${esc(a.prompt||'')}</textarea></div>
     <div class="ttoolbar" style="margin:0"><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" class="aie-active" data-id="${a.id}" ${a.active?"checked":""}> активен</label>
-      <button class="aie-save" data-id="${a.id}">💾 сохранить</button><button class="aie-del" data-id="${a.id}">🗑</button>
+      <button class="aie-save" data-id="${a.id}">сохранить</button><button class="aie-del" data-id="${a.id}">🗑</button>
       <span class="hint aie-msg" data-id="${a.id}"></span></div>
   </div>`).join(""):'<div class="empty">Агентов нет — создай первого формой выше.</div>';
   list.querySelectorAll(".aie-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;const g=c=>list.querySelector(`.${c}[data-id="${id}"]`);
@@ -1408,7 +1409,7 @@ async function renderOrgChartTab(body,agents){
   const depts=data.departments||[];
   body.innerHTML=`
     <div class="card" style="margin-bottom:16px">
-      <div style="font-weight:700;margin-bottom:10px">➕ Новый отдел</div>
+      <div style="font-weight:700;margin-bottom:10px">Новый отдел</div>
       <div class="row2"><div class="field"><label>Название</label><input id="od-name" placeholder="Продажи Сочи"></div>
         <div class="field"><label>Родительский отдел</label><select id="od-parent">${orgParentOpts(depts,null,null)}</select></div></div>
       <div class="field"><label>Зона ответственности</label><input id="od-desc" placeholder="Прогрев и рассылка по агентствам Сочи"></div>
@@ -1432,8 +1433,8 @@ async function renderOrgChartTab(body,agents){
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div><b>🏛️ ${esc(d.name)}</b>${d.description?`<div class="sub" style="margin-top:2px">${esc(d.description)}</div>`:""}</div>
         <div class="ttoolbar" style="margin:0">
-          <button class="od-addmember" data-id="${d.id}">➕ сотрудник</button>
-          <button class="od-addsub" data-id="${d.id}">➕ подотдел</button>
+          <button class="od-addmember" data-id="${d.id}">сотрудник</button>
+          <button class="od-addsub" data-id="${d.id}">подотдел</button>
           <button class="od-del" data-id="${d.id}">🗑</button>
         </div>
       </div>
@@ -1487,7 +1488,7 @@ async function renderOrgMembers(body){
   const accCell=m=>m.account_id?`${m.account_alive===1?'🟢':(m.account_alive===0?'🔴':'⚪')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
   body.innerHTML=`
     <div class="card" style="margin-bottom:14px">
-      <div style="font-weight:700;margin-bottom:8px">➕ Новая должность</div>
+      <div style="font-weight:700;margin-bottom:8px">Новая должность</div>
       ${depts.length?`<div id="om-addform"></div>`:'<div class="hint">Сначала создай отдел на вкладке «🏛️ Схема» (кнопка вверху).</div>'}
     </div>
     <table><thead><tr>
@@ -1511,7 +1512,7 @@ async function renderOrgMembers(body){
   body.querySelectorAll(".omt-edit").forEach(b=>b.onclick=()=>{
     const m=items.find(x=>String(x.id)===String(b.dataset.id));if(!m)return;
     const ef=$("#om-editform");
-    ef.innerHTML=`<div class="card" style="margin-top:12px;background:var(--panel2)"><div style="font-weight:700;margin-bottom:8px">✏️ Редактировать: ${esc(m.name||m.role||'должность')}</div><div class="om-editwrap">${orgDeptField(depts,m.department_id)+orgMemberFormHtml(m.department_id,m)}</div></div>`;
+    ef.innerHTML=`<div class="card" style="margin-top:12px;background:var(--panel2)"><div style="font-weight:700;margin-bottom:8px">Редактировать: ${esc(m.name||m.role||'должность')}</div><div class="om-editwrap">${orgDeptField(depts,m.department_id)+orgMemberFormHtml(m.department_id,m)}</div></div>`;
     wireOrgMemberForm(ef.querySelector(".om-editwrap"));
     ef.scrollIntoView({behavior:"smooth",block:"center"});
   });
@@ -1581,10 +1582,10 @@ async function viewDeals(v){
       <button id="tab-kan" class="primary">Воронка</button>
       <button id="tab-tbl">Таблица</button>
       <select id="deal-pipe" title="воронка / продукт" style="max-width:260px">${pOpts}</select>
-      <button id="pipe-new" title="создать воронку">➕ воронка</button>
+      <button id="pipe-new" title="создать воронку">воронка</button>
       <button id="pipe-del" title="удалить выбранную воронку">🗑</button>
       <span class="grow"></span>
-      <button class="primary" id="deal-new">➕ Сделка</button>
+      <button class="primary" id="deal-new">Сделка</button>
     </div><div id="deal-body"></div>`;
   const body=$("#deal-body");
   const showKan=()=>{body.innerHTML="";renderDealsKanban(body);$("#tab-kan").classList.add("primary");$("#tab-tbl").classList.remove("primary");};
@@ -1645,7 +1646,7 @@ function dealsTable(mount){
       {key:"amount",label:"Сумма",cls:"mono",render:d=>d.amount?Number(d.amount).toLocaleString("ru-RU")+" ₽":"—"},
       {key:"updated_at",label:"Обновлено",cls:"sub mono",render:d=>fmt(d.updated_at)||"—"},
     ],
-    emptyText:"Сделок нет. Создай «➕ Сделка» или из карточки компании.",
+    emptyText:"Сделок нет. Создай «Сделка» или из карточки компании.",
   });
 }
 
@@ -1654,9 +1655,9 @@ let COMPANIES=[];
 async function viewCompanies(v){
   COMPANIES=await api("/api/companies");
   v.innerHTML=`<div class="ttoolbar">
-      <button class="primary" id="co-new">➕ Компания</button>
+      <button class="primary" id="co-new">Компания</button>
       <button id="co-imp">⬆ Импорт 2ГИС</button>
-      <button id="co-enr">✨ Обогатить пачку</button>
+      <button id="co-enr">Обогатить пачку</button>
       <span class="grow"></span>
       <span class="hint">Юрлица/агентства. Клик по строке — карточка со связанными контактами и сделками.</span>
     </div>
@@ -1712,7 +1713,7 @@ async function viewCompanies(v){
 async function viewContacts(v){
   await loadContacts();
   v.innerHTML=`<div class="ttoolbar">
-      <button class="primary" id="ct-new">➕ Контакт</button>
+      <button class="primary" id="ct-new">Контакт</button>
       <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать базу</button>
       <span class="grow"></span>
       <span class="hint" id="ct-seg-msg">Физлица (директора/риелторы). Клик — карточка с историей и контекстом для агента.</span>
@@ -1766,10 +1767,10 @@ async function openCompany(id){
     <div class="row2">${fld("site","Сайт",c.site)}${fld("email","Email",c.email)}</div>
     ${fld("address","Адрес",c.address)}
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
-    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">💾 Сохранить</button><button id="co-del">🗑 Удалить</button></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">Сохранить</button><button id="co-del">Удалить</button></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Контакты (${(c.contacts||[]).length})</label>
     <div style="margin:6px 0">${(c.contacts||[]).map(p=>`<div class="lnk" data-cid="${p.id}" style="padding:6px 0;cursor:pointer">👤 ${esc(p.person_name||p.name||"без имени")}${p.person_role?` · <span class="sub">${esc(p.person_role)}</span>`:""}${p.phone?` · <span class="sub mono">${esc(p.phone)}</span>`:""}</div>`).join("")||'<div class="no">нет — добавь в разделе «Контакты»</div>'}</div>
-    <hr><div style="display:flex;justify-content:space-between;align-items:center"><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Сделки (${(c.deals||[]).length})</label><button id="co-deal-new">➕ сделка</button></div>
+    <hr><div style="display:flex;justify-content:space-between;align-items:center"><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Сделки (${(c.deals||[]).length})</label><button id="co-deal-new">сделка</button></div>
     <div style="margin:6px 0">${(c.deals||[]).map(d=>`<div class="lnk" data-did="${d.id}" style="padding:6px 0;cursor:pointer">💼 ${esc(d.title||"сделка")} · ${statusBadge(d.stage)}${d.amount?` · <span class="mono">${Number(d.amount).toLocaleString("ru-RU")} ₽</span>`:""}</div>`).join("")||'<div class="no">нет</div>'}</div>`;
   $("#co-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.type==="checkbox"?el.checked:el.value);
     await api(`/api/company/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -1800,7 +1801,7 @@ async function openDeal(id){
     <div class="field"><label>Компания</label><div class="v">${d.company_name?`<span class="lnk" data-cid="${d.company_id}" style="cursor:pointer">🏢 ${esc(d.company_name)}</span>`:'<span class="no">—</span>'}</div></div>
     <div class="field"><label>Контакт</label><div class="v">${(d.person_name||d.contact_name)?`<span class="lnk" data-pid="${d.contact_id}" style="cursor:pointer">👤 ${esc(d.person_name||d.contact_name)}</span>`:'<span class="no">—</span>'}</div></div>
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(d.notes||"")}</textarea></div>
-    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="dl-save">💾 Сохранить</button><button id="dl-del">🗑 Удалить</button></div>`;
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="dl-save">Сохранить</button><button id="dl-del">Удалить</button></div>`;
   $("#dl-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.dataset.k==="pipeline_id"?(+el.value||null):el.value);
     await api(`/api/deal/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     $("#dl-save").textContent="✓ сохранено";setTimeout(route,500);};
@@ -1843,7 +1844,7 @@ async function openAgent(id){
     <label style="display:flex;align-items:center;gap:8px;margin:2px 0 12px;font-weight:600;padding:8px 10px;background:var(--panel2);border-radius:8px"><input type="checkbox" data-k="protected" ${a.protected?"checked":""}> 🏠 Родной (личный) номер — автоматика (прогрев/рассылка) его НЕ трогает</label>
     <div class="field"><label>📝 Описание профиля (для команды)</label>
       <textarea data-k="description" rows="4" placeholder="Кто этот агент, легенда, специализация, особенности общения…">${esc(a.description||"")}</textarea>
-      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-gen-bio">🤖 Сгенерировать bio (ИИ)</button><button id="ag-profile-setup">✨ Оформить профиль в Telegram (фото + bio + спрятать номер)</button></div>
+      <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-gen-bio">Сгенерировать bio (ИИ)</button><button id="ag-profile-setup">Оформить профиль в Telegram (фото + bio + спрятать номер)</button></div>
       <div class="hint" style="margin-top:4px">Поставит аватар и био (первые 70 симв. описания) прямо в аккаунт. Нужна авторизованная сессия. Сохрани изменения перед оформлением.</div>
       <pre id="ag-profile-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🛡️ Прокси аккаунта</label>
@@ -1852,33 +1853,36 @@ async function openAgent(id){
       <div class="ttoolbar" style="margin:6px 0 0"><button id="ag-proxy-find">🔎 Найти бесплатный SOCKS5</button><button id="ag-proxy-auto">📡 Авто MTProto из пула (только TG)</button></div>
       <div class="hint" style="margin-top:4px">«Найти бесплатный» проверит публичные SOCKS5 на доступ к Telegram и подставит живой (для теста; для боя — платный мобильный).</div>
       <pre id="ag-proxy-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto;font-size:12px"></pre></div>
-    <div class="field"><label>🔥 Прогрев</label>
+    <div class="field"><label>Прогрев</label>
       ${warmReport}
       <div class="hint" style="margin-bottom:6px">Нужно: статус «прогрев» + TG✓ (подключён) + рабочий прокси. Один заход = одна стадия (всего ~14).</div>
-      <button id="ag-warm-now">🔥 Прогреть сейчас (с логом)</button>
+      <button id="ag-warm-now">Прогреть сейчас (с логом)</button>
       <pre id="ag-warm-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:240px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🖥 Зайти в аккаунт (Telegram Desktop)</label>
       <div class="hint" style="margin-bottom:6px">Соберёт портативный Telegram с этим аккаунтом — запустишь Telegram.exe и окажешься внутри (полистать/пописать руками). Нужна подключённая живая сессия (TG✓).</div>
       <button id="ag-tdesk">🖥 Войти в Telegram Desktop</button>
       <pre id="ag-tdesk-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
-    <div class="field"><label>👁 Заглянуть внутрь (профиль + переписки)</label>
+    <div class="field"><label>Заглянуть внутрь (профиль + переписки)</label>
       <div class="hint" style="margin-bottom:6px">Покажет прямо здесь, как оформлен аккаунт (аватар / имя / bio / спрятан ли номер) и его последние диалоги — не заходя в Telegram. Только чтение. Нужна подключённая сессия (TG✓).</div>
-      <button id="ag-inspect">👁 Показать профиль и переписки</button>
+      <button id="ag-inspect">Показать профиль и переписки</button>
       <div id="ag-inspect-box" style="display:none;margin-top:8px"></div></div>
     <div class="field"><label>📲 Подключить WhatsApp (код привязки)</label>
       <div class="hint" style="margin-bottom:6px">Запросит 8-значный код. Вводишь на телефоне с этим номером: WhatsApp → Связанные устройства → Привязать устройство → «Привязать по номеру телефона». Нужен запущенный WhatsApp-модуль (Node).</div>
       <button id="ag-wa">📲 Получить код WhatsApp</button>
       <div id="ag-wa-code" style="display:none;margin-top:8px;text-align:center;font-size:28px;font-weight:800;letter-spacing:3px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:14px"></div>
       <pre id="ag-wa-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:160px;overflow:auto;font-size:12px"></pre></div>
-    <div class="field"><label>📋 Чаты аккаунта</label>
+    <div class="field"><label>Чаты аккаунта</label>
       <div class="hint" style="margin-bottom:6px">Соберёт все группы/каналы, где аккаунт уже состоит, в каталог «Чаты». Сейчас за аккаунтом: <b id="ag-chats-cnt">${a.chats_count||0}</b>. Нужна подключённая сессия (TG✓).</div>
-      <button id="ag-invent-now">📋 Инвентаризовать чаты сейчас</button>
+      <button id="ag-invent-now">Инвентаризовать чаты сейчас</button>
       <pre id="ag-invent-log" style="display:none;white-space:pre-wrap;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;max-height:200px;overflow:auto;font-size:12px"></pre></div>
     <div class="field"><label>🗂 Резерв чатов (на случай бана)</label>
       <div class="hint" style="margin-bottom:6px">Списки чатов и ссылки, где аккаунт постит/держит контакт. Если забанят — зайдёшь в эти же чаты с другого номера и продолжишь. По строке на чат: название — ссылка — заметка.</div>
       <textarea data-k="chats_backup" rows="5" placeholder="Пикник+Баня Сочи — https://t.me/... — постил, дал результат&#10;Анонс Марафона — https://t.me/...">${esc(a.chats_backup||"")}</textarea>
       <button id="ag-backup-fill" type="button" style="margin-top:6px">⤵ Заполнить из каталога (что за этим аккаунтом)</button></div>
-    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">💾 Сохранить</button></div>`;
+    <div class="field"><label>👥 Аккаунт состоит в чатах</label>
+      <button id="ag-show-chats" style="margin-bottom:6px">Показать чаты аккаунта</button>
+      <div id="ag-chats-list" style="display:none;max-height:240px;overflow:auto;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px"></div></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="ag-save">Сохранить</button></div>`;
   const insp=$("#ag-inspect");if(insp)insp.onclick=async()=>{
     const box=$("#ag-inspect-box");box.style.display="block";
     box.innerHTML='<div class="hint">читаю аккаунт из Telegram… (5–15 сек)</div>';
@@ -1928,7 +1932,7 @@ async function openAgent(id){
   const wn=$("#ag-warm-now");if(wn)wn.onclick=async()=>{wn.disabled=true;wn.textContent="прогреваю… (до 5 мин)";
     const log=$("#ag-warm-log");log.style.display="block";log.textContent="запускаю прогрев #"+id+"…";
     const r=await api(`/api/account/${id}/warm_now`,{method:"POST"});
-    wn.disabled=false;wn.textContent="🔥 Прогреть сейчас (с логом)";
+    wn.disabled=false;wn.textContent="Прогреть сейчас (с логом)";
     log.textContent=(r.output||"(пусто)");};
   const td=$("#ag-tdesk");if(td)td.onclick=async()=>{td.disabled=true;td.textContent="готовлю вход… (до 3 мин)";
     const log=$("#ag-tdesk-log");log.style.display="block";log.textContent="создаю desktop-сессию и собираю папку…";
@@ -1946,7 +1950,7 @@ async function openAgent(id){
   const inv=$("#ag-invent-now");if(inv)inv.onclick=async()=>{inv.disabled=true;inv.textContent="собираю чаты… (до 4 мин)";
     const log=$("#ag-invent-log");log.style.display="block";log.textContent="прохожу диалоги аккаунта #"+id+"…";
     const r=await api(`/api/account/${id}/inventory`,{method:"POST"});
-    inv.disabled=false;inv.textContent="📋 Инвентаризовать чаты сейчас";
+    inv.disabled=false;inv.textContent="Инвентаризовать чаты сейчас";
     log.textContent=(r.output||"(пусто)");
     try{const o=JSON.parse((r.output||"").trim().split("\n").pop());if(o&&o.account_id!=null){const c=$("#ag-chats-cnt");if(c)c.textContent=(o.found??"")+"";}}catch(e){}};
   const bf=$("#ag-backup-fill");if(bf)bf.onclick=async()=>{
@@ -1954,9 +1958,18 @@ async function openAgent(id){
     if(!ch||!ch.length){alert("за этим аккаунтом в каталоге чатов нет — сначала «Инвентаризовать чаты сейчас»");return;}
     const ta=$('[data-k="chats_backup"]');
     ta.value=ch.map(c=>[c.title||"—",c.link||(c.username?("https://t.me/"+c.username):"")].filter(Boolean).join(" — ")).join("\n");};
+  const sc=$("#ag-show-chats");if(sc)sc.onclick=async()=>{
+    const box=$("#ag-chats-list");box.style.display=box.style.display==="none"?"block":"none";
+    if(box.innerHTML)return;box.innerHTML='<div class="hint">загружаю…</div>';
+    const ch=await api(`/api/account/${id}/chats`);
+    if(!ch||!ch.length){box.innerHTML='<div class="hint">аккаунт пока не состоит в чатах — нажми «Инвентаризовать чаты сейчас»</div>';return;}
+    box.innerHTML=ch.map(c=>`<div style="padding:5px 6px;border-bottom:1px solid var(--border);font-size:12px">
+      <b>${esc(c.title||"—")}</b> ${c.members_count?`<span class="sub">${c.members_count} участ.</span>`:""}
+      ${c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">открыть ↗</a>`:""}
+      ${c.kind?`<span class="sub">${c.kind}</span>`:""}</div>`).join("");};
   const gb2=$("#ag-gen-bio");if(gb2)gb2.onclick=async()=>{gb2.disabled=true;gb2.textContent="генерирую…";
     const r=await api(`/api/account/${id}/gen_bio`,{method:"POST"});
-    gb2.disabled=false;gb2.textContent="🤖 Сгенерировать bio (ИИ)";
+    gb2.disabled=false;gb2.textContent="Сгенерировать bio (ИИ)";
     if(r.error){alert(r.error);return;}
     const ta=$("#dr-body").querySelector('[data-k="description"]');
     if(ta){const rest=ta.value.trim();ta.value=rest?(r.bio+"\n\n"+rest):r.bio;}
@@ -1968,7 +1981,7 @@ async function openAgent(id){
     ps.disabled=true;ps.textContent="оформляю…";
     const log=$("#ag-profile-log");log.style.display="block";log.textContent="ставлю аватар, био и приватность (прячу номер) в Telegram…";
     const r=await api(`/api/account/${id}/profile_setup`,{method:"POST"});
-    ps.disabled=false;ps.textContent="✨ Оформить профиль в Telegram (фото + bio + спрятать номер)";
+    ps.disabled=false;ps.textContent="Оформить профиль в Telegram (фото + bio + спрятать номер)";
     if(r.error){log.textContent="⚠ "+r.error;return;}
     log.textContent="✓ Готово для @"+(r.username||id)+" — поставлено: "+((r.set||[]).join(", ")||"ничего");};
   const fileInp=$("#ag-ava-file");
@@ -2114,7 +2127,7 @@ async function viewChatCatalog(v){
   const nicheOpts=niches.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join("");
   v.innerHTML=`<div class="ttoolbar">
       <input id="cc-target" class="grow" placeholder="@username или ссылка чата">
-      <button class="primary" id="cc-add">➕ Добавить чат</button>
+      <button class="primary" id="cc-add">Добавить чат</button>
       <button id="cc-import">📤 Импортировать</button>
       <button id="cc-inv">🔄 Инвентаризация</button>
       <button id="cc-backfill" title="дозаполнить tg_chat_id у старых чатов и аватары лидов — чинит связку «в каком чате найден» в досье">🧩 Дозаполнить</button>
@@ -2366,7 +2379,7 @@ async function openChat(id){
     <div class="row2"><div class="field"><label>Тема/ниша</label><input data-k="topic" value="${esc(c.topic||"")}"></div>
       <div class="field"><label>Город</label><input data-k="city" value="${esc(c.city||"")}"></div></div>
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
-    <div class="ttoolbar" style="margin:4px 0"><button class="primary" id="cc-save">💾 Сохранить</button><button id="cc-del">🗑 Удалить</button></div>
+    <div class="ttoolbar" style="margin:4px 0"><button class="primary" id="cc-save">Сохранить</button><button id="cc-del">Удалить</button></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Мои агенты в этом чате (${(c.agents||[]).length})</label>
     <div id="cc-agents" style="margin-top:6px">${renderChatAgents(c.agents)}</div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Админы (${(c.admins||[]).length}) — часто это ЛПР</label>
@@ -2390,7 +2403,7 @@ function showImportChatsDialog(initialText){
     <h3 style="margin:0 0 12px">📤 Импортировать чаты</h3>
     <div class="sub" style="margin-bottom:12px">Укажи ссылки или username'ы (по одной в строке). Или загрузи CSV/TXT файл.</div>
     <div style="margin-bottom:12px">
-      <label style="display:block;margin-bottom:6px;font-weight:500">📋 Вариант 1: Загрузи файл (CSV/TXT)</label>
+      <label style="display:block;margin-bottom:6px;font-weight:500">Вариант 1: Загрузи файл (CSV/TXT)</label>
       <input type="file" id="imp-file" accept=".csv,.txt" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px">
     </div>
     <div style="text-align:center;color:var(--muted);margin:12px 0">или</div>
@@ -2467,7 +2480,7 @@ async function viewLeadHits(v){
     <div id="ni-list"></div>
     <div class="ttoolbar" style="margin:10px 0 0"><input id="ni-name" placeholder="Название ниши (напр. Загородная)" style="max-width:240px">
       <input id="ni-kw" class="grow" placeholder="ключи через запятую: куплю дом, ищу участок, ...">
-      <button id="ni-add">➕ Ниша</button></div>
+      <button id="ni-add">Ниша</button></div>
   </div>
   <div class="ttoolbar"><b>Очередь находок:</b>
     <button id="ht-new" class="primary">Новые</button><button id="ht-lead">В лидах</button><button id="ht-ign">Игнор</button>
@@ -2610,7 +2623,7 @@ function kpCard(eid,k){
       <div class="field"><label>Тип/название КП</label><input class="kp-name" data-id="${k.id}" value="${esc(k.name||'')}" placeholder="Застройщики"></div>
       <div class="field"><label>Кому подходит (условие для агента)</label><input class="kp-when" data-id="${k.id}" value="${esc(k.when_to_use||'')}" placeholder="если контакт — строительная компания/застройщик"></div></div>
     <div class="field"><label>Текст КП</label><textarea class="kp-text" data-id="${k.id}" rows="3" placeholder="текст КП для этого типа клиентов">${esc(k.kp_text||'')}</textarea></div>
-    <div class="ttoolbar" style="margin:0"><button type="button" class="kp-save" data-id="${k.id}">💾 сохранить</button><button type="button" class="kp-del" data-id="${k.id}">🗑 удалить</button> ${fileBox} <span class="hint kp-msg" data-id="${k.id}"></span></div>
+    <div class="ttoolbar" style="margin:0"><button type="button" class="kp-save" data-id="${k.id}">сохранить</button><button type="button" class="kp-del" data-id="${k.id}">удалить</button> ${fileBox} <span class="hint kp-msg" data-id="${k.id}"></span></div>
   </div>`;
 }
 const PROMPT_PH="Ты пишешь от лица Василия из Фонда доступного жилья директорам агентств недвижимости в личке. Цель диалога — договориться о созвоне на 10-15 минут (НЕ продать в переписке).\n\nПродукт: дополнительный финансовый маршрут для клиентов агентства, которым банк отказал или не хватает первоначального взноса. Агентству +3% с каждой сделки (1% руководителю, 2% риелтору), обучение и сопровождение берём на себя. Работу агентства не меняем — добавляется одно действие: передать короткую анкету.\n\nОтрабатывай возражения: «нет таких клиентов» → у каждого агентства есть сорванные из-за банка сделки; «это развод» → объясни структуру (объект сразу на клиента, всё по договору); «нет времени» → созвон всего 10-15 минут.\n\nНЕЛЬЗЯ: обещать «одобрение всем», выдавать Фонд за банк, скрывать платежи. Говори «дополнительный финансовый маршрут».";
@@ -2618,11 +2631,11 @@ async function viewCampaigns(v){
   const url=PROJECT_SEL?`/api/campaigns?project_id=${PROJECT_SEL.id}`:"/api/campaigns";
   const [camps,accounts,projects]=await Promise.all([api(url),api("/api/accounts"),api("/api/projects")]);
   const accChan=a=>{const b=[];if(a.tg_connected)b.push("TG");if(a.wa_authed)b.push("WA");return b.length?b.join("/"):"—";};
-  const accStatusTxt=a=>a.status==="active"?"✅ готов":(a.status==="warming"?("🔥 прогрев"+(a.warm_stage?(" ст."+a.warm_stage):"")):(a.status==="banned"?"⛔ бан":(a.status||"")));
+  const accStatusTxt=a=>a.status==="active"?"✅ готов":(a.status==="warming"?("прогрев"+(a.warm_stage?(" ст."+a.warm_stage):"")):(a.status==="banned"?"бан":(a.status||"")));
   const projOpts=`<option value="">— без проекта —</option>`+projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   v.innerHTML=`
     <div class="ttoolbar"><button class="primary" id="c-wizard-btn">🚀 Мастер запуска (визард)</button>
-      <button id="c-new-btn">➕ Новая кампания</button>
+      <button id="c-new-btn">Новая кампания</button>
       ${PROJECT_SEL?`<span class="badge b-active">проект: ${esc(PROJECT_SEL.name)}</span> <button id="c-allproj">показать все</button>`:""}
       <span class="hint">Антибан: 2-3 аккаунта на мессенджер · 10-15 контактов/день на аккаунт · постепенный прогрев до КЭВ.</span></div>
     <div class="ttoolbar" style="margin:0 0 12px">
@@ -2644,8 +2657,8 @@ async function viewCampaigns(v){
         <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся).</div>
         <textarea id="c-test-nums" rows="2" placeholder="+79991234567&#10;@my_second_account"></textarea>
         <div class="ttoolbar" style="margin:6px 0 0">
-          <button type="button" id="c-test-add">➕ Добавить в начало очереди</button>
-          <button type="button" id="c-preview">👁 Предпросмотр — что уйдёт получателям</button>
+          <button type="button" id="c-test-add">Добавить в начало очереди</button>
+          <button type="button" id="c-preview">Предпросмотр — что уйдёт получателям</button>
         </div>
         <div id="c-test-msg" style="margin-top:4px;font-size:13px"></div>
         <div id="c-preview-out" style="display:none;margin-top:10px"></div></div>
@@ -2760,7 +2773,7 @@ async function viewCampaigns(v){
     const eid=form.dataset.edit;
     if(!eid){box.innerHTML='<span class="hint">Сначала создай и сохрани кампанию, затем открой её — и добавь КП под типы.</span>';return;}
     const kps=c.kps||[];
-    box.innerHTML=kps.map(k=>kpCard(eid,k)).join("")+`<button type="button" id="c-kp-add">➕ Добавить КП</button>`;
+    box.innerHTML=kps.map(k=>kpCard(eid,k)).join("")+`<button type="button" id="c-kp-add">Добавить КП</button>`;
     const reload=async()=>{const fr=await api(`/api/campaign/${eid}`);c.kps=fr.kps||[];renderKpsBox(c);};
     box.querySelector("#c-kp-add").onclick=async()=>{await api(`/api/campaign/${eid}/kps`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Новый тип"})});reload();};
     box.querySelectorAll(".kp-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
@@ -2814,7 +2827,7 @@ async function viewCampaigns(v){
     if(!text.trim()){msg.textContent="введи хотя бы один номер или @username";return;}
     ctAdd.disabled=true;ctAdd.textContent="добавляю…";
     const r=await api(`/api/campaign/${eid}/test_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
-    ctAdd.disabled=false;ctAdd.textContent="➕ Добавить в начало очереди";
+    ctAdd.disabled=false;ctAdd.textContent="Добавить в начало очереди";
     if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     msg.innerHTML=`<span style="color:var(--green)">✅ добавлено ${r.added} — теперь запусти кампанию с лимитом ${r.added} (поле у кнопки «▶ Запустить» в списке кампаний), проверь, и уже потом увеличь лимит для боевого захода</span>`;
     $("#c-test-nums").value="";
@@ -2824,7 +2837,7 @@ async function viewCampaigns(v){
     if(!eid){out.style.display="block";out.innerHTML='<span style="color:#c0392b">сначала сохрани кампанию, затем открой её ещё раз</span>';return;}
     cPrev.disabled=true;cPrev.textContent="гружу…";
     const r=await api(`/api/campaign/${eid}/preview`);
-    cPrev.disabled=false;cPrev.textContent="👁 Предпросмотр — что уйдёт получателям";
+    cPrev.disabled=false;cPrev.textContent="Предпросмотр — что уйдёт получателям";
     out.style.display="block";
     if(r.error){out.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     if(!r.items.length){out.innerHTML='<span class="hint">нет ни одного получателя (проверь тег аудитории/добавь тестовые номера) — шаблон не с кем показать</span>';return;}
@@ -2893,9 +2906,9 @@ function renderCampList(mount,camps){
           <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
           <button class="cl-wiz" data-id="${c.id}" title="пройти по шагам визарда, проверить и поправить">🔁 В визард</button>
           <button class="cl-pre" data-id="${c.id}" title="что готово/мешает запуску">🚦 Готовность</button>
-          <button class="cl-prog" data-id="${c.id}">📋 Прогресс</button>
+          <button class="cl-prog" data-id="${c.id}">Прогресс</button>
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
-          <button class="cl-warm" data-id="${c.id}">🔥 Прогрев</button>
+          <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go" data-id="${c.id}">▶ Запустить</button>
@@ -2958,7 +2971,7 @@ function renderCampList(mount,camps){
         <div class="ttoolbar" style="margin:6px 0;flex-wrap:wrap">
           <label>доход со сделки ${inp("revenue_per_deal")}</label>
           <label>ЗП менеджера/мес ${inp("manager_salary")}</label><label>лидов у менеджера/мес ${inp("manager_leads")}</label></div>
-        <button class="primary" id="econ-save-${id}">💾 Сохранить и пересчитать</button>
+        <button class="primary" id="econ-save-${id}">Сохранить и пересчитать</button>
         <hr>
         <div class="row2">
           <div><div class="sub">Охвачено / Лидов / Сделок</div><div style="font-size:18px;font-weight:700">${m.reached} / ${m.leads} / ${m.deals}</div></div>
@@ -2993,7 +3006,7 @@ function renderCampList(mount,camps){
           <td style="min-width:140px"><div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--green)"></div></div><span class="sub mono">${a.warm_stage||0}/${a.ready_stage||7}</span></td></tr>`;}).join("");
       box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
         ${team.length?`<table style="width:100%;border-collapse:collapse"><tr><th>Аккаунт</th><th>Сессия</th><th>Статус</th><th>Прогрев</th></tr>${rows}</table>`:'<div class="sub">В команде нет аккаунтов. Добавь их в «⚙ Настроить» → «Команда агентов».</div>'}
-        <div class="ttoolbar" style="margin:10px 0 0"><button class="primary" id="warm-go-${id}">🔥 Запустить ступень прогрева</button><span class="hint" id="warm-msg"></span></div>
+        <div class="ttoolbar" style="margin:10px 0 0"><button class="primary" id="warm-go-${id}">Запустить ступень прогрева</button><span class="hint" id="warm-msg"></span></div>
         <div class="ttoolbar" style="margin:8px 0 0;flex-wrap:wrap">
           <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="warm-auto"> авто-ступень каждые</label>
           <input id="warm-int" type="number" min="1" value="24" style="max-width:64px"> ч
@@ -3008,7 +3021,7 @@ function renderCampList(mount,camps){
         box.querySelector("#warm-set-msg").textContent="сохранено";};
       const gb=box.querySelector(`#warm-go-${id}`);if(gb)gb.onclick=async()=>{gb.disabled=true;gb.textContent="запускаю…";
         const r=await api(`/api/campaign/${id}/warmup`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});
-        gb.disabled=false;gb.textContent="🔥 Запустить ступень прогрева";
+        gb.disabled=false;gb.textContent="Запустить ступень прогрева";
         const m=box.querySelector("#warm-msg");
         if(r.error){m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
         else{m.textContent=`прогрев запущен (${r.warming} акк.) — идёт в фоне, ступень обновится через несколько минут`;}};
@@ -3169,7 +3182,7 @@ async function openDossier(id){
     <div class="field"><label>Заметки</label><div class="v">${esc(c.notes)||'<span class="no">нет</span>'}</div></div>
     <div class="field"><label>🧠 Контекст для агента — история/нюансы общения (агент учтёт в диалоге)</label>
       <textarea id="dr-context" rows="3" style="width:100%" placeholder="напр.: общались на конференции, обещал перезвонить; интересовался загородной недвижимостью">${esc(c.agent_context||"")}</textarea>
-      <button id="dr-ctx-save" data-id="${c.id}" style="margin-top:6px">💾 Сохранить контекст</button></div>
+      <button id="dr-ctx-save" data-id="${c.id}" style="margin-top:6px">Сохранить контекст</button></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;">История переписки</label>
     <div class="th-body" style="max-height:none;padding:12px 0">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}</div></div>`).join("")||'<div class="no">Сообщений нет</div>'}</div>`;
   bindTags($("#dr-body"));
@@ -3178,7 +3191,7 @@ async function openDossier(id){
   const cb=$("#dr-ctx-save");
   if(cb)cb.onclick=async()=>{cb.textContent="…";
     await api(`/api/contact/${id}/context`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_context:$("#dr-context").value})});
-    cb.textContent="✓ сохранено";setTimeout(()=>cb.textContent="💾 Сохранить контекст",1500);};
+    cb.textContent="✓ сохранено";setTimeout(()=>cb.textContent="Сохранить контекст",1500);};
   const dp=$("#dr-pipe");
   if(dp)dp.onchange=async()=>{await api(`/api/contact/${id}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pipeline_id:+dp.value})});
     const c2=STATE.contacts.find(x=>x.id===id);if(c2)c2.pipeline_id=+dp.value;};
@@ -3251,7 +3264,7 @@ async function viewParser(v){
 async function viewProjects(v){
   const projects=await api("/api/projects");
   v.innerHTML=`
-    <div class="ttoolbar"><button class="primary" id="p-new-btn">➕ Новый проект</button>
+    <div class="ttoolbar"><button class="primary" id="p-new-btn">Новый проект</button>
       <span class="hint">Проект = направление бизнеса. Внутри проекта — несколько маркетинговых кампаний.</span></div>
     <div id="p-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="p-form-title">Новый проект</div>
@@ -3626,7 +3639,7 @@ function renderWizard(){
       ${edit?"":`<div class="field" style="margin:10px 0"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="wz-autoproxy"> 📡 Включить бесплатный авто-пул MTProto-прокси (если нет платных)</label>
         <div class="hint">Соберёт прокси из каналов и раздаст аккаунтам автоматически. Только Telegram, времянка — на боевую лучше платные.</div></div>`}
       <div class="hint" style="margin:10px 0">${edit?"Сохраню изменения в существующую кампанию (название, оффер→первое сообщение, промпт, аудитория, канал). Аккаунты/КП-набор — в «⚙ Настроить».":"При запуске создам: проект, воронку, кампанию (оффер → первое сообщение, промпт → агент), и нишу из ключей. Дальше назначишь аккаунты-отправители и жмёшь ▶."}</div>
-      <button class="primary" id="wz-launch" style="font-size:15px;padding:12px 20px">${edit?"💾 Сохранить изменения":"💰 Запустить (клиенты на автомате)"}</button>
+      <button class="primary" id="wz-launch" style="font-size:15px;padding:12px 20px">${edit?"Сохранить изменения":"💰 Запустить (клиенты на автомате)"}</button>
       <div id="wz-launch-msg" style="margin-top:10px"></div>`;
   }
   v.innerHTML=`<div class="card" id="wz-card" style="max-width:760px">
@@ -3674,12 +3687,12 @@ async function wzLaunch(){
       const r=await api(`/api/campaign/${WZ.editId}/update`,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({name:d.name,product:d.client,audience_tag:d.audience_tag,channel:d.channel,
           message_template:d.offer,agent_prompt:d.prompt,kp_text:d.kp_text||""})});
-      if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';lb.disabled=false;lb.textContent="💾 Сохранить изменения";return;}
+      if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';lb.disabled=false;lb.textContent="Сохранить изменения";return;}
       if(d.keywords.trim())await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:d.name,keywords:d.keywords})});
       wzClearDraft();
       msg.innerHTML=`<div class="card" style="background:var(--green-soft);padding:12px">✅ Кампания обновлена.<div style="margin-top:8px"><button class="primary" id="wz-done">К кампаниям →</button></div></div>`;
       const done=$("#wz-done");if(done)done.onclick=()=>{WZ=null;location.hash="campaigns";route();};
-    }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка: '+esc(e.message)+'</span>';lb.disabled=false;lb.textContent="💾 Сохранить изменения";}
+    }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка: '+esc(e.message)+'</span>';lb.disabled=false;lb.textContent="Сохранить изменения";}
     return;
   }
   lb.textContent="запускаю…";

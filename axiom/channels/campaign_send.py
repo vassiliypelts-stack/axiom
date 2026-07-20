@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
+from telethon.tl.functions.contacts import AddContactRequest
+from telethon.tl.types import InputPhoneContact
 
 from db import database
 from channels.telegram import (
@@ -253,6 +255,19 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"], _decision_phrase(row))
         try:
             entity = await _resolve_entity(s["client"], row)
+            # антибан: добавить контакт в книжку перед первым сообщением
+            try:
+                await s["client"](AddContactRequest(
+                    add_phone_privacy_exception=False,
+                    add_contact=[InputPhoneContact(
+                        client_id=row["id"],
+                        phone=row.get("phone") or "",
+                        first_name=name.split()[0] if name.split() else name,
+                        last_name=" ".join(name.split()[1:]) if len(name.split()) > 1 else "",
+                    )]
+                ))
+            except Exception:
+                pass  # не критично — книжка не блокирует отправку
             # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана
             # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
             # опенер целиком сразу — очередь на потом ставить некому.

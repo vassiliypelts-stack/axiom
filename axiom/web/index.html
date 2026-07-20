@@ -1197,11 +1197,16 @@ async function showSmsRegisterDialog(){
   go.onclick=async()=>{
     const c=CS.find(x=>x.code==sel.value); if(!c)return;
     const n=Math.max(1,+qty.value||1);
-    if(!confirm(`Зарегистрировать ${n} номер(ов) в стране «${c.label}» за ≈ $${(c.cost*n).toFixed(2)}?\n\nЭто СПИШЕТ деньги с баланса hero-sms и создаст аккаунты.`))return;
-    go.disabled=true; go.textContent="регистрирую…";
+    if(!confirm(`Купить ${n} номер(ов) в стране «${c.label}» за ≈ $${(c.cost*n).toFixed(2)}?\n\nЭто СПИШЕТ деньги с баланса hero-sms и создаст аккаунты status=warming. Их надо будет подключить через 🔌 Подключить.`))return;
+    go.disabled=true; go.textContent="покупаю…";
     const r=await api("/api/sms/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({country:c.code,qty:n})});
-    if(r&&r.ok){modal.querySelector("#sm-msg").innerHTML=`<span style="color:var(--green)">✅ ${esc(r.msg||"запущено")}</span>`;}
-    else{modal.querySelector("#sm-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не удалось")+'</span>';go.disabled=false;go.textContent="Зарегистрировать";}
+    if(r&&r.ok){
+      modal.querySelector("#sm-msg").innerHTML=`<span style="color:var(--green)">✅ ${esc(r.msg||"куплено")}</span>`;
+      setTimeout(()=>{close();route();},2000);
+    } else {
+      modal.querySelector("#sm-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не удалось")+'</span>';
+      go.disabled=false; go.textContent="Зарегистрировать";
+    }
   };
 }
 // Защита купленных аккаунтов от реклейма: 2FA (бесплатно, сразу) + опционально смена

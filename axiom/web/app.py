@@ -212,21 +212,30 @@ def sms_countries() -> JSONResponse:
 
 @app.post("/api/sms/register")
 def sms_register(payload: dict = Body(default={})) -> JSONResponse:
-    """Саморегистрация номера через hero-sms — ПЛАТНЫЙ шаг (getNumber резервирует номер
-    и списывает деньги). Пока НЕ включён: реальная регистрация свежего TG-номера требует
-    гео-совпадающего мобильного/резидентного прокси (наш пул — бесплатный MTProto, его
-    Telegram часто отклоняет для регистрации), а также согласованной страны. Поэтому
-    эндпоинт денег НЕ тратит — возвращает, что нужно решить, чтобы не спалить баланс/номер
-    впустую. Реализация регистрации — channels/phone_register.py (следующий этап ТЗ)."""
+    """Купить номера через hero-sms и создать аккаунты в БД.
+    ТРАТИТ ДЕНЬГИ: get_number() за каждый номер — реальная покупка."""
+    from channels.phone_register import buy_and_save
+    from channels.sms_hero import SmsHeroError
+
     country = payload.get("country")
     qty = int(payload.get("qty") or 1)
+    label = (payload.get("label") or "").strip()
+
+    if not country:
+        return JSONResponse({"ok": False, "error": "выбери страну"}, status_code=400)
+    if qty < 1 or qty > 10:
+        return JSONResponse({"ok": False, "error": "от 1 до 10 номеров за раз"}, status_code=400)
+
+    try:
+        created = buy_and_save(int(country), qty, label)
+    except SmsHeroError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
     return JSONResponse({
-        "ok": False,
-        "error": (f"Регистрация ещё не включена (Этап 2 ТЗ). Витрина/выбор страны работают, "
-                  f"но реальная покупка номера требует: 1) гео-прокси под страну (наш пул — "
-                  f"MTProto, для рег-ции Telegram ненадёжен); 2) твоего подтверждения страны "
-                  f"(выбрано: {country}, кол-во: {qty}). Денег не потратил."),
-    }, status_code=400)
+        "ok": True,
+        "msg": f"Куплено {len(created)} номеров. Аккаунты созданы (status=warming). Подключи их через 🔌 Подключить.",
+        "accounts": created,
+    })
 
 
 @app.get("/api/proxy6/whoami")
@@ -3574,22 +3583,52 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/campaign/{cid}/test")
 def campaign_test(cid: int) -> JSONResponse:
     """Тестовый заход: шлёт ТОЛЬКО на свои тест-номера (is_test=1), в обход гейта прогрева.
-    Отдельная кнопка «Тест» — проверить скрипт живьём на себе перед боевым запуском."""
+    Отдельная кнопка «Тест» — проверить скрипт живьём на себе перед боевым запуском.
+    Перед отправкой СБРАСЫВАЕТ статус тестовых контактов в 'new' — чтобы можно было
+    тестировать многократно, не добавляя номера заново."""
     import subprocess
     import sys
     with database.get_conn() as conn:
-        row = conn.execute("SELECT name, message_template FROM campaigns WHERE id=?", (cid,)).fetchone()
+        row = conn.execute("SELECT name, message_template, audience_tag FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         if not (row["message_template"] or "").strip():
             return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        # Сбрасываем статус тестовых контактов — чтобы тест срабатывал повторно
+        tag = (row["audience_tag"] or "").strip()
+        test_ids: list[int] = []
+        if tag:
+            test_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM contacts WHERE COALESCE(is_test,0)=1 AND tags LIKE ?",
+                (f"%{tag}%",),
+            ).fetchall()]
+            conn.execute(
+                "UPDATE contacts SET status='new' WHERE id IN ({})".format(
+                    ",".join("?" * len(test_ids))
+                ),
+                test_ids,
+            )
+        else:
+            test_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM contacts WHERE COALESCE(is_test,0)=1"
+            ).fetchall()]
+            conn.execute("UPDATE contacts SET status='new' WHERE COALESCE(is_test,0)=1")
+        # Очищаем старые записи очереди тестовых контактов (чтобы не было дублей)
+        if test_ids:
+            conn.execute(
+                "DELETE FROM opener_queue WHERE contact_id IN ({}) AND campaign_id=?".format(
+                    ",".join("?" * len(test_ids))
+                ),
+                (*test_ids, cid),
+            )
         n_test = conn.execute("SELECT COUNT(*) FROM contacts WHERE COALESCE(is_test,0)=1 "
                               "AND status='new'").fetchone()[0]
         if not n_test:
-            return JSONResponse({"error": "нет тест-номеров (is_test=1, статус new). Добавь свои "
+            return JSONResponse({"error": "нет тест-номеров (is_test=1). Добавь свои "
                                           "номера в тест-контакты кампании."}, status_code=400)
         database.add_event(conn, "campaign_test", f"🧪 Тест кампании «{row['name']}»",
-                           "отправка только на свои тест-номера", level="good", campaign_id=cid)
+                           f"сброс {n_test} тестовых контактов → статус new, отправка",
+                           level="good", campaign_id=cid)
     subprocess.Popen(
         [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", "10", "--test"],
         cwd=str(BASE_DIR.parent),

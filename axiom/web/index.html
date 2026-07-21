@@ -1902,15 +1902,52 @@ async function viewContacts(v){
   await loadContacts();
   v.innerHTML=`<div class="ttoolbar">
       <button class="primary" id="ct-new">Контакт</button>
+      <button id="ct-imp">⬆ Импорт</button>
       <button id="ct-resolve-tg" title="пробить номера в Telegram — узнать tg_user_id, username, аватар, bio">📡 Пробив TG</button>
       <button id="ct-enrich" title="обогатить пачку контактов: DaData (ИНН/директор) + AI-досье">🧠 Обогатить пачку</button>
       <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать</button>
       <span class="grow"></span>
       <span class="hint" id="ct-seg-msg">Физлица. Клик — карточка с историей и досье.</span>
-    </div><div id="ct-body"></div>`;
+    </div>
+    <div id="ct-imp-panel" class="card" style="display:none;margin-bottom:12px">
+      <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
+        <input type="file" id="ct-imp-file" accept=".csv" style="max-width:260px">
+        <input id="ct-imp-tag" value="Контакты" placeholder="тег для всех" style="max-width:200px">
+        <input id="ct-imp-source" placeholder="источник (напр. Телефоны ЦА)" style="max-width:200px" class="grow">
+        <button class="primary" id="ct-imp-go">⬆ Загрузить</button>
+        <span class="hint" id="ct-imp-msg"></span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
+        <textarea id="ct-imp-text" rows="3" placeholder="Или вставь номера телефонов сюда (каждый с новой строки)" style="flex:1;min-width:240px"></textarea>
+        <button id="ct-imp-text-go">📱 Вставить номера</button>
+      </div>
+      <div class="hint" style="margin-top:6px">CSV: столбцы «Телефон» / «Имя» / «Название» / «Город» — всё определится само. Дубли обновляются.</div>
+    </div>
+    <div id="ct-body"></div>`;
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
+  $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  $("#ct-imp-go").onclick=async()=>{
+    const f=$("#ct-imp-file").files[0],msg=$("#ct-imp-msg");
+    if(!f){msg.textContent="выбери CSV-файл";return;}
+    msg.textContent="загружаю…";
+    const fd=new FormData();fd.append("file",f);
+    fd.append("tag",$("#ct-imp-tag").value||"Контакты");
+    const srcEl=$("#ct-imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
+    try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
+      if(r.error){msg.textContent="ошибка: "+r.error;return;}
+      msg.textContent=`✅ импортировано ${r.imported}, всего ${r.total}`;route();
+    }catch(e){msg.textContent="ошибка: "+e.message;}};
+  $("#ct-imp-text-go").onclick=async()=>{
+    const text=$("#ct-imp-text").value.trim(),msg=$("#ct-imp-msg");
+    if(!text){msg.textContent="вставь номера";return;}
+    msg.textContent="загружаю…";
+    try{const r=await api("/api/import/phones",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text, tag:$("#ct-imp-tag").value||"Контакты", source:$("#ct-imp-source").value||"phones"})});
+      if(r.error){msg.textContent="ошибка: "+r.error;return;}
+      msg.textContent=`✅ добавлено ${r.imported} номеров, всего ${r.total}`;route();
+    }catch(e){msg.textContent="ошибка: "+e.message;}};
   $("#ct-resolve-tg").onclick=async()=>{
     const b=$("#ct-resolve-tg"),m=$("#ct-seg-msg");b.disabled=true;b.textContent="пробиваю TG…";
     m.textContent="запускаю пробив номеров по одному на каждом живом аккаунте (антибан)…";

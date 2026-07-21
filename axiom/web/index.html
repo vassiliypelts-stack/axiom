@@ -459,30 +459,26 @@ function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</s
 
 const NAV_GROUPS=[
   {title:"",items:[
-    {id:"dashboard",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>',label:"Дашборд"},
+    {id:"dashboard",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>',label:"Виджеты"},
     {id:"orgchart",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="6" height="5" rx="1"/><rect x="12" y="2" width="6" height="5" rx="1"/><rect x="7" y="13" width="6" height="5" rx="1"/><line x1="5" y1="7" x2="10" y2="13"/><line x1="15" y1="7" x2="10" y2="13"/></svg>',label:"Структура"},
     {id:"calendar",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="16" height="14" rx="2"/><line x1="2" y1="8" x2="18" y2="8"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="14" y1="1" x2="14" y2="5"/></svg>',label:"Календарь"},
-  ]},
-  {title:"Проекты",collapsible:true,items:[
     {id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"},
   ]},
-  {title:"CRM",collapsible:true,items:[
-    {id:"leads",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="5"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Лиды (квал)"},
+  {title:"Ресурсы",collapsible:true,items:[
+    {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
+    {id:"dossier",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="2"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="10" x2="14" y2="10"/><line x1="6" y1="14" x2="10" y2="14"/></svg>',label:"Досье"},
+    {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
+    {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
+    {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
+  ]},
+  {title:"CRM / Лидген",collapsible:true,items:[
+    {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/><path d="M14 10h2a2 2 0 010 4h-2z"/><path d="M7 13.5v1.5a2 2 0 004 0v-.5"/></svg>',label:"Кампании"},
+    {id:"chats",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 9a7 7 0 00-7-7H8a7 7 0 000 14h2l4 3v-3a7 7 0 003-4z"/><circle cx="8.5" cy="9" r="1" fill="currentColor"/><circle cx="11.5" cy="9" r="1" fill="currentColor"/><circle cx="14.5" cy="9" r="1" fill="currentColor"/></svg>',label:"Диалоги"},
+    {id:"leads",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="5"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Лиды"},
+    {id:"hits",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Находки"},
     {id:"deals",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="16" height="12" rx="2"/><path d="M7 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>',label:"Сделки"},
     {id:"contacts",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="6" r="3.5"/><path d="M3 18c0-4 3.1-6 7-6s7 2 7 6"/></svg>',label:"Контакты"},
     {id:"companies",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="8" width="6" height="10"/><rect x="12" y="4" width="6" height="14"/><line x1="4" y1="11" x2="6" y2="11"/><line x1="4" y1="14" x2="6" y2="14"/><line x1="14" y1="7" x2="16" y2="7"/><line x1="14" y1="10" x2="16" y2="10"/><line x1="14" y1="13" x2="16" y2="13"/><line x1="14" y1="16" x2="16" y2="16"/></svg>',label:"Компании"},
-  ]},
-  {title:"Лидген",collapsible:true,items:[
-    {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/><path d="M14 10h2a2 2 0 010 4h-2z"/><path d="M7 13.5v1.5a2 2 0 004 0v-.5"/></svg>',label:"Кампании"},
-    {id:"chats",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 9a7 7 0 00-7-7H8a7 7 0 000 14h2l4 3v-3a7 7 0 003-4z"/><circle cx="8.5" cy="9" r="1" fill="currentColor"/><circle cx="11.5" cy="9" r="1" fill="currentColor"/><circle cx="14.5" cy="9" r="1" fill="currentColor"/></svg>',label:"Диалоги"},
-  ]},
-  {title:"Досье",collapsible:true,items:[
-    {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
-  ]},
-  {title:"Ресурсы",collapsible:true,items:[
-    {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
-    {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
-    {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
   ]},
 ];
 // «ИИ-агенты» слиты в «Структуру»: должность сама несёт аккаунт/задачу/промпт.
@@ -3623,7 +3619,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 
@@ -3661,16 +3657,33 @@ function renderNav(active){
       const [m]=order.splice(from,1);order.splice(to,0,m);
       NAV_GORDER=order;localStorage.setItem("axiom_nav_gorder",JSON.stringify(order));renderNav(active);};
   });
-  let drag=null;
+  let drag=null, dragGroup=null;
   $("#nav").querySelectorAll("a[draggable]").forEach(a=>{
-    a.ondragstart=()=>{drag=a;a.style.opacity=".4";};
-    a.ondragend=()=>{a.style.opacity="1";drag=null;};
+    a.ondragstart=()=>{drag=a;dragGroup=a.dataset.g;a.style.opacity=".4";};
+    a.ondragend=()=>{a.style.opacity="1";drag=null;dragGroup=null;};
     a.ondragover=e=>e.preventDefault();
-    a.ondrop=e=>{e.preventDefault();if(!drag||drag===a||drag.dataset.g!==a.dataset.g)return;
-      const g=NAV_GROUPS.find(x=>(x.title||"_")===a.dataset.g);if(!g)return;
-      const from=g.items.findIndex(i=>i.id===drag.dataset.id),to=g.items.findIndex(i=>i.id===a.dataset.id);
-      const [m]=g.items.splice(from,1);g.items.splice(to,0,m);
-      NAV_ORDER=NAV_ORDER||{};NAV_ORDER[a.dataset.g]=g.items.map(i=>i.id);
+    a.ondrop=e=>{e.preventDefault();if(!drag||drag===a)return;
+      const targetGroup=a.dataset.g,srcGroup=drag.dataset.g;
+      if(srcGroup===targetGroup){
+        // перестановка внутри группы
+        const g=NAV_GROUPS.find(x=>(x.title||"_")===srcGroup);if(!g)return;
+        const from=g.items.findIndex(i=>i.id===drag.dataset.id),to=g.items.findIndex(i=>i.id===a.dataset.id);
+        const [m]=g.items.splice(from,1);g.items.splice(to,0,m);
+      }else{
+        // перемещение между группами
+        const srcG=NAV_GROUPS.find(x=>(x.title||"_")===srcGroup);if(!srcG)return;
+        const tgtG=NAV_GROUPS.find(x=>(x.title||"_")===targetGroup);if(!tgtG)return;
+        const from=srcG.items.findIndex(i=>i.id===drag.dataset.id);if(from<0)return;
+        const [m]=srcG.items.splice(from,1);
+        const to=tgtG.items.findIndex(i=>i.id===a.dataset.id);
+        tgtG.items.splice(to<0?tgtG.items.length:to,0,m);
+      }
+      // сохраняем порядок для обеих групп
+      NAV_ORDER=NAV_ORDER||{};
+      [srcGroup,targetGroup].forEach(gTitle=>{
+        const g=NAV_GROUPS.find(x=>(x.title||"_")===gTitle);
+        if(g)NAV_ORDER[gTitle]=g.items.map(i=>i.id);
+      });
       localStorage.setItem("axiom_nav_order",JSON.stringify(NAV_ORDER));renderNav(active);};
   });
 }

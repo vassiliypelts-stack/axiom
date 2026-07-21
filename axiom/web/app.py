@@ -50,7 +50,7 @@ import os as _os_auth
 
 _AUTH_PW = _os_auth.environ.get("AXIOM_PASSWORD", "").strip()
 _AUTH_COOKIE = "axiom_auth"
-_AUTH_OPEN = {"/login", "/favicon.ico", "/health"}
+_AUTH_OPEN = {"/login", "/favicon.ico", "/health", "/api/auth/request-code", "/api/auth/verify-code"}
 
 
 def _auth_token() -> str:
@@ -64,7 +64,7 @@ _LOGIN_HTML = """<!doctype html><html lang=ru><meta charset=utf-8>
 <style>
 body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
 background:#0b1020;font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#e8ecf5}
-form{background:#141b2f;padding:32px 28px;border-radius:16px;width:300px;
+.card{background:#141b2f;padding:32px 28px;border-radius:16px;width:320px;
 box-shadow:0 20px 60px rgba(0,0,0,.5);border:1px solid #222c46}
 h1{font-size:20px;margin:0 0 4px;text-align:center}
 p{color:#8b96b3;font-size:13px;margin:0 0 20px;text-align:center}
@@ -73,25 +73,75 @@ border:1px solid #2a3557;background:#0d1428;color:#fff;font-size:15px;margin-bot
 button{width:100%;padding:12px;border:0;border-radius:10px;background:#5b6cff;
 color:#fff;font-size:15px;font-weight:600;cursor:pointer}
 button:hover{background:#4a5bef}
+button.sec{background:transparent;border:1px solid #2a3557;color:#8b96b3;margin-top:8px}
+button.sec:hover{border-color:#5b6cff;color:#e8ecf5}
 .err{background:#3a1622;color:#ff9db1;padding:9px 12px;border-radius:8px;
 font-size:13px;margin-bottom:12px;text-align:center}
+.ok{background:#163a1e;color:#9bffb1;padding:9px 12px;border-radius:8px;font-size:13px;margin-bottom:12px;text-align:center}
+.divider{display:flex;align-items:center;gap:12px;margin:16px 0;color:#4a5580;font-size:12px}
+.divider:before,.divider:after{content:"";flex:1;height:1px;background:#1e2844}
+.tab{display:flex;margin-bottom:18px;border-radius:10px;background:#0d1428;overflow:hidden}
+.tab button{flex:1;padding:10px;border:0;background:transparent;color:#8b96b3;font-size:13px;cursor:pointer;border-radius:0}
+.tab button.on{background:#5b6cff;color:#fff}
+.hide{display:none}
+.tg-info{font-size:12px;color:#6a75a0;margin-bottom:16px;text-align:center;line-height:1.5}
 </style>
+<div class=card>
+<div class=tab>
+<button id=t1 class=on onclick="switchTab(1)">🔑 Пароль</button>
+<button id=t2 onclick="switchTab(2)">✈️ Telegram</button>
+</div>
+
+<!-- Пароль -->
+<div id=pane1>
 <form method=post action=/login>
-<h1>🔒 AXIOM</h1><p>Пульт оператора — вход</p>
 <!--ERR-->
 <input type=password name=password placeholder="Пароль" autofocus required>
 <button type=submit>Войти</button>
-</form></html>"""
+</form>
+</div>
+
+<!-- Telegram -->
+<div id=pane2 class=hide>
+<p>Авторизация через бота</p>
+<div class=tg-info>Напишите <b>/login</b> боту <b>@Jarvisvvp_bot</b>,<br>затем нажмите «Получить код»</div>
+<div id=tg-status></div>
+<button class=sec onclick="requestTgCode()">📱 Получить код</button>
+<div id=tg-code-block class=hide style=margin-top:16px>
+<input id=tg-code placeholder="6 цифр из Telegram" maxlength=6 autocomplete=off inputmode=numeric>
+<button onclick="verifyTgCode()">Войти</button>
+</div>
+</div>
+</div>
+
+<script>
+let tab=1;
+function switchTab(n){tab=n;['t1','t2'].forEach((id,i)=>document.getElementById(id).className=i+1===n?'on':'');['pane1','pane2'].forEach((id,i)=>document.getElementById(id).className=i+1===n?'':'hide')}
+function status(msg,ok){document.getElementById('tg-status').innerHTML=ok?'<div class=ok>'+msg+'</div>':'<div class=err>'+msg+'</div>'}
+async function requestTgCode(){try{let r=await fetch('/api/auth/request-code',{method:'POST'});let d=await r.json();if(d.ok){status('Код отправлен в Telegram!',1);document.getElementById('tg-code-block').className='';document.getElementById('tg-code').focus()}else{status(d.error||'Ошибка',0)}}catch(e){status('Ошибка сети',0)}}
+let _checking=0;
+async function verifyTgCode(){let code=document.getElementById('tg-code').value.trim();if(code.length!==6){status('Введите 6 цифр',0);return}try{let r=await fetch('/api/auth/verify-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});let d=await r.json();if(d.ok){document.cookie='axiom_auth='+d.session_id+';path=/;max-age='+(30*24*3600);window.location.href='/'}else{status(d.error||'Неверный код',0)}}catch(e){status('Ошибка сети',0)}}
+document.getElementById('tg-code').addEventListener('keydown',e=>{if(e.key==='Enter')verifyTgCode()});
+</script>
+</html>"""
 
 
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
-    if not _AUTH_PW:                       # защита выключена (локальный режим)
-        return await call_next(request)
+    # Если нет пароля И мы на локальной машине — защита выключена
+    if not _AUTH_PW:
+        host = (request.headers.get("host") or "").split(":")[0]
+        if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+            return await call_next(request)
+        # На внешнем IP/домене — Telegram-защита активна всегда
     path = request.url.path
     if path in _AUTH_OPEN:
         return await call_next(request)
-    if _hmac.compare_digest(request.cookies.get(_AUTH_COOKIE, ""), _auth_token()):
+    cookie = request.cookies.get(_AUTH_COOKIE, "")
+    # Проверка: пароль ИЛИ Telegram-сессия
+    pw_ok = _AUTH_PW and _hmac.compare_digest(cookie, _auth_token())
+    tg_ok = bool(cookie) and _bot_auth.check_session(cookie)
+    if pw_ok or tg_ok:
         return await call_next(request)
     if path.startswith("/api/"):
         return JSONResponse({"error": "нужен вход в пульт"}, status_code=401)
@@ -116,6 +166,29 @@ async def login_submit(request: Request):
         _LOGIN_HTML.replace("<!--ERR-->", '<div class=err>Неверный пароль</div>'),
         status_code=401,
     )
+
+
+# --------------------------------------------------------------------------- #
+#  Telegram bot auth (через @Jarvisvvp_bot)                                   #
+# --------------------------------------------------------------------------- #
+from channels import bot_auth as _bot_auth
+
+
+@app.post("/api/auth/request-code")
+async def tg_auth_request_code(request: Request) -> JSONResponse:
+    """Запросить код авторизации через Telegram-бота."""
+    result = _bot_auth.request_code()
+    return JSONResponse(result)
+
+
+@app.post("/api/auth/verify-code")
+async def tg_auth_verify_code(payload: dict = Body(...)) -> JSONResponse:
+    """Проверить код и создать сессию."""
+    code = (payload.get("code") or "").strip()
+    if len(code) != 6 or not code.isdigit():
+        return JSONResponse({"ok": False, "error": "Код — 6 цифр"})
+    result = _bot_auth.verify_code(code)
+    return JSONResponse(result)
 
 
 @app.get("/logout")

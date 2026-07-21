@@ -819,6 +819,17 @@ def org_member_save(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "id": new_id})
 
 
+@app.post("/api/org/member/{mid}/move")
+def org_member_move(mid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Переместить сотрудника в другой отдел (drag-and-drop на схеме)."""
+    department_id = payload.get("department_id")
+    if not department_id:
+        return JSONResponse({"error": "нужно выбрать отдел"}, status_code=400)
+    with database.get_conn() as conn:
+        conn.execute("UPDATE org_members SET department_id=? WHERE id=?", (int(department_id), mid))
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/org/member/{mid}/delete")
 def org_member_delete(mid: int) -> JSONResponse:
     with database.get_conn() as conn:
@@ -1517,7 +1528,7 @@ def contacts() -> JSONResponse:
             SELECT c.id, c.name, c.person_name, c.person_role, c.username, c.phone, c.wa_phone,
                    c.city, c.agency, c.tags, c.notes, c.status, c.has_tg, c.has_wa,
                    c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
-                   c.specialization, c.hook, c.enriched_at, c.source, c.created_at,
+                   c.specialization, c.hook, c.enriched_at, c.source, c.created_at, c.email,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts

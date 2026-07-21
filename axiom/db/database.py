@@ -59,6 +59,7 @@ _EXTRA_CONTACT_COLS = {
     "photo_analysis": "TEXT",   # анализ аватара (дресс-код/возраст/статус) — этап 4
     "confidence": "REAL",       # достоверность портрета 0..1 («85% по профилю»)
     "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
+    "email": "TEXT",                  # email из импорта/обогащения
     "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
     # --- карточка человека (bэклог P0): идентификация ---
     "gender": "TEXT",           # male|female — угадан по имени (channels/ru_names.gender_of)
@@ -68,6 +69,8 @@ _EXTRA_CONTACT_COLS = {
 
 # Поля компаний, добавляемые миграцией
 _EXTRA_COMPANY_COLS = {
+    "source": "TEXT DEFAULT 'import'",  # откуда импортирована компания
+    "director_inn": "TEXT",            # ИНН руководителя (отдельное поле в выгрузках)
     "director_name": "TEXT",     # ФИО руководителя
     "director_phone": "TEXT",    # Телефон директора
     "director_email": "TEXT",    # Email директора

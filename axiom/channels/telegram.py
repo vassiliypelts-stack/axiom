@@ -23,8 +23,8 @@ from datetime import datetime, timedelta
 
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
-from telethon.tl.functions.contacts import ImportContactsRequest
-from telethon.tl.types import InputPhoneContact
+from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequest
+from telethon.tl.types import InputPhoneContact, InputUser
 
 import config
 from agent.agent import generate_reply
@@ -256,7 +256,20 @@ async def _resolve_entity(client: TelegramClient, row):
     если он есть у контакта (жёсткий отказ только когда вообще нечем резолвить)."""
     if row["username"]:
         try:
-            return await client.get_entity(row["username"].lstrip("@"))
+            entity = await client.get_entity(row["username"].lstrip("@"))
+            # Добавляем в записную книжку аккаунта (антибан)
+            if hasattr(entity, "id"):
+                try:
+                    await client(AddContactRequest(
+                        id=InputUser(entity.id, entity.access_hash or 0),
+                        first_name=(row["name"] or entity.first_name or "").split()[0] if (row["name"] or entity.first_name or "") else "lead",
+                        last_name=" ".join((row["name"] or "").split()[1:]) if row["name"] and len(row["name"].split()) > 1 else (entity.last_name or ""),
+                        phone=entity.phone or "",
+                        add_phone_privacy_exception=False,
+                    ))
+                except Exception:  # noqa: BLE001
+                    pass  # не критично если не добавилось
+            return entity
         except Exception:  # noqa: BLE001
             if not row["phone"]:
                 raise

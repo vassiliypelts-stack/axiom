@@ -66,6 +66,28 @@ _EXTRA_CONTACT_COLS = {
     "has_photo": "INTEGER DEFAULT 0",  # 1 = аватар скачан в data/avatars/{tg_user_id}.jpg (для карточки)
 }
 
+# Поля компаний, добавляемые миграцией
+_EXTRA_COMPANY_COLS = {
+    "director_name": "TEXT",     # ФИО руководителя
+    "director_phone": "TEXT",    # Телефон директора
+    "director_email": "TEXT",    # Email директора
+    "director_role": "TEXT",     # Должность руководителя
+    "kpp": "TEXT",               # КПП
+    "registration_date": "TEXT", # Дата регистрации
+    "employee_count": "INTEGER", # Количество сотрудников
+    "revenue": "REAL",           # Выручка, тыс. руб
+    "profit": "REAL",            # Чистая прибыль/убыток, тыс. руб
+    "balance": "REAL",           # Баланс, тыс. руб
+    "arbitration": "REAL",       # Арбитраж (ответчик), тыс. руб
+    "licenses": "TEXT",          # Полученные лицензии
+    "main_activity": "TEXT",     # Основной вид деятельности
+    "other_activities": "TEXT",  # Другие виды деятельности
+    "procurement_codes": "TEXT", # Предметы закупок (ОКПД2)
+    "region": "TEXT",            # Регион регистрации
+    "sme_category": "TEXT",      # Категория МСП
+    "lessee": "INTEGER DEFAULT 0", # Лизингополучатель
+}
+
 
 # Поля сделок (deals как воронка Битрикс, а не только встречи).
 _EXTRA_DEAL_COLS = {
@@ -215,6 +237,10 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     for col, typ in _EXTRA_CAMPAIGN_CONTACT_COLS.items():
         if col not in cc:
             conn.execute(f"ALTER TABLE campaign_contacts ADD COLUMN {col} {typ}")
+    co = {r["name"] for r in conn.execute("PRAGMA table_info(companies)")}
+    for col, typ in _EXTRA_COMPANY_COLS.items():
+        if col not in co:
+            conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {typ}")
     deal = {r["name"] for r in conn.execute("PRAGMA table_info(deals)")}
     for col, typ in _EXTRA_DEAL_COLS.items():
         if col not in deal:
@@ -450,7 +476,7 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
         row = conn.execute("SELECT id FROM contacts WHERE username = ?", (username,)).fetchone()
 
     cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes",
-            "gender", "is_premium"]
+            "gender", "is_premium", "email", "person_name", "person_role"]
     vals = {c: fields.get(c) for c in cols}
 
     if row:

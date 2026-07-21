@@ -354,6 +354,9 @@
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid var(--bg);}
   ::-webkit-scrollbar-thumb:hover{background:var(--border-hov);}
+  .fin-item{text-align:center;min-width:80px}
+  .fin-val{display:block;font-weight:700;font-size:15px;color:var(--accent)}
+  .fin-label{font-size:10px;color:var(--muted);line-height:1.3}
 
   /* ---- Оргструктура: визуальная org-диаграмма ---- */
   .org-chart{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 20px;overflow-x:auto}
@@ -462,7 +465,7 @@ const NAV_GROUPS=[
     {id:"dashboard",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>',label:"Виджеты"},
     {id:"orgchart",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="6" height="5" rx="1"/><rect x="12" y="2" width="6" height="5" rx="1"/><rect x="7" y="13" width="6" height="5" rx="1"/><line x1="5" y1="7" x2="10" y2="13"/><line x1="15" y1="7" x2="10" y2="13"/></svg>',label:"Структура"},
     {id:"calendar",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="16" height="14" rx="2"/><line x1="2" y1="8" x2="18" y2="8"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="14" y1="1" x2="14" y2="5"/></svg>',label:"Календарь"},
-    {id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"},
+    {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
@@ -472,7 +475,6 @@ const NAV_GROUPS=[
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
   ]},
   {title:"CRM / Лидген",collapsible:true,items:[
-    {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/><path d="M14 10h2a2 2 0 010 4h-2z"/><path d="M7 13.5v1.5a2 2 0 004 0v-.5"/></svg>',label:"Кампании"},
     {id:"chats",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 9a7 7 0 00-7-7H8a7 7 0 000 14h2l4 3v-3a7 7 0 003-4z"/><circle cx="8.5" cy="9" r="1" fill="currentColor"/><circle cx="11.5" cy="9" r="1" fill="currentColor"/><circle cx="14.5" cy="9" r="1" fill="currentColor"/></svg>',label:"Диалоги"},
     {id:"leads",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="5"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Лиды"},
     {id:"hits",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Находки"},
@@ -1850,19 +1852,17 @@ async function viewCompanies(v){
       <span class="hint">Юрлица/агентства. Клик по строке — карточка со связанными контактами и сделками.</span>
     </div>
     <div id="imp-panel" style="display:none" class="card">
-      <div class="ttoolbar" style="margin:0">
+      <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
         <input type="file" id="imp-file" accept=".csv">
-        <input id="imp-tag" value="Агентства недвижимости" title="тег для всей пачки" class="grow">
+        <input id="imp-tag" value="Агентства недвижимости" placeholder="тег" style="max-width:160px">
+        <input id="imp-source" list="src-list" placeholder="источник" style="max-width:170px">
         <button class="primary" id="imp-go">Загрузить</button>
         <span class="hint" id="imp-msg"></span>
       </div>
-      <div class="ttoolbar" style="margin:8px 0 0">
-        <input id="imp-source" value="2ГИС Сочи" title="источник базы — откуда взяты контакты" placeholder="Источник базы (напр.: 2ГИС Сочи)" class="grow">
-      </div>
-      <div class="hint" style="margin-top:8px">CSV из 2ГИС (кодировка определится сама). Дубли по телефону/username обновятся. «Источник» помогает потом выбрать эту базу целиком при сборке кампании (дата проставится сама).</div>
+      <div class="hint" style="margin-top:8px">CSV с любыми столбцами: Наименование, ИНН, ОГРН, ФИО руководителя, Телефон, Адрес, Сайт, Выручка… — система сама сопоставит. Дубли по ИНН/названию обновляются.</div>
     </div>
     <div id="co-body"></div>`;
-  $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";loadSources();};
   $("#co-enr").onclick=async()=>{const n=prompt("Сколько НЕобогащённых обогатить за раз?","10");if(!n)return;
     const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
     alert(`Запущено обогащение до ${r.limit} в фоне. Обнови через минуту-две.`);};
@@ -1889,11 +1889,12 @@ async function viewCompanies(v){
       {key:"company_type",label:"Тип",cls:"sub",render:r=>esc(r.company_type)||"—"},
       {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||"—"},
+      {key:"source",label:"Источник",cls:"sub",render:r=>esc(r.source)||"—"},
       {key:"contacts_count",label:"Контакты",cls:"mono",render:r=>r.contacts_count||0},
-      {key:"deals_count",label:"Сделки",cls:"mono",render:r=>r.deals_count||0},
+      {key:"revenue",label:"Выручка",cls:"mono",render:r=>r.revenue?Number(r.revenue).toLocaleString("ru-RU")+"т":""},
       {key:"site",label:"Сайт",cls:"sub",render:r=>r.site?`<a class="ext" href="${esc(r.site)}" target="_blank" onclick="event.stopPropagation()">сайт ↗</a>`:"—"},
     ],
-    emptyText:"Компаний нет. Импортируй 2ГИС или добавь вручную.",
+    emptyText:"Компаний нет. Импортируй CSV или добавь вручную.",
   });
 }
 
@@ -1912,8 +1913,9 @@ async function viewContacts(v){
     <div id="ct-imp-panel" class="card" style="display:none;margin-bottom:12px">
       <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
         <input type="file" id="ct-imp-file" accept=".csv" style="max-width:260px">
-        <input id="ct-imp-tag" value="Контакты" placeholder="тег для всех" style="max-width:200px">
-        <input id="ct-imp-source" placeholder="источник (напр. Телефоны ЦА)" style="max-width:200px" class="grow">
+        <input id="ct-imp-tag" value="Контакты" placeholder="тег для всех" style="max-width:160px">
+        <input id="ct-imp-source" list="src-list" placeholder="источник" style="max-width:170px">
+        <datalist id="src-list"></datalist>
         <button class="primary" id="ct-imp-go">⬆ Загрузить</button>
         <span class="hint" id="ct-imp-msg"></span>
       </div>
@@ -1927,7 +1929,7 @@ async function viewContacts(v){
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
-  $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";if(loadSources)loadSources();};
   $("#ct-imp-go").onclick=async()=>{
     const f=$("#ct-imp-file").files[0],msg=$("#ct-imp-msg");
     if(!f){msg.textContent="выбери CSV-файл";return;}
@@ -1987,6 +1989,7 @@ async function viewContacts(v){
       {key:"company_name",label:"Компания",cls:"sub",render:r=>esc(r.company_name)||"—"},
       {key:"username",label:"Канал",render:chCell},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>esc(r.phone)||"—"},
+      {key:"source",label:"Источник",cls:"sub",render:r=>esc(r.source)||"—"},
       {key:"tags",label:"Теги",render:tagsCell},
       {key:"status",label:"Статус",render:r=>statusBadge(r.status)},
       {key:"last_ts",label:"Активность",cls:"sub mono",render:r=>fmt(r.last_ts)||"—"},
@@ -2002,13 +2005,23 @@ async function openCompany(id){
   $("#dr-title").textContent=c.name||("Компания #"+id);
   const TYPES=["ООО","ИП","АО","Физлицо","Самозанятый"];
   const fld=(k,label,val,mono)=>`<div class="field"><label>${label}</label><input data-k="${k}" value="${esc(val||"")}"${mono?' class="mono"':''}></div>`;
+  const fin=(k,label,val)=>val?`<div class="fin-item"><span class="fin-val">${Number(val).toLocaleString("ru-RU")}</span><span class="fin-label">${label}</span></div>`:'';
   $("#dr-body").innerHTML=`
     <div class="row2"><div class="field"><label>Название</label><input data-k="name" value="${esc(c.name||"")}"></div>
       <div class="field"><label>Тип</label><select data-k="company_type">${TYPES.map(t=>`<option ${t===c.company_type?"selected":""}>${t}</option>`).join("")}</select></div></div>
     <div class="row2">${fld("city","Город",c.city)}${fld("phone","Телефон",c.phone,1)}</div>
-    <div class="row2">${fld("inn","ИНН",c.inn,1)}${fld("ogrn","ОГРН",c.ogrn,1)}</div>
+    <div class="row2">${fld("inn","ИНН",c.inn,1)}${fld("kpp","КПП",c.kpp,1)}</div>
+    <div class="row2">${fld("ogrn","ОГРН",c.ogrn,1)}${fld("registration_date","Дата рег.",c.registration_date)}</div>
     <div class="row2">${fld("site","Сайт",c.site)}${fld("email","Email",c.email)}</div>
     ${fld("address","Адрес",c.address)}
+    <div class="row2">${fld("director_name","Руководитель",c.director_name)}${fld("director_role","Должность",c.director_role)}</div>
+    <div class="row2">${fld("director_phone","Тел. директора",c.director_phone,1)}${fld("director_email","Email директора",c.director_email)}</div>
+    <div class="row2">${fld("region","Регион",c.region)}${fld("sme_category","Категория МСП",c.sme_category)}</div>
+    <div class="row2">${fld("main_activity","Основной вид деят.",c.main_activity)}${fld("licenses","Лицензии",c.licenses)}</div>
+    ${(c.revenue||c.profit||c.balance)?`<div class="fin-row" style="display:flex;gap:20px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--border);margin-top:6px">
+      ${fin("revenue","Выручка, тыс ₽",c.revenue)}${fin("profit","Прибыль, тыс ₽",c.profit)}${fin("balance","Баланс, тыс ₽",c.balance)}${fin("arbitration","Арбитраж, тыс ₽",c.arbitration)}
+      ${c.employee_count?`<div class="fin-item"><span class="fin-val">${c.employee_count}</span><span class="fin-label">Сотрудников</span></div>`:''}
+    </div>`:''}
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
     <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">Сохранить</button><button id="co-del">Удалить</button></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Контакты (${(c.contacts||[]).length})</label>
@@ -2855,6 +2868,7 @@ async function viewDossier(v){
   });
 }
 
+async function loadSources(){try{const s=await api("/api/import/sources");const dl=$("#src-list");if(dl)dl.innerHTML=s.map(x=>`<option value="${esc(x)}">`).join("");}catch(e){}}
 const CH_RU={telegram:"Telegram",whatsapp:"WhatsApp"};
 const CST={draft:"черновик",running:"идёт",paused:"пауза",done:"готово"};
 function kpCard(eid,k){

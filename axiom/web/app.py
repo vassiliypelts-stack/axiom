@@ -2013,6 +2013,14 @@ def enrich_batch(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "limit": limit})
 
 
+@app.post("/api/enrich/resolve-tg")
+def enrich_resolve_tg(payload: dict = Body(...)) -> JSONResponse:
+    """Пробив номеров контактов в Telegram (phone_resolve) — узнать tg_user_id, username, аватар, bio."""
+    limit = int(payload.get("limit") or 100)
+    _spawn("channels.phone_resolve", "--limit", str(limit))
+    return JSONResponse({"ok": True, "limit": limit, "message": "запущен пробив TG в фоне. Лог в data/logs/phone_resolve.log"})
+
+
 # ---- Парсинг Telegram (поиск групп / парсер / инвайты) -------------------- #
 def _run_capture(args: list[str], timeout: int = 240) -> dict:
     """Запускает модуль и ВОЗВРАЩАЕТ его вывод (для веба, в отличие от _spawn)."""

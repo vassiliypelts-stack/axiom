@@ -16,9 +16,12 @@ import hmac
 import hashlib
 from urllib.request import Request, urlopen
 
-BOT_TOKEN = "8629349002:AAFv2eN-UKNiP1peY_lM4s6VqNmUtw51q58"
-BOT_USERNAME = "Jarvisvvp_bot"
-API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+import os as _os
+BOT_TOKEN = (_os.environ.get("TG_BOT_TOKEN") or "").strip()
+BOT_USERNAME = (_os.environ.get("TG_BOT_USERNAME") or "Jarvisvvp_bot").strip()
+if not BOT_TOKEN:
+    BOT_USERNAME = "none"
+API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
 # Коды авторизации: code -> {chat_id, expires_at, used}
 _codes: dict[str, dict] = {}

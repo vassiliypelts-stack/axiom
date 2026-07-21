@@ -1902,13 +1902,31 @@ async function viewContacts(v){
   await loadContacts();
   v.innerHTML=`<div class="ttoolbar">
       <button class="primary" id="ct-new">Контакт</button>
-      <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать базу</button>
+      <button id="ct-resolve-tg" title="пробить номера в Telegram — узнать tg_user_id, username, аватар, bio">📡 Пробив TG</button>
+      <button id="ct-enrich" title="обогатить пачку контактов: DaData (ИНН/директор) + AI-досье">🧠 Обогатить пачку</button>
+      <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать</button>
       <span class="grow"></span>
-      <span class="hint" id="ct-seg-msg">Физлица (директора/риелторы). Клик — карточка с историей и контекстом для агента.</span>
+      <span class="hint" id="ct-seg-msg">Физлица. Клик — карточка с историей и досье.</span>
     </div><div id="ct-body"></div>`;
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
+  $("#ct-resolve-tg").onclick=async()=>{
+    const b=$("#ct-resolve-tg"),m=$("#ct-seg-msg");b.disabled=true;b.textContent="пробиваю TG…";
+    m.textContent="запускаю пробив номеров по одному на каждом живом аккаунте (антибан)…";
+    try{const r=await api("/api/enrich/resolve-tg",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:100})});
+      m.innerHTML=r.ok?`✅ пробито: найдено ${r.found}, нет в TG ${r.absent}, ошибок ${r.errors}.`:'<span style="color:#c0392b">ошибка: '+esc(r.output||r.error)+'</span>';
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="📡 Пробив TG";route();
+  };
+  $("#ct-enrich").onclick=async()=>{
+    const b=$("#ct-enrich"),m=$("#ct-seg-msg");b.disabled=true;b.textContent="обогащаю…";
+    m.textContent="запускаю обогащение (DaData + AI-досье)…";
+    try{const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:20})});
+      m.textContent=`✅ запущено обогащение до ${r.limit} в фоне. Обнови через минуту.`;
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
+    b.disabled=false;b.textContent="🧠 Обогатить пачку";
+  };
   $("#ct-seg").onclick=async()=>{
     const b=$("#ct-seg"),m=$("#ct-seg-msg");
     if(!confirm("Разложу базу по сферам из фиксированного словаря.\n\nСначала бесплатные правила по тегам, остаток — дешёвой моделью (копейки).\nТрогаю только тех, у кого сегмента ещё нет. Продолжить?"))return;

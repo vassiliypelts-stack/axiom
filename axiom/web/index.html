@@ -959,7 +959,7 @@ async function viewAgents(v){
         if(r.session_state==='banned')return `<span class="badge b-stop" title="${tip}">бан</span>`;
         if(r.session_state==='revoked')return `<span class="badge b-stop" title="${tip}"><span class="sdot r"></span>сессия слетела</span>`;
         if(r.session_state==='noconn')return `<span class="badge b-nurture" title="не достучались ни через прокси, ни напрямую — про сессию не судим. ${tip}"><span class="sdot gy"></span>нет связи</span>`;
-        return '<span class="badge b-nurture" title="ещё не проверялся — нажми «🫀 Проверить живость всех»"><span class="sdot gy"></span>не проверен</span>';
+        return '<span class="badge b-nurture" title="ещё не проверялся — нажми «Проверить живость всех»"><span class="sdot gy"></span>не проверен</span>';
       }},
       {key:"kind",label:"Тип",cls:"sub",render:r=>`${r.protected?'🏠 ':''}${ACC_KIND[r.kind]||(r.kind?esc(r.kind):'<span class="no">—</span>')}`},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
@@ -972,7 +972,7 @@ async function viewAgents(v){
         const pc=r.proxy_checked_at;
         if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''}"><span class="sdot g"></span>живой</span>`;
         if(r.proxy_alive===0)return `<span class="badge b-stop" title="проверено ${fmt(pc)||''} — не отвечает"><span class="sdot r"></span>мёртвый</span>`;
-        return `<span class="badge b-nurture" title="ещё не проверялся — нажми 🔎 Проверить прокси"><span class="sdot gy"></span>не проверен</span>`;
+        return `<span class="badge b-nurture" title="ещё не проверялся — нажми «Проверить прокси»"><span class="sdot gy"></span>не проверен</span>`;
       }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
@@ -1418,7 +1418,7 @@ async function viewOrgChart(v){
 }
 let ORG_ACCOUNTS=[], ORG_AGENTS=[];   // общие данные для формы/таблицы оргструктуры
 function isAccLive(a){return a&&a.session_alive===1&&a.status!=='banned';}  // «живой» аккаунт
-function accMark(a){return a.session_alive===1?'🟢':(a.session_alive===0?'🔴':'⚪');}
+function accMark(a){return a.session_alive===1?'<span class="sdot g"></span>':(a.session_alive===0?'<span class="sdot r"></span>':'<span class="sdot gy"></span>');}
 // Выпадающий аккаунтов: по умолчанию только живые; showAll — все. Текущий выбранный
 // показываем всегда, даже если он не живой и фильтр включён (чтобы не «пропал»).
 function orgAccOptions(selId,showAll){
@@ -1491,7 +1491,7 @@ function wireOrgMemberForm(wrap){
 function orgMemberChip(m){
   const ic=m.kind==='agent'?'🤖':'👤';
   const sub=[m.role, m.kind==='agent'?(AI_TASKS[m.task||m.agent_task]||''):null].filter(Boolean).join(" · ");
-  const acc=m.account_id?`<div class="hint" style="margin-top:2px">${m.account_alive===1?'🟢':(m.account_alive===0?'🔴':'⚪')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}</div>`
+  const acc=m.account_id?`<div class="hint" style="margin-top:2px">${m.account_alive===1?'<span class=\"sdot g\"></span>':(m.account_alive===0?'<span class=\"sdot r\"></span>':'<span class=\"sdot gy\"></span>')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}</div>`
     :'<div class="hint" style="margin-top:2px;color:var(--muted)">аккаунт не назначен</div>';
   return `<div class="card" data-id="${m.id}" style="padding:8px 10px;min-width:180px">
     <div style="font-weight:600">${ic} ${esc(m.name||m.role||'без имени')}</div>
@@ -1507,7 +1507,7 @@ function orgCardHtml(m){
   const ic=m.kind==='agent'?'🤖':'👤';
   const badge=m.kind==='agent'?'agent':'human';
   const badgeLabel=m.kind==='agent'?'ИИ':'живой';
-  const accStr=m.account_id?`<span class="oiacc">${m.account_alive===1?'🟢':'⚪'} ${esc(m.account_label||m.account_username||'#'+m.account_id)}</span>`:'';
+  const accStr=m.account_id?`<span class="oiacc">${m.account_alive===1?'<span class=\"sdot g\"></span>':'<span class=\"sdot gy\"></span>'} ${esc(m.account_label||m.account_username||'#'+m.account_id)}</span>`:'';
   return `<div class="org-card" draggable="true" data-id="${m.id}" data-dept="${m.department_id}">
     <span class="oic">${ic}</span>
     <div class="oinfo">
@@ -1707,7 +1707,7 @@ function orgDeptField(depts,selId){
 async function renderOrgMembers(body){
   const [items,tree]=await Promise.all([api("/api/org/members"),api("/api/org/tree")]);
   const depts=(tree.departments||[]);
-  const accCell=m=>m.account_id?`${m.account_alive===1?'🟢':(m.account_alive===0?'🔴':'⚪')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
+  const accCell=m=>m.account_id?`${m.account_alive===1?'<span class=\"sdot g\"></span>':(m.account_alive===0?'<span class=\"sdot r\"></span>':'<span class=\"sdot gy\"></span>')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
   body.innerHTML=`
     <div class="card" style="margin-bottom:14px">
       <div style="font-weight:700;margin-bottom:8px">Новая должность</div>

@@ -351,6 +351,12 @@
   .skel-table{display:flex;flex-direction:column;gap:12px;padding:16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);}
   .skel-card{height:100px;}
   .skel-row{height:18px;width:100%;}
+  /* Цветные точки статуса вместо эмодзи */
+  .sdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:1px;flex:none;}
+  .sdot.g{background:var(--green);box-shadow:0 0 6px var(--green);}
+  .sdot.r{background:var(--red);box-shadow:0 0 6px var(--red);}
+  .sdot.y{background:var(--accent2);box-shadow:0 0 6px var(--accent2);}
+  .sdot.gy{background:var(--muted);opacity:.5;}
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid var(--bg);}
   ::-webkit-scrollbar-thumb:hover{background:var(--border-hov);}
@@ -514,7 +520,7 @@ function smartTable(mount,cfg){
   });
   const colByKey=k=>allCols.find(c=>c.key===k);
   // Текст ячейки как его ВИДИТ человек: рендер → снять теги → чистый текст.
-  // Нужен фильтрам: в ячейке «🟢 жив» (из session_state), а в r.session_alive лежит 1/0/null —
+  // Нужен фильтрам: в ячейке «<span class="sdot g"></span>жив» (из session_state), а в r.session_alive лежит 1/0/null —
   // фильтр по сырому полю не найдёт ничего по слову «жив». Атрибуты (title и пр.) отсекаются
   // вместе с тегами — ищем только по видимому, не по подсказкам.
   const _sb=document.createElement("div");
@@ -793,7 +799,7 @@ function accLiveSummary(rows){
   const parts=Object.keys(ACC_LIVE).filter(k=>n[k]).map(k=>{
     const cls=k==='alive'?'b-active':(k==='noconn'?'b-nurture':'b-stop');
     return `<span class="badge ${cls}">${ACC_LIVE[k]}: ${n[k]}</span>`;});
-  if(unchecked)parts.push(`<span class="badge b-nurture">⚪ не проверено: ${unchecked}</span>`);
+  if(unchecked)parts.push(`<span class="badge b-nurture"><span class="sdot gy"></span>не проверено: ${unchecked}</span>`);
   const nosess=rows.length-conn.length;
   if(nosess)parts.push(`<span class="hint">без сессии: ${nosess}</span>`);
   return `<span style="display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center">из ${conn.length} подключённых — ${parts.join(" ")}</span>`;
@@ -839,7 +845,7 @@ async function viewAgents(v){
         <span id="a-sess-sum">${accLiveSummary(a)}</span>
         <span class="hint" id="a-sess-msg"></span>
       </div>
-      <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «⚪ нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
+      <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «<span class="sdot gy"></span>нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">Автопрогрев</b>
@@ -860,7 +866,7 @@ async function viewAgents(v){
       <span style="width:1px;height:18px;background:var(--border)"></span>
       <button id="ab-warm">🔥 На прогрев</button>
       <button id="ab-check">Проверить выбранные</button>
-      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — 🟢 жив / 🔴 сессия слетела / бан в колонке «Живость»">🫀 Проверить живость</button>
+      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — <span class="sdot g"></span>жив / <span class="sdot r"></span>сессия слетела / бан в колонке «Живость»">🫀 Проверить живость</button>
       <button id="ab-invent">Инвентаризация чатов</button>
       <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">Оформить (имя+ник+bio+фото+приватность)</button>
       <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
@@ -869,7 +875,7 @@ async function viewAgents(v){
       <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
       <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
       <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
-      <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет 🟢 живой / 🔴 мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
+      <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет <span class="sdot g"></span>живой / <span class="sdot r"></span>мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
       <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
       <button id="ab-unprotect">снять «родной»</button>
       <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">применить</button></span>
@@ -949,11 +955,11 @@ async function viewAgents(v){
         const when=r.session_checked_at?`проверено ${fmt(r.session_checked_at)}`:'';
         const why=r.session_reason?` · ${r.session_reason}`:'';
         const tip=esc(when+why);
-        if(r.session_state==='alive')return `<span class="badge b-active" title="${tip}">🟢 жив</span>`;
+        if(r.session_state==='alive')return `<span class="badge b-active" title="${tip}"><span class="sdot g"></span>жив</span>`;
         if(r.session_state==='banned')return `<span class="badge b-stop" title="${tip}">бан</span>`;
-        if(r.session_state==='revoked')return `<span class="badge b-stop" title="${tip}">🔴 сессия слетела</span>`;
-        if(r.session_state==='noconn')return `<span class="badge b-nurture" title="не достучались ни через прокси, ни напрямую — про сессию не судим. ${tip}">⚪ нет связи</span>`;
-        return '<span class="badge b-nurture" title="ещё не проверялся — нажми «🫀 Проверить живость всех»">⚪ не проверен</span>';
+        if(r.session_state==='revoked')return `<span class="badge b-stop" title="${tip}"><span class="sdot r"></span>сессия слетела</span>`;
+        if(r.session_state==='noconn')return `<span class="badge b-nurture" title="не достучались ни через прокси, ни напрямую — про сессию не судим. ${tip}"><span class="sdot gy"></span>нет связи</span>`;
+        return '<span class="badge b-nurture" title="ещё не проверялся — нажми «🫀 Проверить живость всех»"><span class="sdot gy"></span>не проверен</span>';
       }},
       {key:"kind",label:"Тип",cls:"sub",render:r=>`${r.protected?'🏠 ':''}${ACC_KIND[r.kind]||(r.kind?esc(r.kind):'<span class="no">—</span>')}`},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
@@ -964,9 +970,9 @@ async function viewAgents(v){
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>{
         if(!r.proxy)return '<span class="no">нет</span>';
         const pc=r.proxy_checked_at;
-        if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''}">🟢 живой</span>`;
-        if(r.proxy_alive===0)return `<span class="badge b-stop" title="проверено ${fmt(pc)||''} — не отвечает">🔴 мёртвый</span>`;
-        return `<span class="badge b-nurture" title="ещё не проверялся — нажми 🔎 Проверить прокси">⚪ не проверен</span>`;
+        if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''}"><span class="sdot g"></span>живой</span>`;
+        if(r.proxy_alive===0)return `<span class="badge b-stop" title="проверено ${fmt(pc)||''} — не отвечает"><span class="sdot r"></span>мёртвый</span>`;
+        return `<span class="badge b-nurture" title="ещё не проверялся — нажми 🔎 Проверить прокси"><span class="sdot gy"></span>не проверен</span>`;
       }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
@@ -1447,7 +1453,7 @@ function orgMemberFormHtml(deptId,m){
     <div class="row2"><div class="field"><label>Имя</label><input class="om-name" value="${esc((m&&m.name)||'')}" placeholder="Никита / Нетворкер Аня"></div>
       <div class="field"><label>🔑 Аккаунт-исполнитель &nbsp;<label style="font-weight:400;font-size:12px"><input type="checkbox" class="om-acc-all"> показать все</label></label>
         <select class="om-acc">${orgAccOptions(accId,false)}</select>
-        <div class="hint" style="margin-top:3px">по умолчанию — 🟢 живые. Галочка «показать все» покажет и 🔴 мёртвые/⚪ непроверенные.</div></div></div>
+        <div class="hint" style="margin-top:3px">по умолчанию — <span class="sdot g"></span>живые. Галочка «показать все» покажет и 🔴 мёртвые/⚪ непроверенные.</div></div></div>
     <div class="om-agentwrap" style="${isAgent?'':'display:none'}">
       <div class="field"><label>Задача ИИ-роли</label><select class="om-task">${orgTaskOptions(m&&(m.task||m.agent_task))}</select></div>
       <div class="field"><label>Промпт (характер / как ведёт диалог под задачу)</label><textarea class="om-prompt" rows="4" placeholder="Ты ведёшь нетворкинг от лица…">${esc((m&&m.prompt)||'')}</textarea></div>
@@ -1908,7 +1914,7 @@ async function viewCompanies(v){
   smartTable($("#co-body"),{
     tableKey:"companies",
     rows:COMPANIES,searchKeys:["name","city","phone","inn","company_type"],
-    groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"}],
+    groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"},{key:"source",label:"источник"}],
     onRowClick:openCompany,
     columns:[
       {key:"name",label:"Компания",cls:"name",render:r=>esc(r.name)||"—"},
@@ -2007,7 +2013,7 @@ async function viewContacts(v){
   smartTable($("#ct-body"),{
     tableKey:"contacts",
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
-    groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"}],
+    groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
     onRowClick:openDossier,
     columns:[
@@ -2880,7 +2886,7 @@ async function viewDossier(v){
   smartTable($("#dz"),{
     tableKey:"dossier",
     rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
-    groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"status",label:"статус"}],
+    groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"source",label:"источник"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
     onRowClick:openDossier,
     columns:[

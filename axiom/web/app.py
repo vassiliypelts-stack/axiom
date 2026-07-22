@@ -158,7 +158,7 @@ async def login_submit(request: Request):
     form = await request.form()
     pw = (form.get("password") or "").strip()
     if _AUTH_PW and _hmac.compare_digest(pw, _AUTH_PW):
-        resp = RedirectResponse("/", status_code=302)
+        resp = FileResponse(BASE_DIR / "index.html", status_code=200)
         resp.set_cookie(_AUTH_COOKIE, _auth_token(), max_age=60 * 60 * 24 * 30,
                         httponly=True, samesite="lax")
         return resp

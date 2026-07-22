@@ -158,7 +158,8 @@ async def login_submit(request: Request):
     form = await request.form()
     pw = (form.get("password") or "").strip()
     if _AUTH_PW and _hmac.compare_digest(pw, _AUTH_PW):
-        resp = FileResponse(BASE_DIR / "index.html", status_code=200)
+        index_html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
+        resp = HTMLResponse(index_html, status_code=200)
         resp.set_cookie(_AUTH_COOKIE, _auth_token(), max_age=60 * 60 * 24 * 30,
                         httponly=True, samesite="lax")
         return resp
@@ -320,6 +321,67 @@ def sms_register(payload: dict = Body(default={})) -> JSONResponse:
         "ok": True,
         "msg": f"Куплено {len(created)} номеров{proxy_note}. Подключи через 🔌 Подключить.",
         "accounts": created,
+    })
+
+
+# --- Авто-регистрация (полный цикл) ---
+_AUTO_TASKS: dict = {}   # task_id -> {"done": bool, "result": dict}
+
+
+@app.post("/api/auto/register")
+def auto_register(payload: dict = Body(default={})) -> JSONResponse:
+    """Полная авто-регистрация: купить номер → SMS → Telegram → прокси → упаковка.
+    Запускается в фоне, возвращает task_id для опроса статуса."""
+    import uuid
+    import threading
+
+    country = payload.get("country")
+    qty = int(payload.get("qty") or 1)
+    proxy_period = int(payload.get("proxy_period") or 7)
+    proxy_version = int(payload.get("proxy_version") or 4)
+
+    if not country:
+        return JSONResponse({"ok": False, "error": "выбери страну"}, status_code=400)
+    if not config.TG_API_ID or not config.TG_API_HASH:
+        return JSONResponse({"ok": False, "error": "Заполни TG_API_ID и TG_API_HASH в .env"}, status_code=400)
+
+    task_id = str(uuid.uuid4())[:8]
+    _AUTO_TASKS[task_id] = {"done": False, "result": {}, "progress": []}
+
+    def _run():
+        import asyncio
+        from channels.auto_register import register_batch
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            results = loop.run_until_complete(register_batch(
+                country, qty, proxy_period, proxy_version,
+            ))
+            _AUTO_TASKS[task_id] = {
+                "done": True,
+                "result": {"ok": any(r.get("ok") for r in results),
+                           "accounts": results},
+                "progress": [s for r in results for s in r.get("steps", [])],
+            }
+        except Exception as e:
+            _AUTO_TASKS[task_id] = {"done": True, "result": {"error": str(e)}}
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return JSONResponse({"ok": True, "task_id": task_id})
+
+
+@app.get("/api/auto/status/{task_id}")
+def auto_status(task_id: str) -> JSONResponse:
+    """Статус задачи авто-регистрации."""
+    task = _AUTO_TASKS.get(task_id)
+    if not task:
+        return JSONResponse({"ok": False, "error": "задача не найдена"}, status_code=404)
+    return JSONResponse({
+        "done": task["done"],
+        "result": task.get("result"),
+        "progress": task.get("progress", []),
     })
 
 

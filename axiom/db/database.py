@@ -650,6 +650,38 @@ def add_event(conn: sqlite3.Connection, type: str, title: str, text: str | None 
     )
 
 
+def add_campaign_log(conn: sqlite3.Connection, campaign_id: int, status: str,
+                     contact_id: int | None = None, account_id: int | None = None,
+                     detail: str | None = None) -> None:
+    """Записать строку лога отправки кампании (видно в карточке кампании)."""
+    conn.execute(
+        "INSERT INTO campaign_logs (campaign_id, contact_id, account_id, status, detail) "
+        "VALUES (?,?,?,?,?)",
+        (campaign_id, contact_id, account_id, status, detail),
+    )
+
+
+def campaign_log_summary(conn: sqlite3.Connection, campaign_id: int) -> dict:
+    """Сводка лога кампании: сколько отправлено, пропущено, ошибок."""
+    total = conn.execute(
+        "SELECT status, COUNT(*) AS cnt FROM campaign_logs WHERE campaign_id=? GROUP BY status",
+        (campaign_id,),
+    ).fetchall()
+    return {r["status"]: r["cnt"] for r in total}
+
+
+def get_campaign_logs(conn: sqlite3.Connection, campaign_id: int, limit: int = 50) -> list[dict]:
+    rows = conn.execute(
+        "SELECT l.*, c.name AS contact_name, c.phone AS contact_phone, a.label AS account_label "
+        "FROM campaign_logs l "
+        "LEFT JOIN contacts c ON c.id = l.contact_id "
+        "LEFT JOIN accounts a ON a.id = l.account_id "
+        "WHERE l.campaign_id=? ORDER BY l.id DESC LIMIT ?",
+        (campaign_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def warming_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Аккаунты в прогреве, у которых есть авторизованная TG-сессия И назначен
     прокси, который не помечен мёртвым. «Родные» (protected) исключаем — их

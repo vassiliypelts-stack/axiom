@@ -316,6 +316,19 @@ CREATE TABLE IF NOT EXISTS opener_queue (
     created_at   TEXT DEFAULT (datetime('now'))
 );
 
+-- Лог отправки кампании: каждая запись = попытка отправить одному контакту.
+-- Позволяет увидеть, сколько ушло, сколько пропущено и почему.
+CREATE TABLE IF NOT EXISTS campaign_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    contact_id  INTEGER,
+    account_id  INTEGER,
+    status      TEXT NOT NULL,              -- sent | skipped | floodwait | ban | error
+    detail      TEXT,                       -- причина/ошибка (текст)
+    ts          TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_logs_cid ON campaign_logs(campaign_id);
+
 -- Оргструктура (как в Битрикс): отделы + сотрудники внутри — живые люди и
 -- виртуальные ИИ-агенты (ссылка на ai_agents). Чисто для наглядности «кто за что
 -- отвечает» — не привязана жёстко к projects/campaigns.

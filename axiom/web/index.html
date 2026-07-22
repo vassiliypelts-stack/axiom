@@ -1237,15 +1237,17 @@ async function showSmsRegisterDialog(){
       </select>
       <div class="hint" style="margin-top:4px">Резидентный SOCKS5 той же страны, что номер. Если PROXY6_API_KEY не задан — покупается только номер.</div></div>
     <div id="sm-est" class="sub" style="margin:8px 0"></div>
-    <div class="ttoolbar" style="justify-content:flex-end;margin-top:12px"><button class="sm-close">Отмена</button><button class="primary" id="sm-go" disabled>Купить</button></div>
-    <div id="sm-msg" style="margin-top:8px;font-size:13px"></div></div>`;
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:12px;flex-wrap:wrap;gap:6px"><button class="sm-close">Отмена</button><button class="primary" id="sm-go" disabled>Купить номер</button><button class="primary" id="sm-auto" disabled style="background:var(--accent2);color:var(--primary-txt);border-color:var(--accent2)">🤖 Купить + SMS + TG + прокси (авто)</button></div>
+    <div id="sm-msg" style="margin-top:8px;font-size:13px"></div>
+    <div id="sm-progress" style="display:none;margin-top:8px;font-size:12px;color:var(--muted)"></div></div>`;
   document.body.appendChild(modal);
   const close=()=>modal.remove();
   modal.querySelectorAll(".sm-close").forEach(b=>b.onclick=close);
   modal.onclick=e=>{if(e.target===modal)close();};
   const sel=modal.querySelector("#sm-country"), est=modal.querySelector("#sm-est"),
         qty=modal.querySelector("#sm-qty"), go=modal.querySelector("#sm-go"),
-        proxySel=modal.querySelector("#sm-proxy");
+        proxySel=modal.querySelector("#sm-proxy"), autoBtn=modal.querySelector("#sm-auto"),
+        progress=modal.querySelector("#sm-progress");
   let bal=0, CS=[];
   const recalc=()=>{
     const c=CS.find(x=>x.code==sel.value); if(!c)return;
@@ -1256,6 +1258,7 @@ async function showSmsRegisterDialog(){
       `. `+(enough?`<span style="color:var(--green)">баланса хватает ($${bal.toFixed(2)})</span>`
              :`<span style="color:#c0392b">не хватает баланса: $${bal.toFixed(2)}</span>`);
     go.disabled=!enough||!c.count;
+    autoBtn.disabled=!enough||!c.count;
   };
   try{
     const r=await api("/api/sms/countries");
@@ -1280,8 +1283,46 @@ async function showSmsRegisterDialog(){
       setTimeout(()=>{close();route();},2000);
     } else {
       modal.querySelector("#sm-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не удалось")+'</span>';
-      go.disabled=false; go.textContent="Купить";
+      go.disabled=false; go.textContent="Купить номер";
     }
+  };
+  // Полная авто-регистрация
+  autoBtn.onclick=async()=>{
+    const c=CS.find(x=>x.code==sel.value); if(!c)return;
+    const n=Math.max(1,+qty.value||1), pp=+proxySel.value;
+    if(!confirm(`🤖 Полная авто-регистрация ${n} номер(ов) в «${c.label}» за ~$${(c.cost*n).toFixed(2)}${pp?" + прокси":" без прокси"}.\n\nКуплю номер → дождусь SMS → зарегистрирую Telegram → куплю прокси → упакую. Всё само, ~1-3 мин.`))return;
+    autoBtn.disabled=true; go.disabled=true;
+    autoBtn.textContent="запускаю…"; progress.style.display="block"; progress.textContent="";
+    const r=await api("/api/auto/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({country:c.code,qty:n,proxy_period:pp})});
+    if(!r.ok||!r.task_id){
+      modal.querySelector("#sm-msg").innerHTML=`<span style="color:#c0392b">⚠ ${esc(r.error||"не удалось запустить")}</span>`;
+      autoBtn.disabled=false; go.disabled=false;
+      autoBtn.textContent="🤖 Купить + SMS + TG + прокси (авто)";
+      return;
+    }
+    const tid=r.task_id;
+    autoBtn.textContent="регистрирую…";
+    // опрос прогресса
+    const poll=setInterval(async()=>{
+      const st=await api(`/api/auto/status/${tid}`);
+      if(st.done){
+        clearInterval(poll);
+        const res=st.result||{};
+        const steps=(st.progress||[]).slice(-5).map(s=>s.msg).join(" → ");
+        if(res.ok){
+          modal.querySelector("#sm-msg").innerHTML=`<span style="color:var(--green)">✅ Аккаунт зарегистрирован! ${steps}</span>`;
+          progress.style.display="none";
+        } else {
+          modal.querySelector("#sm-msg").innerHTML=`<span style="color:#c0392b">⚠ ${esc(res.error||"неизвестная ошибка")}</span>`;
+          progress.innerHTML=steps;
+        }
+        autoBtn.disabled=false; autoBtn.textContent="🤖 Авто (готово)";
+        setTimeout(()=>{close();route();},3000);
+      } else {
+        const steps=(st.progress||[]).slice(-3).map(s=>s.msg).join(" → ");
+        progress.innerHTML=`⏳ ${steps}`;
+      }
+    },2000);
   };
 }
 // Защита купленных аккаунтов от реклейма: 2FA (бесплатно, сразу) + опционально смена

@@ -143,22 +143,31 @@ async def _register_number(country: int, proxy_period: int = 7,
     except Exception as e:
         _log("save", f"Ошибка подтверждения hero-sms: {e}")
 
-    # --- Шаг 6: Купить прокси той же страны через Proxy6 ---
-    if phone_iso2 and config.PROXY6_API_KEY:
+    # --- Шаг 6: Прокси — Proxy6 (платно) той же страны, иначе бесплатный MTProto ---
+    proxy_url = None
+    if proxy_period and phone_iso2 and config.PROXY6_API_KEY:
         try:
             from channels.proxy6 import buy as p6_buy, to_socks_url, Proxy6Error
             p6_list = p6_buy(country=phone_iso2, count=1,
                              period=proxy_period, version=proxy_version)
             if p6_list:
-                p = p6_list[0]
-                proxy_url = to_socks_url(p)
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE accounts SET proxy=?, proxy_alive=1 WHERE id=?",
-                                 (proxy_url, acc_id))
-                _log("proxy", f"Прокси куплен: {proxy_url}")
-                result["proxy"] = proxy_url
+                proxy_url = to_socks_url(p6_list[0])
+                _log("proxy", f"Прокси Proxy6 куплен: {proxy_url}")
         except Proxy6Error as e:
-            _log("proxy", f"Прокси не куплен: {e}")
+            _log("proxy", f"Proxy6 не куплен: {e}")
+    if not proxy_url:
+        try:
+            from channels.proxy_pool import pick_free_mt
+            proxy_url = pick_free_mt()
+            if proxy_url:
+                _log("proxy", "Назначен бесплатный MTProto из пула")
+        except Exception as e:
+            _log("proxy", f"Пул MTProto недоступен: {e}")
+    if proxy_url:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE accounts SET proxy=?, proxy_alive=1 WHERE id=?",
+                         (proxy_url, acc_id))
+        result["proxy"] = proxy_url
 
     # --- Шаг 7: Спрятать номер (приватность) ---
     try:

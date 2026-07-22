@@ -309,13 +309,17 @@ def sms_register(payload: dict = Body(default={})) -> JSONResponse:
     except SmsHeroError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
-    proxy_note = ""
-    if proxy_period:
-        with_proxy = sum(1 for a in created if a.get("proxy"))
-        if with_proxy:
-            proxy_note = f" + {with_proxy} прокси на {proxy_period} дн"
-        if with_proxy < len(created):
-            proxy_note += f" (без прокси: {len(created) - with_proxy} — проверь PROXY6_API_KEY и страну)"
+    with_paid = sum(1 for a in created if (a.get("proxy") or "").startswith("socks5://"))
+    with_mt = sum(1 for a in created if (a.get("proxy") or "").startswith("tg://"))
+    without = len(created) - with_paid - with_mt
+    parts = []
+    if with_paid:
+        parts.append(f"{with_paid} с Proxy6 ({proxy_period} дн)")
+    if with_mt:
+        parts.append(f"{with_mt} с бесплатным MTProto")
+    if without:
+        parts.append(f"{without} без прокси")
+    proxy_note = " · " + ", ".join(parts) if parts else ""
 
     return JSONResponse({
         "ok": True,

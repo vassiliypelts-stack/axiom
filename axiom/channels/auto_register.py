@@ -2,13 +2,17 @@
 
 Полный конвейер (запускается фоном, может идти до 3 мин):
 1. Покупка номера через hero-sms (getNumber)
-2. Отправка запроса кода Telegram (send_code_request)
-3. Ожидание SMS-кода через hero-sms (poll_code)
-4. Регистрация аккаунта в Telegram (sign_up/sign_in)
-5. Сохранение сессии в БД
-6. Подтверждение активации hero-sms (finish)
-7. Покупка SOCKS5-прокси той же страны через Proxy6
-8. Настройка профиля: приватность, имя, аватар (позже)
+2. Прокси СНАЧАЛА (Proxy6 той же страны, иначе бесплатный MTProto) — ключевой шаг:
+   hero-sms поддержка прямо предупреждает, что SMS не доходит, если запрос кода
+   идёт с IP страны, не совпадающей со страной номера (наш сервер — GCP, обычно
+   не та гео, что купленный номер). Поэтому прокси нужен ДО send_code_request,
+   не после регистрации, как было раньше.
+3. Отправка запроса кода Telegram (send_code_request) — уже через прокси
+4. Ожидание SMS-кода через hero-sms (poll_code)
+5. Регистрация аккаунта в Telegram (sign_up/sign_in)
+6. Сохранение сессии + прокси в БД
+7. Подтверждение активации hero-sms (finish)
+8. Настройка профиля: приватность (позже — имя, аватар)
 
 Запуск: python3 -m channels.auto_register --country 6
 """
@@ -21,14 +25,11 @@ import sys
 import time
 
 import config
-from channels.sms_hero import (SmsHeroError, get_number, get_status,
-                                poll_code, cancel, finish, countries)
+from channels.sms_hero import get_number, poll_code, cancel, finish
+from channels.telegram import build_client
+from channels.privacy import apply_privacy
 from db import database
 from telethon.sessions import StringSession
-from telethon import TelegramClient
-from telethon.errors import PhoneCodeInvalidError, PhoneCodeExpiredError
-from telethon.tl.functions.account import SetPrivacyRequest
-from telethon.tl.types import InputPrivacyKeyPhoneNumber, InputPrivacyValueAllowAll
 
 # Имена для свежих аккаунтов (чередуем)
 FIRST_NAMES = ["Алексей", "Дмитрий", "Максим", "Сергей", "Антон",
@@ -62,9 +63,33 @@ async def _register_number(country: int, proxy_period: int = 7,
     result["phone"] = phone_full
     result["activation_id"] = activation_id
 
-    # --- Шаг 2: Отправить запрос кода Telegram ---
+    # --- Шаг 2: Прокси ДО запроса кода — иначе SMS не дойдёт (см. docstring модуля) ---
+    phone_iso2 = phone_geo.detect(phone_full)
+    proxy_url = None
+    if proxy_period and phone_iso2 and config.PROXY6_API_KEY:
+        try:
+            from channels.proxy6 import buy as p6_buy, to_socks_url, Proxy6Error
+            p6_list = p6_buy(country=phone_iso2, count=1,
+                             period=proxy_period, version=proxy_version)
+            if p6_list:
+                proxy_url = to_socks_url(p6_list[0])
+                _log("proxy", f"Прокси Proxy6 ({phone_iso2}) куплен: {proxy_url}")
+        except Proxy6Error as e:
+            _log("proxy", f"Proxy6 не куплен: {e}")
+    if not proxy_url:
+        try:
+            from channels.proxy_pool import pick_free_mt
+            proxy_url = pick_free_mt()
+            if proxy_url:
+                _log("proxy", "Назначен бесплатный MTProto из пула (нет гео-совпадения — риск недоставки SMS)")
+        except Exception as e:
+            _log("proxy", f"Пул MTProto недоступен: {e}")
+    if not proxy_url:
+        _log("proxy", "Без прокси — код пойдёт с IP сервера, SMS может не дойти (см. предупреждение hero-sms)")
+
+    # --- Шаг 3: Отправить запрос кода Telegram — через прокси, если он есть ---
     _log("code_request", "Запрашиваю код у Telegram...")
-    client = TelegramClient(StringSession(), config.TG_API_ID, config.TG_API_HASH)
+    client = build_client(StringSession(), proxy_url)
     try:
         await client.connect()
         sent = await client.send_code_request(phone_full)
@@ -76,7 +101,7 @@ async def _register_number(country: int, proxy_period: int = 7,
         await client.disconnect()
         return result
 
-    # --- Шаг 3: Ждать SMS-код от hero-sms ---
+    # --- Шаг 4: Ждать SMS-код от hero-sms ---
     _log("sms_wait", "Ожидаю SMS-код от hero-sms...")
     code = await poll_code(activation_id, timeout=120, interval=3)
     if not code:
@@ -86,7 +111,7 @@ async def _register_number(country: int, proxy_period: int = 7,
         return result
     _log("sms_wait", f"Получен код: {code}")
 
-    # --- Шаг 4: Зарегистрировать аккаунт в Telegram ---
+    # --- Шаг 5: Зарегистрировать аккаунт в Telegram ---
     name = random.choice(FIRST_NAMES)
     _log("register", f"Регистрирую как «{name}»...")
     try:
@@ -115,25 +140,26 @@ async def _register_number(country: int, proxy_period: int = 7,
     session_str = client.session.save()
     await client.disconnect()
 
-    # --- Шаг 5: Сохранить сессию + подтвердить hero-sms ---
+    # --- Шаг 6: Сохранить сессию + прокси в БД, подтвердить hero-sms ---
     _log("save", "Сохраняю сессию в БД...")
-    phone_iso2 = phone_geo.detect(phone_full)
     database.init_db()
     with database.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO accounts (label, phone, country, kind, status, daily_limit, "
-            "notes, bought_at, tg_session) "
-            "VALUES (?, ?, ?, 'bought', 'warming', 10, ?, datetime('now'), ?)",
+            "notes, bought_at, tg_session, proxy) "
+            "VALUES (?, ?, ?, 'bought', 'warming', 10, ?, datetime('now'), ?, ?)",
             (user_label, phone_full, phone_iso2 or str(country),
              f"Авто-регистрация, активация {activation_id}",
-             session_str),
+             session_str, proxy_url),
         )
         acc_id = cur.lastrowid
         conn.execute(
-            "UPDATE accounts SET tg_session=?, session_alive=1, username=? WHERE id=?",
-            (session_str, str(me.username or ""), acc_id),
+            "UPDATE accounts SET tg_session=?, session_alive=1, username=?, "
+            "proxy_alive=? WHERE id=?",
+            (session_str, str(me.username or ""), 1 if proxy_url else None, acc_id),
         )
     result["account_id"] = acc_id
+    result["proxy"] = proxy_url
     _log("save", f"Аккаунт #{acc_id} сохранён")
 
     # Подтверждаем hero-sms (деньги списаны окончательно)
@@ -143,43 +169,13 @@ async def _register_number(country: int, proxy_period: int = 7,
     except Exception as e:
         _log("save", f"Ошибка подтверждения hero-sms: {e}")
 
-    # --- Шаг 6: Прокси — Proxy6 (платно) той же страны, иначе бесплатный MTProto ---
-    proxy_url = None
-    if proxy_period and phone_iso2 and config.PROXY6_API_KEY:
-        try:
-            from channels.proxy6 import buy as p6_buy, to_socks_url, Proxy6Error
-            p6_list = p6_buy(country=phone_iso2, count=1,
-                             period=proxy_period, version=proxy_version)
-            if p6_list:
-                proxy_url = to_socks_url(p6_list[0])
-                _log("proxy", f"Прокси Proxy6 куплен: {proxy_url}")
-        except Proxy6Error as e:
-            _log("proxy", f"Proxy6 не куплен: {e}")
-    if not proxy_url:
-        try:
-            from channels.proxy_pool import pick_free_mt
-            proxy_url = pick_free_mt()
-            if proxy_url:
-                _log("proxy", "Назначен бесплатный MTProto из пула")
-        except Exception as e:
-            _log("proxy", f"Пул MTProto недоступен: {e}")
-    if proxy_url:
-        with database.get_conn() as conn:
-            conn.execute("UPDATE accounts SET proxy=?, proxy_alive=1 WHERE id=?",
-                         (proxy_url, acc_id))
-        result["proxy"] = proxy_url
-
-    # --- Шаг 7: Спрятать номер (приватность) ---
+    # --- Шаг 7: Приватность (номер спрятан + рекомендованный набор) — тем же прокси ---
     try:
-        client2 = TelegramClient(StringSession(session_str),
-                                  config.TG_API_ID, config.TG_API_HASH)
+        client2 = build_client(StringSession(session_str), proxy_url)
         await client2.connect()
-        await client2(SetPrivacyRequest(
-            key=InputPrivacyKeyPhoneNumber(),
-            rules=[InputPrivacyValueAllowAll()]  # кто может видеть номер — никто
-        ))
+        done = await apply_privacy(client2)
         await client2.disconnect()
-        _log("privacy", "Номер скрыт (приватность)")
+        _log("privacy", f"Приватность: {', '.join(done) if done else 'не применилась'}")
     except Exception as e:
         _log("privacy", f"Приватность: {e}")
 

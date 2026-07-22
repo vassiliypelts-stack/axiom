@@ -564,7 +564,7 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"ok": True, "updated": len(ids), "daily_limit": limit})
     if action == "status":
         status = (payload.get("status") or "").strip()
-        if status not in ("warming", "active", "paused", "banned"):
+        if status not in ("warming", "active", "paused", "banned", "archived"):
             return JSONResponse({"error": "плохой статус"}, status_code=400)
         with database.get_conn() as conn:
             conn.execute(f"UPDATE accounts SET status=? WHERE id IN ({qm})", (status, *ids))

@@ -892,6 +892,11 @@ class TelegramClient(telethon.TelegramClient, BaseObject):
                 raise TypeError(
                     "The given session must be a str or a Session instance."
                 )
+            else:
+                # session — уже готовый Session (напр. StringSession()) — используем его.
+                # (в оригинальном Telethon эта ветка есть; в vendored opentele была потеряна,
+                # из-за чего auth_session оставался неприсвоенным → UnboundLocalError)
+                auth_session = session
 
         auth_session.set_dc(endpoint.id, endpoint.ip, endpoint.port)  # type: ignore
         auth_session.auth_key = AuthKey(account.authKey.key)  # type: ignore

@@ -250,6 +250,20 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
             break
         rr += 1
+        # ЗАЩИТА ОТ ДУБЛЯ (атомарный захват). Тот же номер мог попасть в этот заход
+        # дважды: параллельный запуск, тест сбросил статус в 'new' и боевой заход
+        # догнал, гонка между процессами. Атомарно «забираем» контакт: переводим
+        # 'new'→'messaged' ОДНИМ UPDATE с условием status='new'. Кто выиграл гонку —
+        # у того rowcount=1, он и шлёт; проигравшему вернётся 0, и он пропускает.
+        # Так один человек физически не получит два первых сообщения.
+        with database.get_conn() as conn:
+            claimed = conn.execute(
+                "UPDATE contacts SET status='messaged', updated_at=datetime('now') "
+                "WHERE id=? AND status='new'", (row["id"],)
+            ).rowcount
+        if not claimed:
+            print(f"[skip] contact {row['id']}: уже занят другим заходом/аккаунтом — дубль не шлём")
+            continue
         # обращение: из ФИО директора берём «Имя Отчество», иначе имя/название агентства
         name = _greeting(row)
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"], _decision_phrase(row))
@@ -275,7 +289,9 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
             print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
+            # отправки НЕ было — возвращаем контакт в 'new', достанется другому заходу
             with database.get_conn() as conn:
+                conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
                 database.add_event(conn, "ban", f"⏳ Флуд-лимит: «{s['label']}»",
                                    f"Telegram запретил отправку на ~{hrs}ч (FloodWait). Холодных ЛС с этого "
                                    f"аккаунта пока слишком много — нужен прогрев и медленнее темп.",
@@ -286,10 +302,11 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             cat = classify_error(e)
             if cat == "ban":
                 # аккаунт мёртв/деактивирован: помечаем banned и выводим из работы.
-                # контакт НЕ теряем — достанется живому аккаунту в следующий заход.
+                # контакт НЕ теряем — возвращаем в 'new', достанется живому аккаунту.
                 print(f"[{s['label']}] ⛔ аккаунт забанен/деактивирован ({e}) — статус banned, из ротации")
-                if s["id"]:
-                    with database.get_conn() as conn:
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                    if s["id"]:
                         conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (s["id"],))
                         database.add_event(conn, "account_banned", f"⛔ Аккаунт «{s['label']}» забанен",
                                            f"Telegram: {e}", level="bad", campaign_id=cid, account_id=s["id"])
@@ -297,7 +314,10 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 continue
             if cat == "spam":
                 # PeerFlood: слишком много ЛС незнакомцам → пауза аккаунта на этот заход
+                # отправки не было — контакт обратно в 'new'
                 print(f"[{s['label']}] ⚠ PeerFlood (много ЛС незнакомцам) — пауза аккаунта на заход")
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
                 s["remaining"] = 0
                 continue
             print(f"[skip] contact {row['id']} ({s['label']}): {e}")

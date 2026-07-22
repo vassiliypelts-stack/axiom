@@ -255,6 +255,26 @@ async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None
     return {"alive": alive, "harvested": len(fresh), "assigned": assigned}
 
 
+def pick_free_mt(exclude: set[str] | None = None) -> str | None:
+    """Вернуть ОДИН живой telethon-совместимый MTProto-прокси из пула (мин. пинг).
+    Для авто-раздачи при покупке аккаунтов — бесплатная альтернатива Proxy6.
+    exclude — набор ссылок, которые уже отданы (чтобы не дублировать в одной пачке).
+    None — в пуле нет живых совместимых прокси."""
+    from channels.telegram import parse_mtproxy
+    exclude = exclude or set()
+    with database.get_conn() as conn:
+        live = conn.execute(
+            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
+        ).fetchall()
+    for p in live:
+        link = _mt_link(p["server"], p["port"], p["secret"])
+        if link in exclude:
+            continue
+        if parse_mtproxy(link):
+            return link
+    return None
+
+
 def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
     """Раздаёт живой прокси (мин. пинг, round-robin) аккаунтам БЕЗ прокси, а при
     replace_dead=True — ещё и тем, у кого текущий прокси уже помечен мёртвым

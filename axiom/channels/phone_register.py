@@ -48,6 +48,7 @@ def buy_and_save(country: int, qty: int = 1, label: str = "",
     country_name = country_label(country)
     use_proxy = proxy_period > 0 and bool(config.PROXY6_API_KEY)
     created = []
+    _used_free: set[str] = set()   # бесплатные MTProto, уже отданные в этой пачке
 
     database.init_db()
     with database.get_conn() as conn:
@@ -75,10 +76,25 @@ def buy_and_save(country: int, qty: int = 1, label: str = "",
                     # Прокси не купился — аккаунт создаём без прокси, не роняем всю пачку
                     proxy_url = None
 
+            # Шаг 3б: если платный прокси не привязан — берём бесплатный MTProto из пула
+            # (работает на VPS вне РФ). Так каждый аккаунт получает свой IP, не общий.
+            free_mt = False
+            if not proxy_url:
+                try:
+                    from channels.proxy_pool import pick_free_mt
+                    proxy_url = pick_free_mt(exclude=_used_free)
+                    if proxy_url:
+                        _used_free.add(proxy_url)
+                        free_mt = True
+                except Exception:
+                    proxy_url = None
+
             # Шаг 4: создать аккаунт
             notes = f"Куплен через hero-sms, активация {activation_id}"
             if proxy_bought:
                 notes += f" + Proxy6 ({phone_iso2}) на {proxy_period} дн"
+            elif free_mt:
+                notes += " + бесплатный MTProto из пула"
 
             cur = conn.execute(
                 "INSERT INTO accounts (label, phone, country, kind, status, daily_limit, proxy, notes, bought_at) "

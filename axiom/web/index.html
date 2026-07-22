@@ -1996,7 +1996,7 @@ async function viewContacts(v){
         <textarea id="ct-imp-text" rows="3" placeholder="Или вставь номера телефонов сюда (каждый с новой строки)" style="flex:1;min-width:240px"></textarea>
         <button id="ct-imp-text-go">📱 Вставить номера</button>
       </div>
-      <div class="hint" style="margin-top:6px">CSV: столбцы «Телефон» / «Имя» / «Название» / «Город» — всё определится само. Дубли обновляются.</div>
+      <div class="hint" style="margin-top:6px">CSV или Excel (.xlsx). Столбцы: «Наименование», «ИНН», «ФИО руководителя», «Телефон директора» и др. — всё маппится само. Дубли обновляются.</div>
     </div>
     <div id="ct-body"></div>`;
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;

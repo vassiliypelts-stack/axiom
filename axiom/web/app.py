@@ -3137,15 +3137,34 @@ def _parse_2gis(text: str, tag: str, source: str = "2gis") -> tuple[int, int]:
 async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агентства недвижимости"),
                       source: str = Form("2gis")) -> JSONResponse:
     raw = await file.read()
-    text = None
-    for enc in ("cp1251", "utf-8-sig", "utf-8"):
+
+    # Если Excel (.xlsx) — читаем через openpyxl, конвертируем в CSV-текст для парсера
+    if (file.filename or "").endswith(".xlsx"):
         try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        return JSONResponse({"error": "не удалось распознать кодировку файла"}, status_code=400)
+            import openpyxl
+            import io
+            import csv
+            wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            ws = wb.active
+            buf = io.StringIO()
+            w = csv.writer(buf, delimiter=";")
+            for row in ws.iter_rows(values_only=True):
+                w.writerow(["" if v is None else str(v) for v in row])
+            text = buf.getvalue()
+            wb.close()
+        except Exception as e:
+            return JSONResponse({"error": f"ошибка чтения Excel: {e}"}, status_code=400)
+    else:
+        text = None
+        for enc in ("cp1251", "utf-8-sig", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            return JSONResponse({"error": "не удалось распознать кодировку файла"}, status_code=400)
+
     src = (source or "import").strip() or "import"
     tag_clean = tag.strip() or "Импорт"
     try:

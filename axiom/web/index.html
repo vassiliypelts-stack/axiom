@@ -820,8 +820,20 @@ function tgGeoHint(phone,proxy){
   if(!parts.length)return"";
   return `<div class="hint" style="margin-top:6px;color:#7A530A;background:var(--accent-soft);border-radius:8px;padding:8px 10px">${parts.join("<br>")}</div>`;
 }
+const ACC_PRESETS={
+  all:{label:"Все",test:r=>r.status!=='archived'},
+  live:{label:"🟢 Живые",test:r=>r.tg_connected&&r.session_state==='alive'&&r.status!=='banned'},
+  bought:{label:"🛒 Купленные",test:r=>!r.protected&&r.status!=='archived'},
+  personal:{label:"🏠 Родные",test:r=>!!r.protected},
+  nosession:{label:"⚠ Без сессии",test:r=>!r.tg_connected&&r.status!=='archived'},
+  banned:{label:"🚫 В бане",test:r=>r.status==='banned'},
+  archived:{label:"🗄 Архив",test:r=>r.status==='archived'},
+};
 async function viewAgents(v){
   const a=await api("/api/accounts");
+  const accPreset=localStorage.getItem("acc_preset")||"all";
+  const accTest=(ACC_PRESETS[accPreset]||ACC_PRESETS.all).test;
+  const aShown=a.filter(accTest);
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
     <div class="card" style="margin-bottom:16px">
       <div class="ttoolbar" style="margin:0">
@@ -857,33 +869,45 @@ async function viewAgents(v){
         <span class="hint" id="wa-msg"></span>
       </div>
       <div class="hint" style="margin-top:8px">Фон двигает каждый аккаунт в статусе «прогрев» на +1 ступень за заход (~2 недели до «активен»). Прогресс — в колонке «Прогрев» ниже. Человекоподобный темп: первые дни только пассив (каналы/чтение/лайки/онлайн), ЛС позже и плавно. Греем ТОЛЬКО с живым прокси — без прокси/с мёртвым аккаунт пропускается (раздай прокси кнопкой «🆓 Бесплатный прокси» ниже).</div></div>
-    <div id="acc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
-      <b style="font-size:13px">Массово (<span id="ab-cnt">0</span>):</b>
-      <button id="ab-selall" title="выделить все строки, что сейчас видны после фильтра/поиска">☑ Выделить всё</button>
-      <button id="ab-selnone" title="снять выделение со всех">☐ Снять</button>
-      <button id="ab-selbattle" title="выделить всех, кроме родных (protected) — безопасно гонять массовые действия, не задев личные номера">🪖 Выделить боевых</button>
-      <button id="ab-selnative" title="выделить только родные (protected) номера">🏠 Выделить родных</button>
-      <span style="width:1px;height:18px;background:var(--border)"></span>
-      <button id="ab-warm">🔥 На прогрев</button>
-      <button id="ab-check">Проверить выбранные</button>
-      <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — <span class="sdot g"></span>жив / <span class="sdot r"></span>сессия слетела / бан в колонке «Живость»">🫀 Проверить живость</button>
-      <button id="ab-invent">Инвентаризация чатов</button>
-      <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">Оформить (имя+ник+bio+фото+приватность)</button>
-      <button id="ab-proxy">🌐 Раздать прокси (вручную)</button>
-      <button id="ab-proxy-pool" title="Бесплатный MTProto из общего пула — сразу выбранным, включая тех, у кого прокси уже помечен мёртвым (заменит на свежий с минимальным пингом)">🆓 Бесплатный прокси (пул)</button>
-      <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">🛒 Купить прокси (Proxy6, по стране)</button>
-      <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">🔑 Проверить ключ Proxy6</button>
-      <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
-      <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
-      <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет <span class="sdot g"></span>живой / <span class="sdot r"></span>мёртвый в колонке «Прокси»">🔎 Проверить прокси (живость)</button>
-      <button id="ab-protect" title="Личные номера — автоматика их не трогает">🏠 Родные</button>
-      <button id="ab-unprotect">снять «родной»</button>
-      <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">применить</button></span>
-      <span style="display:inline-flex;align-items:center;gap:6px">статус
-        <select id="ab-status"><option value="">—</option><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
-        <button id="ab-status-go">применить</button></span>
-      <span class="hint" id="ab-msg"></span></div>
+    <div id="acc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);padding:10px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b style="font-size:13px">Массово (<span id="ab-cnt">0</span>):</b>
+        <button id="ab-selall" title="выделить все строки, что сейчас видны после фильтра/поиска">Выделить всё</button>
+        <button id="ab-selnone" title="снять выделение со всех">Снять</button>
+        <button id="ab-selbattle" title="выделить всех, кроме родных (protected) — безопасно гонять массовые действия, не задев личные номера">Выделить боевых</button>
+        <button id="ab-selnative" title="выделить только родные (protected) номера">Выделить родных</button>
+        <span style="width:1px;height:18px;background:var(--border)"></span>
+        <button id="ab-warm">На прогрев</button>
+        <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — покажет жив / сессия слетела / бан в колонке «Живость»">Проверить живость</button>
+        <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">Оформить профиль</button>
+        <button id="ab-more" aria-expanded="false">⋯ Ещё действия</button>
+        <span class="hint" id="ab-msg"></span>
+      </div>
+      <div id="ab-more-panel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);gap:8px;flex-wrap:wrap;align-items:center">
+        <button id="ab-check">Проверить выбранные (@SpamBot)</button>
+        <button id="ab-invent">Инвентаризация чатов</button>
+        <button id="ab-proxy">Раздать прокси (вручную)</button>
+        <button id="ab-proxy-pool" title="Бесплатный MTProto из общего пула — сразу выбранным, включая тех, у кого прокси уже помечен мёртвым (заменит на свежий с минимальным пингом)">Бесплатный прокси (пул)</button>
+        <button id="ab-proxy6" title="Купить и назначить резидентный прокси через Proxy6.net — автоматически той же страны, что номер аккаунта. Нужен PROXY6_API_KEY в .env, тратит деньги с баланса Proxy6">Купить прокси (Proxy6, по стране)</button>
+        <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">Проверить ключ Proxy6</button>
+        <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет живой / мёртвый в колонке «Прокси»">Проверить прокси (живость)</button>
+        <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
+        <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
+        <button id="ab-native" title="Личные номера — автоматика их не трогает">Пометить «родной»</button>
+        <button id="ab-unprotect">Снять «родной»</button>
+        <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">применить</button></span>
+        <span style="display:inline-flex;align-items:center;gap:6px">статус
+          <select id="ab-status"><option value="">—</option><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
+          <button id="ab-status-go">применить</button></span>
+        <button id="ab-archive" title="Убрать выбранные в архив — скроются из списка (пресет «Архив» их покажет). Данные не удаляются.">В архив</button>
+        <button id="ab-unarchive" title="Вернуть выбранные из архива обратно в работу">Из архива</button>
+      </div></div>
+    <div class="ttoolbar" style="margin:0 0 10px;gap:6px;flex-wrap:wrap">
+      <b style="font-size:13px;margin-right:4px">Показать:</b>
+      ${Object.entries(ACC_PRESETS).map(([k,p])=>`<button class="acc-preset${k===accPreset?' primary':''}" data-preset="${k}">${p.label} <span style="opacity:.6">${a.filter(p.test).length}</span></button>`).join("")}
+    </div>
     <div id="acc-tbl"></div>`;
+  v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
     await api("/api/health",{method:"POST"});
     setTimeout(()=>{b.disabled=false;b.textContent="Проверить аккаунты (@SpamBot)";route();},15000);};
@@ -929,7 +953,7 @@ async function viewAgents(v){
   const updBulkCnt=()=>{const c=$("#ab-cnt");if(c)c.textContent=selAcc.size;};
   smartTable($("#acc-tbl"),{
     tableKey:"agents",
-    rows:a,searchKeys:["label","phone","username","role"],
+    rows:aShown,searchKeys:["label","phone","username","role"],
     onDraw:rows=>{accFiltered=rows;},
     // Зелёная подсветка «рабочих» — с кем можно работать прямо сейчас: подключён,
     // сессия жива, прокси жив, не забанен. Видно на глаз, кого пускать в бой.
@@ -1019,8 +1043,17 @@ async function viewAgents(v){
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
     showIdentityDialog([...selAcc],bulk);
   };
-  $("#ab-protect").onclick=()=>bulk({action:"protect",protected:1},r=>`🏠 помечено родными: ${r.updated} (автоматика их не трогает)`);
+  $("#ab-native").onclick=()=>bulk({action:"protect",protected:1},r=>`помечено родными: ${r.updated} (автоматика их не трогает)`);
   $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
+  $("#ab-more").onclick=()=>{
+    const panel=$("#ab-more-panel"),btn=$("#ab-more");
+    const open=panel.style.display==="none";
+    panel.style.display=open?"flex":"none";
+    btn.setAttribute("aria-expanded",open?"true":"false");
+    btn.textContent=open?"⋯ Свернуть":"⋯ Ещё действия";
+  };
+  $("#ab-archive").onclick=()=>bulk({action:"status",status:"archived"},r=>`🗄 в архив: ${r.updated}`);
+  $("#ab-unarchive").onclick=()=>bulk({action:"status",status:"warming"},r=>`♻ возвращено из архива: ${r.updated}`);
   $("#ab-proxy").onclick=()=>{if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}showProxyDistDialog([...selAcc],bulk);};
   $("#ab-proxy-pool").onclick=()=>bulk({action:"proxy_pool_assign"},r=>`🆓 обновляю пул и раздаю бесплатный прокси ${r.queued} акк. в фоне (30-90с)${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""} — колонка «Прокси» обновится, обнови страницу`);
   $("#ab-proxy-check").onclick=()=>bulk({action:"proxy_check"},r=>`🔎 проверяю прокси у ${r.queued} акк. в фоне (30-60с)${r.skipped_no_proxy?` · без прокси пропущено: ${r.skipped_no_proxy}`:""} — цвет в колонке «Прокси» обновится, обнови страницу`);

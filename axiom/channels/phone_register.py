@@ -1,17 +1,19 @@
-"""Покупка номера через hero-sms + создание аккаунта + привязка Proxy6.
+"""Покупка номера через hero-sms + создание аккаунта + привязка прокси.
 
 Финансовая граница:
 - ДЕНЬГИ ТРАТИТ get_number() (hero-sms) за номер
-- ДЕНЬГИ ТРАТИТ proxy6.buy() за прокси
-- Всё остальное (balance, countries) — read-only
+- ДЕНЬГИ ТРАТИТ proxy6.buy() за прокси (только если proxy_period>0)
+- Всё остальное (balance, countries, бесплатный MTProto-пул) — бесплатно
 
 После покупки:
 1. Покупается номер через hero-sms
 2. Определяется страна по коду номера
-3. Покупается SOCKS5-прокси той же страны через Proxy6 (на N дней)
-4. Создаётся аккаунт в accounts (status=warming) с привязанным прокси
+3. Прокси привязывается по приоритету:
+   а) Proxy6 SOCKS5 той же страны (если proxy_period>0 и есть ключ) — платно;
+   б) иначе — бесплатный MTProto из пула (работает на VPS вне РФ).
+4. Создаётся аккаунт в accounts (status=warming) с привязанным прокси.
 
-Если Proxy6 ключ не задан — прокси не покупается, аккаунт создаётся без прокси.
+Так каждый купленный аккаунт сразу получает свой прокси (не общий IP пачки).
 """
 from __future__ import annotations
 
@@ -38,12 +40,12 @@ def buy_and_save(country: int, qty: int = 1, label: str = "",
     ТРАТИТ ДЕНЬГИ: get_number() × qty + proxy6.buy() × qty.
     """
     import phone_geo
-    from channels.sms_hero import COUNTRY_RU
+    from channels.sms_hero import country_label
 
     if not config.HERO_SMS_API_KEY:
         raise SmsHeroError("HERO_SMS_API_KEY не задан в .env — заведи ключ в кабинете hero-sms.com")
 
-    country_name = COUNTRY_RU.get(country, f"страна {country}")
+    country_name = country_label(country)
     use_proxy = proxy_period > 0 and bool(config.PROXY6_API_KEY)
     created = []
 

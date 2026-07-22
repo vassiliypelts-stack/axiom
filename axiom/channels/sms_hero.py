@@ -25,16 +25,13 @@ import config
 BASE = "https://hero-sms.com/stubs/handler_api.php"
 SERVICE_TG = "tg"
 
-# Коды стран SMS-Activate (подмножество популярных + те, что реально в наличии у tg).
-# 0 = Россия (сейчас 0 номеров для tg). Незнакомый код → «страна N».
-COUNTRY_RU: dict[int, str] = {
-    0: "Россия", 1: "Украина", 2: "Казахстан", 3: "Китай", 4: "Филиппины",
-    6: "Индонезия", 7: "Малайзия", 10: "Вьетнам", 11: "Кыргызстан", 12: "США (вирт.)",
-    13: "Израиль", 15: "Польша", 16: "Англия", 22: "Индия", 31: "ЮАР", 32: "Румыния",
-    33: "Колумбия", 34: "Эстония", 36: "Канада", 43: "Германия", 44: "Литва",
-    46: "Швеция", 48: "Нидерланды", 52: "Таиланд", 54: "Аргентина", 56: "Испания",
-    73: "Бразилия", 78: "Франция", 82: "Бельгия", 187: "США (реал.)",
-}
+# Названия стран берём ЖИВЫМИ с сервера (action=getCountries отдаёт официальные
+# rus/eng названия для каждого id) — раньше тут была ручная таблица кодов, но
+# коды SMS-Activate не документированы публично и часть записей была фактически
+# угадана по шаблону, а это реальные деньги за номер не той страны. См. _country_names().
+_COUNTRY_CACHE: dict[int, str] = {}
+_COUNTRY_CACHE_TS: float = 0.0
+_COUNTRY_CACHE_TTL = 3600.0   # обновляем раз в час, список стран не меняется поминутно
 
 # Текстовые коды ошибок SMS-Activate → человеку. Всё, что начинается на эти токены,
 # считаем ошибкой, а не данными.
@@ -54,12 +51,36 @@ class SmsHeroError(RuntimeError):
     pass
 
 
+def _refresh_country_cache() -> None:
+    """Тянет официальные названия стран с сервера (getCountries), кладёт в кэш
+    процесса. Не бросает наружу — если недоступно, country_label() просто
+    покажет «страна N» вместо угаданного (потенциально неверного) названия."""
+    global _COUNTRY_CACHE, _COUNTRY_CACHE_TS
+    import time
+    try:
+        text = _get("getCountries")
+        data = json.loads(text)
+        _COUNTRY_CACHE = {
+            int(v["id"]): v.get("rus") or v.get("eng") or f"страна {v['id']}"
+            for v in data.values() if isinstance(v, dict) and "id" in v
+        }
+        _COUNTRY_CACHE_TS = time.monotonic()
+    except Exception:  # noqa: BLE001 — молча остаёмся без кэша, не роняем вызывающий код
+        pass
+
+
 def country_label(code: int | str) -> str:
+    """Название страны по коду hero-sms. Тянет официальный список с сервера
+    (кэш на час) — никаких угаданных названий, только то, что реально прислал
+    провайдер. Пока кэш не наполнился (нет сети/ключа) — вернёт «страна N»."""
+    import time
     try:
         code = int(code)
     except (ValueError, TypeError):
         return str(code)
-    return COUNTRY_RU.get(code, f"страна {code}")
+    if not _COUNTRY_CACHE or (time.monotonic() - _COUNTRY_CACHE_TS) > _COUNTRY_CACHE_TTL:
+        _refresh_country_cache()
+    return _COUNTRY_CACHE.get(code, f"страна {code}")
 
 
 def _get(action: str, **params) -> str:

@@ -42,7 +42,7 @@ async def _register_number(country: int, proxy_period: int = 7,
     """Полный цикл: купить номер → SMS → регистрация → прокси.
     Возвращает dict с результатом."""
     import phone_geo
-    from channels.sms_hero import COUNTRY_RU
+    from channels.sms_hero import country_label
 
     result = {"ok": False, "steps": []}
 
@@ -55,7 +55,7 @@ async def _register_number(country: int, proxy_period: int = 7,
     activation_id, phone = get_number(country)
     phone_clean = phone.lstrip("+")
     phone_full = f"+{phone_clean}"
-    country_name = COUNTRY_RU.get(country, f"страна {country}")
+    country_name = country_label(country)
     _log("buy", f"Номер {phone_full} куплен (активация {activation_id})")
 
     user_label = f"{country_name} #{phone_clean[-4:]}"

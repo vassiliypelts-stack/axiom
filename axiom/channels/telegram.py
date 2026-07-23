@@ -60,6 +60,10 @@ REPLY_DELAY = (4, 18)
 TYPING_CPS = (12, 22)     # «скорость печати» — знаков/сек, время набора ∝ длине сообщения
 MAX_TYPING_SEC = 9.0      # потолок имитации набора одного сообщения
 PART_PAUSE = (1.2, 3.5)   # пауза между соседними сообщениями
+# Человекоподобная РЕАКЦИЯ на входящее (как реальный человек, не бот-молния):
+NOTICE_DELAY = (3, 12)    # «заметил уведомление» — прежде чем открыть/прочитать чат
+LONG_THINK_CHANCE = 0.30  # с такой вероятностью человек «отвлёкся» и отвечает не сразу
+LONG_THINK = (45, 210)    # длинная пауза (сек), когда отвлёкся — от 45 сек до ~3.5 мин
 
 
 def _default_slots() -> list[str]:
@@ -237,6 +241,25 @@ def _contact_dict(row) -> dict:
     return {k: row[k] for k in ("name", "city", "agency") if row[k]}
 
 
+async def _humanize_before_reply(client, peer) -> None:
+    """Ведёт себя как живой человек ПЕРЕД ответом на входящее:
+    1) не отвечает мгновенно — «замечает» уведомление через паузу;
+    2) отмечает сообщение прочитанным (собеседник видит галочки «прочитано»);
+    3) иногда «отвлекается» и отвечает заметно позже (LONG_THINK).
+    Так у собеседника складывается картина живого человека, который увидел, прочитал
+    и через некоторое время ответил — а не бота, отвечающего за 1 секунду."""
+    # 1) заметил уведомление
+    await asyncio.sleep(random.uniform(*NOTICE_DELAY))
+    # 2) прочитал (шлём read-квитанцию — у собеседника появятся галочки «прочитано»)
+    try:
+        await client.send_read_acknowledge(peer)
+    except Exception:
+        pass
+    # 3) иногда человек отвлёкся — отвечает не сразу
+    if random.random() < LONG_THINK_CHANCE:
+        await asyncio.sleep(random.uniform(*LONG_THINK))
+
+
 async def _send_parts(client, peer, parts: list[str]) -> None:
     """Шлёт сообщения по очереди как живой человек: показывает «печатает…»,
     держит паузу пропорционально длине текста, паузит между сообщениями."""
@@ -391,7 +414,8 @@ async def _agent_reply(event, contact_id: int, username: str | None) -> None:
 
     text_in = messages[-1]["content"]
     peer = await event.get_input_chat()
-    await asyncio.sleep(random.uniform(*REPLY_DELAY))  # пауза перед началом ответа
+    # Человекоподобно: заметил → прочитал (галочки) → иногда отвлёкся → печатает
+    await _humanize_before_reply(event.client, peer)
     await _send_parts(event.client, peer, reply.reply_parts)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 

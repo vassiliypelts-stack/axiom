@@ -1460,7 +1460,6 @@ def _startup_account_report() -> None:
         print(f"[startup report] {e}")
 
 
-@app.on_event("startup")
 def _opener_queue_scheduler() -> None:
     """Фоновый тик очереди опенера: каждую минуту досылает следующие строки опенера
     тем, кто ещё не ответил (см. channels/opener_queue). Без этого тика вторая и
@@ -1490,6 +1489,7 @@ def _opener_queue_scheduler() -> None:
             print(f"[opener_queue scheduler] {e}")
 
 
+@app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
     database.init_db()

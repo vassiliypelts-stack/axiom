@@ -3767,7 +3767,7 @@ def campaign_progress(cid: int) -> JSONResponse:
             a = conn.execute("SELECT id,label,phone,username FROM accounts WHERE id=?", (camp["account_id"],)).fetchone()
             acc = dict(a) if a else None
         sent_rows = conn.execute(
-            "SELECT cc.contact_id, cc.sent_at, c.name, c.username, c.phone, c.person_name, c.status, "
+            "SELECT cc.contact_id, cc.sent_at, c.name, c.username, c.phone, c.person_name, c.status, c.source, "
             "a.label AS acc_label, a.phone AS acc_phone "
             "FROM campaign_contacts cc JOIN contacts c ON c.id=cc.contact_id "
             "LEFT JOIN accounts a ON a.id=cc.account_id "
@@ -3785,12 +3785,15 @@ def campaign_progress(cid: int) -> JSONResponse:
         if tag:
             where += " AND tags LIKE ?"
             params.append(f"%{tag}%")
+        # Показываем МНОГО (не только первые 500) — иначе "показано" в шапке не бьётся
+        # с "в очереди N" на карточке кампании (тот счётчик считает всю аудиторию).
         pend = conn.execute(
-            f"SELECT id,name,username,phone,person_name,status,COALESCE(is_test,0) is_test "
-            f"FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT 500",
+            f"SELECT id,name,username,phone,person_name,status,source,COALESCE(is_test,0) is_test "
+            f"FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT 3000",
             params,
         ).fetchall()
         paused_ids = database.paused_contact_ids(conn, cid)
+        audience_total = _audience_count(conn, cid, tag, channel)
 
     def handle(r) -> str:
         return ("@" + r["username"]) if r["username"] else (r["phone"] or "—")
@@ -3800,7 +3803,7 @@ def campaign_progress(cid: int) -> JSONResponse:
     for r in sent_rows:
         rows.append({
             "id": r["contact_id"], "name": r["person_name"] or r["name"], "handle": handle(r),
-            "sent": True, "sent_at": r["sent_at"],
+            "sent": True, "sent_at": r["sent_at"], "source": r["source"],
             "account": r["acc_label"] or r["acc_phone"] or acc_name, "status": r["status"],
         })
     for r in pend:
@@ -3808,11 +3811,11 @@ def campaign_progress(cid: int) -> JSONResponse:
             continue
         rows.append({
             "id": r["id"], "name": r["person_name"] or r["name"], "handle": handle(r),
-            "sent": False, "sent_at": None, "account": acc_name, "status": r["status"],
+            "sent": False, "sent_at": None, "account": acc_name, "status": r["status"], "source": r["source"],
             "is_test": bool(r["is_test"]), "is_paused": r["id"] in paused_ids,
         })
-    return JSONResponse({"account": acc, "account_name": acc_name,
-                         "sent_count": len(sent_ids), "total": len(rows), "rows": rows})
+    return JSONResponse({"account": acc, "account_name": acc_name, "sent_count": len(sent_ids),
+                         "total": len(rows), "audience_total": audience_total, "rows": rows})
 
 
 @app.post("/api/campaign/{cid}/pause_contacts")

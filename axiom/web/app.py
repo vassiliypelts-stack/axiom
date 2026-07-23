@@ -2151,7 +2151,11 @@ async def dossier_lookup_api(payload: dict = Body(...)) -> JSONResponse:
                 "name", "username", "phone", "city", "bio", "pains", "fears", "desires",
                 "interests", "psychotype", "comm_style", "best_time", "segment", "score",
                 "quotes", "rec_message", "photo_analysis", "gender", "summary", "confidence",
+                "niche", "offer", "web_note",
             ) if k in keys}
+            # прямую ссылку на канал из lookup кладём в dossier для карточки
+            if res.get("channel_link"):
+                res["dossier"]["channel_link"] = res["channel_link"]
     return JSONResponse(res)
 
 
@@ -4024,6 +4028,24 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
         cwd=str(BASE_DIR.parent),
     )
     return JSONResponse({"ok": True, "launched": limit})
+
+
+@app.post("/api/campaign/{cid}/stop")
+def campaign_stop(cid: int) -> JSONResponse:
+    """Остановить кампанию: новые заходы (▶ Запустить / автопланировщик опенера)
+    больше не запускаются. Уже отправляющийся в фоне процесс (если запущен только
+    что) доработает свою пачку — он короткоживущий и сам завершится."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT name, status FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        if row["status"] != "running":
+            return JSONResponse({"error": f"кампания не запущена (статус: {row['status']})"}, status_code=400)
+        conn.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
+        database.add_event(conn, "campaign_stop", f"⏸ Кампания остановлена «{row['name']}»",
+                           "новые заходы не запускаются, пока не нажмёшь «▶ Запустить» заново",
+                           level="info", campaign_id=cid)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/campaign/{cid}/test")

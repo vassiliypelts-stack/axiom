@@ -3393,8 +3393,12 @@ function renderCampList(mount,camps){
   mount.innerHTML=camps.map(c=>{
     const left=c.audience, done=c.sent;
     const pct=(done+left)?Math.round(done/(done+left)*100):0;
+    // «Идёт» пульсирует, только если реально ЕСТЬ что слать прямо сейчас (left>0) —
+    // иначе кампания может неделями висеть в status='running' с пустой очередью
+    // (всё уже отправлено, новых контактов нет), и мигание врало бы, что работа кипит.
     const isRunning=c.status==='running';
-    const stCls=(isRunning?'b-active b-live':c.status==='done'?'b-won':'b-nurture');
+    const isActive=isRunning&&left>0;
+    const stCls=(isRunning?('b-active'+(isActive?' b-live':'')):c.status==='done'?'b-won':'b-nurture');
     const hasPrompt=c.agent_prompt?'<span class="badge b-active">🤖 промпт задан</span>':'<span class="badge b-nurture">промпт не задан</span>';
     const hasKp=c.kp_file?'<span class="badge b-active">📎 КП-файл</span>':'';
     return `<div class="card" style="margin-bottom:12px">
@@ -3415,7 +3419,8 @@ function renderCampList(mount,camps){
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
-          <button class="primary cl-go${isRunning?' running':''}" data-id="${c.id}" title="${isRunning?'Кампания сейчас активна — можно запускать ещё заходы':'Запустить рассылку'}">▶ Запустить</button>
+          <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" title="${isActive?'Кампания сейчас активна — можно запускать ещё заходы':'Запустить рассылку'}">▶ Запустить</button>
+          ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца">⏸ Стоп</button>`:""}
           <button class="cl-del" data-id="${c.id}">✕</button>
         </div></div>
         <div class="cprog" id="pre-${c.id}" style="margin-top:12px"></div>
@@ -3556,6 +3561,12 @@ function renderCampList(mount,camps){
     alert(`Запущено: до ${r.launched} контактов. Отправка идёт в фоне с паузами.\n\n⚠️ Если придёт уведомление про флуд-лимит — аккаунту нужен прогрев и медленнее темп. Следи в колокольчике 🔔 и «Прогресс».`);
     setTimeout(route,2000);
   });
+  mount.querySelectorAll(".cl-stop").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Остановить кампанию? Новые заходы запускаться не будут (текущий фоновый процесс, если он ещё шлёт, доработает начатое)."))return;
+    b.disabled=true;b.textContent="…";
+    const r=await api(`/api/campaign/${b.dataset.id}/stop`,{method:"POST"});
+    if(r.error){alert(r.error);b.disabled=false;b.textContent="⏸ Стоп";return;}
+    route();});
   mount.querySelectorAll(".cl-del").forEach(b=>b.onclick=async()=>{
     if(!confirm("Удалить кампанию?"))return;
     await api(`/api/campaign/${b.dataset.id}/delete`,{method:"POST"});route();});

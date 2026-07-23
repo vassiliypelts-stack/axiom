@@ -326,7 +326,7 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     if not camp:
         return 0
     camp = dict(camp)
-    rows = _audience(camp["audience_tag"], "telegram", cap)
+    rows = _audience(camp["id"], camp["audience_tag"], "telegram", cap)
     sent = 0
     for row in rows:
         if sent >= cap:

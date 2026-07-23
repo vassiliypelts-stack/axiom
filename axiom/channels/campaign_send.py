@@ -44,12 +44,21 @@ def _channels(channel: str | None) -> list[str]:
     return [c.strip() for c in (channel or "").split(",") if c.strip()]
 
 
-def _audience(tag: str | None, channel: str, cap: int, test: bool = False):
+def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = False,
+              exclude_paused: bool = True):
     """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram.
     test=True — ТОЛЬКО тестовые (is_test=1): «кнопка Тест» шлёт исключительно на свои
-    номера, боевой аудитории коснуться не может даже при большом лимите."""
+    номера, боевой аудитории коснуться не может даже при большом лимите.
+    Контакты, поставленные на паузу ИМЕННО в этой кампании (campaign_paused_contacts),
+    пропускаем при РЕАЛЬНОЙ отправке (exclude_paused=True) — частичная пауза без
+    остановки всей рассылки. Но при проверке «аудитория исчерпана ли» пауза не в счёт
+    (exclude_paused=False) — поставленные на паузу контакты НЕ ушли навсегда, кампания
+    не должна помечаться done только из-за того, что все оставшиеся сейчас на паузе."""
     where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
     params: list = []
+    if exclude_paused:
+        where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"
+        params.append(cid)
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
     if "telegram" in _channels(channel):
         where += " AND has_tg IN ('yes','unknown')"
@@ -172,7 +181,7 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         print("режим мультиканала: TG-достижимым шлём сейчас; WhatsApp-only контакты "
               "дождутся подключения WA-моста.")
     cap = min(limit, camp["daily_limit"] or limit)
-    rows = _audience(camp["audience_tag"], camp["channel"], cap, test=test)
+    rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test)
     if not rows:
         print("тест: нет тест-контактов (is_test=1) в аудитории" if test
               else "аудитория пуста — некому слать")
@@ -364,8 +373,9 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             # всё равно паузит между своими сообщениями; не меньше 2 сек.
             await asyncio.sleep(max(2.0, random.uniform(*OUTREACH_PAUSE) / len(live)))
 
-    # Если в аудитории больше никого не осталось — кампания отработана.
-    remaining = _audience(camp["audience_tag"], camp["channel"], 1)
+    # Если в аудитории больше никого не осталось — кампания отработана. Пауза не в счёт:
+    # контакты на паузе ещё вернутся, из-за них одних "done" ставить нельзя.
+    remaining = _audience(cid, camp["audience_tag"], camp["channel"], 1, exclude_paused=False)
     with database.get_conn() as conn:
         done = not remaining
         conn.execute(

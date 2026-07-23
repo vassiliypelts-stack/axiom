@@ -583,6 +583,28 @@ def set_status(conn: sqlite3.Connection, contact_id: int, status: str) -> None:
     )
 
 
+def pause_campaign_contacts(conn: sqlite3.Connection, campaign_id: int, contact_ids: list[int]) -> None:
+    """Поставить контакты на паузу ИМЕННО в этой кампании — рассылка их пропустит,
+    остальные из очереди продолжат слаться (частичная пауза, без общего Стопа)."""
+    conn.executemany(
+        "INSERT OR IGNORE INTO campaign_paused_contacts (campaign_id, contact_id) VALUES (?,?)",
+        [(campaign_id, cid) for cid in contact_ids],
+    )
+
+
+def unpause_campaign_contacts(conn: sqlite3.Connection, campaign_id: int, contact_ids: list[int]) -> None:
+    conn.executemany(
+        "DELETE FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+        [(campaign_id, cid) for cid in contact_ids],
+    )
+
+
+def paused_contact_ids(conn: sqlite3.Connection, campaign_id: int) -> set[int]:
+    return {r["contact_id"] for r in conn.execute(
+        "SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?", (campaign_id,)
+    ).fetchall()}
+
+
 def find_contact_by_tg(
     conn: sqlite3.Connection, tg_user_id: int | None = None, username: str | None = None
 ) -> sqlite3.Row | None:

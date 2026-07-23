@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
     UNIQUE(campaign_id, contact_id)
 );
 
+-- Контакт поставлен на паузу ИМЕННО в этой кампании (частично, без остановки всей
+-- рассылки) — не шлём ему, пока не снимут паузу. Глобальный статус контакта не трогаем,
+-- поэтому тот же контакт спокойно участвует в другой кампании.
+CREATE TABLE IF NOT EXISTS campaign_paused_contacts (
+    campaign_id INTEGER NOT NULL,
+    contact_id  INTEGER NOT NULL,
+    paused_at   TEXT DEFAULT (datetime('now')),
+    UNIQUE(campaign_id, contact_id)
+);
+
 -- Воронка / встречи
 CREATE TABLE IF NOT EXISTS deals (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,

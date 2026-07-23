@@ -3494,6 +3494,7 @@ function renderCampList(mount,camps){
           <button class="cl-wiz" data-id="${c.id}" title="пройти по шагам визарда, проверить и поправить">🔁 В визард</button>
           <button class="cl-pre" data-id="${c.id}" title="что готово/мешает запуску">🚦 Готовность</button>
           <button class="cl-prog" data-id="${c.id}">Прогресс</button>
+          <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
@@ -3510,6 +3511,14 @@ function renderCampList(mount,camps){
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
   mount.querySelectorAll(".cl-wiz").forEach(b=>b.onclick=()=>startWizardEdit(+b.dataset.id));
+  mount.querySelectorAll(".cl-segadd").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id;
+    const c=await api(`/api/campaign/${id}`);
+    showAudiencePicker({audience_tag:c.audience_tag||""},(updated,tag)=>{
+      alert(`Добавлено в сегмент «${tag}»: ${updated}. Обновляю очередь…`);
+      route();
+    });
+  });
   mount.querySelectorAll(".cl-pre").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,box=document.getElementById("pre-"+id);
     if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
@@ -3529,17 +3538,51 @@ function renderCampList(mount,camps){
     const p=await api(`/api/campaign/${id}/progress`);
     if(p.error){box.innerHTML=`<div class="empty">${esc(p.error)}</div>`;return;}
     if(!p.rows.length){box.innerHTML='<div class="sub">Аудитория пуста — некому слать (проверь тег/канал/статусы).</div>';return;}
-    const rowsHtml=p.rows.map(r=>`<tr>
+    const rowsHtml=p.rows.map(r=>{
+      const bg=r.is_paused?'background:color-mix(in srgb,var(--red) 10%,transparent)':(r.is_test?'background:var(--accent-soft)':'');
+      const cb=r.sent?'':`<input type="checkbox" class="pg-cb" data-id="${r.id}">`;
+      const testBadge=r.is_test?' <span class="badge b-active" title="Тестовый номер — уходит первым, до боевой аудитории">🧪 тест</span>':'';
+      const pauseBadge=r.is_paused?' <span class="badge b-stop" title="На паузе в этой кампании — рассылка её пропускает">⏸ пауза</span>':'';
+      return `<tr${bg?` style="${bg}"`:''}>
+      <td style="text-align:center">${cb}</td>
       <td style="text-align:center">${r.sent?'<span style="color:var(--green);font-weight:700">✓</span>':'<span class="no">○</span>'}</td>
-      <td>${esc(r.name)||("#"+r.id)}</td>
+      <td>${esc(r.name)||("#"+r.id)}${testBadge}${pauseBadge}</td>
       <td class="mono">${esc(r.handle)}</td>
       <td>${esc(r.account)}</td>
-      <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`).join("");
+      <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`;}).join("");
     box.innerHTML=`<div class="sub" style="margin-bottom:6px">Отправлено <b>${p.sent_count}</b> из ${p.total} · аккаунт: <b>${esc(p.account_name)}</b></div>
+      <div class="ttoolbar" style="margin:0 0 8px;gap:8px">
+        <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="pg-all-${id}"> выбрать все не отправленные</label>
+        <button id="pg-pause-${id}" style="font-size:11px">⏸ Пауза выбранных</button>
+        <button id="pg-unpause-${id}" style="font-size:11px">▶ Снять паузу с выбранных</button>
+        <span class="hint" id="pg-msg-${id}"></span></div>
       <div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px">
         <table style="width:100%;border-collapse:collapse">
-          <tr><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>С аккаунта</th><th>Когда</th></tr>
+          <tr><th style="width:26px"></th><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>С аккаунта</th><th>Когда</th></tr>
           ${rowsHtml}</table></div>`;
+    const selIds=()=>[...box.querySelectorAll(".pg-cb:checked")].map(cb=>+cb.dataset.id);
+    const allCb=document.getElementById(`pg-all-${id}`);
+    if(allCb)allCb.onchange=()=>box.querySelectorAll(".pg-cb").forEach(cb=>cb.checked=allCb.checked);
+    const msgEl=document.getElementById(`pg-msg-${id}`);
+    const reopen=()=>{const btnProg=mount.querySelector(`.cl-prog[data-id="${id}"]`);if(btnProg){box.dataset.open="";btnProg.click();}};
+    const pauseBtn=document.getElementById(`pg-pause-${id}`);
+    if(pauseBtn)pauseBtn.onclick=async()=>{
+      const ids=selIds();if(!ids.length){msgEl.textContent="выбери хотя бы один контакт";return;}
+      pauseBtn.disabled=true;
+      const r=await api(`/api/campaign/${id}/pause_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contact_ids:ids})});
+      pauseBtn.disabled=false;
+      if(r.error){msgEl.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+      reopen();
+    };
+    const unpauseBtn=document.getElementById(`pg-unpause-${id}`);
+    if(unpauseBtn)unpauseBtn.onclick=async()=>{
+      const ids=selIds();if(!ids.length){msgEl.textContent="выбери хотя бы один контакт";return;}
+      unpauseBtn.disabled=true;
+      const r=await api(`/api/campaign/${id}/unpause_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contact_ids:ids})});
+      unpauseBtn.disabled=false;
+      if(r.error){msgEl.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+      reopen();
+    };
   });
   mount.querySelectorAll(".cl-econ").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,box=document.getElementById("econ-"+id);
@@ -4129,7 +4172,7 @@ const WZ_STEPS=[
   {k:"prompt",t:"5 · Промпт ИИ-агента"},
   {k:"launch",t:"6 · Запуск"},
 ];
-async function showAudiencePicker(d){
+async function showAudiencePicker(d,onApplied){
   const modal=document.createElement("div");
   modal.className="modal";
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
@@ -4213,6 +4256,7 @@ async function showAudiencePicker(d){
     const f=document.getElementById("wz-audience_tag");if(f)f.value=tag;
     const pm=document.getElementById("wz-pick-msg");if(pm)pm.textContent=`✅ выбрано ${r.updated}, сегмент «${tag}»`;
     modal.remove();
+    if(onApplied)onApplied(r.updated,tag);
   };
   renderList();
 }

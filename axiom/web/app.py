@@ -3368,9 +3368,11 @@ def _channel_clause(channel: str | None) -> str:
     return "(" + " OR ".join(conds) + ")" if conds else ""
 
 
-def _audience_count(conn, tag, channel) -> int:
-    where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
-    params = []
+def _audience_count(conn, cid, tag, channel) -> int:
+    # На паузе — не в счёт "в очереди": они пока не уйдут, пока не снимут паузу.
+    where = ("status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
+             "AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)")
+    params = [cid]
     cc = _channel_clause(channel)
     if cc:
         where += " AND " + cc
@@ -3382,7 +3384,7 @@ def _audience_count(conn, tag, channel) -> int:
 
 def _camp_row(conn, r) -> dict:
     d = dict(r)
-    d["audience"] = _audience_count(conn, d.get("audience_tag"), d.get("channel"))
+    d["audience"] = _audience_count(conn, d["id"], d.get("audience_tag"), d.get("channel"))
     d["sent"] = conn.execute(
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
     ).fetchone()["c"]
@@ -3706,7 +3708,7 @@ def campaign_preflight(cid: int) -> JSONResponse:
             "SELECT a.*, COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
             "WHERE ca.campaign_id=?", (cid,)).fetchall()]
-        aud = _audience_count(conn, camp.get("audience_tag"), camp.get("channel"))
+        aud = _audience_count(conn, cid, camp.get("audience_tag"), camp.get("channel"))
         kps = conn.execute("SELECT COUNT(*) c FROM campaign_kps WHERE campaign_id=?", (cid,)).fetchone()["c"]
         has_main = bool(config.TG_STRING_SESSION)
 
@@ -3788,6 +3790,7 @@ def campaign_progress(cid: int) -> JSONResponse:
             f"FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT 500",
             params,
         ).fetchall()
+        paused_ids = database.paused_contact_ids(conn, cid)
 
     def handle(r) -> str:
         return ("@" + r["username"]) if r["username"] else (r["phone"] or "—")
@@ -3806,10 +3809,33 @@ def campaign_progress(cid: int) -> JSONResponse:
         rows.append({
             "id": r["id"], "name": r["person_name"] or r["name"], "handle": handle(r),
             "sent": False, "sent_at": None, "account": acc_name, "status": r["status"],
-            "is_test": bool(r["is_test"]),
+            "is_test": bool(r["is_test"]), "is_paused": r["id"] in paused_ids,
         })
     return JSONResponse({"account": acc, "account_name": acc_name,
                          "sent_count": len(sent_ids), "total": len(rows), "rows": rows})
+
+
+@app.post("/api/campaign/{cid}/pause_contacts")
+def campaign_pause_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Частичная пауза: указанные контакты рассылка этой кампании пропустит, пока
+    не снимут паузу. Остальная очередь продолжает слаться — в отличие от общего
+    Стопа, который останавливает всю кампанию целиком."""
+    ids = [int(i) for i in (payload.get("contact_ids") or [])]
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
+    with database.get_conn() as conn:
+        database.pause_campaign_contacts(conn, cid, ids)
+    return JSONResponse({"ok": True, "paused": len(ids)})
+
+
+@app.post("/api/campaign/{cid}/unpause_contacts")
+def campaign_unpause_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    ids = [int(i) for i in (payload.get("contact_ids") or [])]
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
+    with database.get_conn() as conn:
+        database.unpause_campaign_contacts(conn, cid, ids)
+    return JSONResponse({"ok": True, "unpaused": len(ids)})
 
 
 _ECON_FIELDS = ("goal_start", "result_note", "cost_proxy", "cost_accounts", "cost_ai",

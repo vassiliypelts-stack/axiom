@@ -361,6 +361,19 @@
   .skel-table{display:flex;flex-direction:column;gap:12px;padding:16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);}
   .skel-card{height:100px;}
   .skel-row{height:18px;width:100%;}
+  /* Недельный вид календаря */
+  .wk-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;}
+  .wk-col{background:var(--panel);border:1px solid var(--border);border-radius:10px;min-height:160px;display:flex;flex-direction:column;overflow:hidden;}
+  .wk-col.today{border-color:var(--accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent);}
+  .wk-hd{padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;background:var(--panel2);}
+  .wk-col.today .wk-hd{color:var(--accent);}
+  .wk-hd span{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:13px;}
+  .wk-body{padding:6px;flex:1;display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:260px;}
+  .wk-ev{font-size:11.5px;line-height:1.35;padding:5px 7px;border-radius:6px;background:var(--accent-soft);border-left:3px solid var(--blue);cursor:default;}
+  .wk-ev.gcal{background:var(--green-soft);border-left-color:var(--green);}
+  .wk-ev b{font-family:'JetBrains Mono',monospace;display:block;font-size:10.5px;color:var(--muted);font-weight:700;}
+  .wk-empty{font-size:11px;color:var(--faint);text-align:center;padding:10px 0;}
+  @media(max-width:900px){.wk-grid{grid-template-columns:repeat(7,minmax(90px,1fr));overflow-x:auto;}}
   /* Цветные точки статуса вместо эмодзи */
   .sdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:1px;flex:none;}
   .sdot.g{background:var(--green);box-shadow:0 0 6px var(--green);}
@@ -3902,16 +3915,16 @@ async function viewProxy(v){
     <div id="pool-tbl" style="margin-top:10px"></div>
   </div>
   <div class="card" style="margin-bottom:16px">
-    <b style="font-size:14px">🛡️ Прокси для аккаунтов</b>
-    <div class="sub" style="margin:6px 0 12px">Каждому номеру — свой IP. Иначе Telegram/WhatsApp видят пачку аккаунтов с одного адреса и банят. Формат: <span class="mono">socks5://user:pass@host:port</span>, <span class="mono">http://host:port</span> или <span class="mono">tg://proxy?server=...</span> (MTProto, только TG).</div>
+    <b style="font-size:14px">🛡️ Прокси для аккаунтов — быстрые массовые действия</b>
+    <div class="sub" style="margin:6px 0 12px">Каждому номеру — свой IP, иначе Telegram/WhatsApp видят пачку аккаунтов с одного адреса и банят. Формат: <span class="mono">socks5://user:pass@host:port</span>, <span class="mono">http://host:port</span> или <span class="mono">tg://proxy?server=...</span> (MTProto, только TG).
+      <br>Прокси КОНКРЕТНОГО аккаунта, его статус (жив/мёртв) и полный набор действий (раздать/купить/проверить) — в разделе <a href="#agents">«Аккаунты»</a>, колонка «Прокси» + кнопка «⋯ Ещё действия».</div>
     <div class="ttoolbar" style="margin:0">
       <input id="px-all" class="grow" placeholder="socks5://user:pass@host:port — применить сразу ко всем">
       <button id="px-all-btn">Применить ко всем</button>
       <span style="width:1px;height:20px;background:var(--border)"></span>
       <button id="px-proxy6">🛒 Купить Proxy6</button>
     </div>
-  </div>
-  <div id="px-tbl"></div>`;
+  </div>`;
   const drawPool=async()=>{
     const pt=$("#pool-tbl");const d=await api("/api/proxies");
     if(!d.items||!d.items.length){pt.innerHTML='<div class="sub">Пул пуст — нажми «Обновить пул».</div>';return;}
@@ -3936,23 +3949,6 @@ async function viewProxy(v){
     if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';}
     else{m.textContent="готово";drawPool();route();}
   };
-  const tbl=$("#px-tbl");
-  tbl.innerHTML=`<div style="border:1px solid var(--border);border-radius:8px;overflow:auto">
-    <table style="width:100%;border-collapse:collapse">
-      <tr><th>Аккаунт</th><th>Телефон</th><th>Статус</th><th>Прокси (socks5/http)</th><th></th></tr>
-      ${a.map(x=>`<tr>
-        <td>${esc(x.label)||("#"+x.id)}</td>
-        <td class="mono">${esc(x.phone)||"—"}</td>
-        <td><span class="badge b-${x.status==='active'?'active':x.status==='banned'?'stop':'nurture'}">${ACC_ST[x.status]||x.status}</span></td>
-        <td><input class="px-in" data-id="${x.id}" value="${esc(x.proxy||'')}" placeholder="socks5://..." style="width:100%;min-width:240px"></td>
-        <td><button class="px-save" data-id="${x.id}">💾</button></td></tr>`).join("")}
-    </table></div>`;
-  tbl.querySelectorAll(".px-save").forEach(b=>b.onclick=async()=>{
-    const id=b.dataset.id,val=tbl.querySelector(`.px-in[data-id="${id}"]`).value.trim();
-    b.textContent="…";
-    const r=await api(`/api/accounts/${id}/proxy`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({proxy:val})});
-    b.textContent=r.ok?"✓":"!";setTimeout(()=>b.textContent="💾",1400);
-  });
   $("#px-all-btn").onclick=async()=>{
     const val=$("#px-all").value.trim();
     if(!val){alert("введи адрес прокси");return;}
@@ -4001,11 +3997,56 @@ async function viewCalendar(v){
       <br>3) обнови страницу — при первом обращении откроется окно входа Google (разово).
       <br><span style="opacity:.7">Скажи Claude «подключи Google-календарь» — проведу по шагам.</span></div></div>`;
   }
+  // Объединяем оба источника в один список событий для недельного грида.
+  const events=[
+    ...m.map(x=>({ts:x.meeting_at,title:(x.name||("#"+x.cid)),sub:x.username?"@"+x.username:(x.phone||""),link:x.zoom_link,kind:"axiom"})),
+    ...((g&&g.connected&&g.events)?g.events.map(e=>({ts:e.start,title:e.summary,sub:e.location||"",link:e.link,kind:"gcal"})):[]),
+  ].map(e=>({...e,d:parseTs(e.ts)})).filter(e=>e.d);
+
+  const startOfWeek=d=>{const x=new Date(d);const day=(x.getDay()+6)%7;x.setDate(x.getDate()-day);x.setHours(0,0,0,0);return x;};
+  const DOW=["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+  let weekBase=startOfWeek(new Date());
+
+  const renderWeek=()=>{
+    const days=[...Array(7)].map((_,i)=>{const d=new Date(weekBase);d.setDate(d.getDate()+i);return d;});
+    const wkLabel=`${days[0].toLocaleDateString("ru-RU",{day:"2-digit",month:"short"})} — ${days[6].toLocaleDateString("ru-RU",{day:"2-digit",month:"short"})}`;
+    const today=new Date();
+    const colHtml=days.map((d,i)=>{
+      const isToday=d.toDateString()===today.toDateString();
+      const dayEvents=events.filter(e=>e.d.toDateString()===d.toDateString()).sort((a,b)=>a.d-b.d);
+      const evHtml=dayEvents.length?dayEvents.map(e=>`<div class="wk-ev ${e.kind}" ${e.link?`onclick="window.open('${esc(e.link)}','_blank')"`:''} title="${esc(e.sub||'')}">
+          <b>${e.d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}</b> ${esc(e.title)}</div>`).join(""):
+        '<div class="wk-empty">—</div>';
+      return `<div class="wk-col${isToday?' today':''}">
+        <div class="wk-hd">${DOW[i]}<span>${d.getDate()}</span></div>
+        <div class="wk-body">${evHtml}</div></div>`;
+    }).join("");
+    $("#wk-label").textContent=wkLabel;
+    $("#wk-grid").innerHTML=colHtml;
+    $("#wk-grid").querySelectorAll(".wk-ev").forEach(el=>{if(el.onclick)el.style.cursor="pointer";});
+  };
+
   v.innerHTML=`<p class="sub" style="margin-top:0">Встречи AXIOM (КЭВ) + твой личный Google-календарь в одном месте.</p>
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:4px 0 8px">🤝 Встречи AXIOM</div>
-    ${meetTable}
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 8px">📅 Google-календарь</div>
-    ${gcalBlock}`;
+    <div class="ttoolbar" style="margin-bottom:10px">
+      <button id="wk-prev" title="прошлая неделя">← неделя</button>
+      <button id="wk-today">Сегодня</button>
+      <button id="wk-next" title="следующая неделя">неделя →</button>
+      <b id="wk-label" style="margin-left:8px"></b>
+      <span class="grow"></span>
+      <span class="hint">🟦 AXIOM (КЭВ) · 🟩 Google</span>
+    </div>
+    <div id="wk-grid" class="wk-grid"></div>
+    <details style="margin-top:20px"><summary style="cursor:pointer;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted)">📋 Списком (все встречи)</summary>
+      <div style="margin-top:10px">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:4px 0 8px">🤝 Встречи AXIOM</div>
+        ${meetTable}
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 8px">📅 Google-календарь</div>
+        ${gcalBlock}
+      </div></details>`;
+  $("#wk-prev").onclick=()=>{weekBase.setDate(weekBase.getDate()-7);renderWeek();};
+  $("#wk-next").onclick=()=>{weekBase.setDate(weekBase.getDate()+7);renderWeek();};
+  $("#wk-today").onclick=()=>{weekBase=startOfWeek(new Date());renderWeek();};
+  renderWeek();
 }
 
 // ----------------------------------------------------------------- router

@@ -2972,7 +2972,35 @@ async function renderTargetLeads(body){
 
 async function viewDossier(v){
   await loadContacts();
-  v.innerHTML=`<p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p><div id="dz"></div>`;
+  v.innerHTML=`
+    <div class="card" style="margin:0 0 14px;padding:14px">
+      <b style="font-size:14px">🔎 Досье по телефону или @username</b>
+      <div class="sub" style="margin:4px 0 10px">Заходим в TG-профиль живым аккаунтом → био, аватар, личный канал → AI-портрет: боли, страхи, желания, психотип и готовый первый крючок.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="dl-q" placeholder="+79161234567  или  @username" style="flex:1;min-width:220px">
+        <button class="primary" id="dl-go">Собрать досье</button>
+      </div>
+      <div id="dl-msg" class="hint" style="margin-top:8px"></div>
+      <div id="dl-result"></div>
+    </div>
+    <p class="sub" style="margin-top:0">Клик по человеку — полное досье справа: контакты, ссылки, теги, сделка, история.</p>
+    <div id="dz"></div>`;
+  const dlRun=async()=>{
+    const q=$("#dl-q").value.trim();
+    if(!q){$("#dl-msg").textContent="введите телефон или @username";return;}
+    const b=$("#dl-go");b.disabled=true;b.textContent="собираю… (10-40с)";
+    $("#dl-msg").innerHTML='<span style="color:var(--muted)">захожу в профиль, читаю канал, строю портрет…</span>';
+    $("#dl-result").innerHTML="";
+    try{
+      const r=await api("/api/dossier/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:q})});
+      b.disabled=false;b.textContent="Собрать досье";
+      if(r.error){$("#dl-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error)+'</span>';return;}
+      $("#dl-msg").innerHTML='<span style="color:var(--green)">✓ готово'+(r.channel_posts?` · собрано постов канала: ${r.channel_posts}`:'')+(r.warning?` · <span style="color:#c0392b">${esc(r.warning)}</span>`:'')+'</span>';
+      $("#dl-result").innerHTML=dossierCard(r.dossier||{},r.contact_id);
+    }catch(e){b.disabled=false;b.textContent="Собрать досье";$("#dl-msg").innerHTML='<span style="color:#c0392b">ошибка сети</span>';}
+  };
+  $("#dl-go").onclick=dlRun;
+  $("#dl-q").addEventListener("keydown",e=>{if(e.key==="Enter")dlRun();});
   smartTable($("#dz"),{
     tableKey:"dossier",
     rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
@@ -2989,6 +3017,43 @@ async function viewDossier(v){
     ],
     emptyText:"Людей нет",
   });
+}
+
+function dossierCard(d,cid){
+  if(!d||!Object.keys(d).length)return"";
+  const sc=d.score!=null?Math.round(d.score*100):null;
+  const conf=d.confidence!=null?Math.round(d.confidence*100):null;
+  const field=(icon,label,val,color)=>val?`<div style="margin:6px 0"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">${icon} ${label}</span><div style="color:${color||'var(--text)'}">${esc(val)}</div></div>`:"";
+  const chips=(label,val)=>val?`<span class="badge" style="margin:2px 4px 2px 0">${label}: ${esc(val)}</span>`:"";
+  const avatar=cid?`<img src="/api/contact/${cid}/avatar?t=${Date.now()}" onerror="this.style.display='none'" style="width:56px;height:56px;border-radius:12px;object-fit:cover;float:right;margin-left:12px">`:"";
+  return `<div class="card" style="margin-top:12px;padding:16px;background:var(--panel2)">
+    ${avatar}
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="font-size:16px">${esc(d.name)||'без имени'}</b>
+      ${d.username?`<span class="tg">@${esc(d.username)}</span>`:''}
+      ${sc!=null?`<span class="badge b-${sc>=70?'active':sc>=40?'nurture':'stop'}" title="релевантность лида">🎯 ${sc}%</span>`:''}
+      ${conf!=null?`<span class="badge" title="достоверность портрета">достоверность ${conf}%</span>`:''}
+    </div>
+    <div style="margin:4px 0 10px">
+      ${chips('пол',d.gender)}${chips('город',d.city)}${chips('сегмент',d.segment)}${d.phone?`<span class="badge">${esc(d.phone)}</span>`:''}
+    </div>
+    ${d.bio?`<div class="sub" style="margin-bottom:8px">📝 био: ${esc(d.bio)}</div>`:''}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      ${field('😣','Боли',d.pains,'#e07a5f')}
+      ${field('⚠️','Страхи',d.fears,'#e0a35f')}
+      ${field('🎯','Желания',d.desires,'var(--green)')}
+      ${field('🧠','Психотип',d.psychotype)}
+      ${field('💬','Как общаться',d.comm_style)}
+      ${field('⏰','Когда активен',d.best_time)}
+      ${field('🔖','Интересы',d.interests)}
+      ${field('📸','По фото',d.photo_analysis,'var(--muted)')}
+    </div>
+    ${d.quotes?`<div style="margin:10px 0"><span style="font-size:11px;text-transform:uppercase;color:var(--muted)">💬 цитаты</span><div style="font-style:italic;color:var(--muted)">${esc(d.quotes)}</div></div>`:''}
+    ${d.rec_message?`<div style="margin-top:12px;padding:12px;border-radius:10px;background:var(--accent-soft);border:1px solid var(--accent)">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-ink);margin-bottom:4px">🪝 готовый первый крючок</div>
+      <div style="color:var(--text)">${esc(d.rec_message)}</div></div>`:''}
+    ${cid?`<div style="margin-top:12px"><button onclick="openDossier(STATE.contacts.find(c=>c.id==${cid})||{id:${cid}})">открыть полную карточку →</button></div>`:''}
+  </div>`;
 }
 
 async function loadSources(){try{const s=await api("/api/import/sources");const dl=$("#src-list");if(dl)dl.innerHTML=s.map(x=>`<option value="${esc(x)}">`).join("");}catch(e){}}
@@ -3101,7 +3166,7 @@ async function viewCampaigns(v){
       if(fst&&a.status!==fst)return false;
       if(q){const hay=((a.label||"")+" "+(a.phone||"")+" "+(a.username||"")).toLowerCase();if(!hay.includes(q))return false;}
       return true;
-    });
+    }).sort((a,b)=>(isAccReady(b)-isAccReady(a)));   // живые — всегда сверху, без прокрутки
     const tm=$("#c-team-msg");
     if(tm){
       const cap=[...teamSet].reduce((sum,id)=>{

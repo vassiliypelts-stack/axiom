@@ -37,10 +37,19 @@ _SORTED_PREFIXES = sorted(_COUNTRY_PREFIXES, key=lambda x: len(x[0]), reverse=Tr
 
 # Имена классов ошибок Telethon — сверяем по имени, чтобы не падать на разных
 # версиях библиотеки (где-то класса может не быть).
+# ⚠️ РАЗДЕЛЕНО НАРОЧНО (было слито в один _BAN_ERRORS — баг, живые номера
+# уходили в status='banned' навсегда из-за обычного конфликта сессий):
+#   ban            — Telegram убил САМ НОМЕР/аккаунт. Необратимо, номер сожжён.
+#   session_revoked — умерла ЭТА КОНКРЕТНАЯ сессия (как «вышел с одного
+#                     устройства»). Номер жив, чинится обычным перелогином
+#                     (🔌 Подключить). Частый триггер — наши же параллельные
+#                     подключения одной sessions-строки с разных IP/прокси.
 _BAN_ERRORS = {
-    "UserDeactivatedBanError", "UserDeactivatedError", "AuthKeyUnregisteredError",
-    "AuthKeyDuplicatedError", "SessionRevokedError", "SessionExpiredError",
-    "PhoneNumberBannedError", "UnauthorizedError",
+    "UserDeactivatedBanError", "UserDeactivatedError", "PhoneNumberBannedError",
+}
+_SESSION_REVOKED_ERRORS = {
+    "AuthKeyUnregisteredError", "AuthKeyDuplicatedError", "SessionRevokedError",
+    "SessionExpiredError", "UnauthorizedError",
 }
 _FLOOD_ERRORS = {"FloodWaitError", "FloodError", "SlowModeWaitError"}
 _SPAM_ERRORS = {"PeerFloodError"}
@@ -52,8 +61,10 @@ _SKIP_ERRORS = {
 
 
 def classify_error(exc: BaseException) -> str:
-    """Категория ошибки: 'ban' | 'flood' | 'spam' | 'blocked' | 'skip' | 'other'.
-    'ban'    — аккаунт мёртв/деактивирован (вывести из работы, статус banned).
+    """Категория ошибки: 'ban' | 'session_revoked' | 'flood' | 'spam' | 'blocked' | 'skip' | 'other'.
+    'ban'            — НОМЕР мёртв/деактивирован Telegram'ом. Необратимо, статус banned навсегда.
+    'session_revoked'— жива только СЕССИЯ отозвана (конфликт подключений, устарел вход) —
+                        номер жив, лечится перелогином (🔌 Подключить), НЕ статус banned.
     'flood'  — временный лимит (подождать/вывести из ротации на заход).
     'spam'   — PeerFlood: слишком много ЛС незнакомцам (риск бана, притормозить).
     'blocked'— контакт заблокировал НАШ аккаунт (не «потерян» вообще — просто
@@ -63,8 +74,10 @@ def classify_error(exc: BaseException) -> str:
     """
     name = type(exc).__name__
     msg = str(exc).lower()
-    if name in _BAN_ERRORS or "banned" in msg or "deactivated" in msg or "auth key" in msg:
+    if name in _BAN_ERRORS or "banned" in msg or "deactivated" in msg:
         return "ban"
+    if name in _SESSION_REVOKED_ERRORS or "auth key" in msg or "unauthorized" in msg:
+        return "session_revoked"
     if name in _FLOOD_ERRORS or "flood" in msg:
         return "flood"
     if name in _SPAM_ERRORS or "too many requests" in msg:
@@ -77,8 +90,13 @@ def classify_error(exc: BaseException) -> str:
 
 
 def is_ban(exc: BaseException) -> bool:
-    """True, если ошибка означает, что аккаунт мёртв/забанен/деавторизован."""
+    """True, если НОМЕР мёртв/забанен/деактивирован Telegram'ом (не просто сессия)."""
     return classify_error(exc) == "ban"
+
+
+def is_session_revoked(exc: BaseException) -> bool:
+    """True, если отозвана именно СЕССИЯ (лечится перелогином, номер жив)."""
+    return classify_error(exc) == "session_revoked"
 
 
 def phone_country(phone: str | None) -> tuple[str | None, str | None]:

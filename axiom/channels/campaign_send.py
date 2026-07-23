@@ -315,7 +315,7 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         except Exception as e:
             cat = classify_error(e)
             if cat == "ban":
-                # аккаунт мёртв/деактивирован: помечаем banned и выводим из работы.
+                # НОМЕР мёртв/деактивирован Telegram'ом: помечаем banned и выводим из работы.
                 # контакт НЕ теряем — возвращаем в 'new', достанется живому аккаунту.
                 print(f"[{s['label']}] ⛔ аккаунт забанен/деактивирован ({e}) — статус banned, из ротации")
                 with database.get_conn() as conn:
@@ -324,6 +324,22 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                         conn.execute("UPDATE accounts SET status='banned' WHERE id=?", (s["id"],))
                         database.add_event(conn, "account_banned", f"⛔ Аккаунт «{s['label']}» забанен",
                                            f"Telegram: {e}", level="bad", campaign_id=cid, account_id=s["id"])
+                s["remaining"] = 0
+                continue
+            if cat == "session_revoked":
+                # НОМЕР жив, отозвана только эта сессия (часто — конфликт наших же
+                # параллельных подключений). НЕ banned — просто session_alive=0,
+                # лечится перелогином через 🔌 Подключить.
+                print(f"[{s['label']}] 🔴 сессия отозвана ({e}) — нужен перелогин, из ротации")
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                    if s["id"]:
+                        conn.execute(
+                            "UPDATE accounts SET session_alive=0, session_state='revoked', "
+                            "session_reason=? WHERE id=?", (str(e)[:200], s["id"]))
+                        database.add_event(conn, "ban", f"🔴 Сессия отозвана: «{s['label']}»",
+                                           f"номер жив — переподключи (🔌 Подключить). {e}",
+                                           level="warn", campaign_id=cid, account_id=s["id"])
                 s["remaining"] = 0
                 continue
             if cat == "spam":

@@ -3103,11 +3103,13 @@ async function viewCampaigns(v){
       <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
         <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
       <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании)</label>
-        <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся).</div>
-        <textarea id="c-test-nums" rows="2" placeholder="+79991234567&#10;@my_second_account"></textarea>
+        <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся). Кнопка «💾 Запомнить» сохранит текущий список в браузере — он сам подставится в каждой новой кампании, дописывай к нему что нужно вручную.</div>
+        <textarea id="c-test-nums" rows="3" placeholder="+79991234567&#10;@my_second_account"></textarea>
         <div class="ttoolbar" style="margin:6px 0 0">
           <button type="button" id="c-test-add">Добавить в начало очереди</button>
           <button type="button" id="c-preview">Предпросмотр — что уйдёт получателям</button>
+          <button type="button" id="c-test-save" title="Сохранить эти номера как «мои постоянные» — будут сами подставляться в каждой новой кампании">💾 Запомнить мои номера</button>
+          <span class="hint" id="c-test-saved-hint"></span>
         </div>
         <div id="c-test-msg" style="margin-top:4px;font-size:13px"></div>
         <div id="c-preview-out" style="display:none;margin-top:10px"></div></div>
@@ -3237,6 +3239,13 @@ async function viewCampaigns(v){
     if(mainAcc)teamSet.add(+mainAcc);
     Object.keys(teamLimits).forEach(k=>delete teamLimits[k]);
     Object.entries(c.account_limits||{}).forEach(([id,v])=>teamLimits[+id]=+v);
+    // Свои номера для теста — подставляем сохранённые (localStorage), чтобы не
+    // вводить одно и то же вручную в каждой новой кампании. Дописать что-то ещё
+    // можно прямо в поле, сохранённый список от этого не портится (жми «Запомнить»
+    // заново, если хочешь обновить постоянный список).
+    const savedNums=localStorage.getItem("axiom_my_test_nums")||"";
+    $("#c-test-nums").value=savedNums;
+    $("#c-test-saved-hint").textContent=savedNums?`сохранено: ${savedNums.split("\n").filter(x=>x.trim()).length} номер(ов)`:"";
     renderMain();renderTeam();
     renderKpBox(c);
     renderKpsBox(c);
@@ -3293,6 +3302,12 @@ async function viewCampaigns(v){
   const wb=$("#c-wizard-btn");if(wb)wb.onclick=()=>startWizard();
   $("#c-cancel").onclick=()=>{form.style.display="none";};
   $("#c-prompt-ex").onclick=()=>{$("#c-prompt").value=PROMPT_PH;};
+  const ctSave=$("#c-test-save");if(ctSave)ctSave.onclick=()=>{
+    const val=$("#c-test-nums").value;
+    localStorage.setItem("axiom_my_test_nums",val);
+    const n=val.split("\n").filter(x=>x.trim()).length;
+    $("#c-test-saved-hint").textContent=n?`сохранено: ${n} номер(ов) — подставится в каждой новой кампании`:"список очищен";
+  };
   const ctAdd=$("#c-test-add");if(ctAdd)ctAdd.onclick=async()=>{
     const eid=form.dataset.edit;const msg=$("#c-test-msg");
     if(!eid){msg.innerHTML='<span style="color:#c0392b">сначала сохрани кампанию, затем открой её ещё раз — и добавь тестовые номера</span>';return;}
@@ -4266,12 +4281,26 @@ const SKELS={
   orgchart:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:60%"></div><div class="skel-grid"><div class="skel skel-card" style="height:120px"></div><div class="skel skel-card" style="height:120px;width:70%"></div></div></div>',
   default:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:60%"></div></div>',
 };
+// Прямые ссылки на сущности (как в Битрикс): #dossier/295, #deals/12, #contacts/7
+function openEntityDeep(section,id){
+  id=+id; if(!id)return;
+  setTimeout(()=>{
+    try{
+      if(section==="dossier"||section==="contacts"||section==="leads")openDossier(id);
+      else if(section==="deals")openDeal(id);
+    }catch(e){}
+  },400);
+}
 async function route(){
-  const id=(location.hash||"#dashboard").slice(1);
-  const nav=NAV.find(n=>n.id===id)||NAV[0];
+  const raw=(location.hash||"#dashboard").slice(1);
+  const slash=raw.indexOf("/");
+  const section=slash>=0?raw.slice(0,slash):raw;
+  const entityId=slash>=0?raw.slice(slash+1):null;
+  const nav=NAV.find(n=>n.id===section)||NAV[0];
   renderNav(nav.id);$("#title").textContent=nav.label;
   const v=$("#view");v.innerHTML=SKELS[nav.id]||SKELS.default;
   try{await (VIEWS[nav.id]||viewDashboard)(v);}catch(e){v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`;}
+  if(entityId)openEntityDeep(section,entityId);
   $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
   refreshNotif();
 }

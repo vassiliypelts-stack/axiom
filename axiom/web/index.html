@@ -280,6 +280,7 @@
   .b-messaged,.b-in_dialog{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 38%,transparent);background:color-mix(in srgb,var(--accent) 14%,var(--panel));}
   .b-meeting_set,.b-met,.b-won{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent);background:color-mix(in srgb,var(--green) 15%,var(--panel));}
   .b-lost,.b-stop{color:var(--red);border-color:color-mix(in srgb,var(--red) 38%,transparent);background:color-mix(in srgb,var(--red) 14%,var(--panel));}
+  .b-blocked{color:var(--purple);border-color:color-mix(in srgb,var(--purple) 42%,transparent);background:color-mix(in srgb,var(--purple) 15%,var(--panel));}
   .b-nurture{color:var(--muted);border-color:var(--border);background:var(--panel2);}
   .b-active{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent);background:color-mix(in srgb,var(--green) 15%,var(--panel));}
   /* бейдж прогрева с прогресс-заливкой: «прогрев N/14 дн» */
@@ -448,8 +449,8 @@
 
 <script>
 // ----------------------------------------------------------------- helpers
-const STATUS_RU={new:"Новый",messaged:"Написано",in_dialog:"В диалоге",meeting_set:"Встреча",met:"Встреча прошла",won:"Сделка",lost:"Потерян",nurture:"Прогрев",stop:"Стоп"};
-const STAGES=["new","messaged","in_dialog","meeting_set","met","won","nurture","lost","stop"];
+const STATUS_RU={new:"Новый",messaged:"Написано",in_dialog:"В диалоге",meeting_set:"Встреча",met:"Встреча прошла",won:"Сделка",lost:"Потерян",blocked:"Заблокировал",nurture:"Прогрев",stop:"Стоп"};
+const STAGES=["new","messaged","in_dialog","meeting_set","met","won","nurture","lost","blocked","stop"];
 const $=s=>document.querySelector(s);
 const api=(u,o)=>fetch(u,o).then(r=>r.json());
 // ── Тема оформления (3 гаммы, выбирается в профиле, запоминается) ──
@@ -2504,64 +2505,99 @@ async function viewChatCatalog(v){
   CHATCAT=await api("/api/chatcat");
   let niches=[];try{niches=await api("/api/niches");}catch(e){}
   const nicheOpts=niches.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join("");
-  v.innerHTML=`<div class="ttoolbar">
-      <input id="cc-target" class="grow" placeholder="@username или ссылка чата">
-      <button class="primary" id="cc-add">Добавить чат</button>
-      <button id="cc-import">📤 Импортировать</button>
-      <button id="cc-inv">🔄 Инвентаризация</button>
-      <button id="cc-backfill" title="дозаполнить tg_chat_id у старых чатов и аватары лидов — чинит связку «в каком чате найден» в досье">🧩 Дозаполнить</button>
-      <span class="hint" id="cc-inv-msg">Каталог отдельно от CRM. «Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
+  v.innerHTML=`
+    <div class="ttoolbar" style="margin-bottom:14px">
+      <button class="cc-tabbtn primary" data-tab="cat">📋 Каталог</button>
+      <button class="cc-tabbtn" data-tab="search">🔍 Поиск и рост</button>
+      <button class="cc-tabbtn" data-tab="scan">📊 Проверка</button>
+      <span class="grow"></span>
+      <span class="hint">Каталог отдельно от CRM — сбор и разведка чатов, не сама рассылка.</span>
     </div>
-    <div class="ttoolbar" style="margin-top:-4px">
-      <b class="sub" style="align-self:center">🔍 Авто-поиск чатов:</b>
-      ${niches.length?`<select id="cc-disc-niche" title="искать по ключам ниши">${nicheOpts}</select>`:""}
-      <input id="cc-disc-q" placeholder="или свой запрос (напр. ипотека сочи)" style="min-width:220px">
-      <input id="cc-disc-min" type="number" min="0" placeholder="мин. участников" style="width:130px" title="отсекать мелкие чаты">
-      <label class="sub" style="align-self:center"><input id="cc-disc-groups" type="checkbox"> только группы</label>
-      <button class="primary" id="cc-disc">🔍 Найти чаты</button>
-      <button id="cc-bio" title="достать из bio собранных лидов ссылки на другие/закрытые чаты">🔗 Скан ссылок из bio</button>
-      <button id="cc-sim" title="взять рекомендации Telegram от уже найденных чатов — каталог растёт вширь">♊ Похожие чаты</button>
-      <select id="cc-sim-seed" title="от каких чатов плясать (затравка)">
-        <option value="analyzed">от изученных чатов</option>
-        <option value="favorites">от ⭐ избранных</option>
-        <option value="niche">от чатов выбранной ниши</option>
-      </select>
-      <label class="sub" style="align-self:center" title="кругов размножения: находки круга приводят соседей на следующем">×<input id="cc-sim-depth" type="number" min="1" max="4" value="1" style="width:44px"> круга</label>
-      <label class="sub" style="align-self:center" title="сразу после находки армия вступит в новые чаты (человекоподобно, с паузами). Действует на все три кнопки. 0 = только заносить в каталог"><input id="cc-join-now" type="checkbox"> и сразу вступить по <input id="cc-join-per" type="number" min="1" max="15" value="2" style="width:44px"> чата/акк</label>
-      <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
-    </div>
-    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <b style="font-size:13px">📊 Проверка чатов</b>
-        <button class="primary" id="cc-scanall" title="Пройти по всем непроверенным чатам рабочими аккаунтами: участники, активность, «могу писать», админы. Несуществующие пометит «мёртвый»">📊 Проверить все новые</button>
-        <button id="cc-scanfav" title="Только избранные ⭐ — быстро и безопасно">⭐ Только избранные</button>
-        <button id="cc-scanstop" title="Мягкая остановка: воркеры дочитают текущий чат и выйдут">⏹ Стоп</button>
-        <span id="cc-scan-prog" class="hint"></span>
+
+    <div class="cc-tab" data-tab="cat">
+      <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
+      <div class="ttoolbar" style="margin-bottom:10px">
+        <input id="cc-target" class="grow" placeholder="@username или ссылка чата — добавить вручную">
+        <button class="primary" id="cc-add">Добавить</button>
       </div>
-      <div class="hint" style="margin-top:8px">Идёт <b>рабочими</b> аккаунтами (живыми, не родными) — твой главный номер не под ударом. Скан только читает, не вступает. Паузы между чатами человекоподобные, FloodWait переживает: чат вернётся в очередь к другому аккаунту. Пока не проверишь — в таблице ниже прочерки, и «Могу писать» неизвестно.</div>
-      <div id="cc-verdict-sum" style="margin-top:8px"></div></div>
-    <div id="cc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
-      <b style="font-size:13px">Аппрув (<span id="cv-cnt">0</span>):</b>
-      <button id="cv-selall" title="выделить все строки, что видны после фильтра/поиска">☑ Выделить видимые</button>
-      <button id="cv-selnone">☐ Снять</button>
-      <span style="width:1px;height:18px;background:var(--border)"></span>
-      <button id="cv-good" title="Годен — рассылка и прослушка берут только такие чаты">✅ Годен</button>
-      <button id="cv-bad" title="Не годен — флудилка/не та тема, убрать из работы">🚫 Не годен</button>
-      <button id="cv-maybe" title="Вернуться позже">🤔 На проверку</button>
-      <button id="cv-clear" title="Снять вердикт">✖ Снять вердикт</button>
-      <span class="hint" id="cv-msg">Вердикт — это ТВОЁ решение, отдельно от статуса робота. ИИ ставит предварительный (🤖), твой всегда главнее и не перетирается.</span></div>
-    <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
-    <div class="card" style="margin:0 0 10px;background:var(--panel2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px">
-      <b style="font-size:13px">Показать:</b>
-      <button class="ccf" data-f="fav" title="только помеченные ⭐ (звёздочка в первой колонке)">⭐ Избранные</button>
-      <button class="ccf" data-f="good" title="вердикт «годен» — ты или ИИ отметили как хороший">✅ Годные</button>
-      <button class="ccf" data-f="canwrite" title="можно писать (мы внутри и не заблокированы)">✍️ Могу писать</button>
-      <button class="ccf" data-f="notrash" title="спрятать мёртвые и «не годен»">🙈 Без мусора</button>
-      <span style="width:1px;height:18px;background:var(--border)"></span>
-      <button id="ccf-clear" title="сбросить быстрые фильтры">✖ Сброс</button>
-      <span class="hint" id="ccf-hint">кликай — фильтры складываются (⭐ + ✅ = избранные И годные). Звёздочку ставь в таблице, первый столбец.</span>
+      <div class="card" style="margin:0 0 10px;background:var(--panel2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px">
+        <b style="font-size:13px">Показать:</b>
+        <button class="ccf" data-f="fav" title="только помеченные ⭐ (звёздочка в первой колонке)">⭐ Избранные</button>
+        <button class="ccf" data-f="good" title="вердикт «годен» — ты или ИИ отметили как хороший">✅ Годные</button>
+        <button class="ccf" data-f="canwrite" title="можно писать (мы внутри и не заблокированы)">✍️ Могу писать</button>
+        <button class="ccf" data-f="notrash" title="спрятать мёртвые и «не годен»">🙈 Без мусора</button>
+        <span style="width:1px;height:18px;background:var(--border)"></span>
+        <button id="ccf-clear" title="сбросить быстрые фильтры">✖ Сброс</button>
+        <span class="hint" id="ccf-hint">кликай — фильтры складываются. Звёздочку ставь в таблице, первый столбец.</span>
+      </div>
+      <div id="cc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px">
+        <b style="font-size:13px">Аппрув (<span id="cv-cnt">0</span>):</b>
+        <button id="cv-selall" title="выделить все строки, что видны после фильтра/поиска">☑ Выделить видимые</button>
+        <button id="cv-selnone">☐ Снять</button>
+        <span style="width:1px;height:18px;background:var(--border)"></span>
+        <button id="cv-good" title="Годен — рассылка и прослушка берут только такие чаты">✅ Годен</button>
+        <button id="cv-bad" title="Не годен — флудилка/не та тема, убрать из работы">🚫 Не годен</button>
+        <button id="cv-maybe" title="Вернуться позже">🤔 На проверку</button>
+        <button id="cv-clear" title="Снять вердикт">✖ Снять вердикт</button>
+        <span class="hint" id="cv-msg">Вердикт — ТВОЁ решение, отдельно от статуса робота.</span></div>
+      <div id="cc-body"></div>
     </div>
-    <div id="cc-body"></div>`;
+
+    <div class="cc-tab" data-tab="search" style="display:none">
+      <div class="card" style="margin-bottom:12px;padding:14px">
+        <b style="font-size:13px">🔍 Авто-поиск по нише/запросу</b>
+        <div class="ttoolbar" style="margin-top:8px">
+          ${niches.length?`<select id="cc-disc-niche" title="искать по ключам ниши">${nicheOpts}</select>`:""}
+          <input id="cc-disc-q" placeholder="или свой запрос (напр. ипотека сочи)" style="min-width:220px">
+          <input id="cc-disc-min" type="number" min="0" placeholder="мин. участников" style="width:130px" title="отсекать мелкие чаты">
+          <label class="sub" style="align-self:center"><input id="cc-disc-groups" type="checkbox"> только группы</label>
+          <button class="primary" id="cc-disc">🔍 Найти чаты</button>
+        </div>
+        <span class="hint" id="cc-disc-msg">Ищет публичные чаты по нише/запросу и заносит новые в каталог (без вступления). ~1-2 мин.</span>
+      </div>
+      <div class="card" style="margin-bottom:12px;padding:14px">
+        <b style="font-size:13px">♊ Рост вширь</b>
+        <div class="ttoolbar" style="margin-top:8px">
+          <button id="cc-bio" title="достать из bio собранных лидов ссылки на другие/закрытые чаты">🔗 Скан ссылок из bio</button>
+          <button id="cc-sim" title="взять рекомендации Telegram от уже найденных чатов — каталог растёт вширь">♊ Похожие чаты</button>
+          <select id="cc-sim-seed" title="от каких чатов плясать (затравка)">
+            <option value="analyzed">от изученных чатов</option>
+            <option value="favorites">от ⭐ избранных</option>
+            <option value="niche">от чатов выбранной ниши</option>
+          </select>
+          <label class="sub" style="align-self:center" title="кругов размножения">×<input id="cc-sim-depth" type="number" min="1" max="4" value="1" style="width:44px"> круга</label>
+        </div>
+        <label class="sub" style="margin-top:8px;display:block" title="сразу после находки армия вступит в новые чаты (человекоподобно, с паузами). Действует на все кнопки поиска. 0 = только заносить в каталог"><input id="cc-join-now" type="checkbox"> и сразу вступить по <input id="cc-join-per" type="number" min="1" max="15" value="2" style="width:44px"> чата/акк</label>
+      </div>
+      <div class="card" style="padding:14px">
+        <b style="font-size:13px">⚙ Обслуживание каталога</b>
+        <div class="ttoolbar" style="margin-top:8px">
+          <button id="cc-import">📤 Импортировать список</button>
+          <button id="cc-inv">🔄 Инвентаризация (свои чаты аккаунтов)</button>
+          <button id="cc-backfill" title="дозаполнить tg_chat_id у старых чатов и аватары лидов — чинит связку «в каком чате найден» в досье">🧩 Дозаполнить</button>
+        </div>
+        <span class="hint" id="cc-inv-msg">«Анализ» только читает (участники, активность, админы, могу ли писать), без вступления.</span>
+      </div>
+    </div>
+
+    <div class="cc-tab" data-tab="scan" style="display:none">
+      <div class="card" style="padding:14px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <b style="font-size:13px">📊 Проверка чатов</b>
+          <button class="primary" id="cc-scanall" title="Пройти по всем непроверенным чатам рабочими аккаунтами: участники, активность, «могу писать», админы. Несуществующие пометит «мёртвый»">📊 Проверить все новые</button>
+          <button id="cc-scanfav" title="Только избранные ⭐ — быстро и безопасно">⭐ Только избранные</button>
+          <button id="cc-scanstop" title="Мягкая остановка: воркеры дочитают текущий чат и выйдут">⏹ Стоп</button>
+          <span id="cc-scan-prog" class="hint"></span>
+        </div>
+        <div class="hint" style="margin-top:8px">Идёт <b>рабочими</b> аккаунтами (живыми, не родными) — твой главный номер не под ударом. Скан только читает, не вступает. Паузы между чатами человекоподобные, FloodWait переживает: чат вернётся в очередь к другому аккаунту. Пока не проверишь — в таблице каталога прочерки, и «Могу писать» неизвестно.</div>
+        <div id="cc-verdict-sum" style="margin-top:8px"></div>
+      </div>
+    </div>`;
+  v.querySelectorAll(".cc-tabbtn").forEach(b=>b.onclick=()=>{
+    v.querySelectorAll(".cc-tabbtn").forEach(x=>x.classList.remove("primary"));
+    b.classList.add("primary");
+    v.querySelectorAll(".cc-tab").forEach(t=>t.style.display=t.dataset.tab===b.dataset.tab?"":"none");
+  });
   loadCoverage();
   ccScanWire();
   ccRenderVerdictSummary();
@@ -3023,44 +3059,64 @@ function dossierCard(d,cid){
   if(!d||!Object.keys(d).length)return"";
   const sc=d.score!=null?Math.round(d.score*100):null;
   const conf=d.confidence!=null?Math.round(d.confidence*100):null;
-  const field=(icon,label,val,color)=>val?`<div style="margin:6px 0"><span style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">${icon} ${label}</span><div style="color:${color||'var(--text)'}">${esc(val)}</div></div>`:"";
-  const chips=(label,val)=>val?`<span class="badge" style="margin:2px 4px 2px 0">${label}: ${esc(val)}</span>`:"";
-  const avatar=cid?`<img src="/api/contact/${cid}/avatar?t=${Date.now()}" onerror="this.style.display='none'" style="width:56px;height:56px;border-radius:12px;object-fit:cover;float:right;margin-left:12px">`:"";
-  return `<div class="card" style="margin-top:12px;padding:16px;background:var(--panel2)">
-    ${avatar}
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <b style="font-size:16px">${esc(d.name)||'без имени'}</b>
-      ${d.username?`<span class="tg">@${esc(d.username)}</span>`:''}
-      ${sc!=null?`<span class="badge b-${sc>=70?'active':sc>=40?'nurture':'stop'}" title="релевантность лида">🎯 ${sc}%</span>`:''}
-      ${conf!=null?`<span class="badge" title="достоверность портрета">достоверность ${conf}%</span>`:''}
+  const scColor=sc==null?'var(--muted)':sc>=70?'var(--green)':sc>=40?'var(--accent)':'var(--red)';
+  const initial=esc((d.name||d.username||'?').trim().slice(0,1).toUpperCase());
+  // score-круг (conic прогресс)
+  const scoreRing=sc!=null?`<div style="position:relative;width:66px;height:66px;flex-shrink:0">
+    <div style="width:66px;height:66px;border-radius:50%;background:conic-gradient(${scColor} ${sc*3.6}deg,var(--border) 0)"></div>
+    <div style="position:absolute;inset:5px;border-radius:50%;background:var(--panel);display:flex;flex-direction:column;align-items:center;justify-content:center">
+      <b style="font-size:19px;line-height:1;color:${scColor}">${sc}</b>
+      <span style="font-size:7px;letter-spacing:1.5px;color:var(--muted);margin-top:2px">SCORE</span>
+    </div></div>`:'';
+  const avatar=cid?`<div style="width:64px;height:64px;border-radius:16px;overflow:hidden;flex-shrink:0;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;color:var(--accent-ink);font-size:24px;font-weight:800">
+    <img src="/api/contact/${cid}/avatar?t=${Date.now()}" onerror="this.remove()" style="width:100%;height:100%;object-fit:cover">${initial}</div>`:'';
+  const chip=(txt)=>txt?`<span style="display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:7px;background:var(--panel);border:1px solid var(--border);font-size:12px;color:var(--muted)">${esc(txt)}</span>`:'';
+  // психо-блок с цветовым кодированием
+  const psy=(label,val,color)=>val?`<div style="border-left:3px solid ${color};padding:9px 13px;background:var(--panel);border-radius:0 10px 10px 0">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;color:${color}">${label}</div>
+    <div style="color:var(--text);margin-top:3px;line-height:1.45">${esc(val)}</div></div>`:'';
+  const meta=(label,val)=>val?`<div style="padding:9px 13px;background:var(--panel);border-radius:10px">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);font-weight:600">${label}</div>
+    <div style="color:var(--text);margin-top:3px;line-height:1.45">${esc(val)}</div></div>`:'';
+  const psyBlocks=[psy('БОЛИ',d.pains,'var(--red)'),psy('СТРАХИ',d.fears,'#E0A35F'),psy('ЖЕЛАНИЯ',d.desires,'var(--green)')].filter(Boolean).join('');
+  const metaBlocks=[meta('Психотип',d.psychotype),meta('Как общаться',d.comm_style),meta('Когда активен',d.best_time),meta('Интересы',d.interests)].filter(Boolean).join('');
+  return `<div style="margin-top:14px;border-radius:18px;overflow:hidden;border:1px solid var(--border);background:var(--panel2)">
+    <div style="padding:20px 22px;background:linear-gradient(135deg,var(--accent-soft) 0%,transparent 60%);display:flex;gap:16px;align-items:flex-start">
+      ${avatar}
+      <div style="flex:1;min-width:0">
+        <div style="font-size:22px;font-weight:800;letter-spacing:-.02em;line-height:1.1">${esc(d.name)||'без имени'}</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:5px;flex-wrap:wrap">
+          ${d.username?`<a href="https://t.me/${esc(d.username)}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:14px">@${esc(d.username)}</a>`:''}
+          ${d.phone?`<span style="font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums">${esc(d.phone)}</span>`:''}
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+          ${chip(d.gender)}${chip(d.city)}${chip(d.segment)}${conf!=null?chip('точность '+conf+'%'):''}
+        </div>
+      </div>
+      ${scoreRing}
     </div>
-    <div style="margin:4px 0 10px">
-      ${chips('пол',d.gender)}${chips('город',d.city)}${chips('сегмент',d.segment)}${d.phone?`<span class="badge">${esc(d.phone)}</span>`:''}
+    <div style="padding:18px 22px;display:flex;flex-direction:column;gap:14px">
+      ${(d.niche||d.offer)?`<div style="padding:14px 16px;border-radius:12px;background:var(--panel);border:1px solid var(--border)">
+        ${d.niche?`<div style="display:flex;gap:8px;margin-bottom:${d.offer?'8px':'0'}"><span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);min-width:64px;padding-top:2px">ниша</span><b style="font-size:15px">${esc(d.niche)}</b></div>`:''}
+        ${d.offer?`<div style="display:flex;gap:8px"><span style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);min-width:64px;padding-top:2px">продаёт</span><b style="font-size:15px;color:var(--green)">${esc(d.offer)}</b></div>`:''}
+      </div>`:''}
+      ${_channelLink(d)?`<a href="${esc(_channelLink(d))}" target="_blank" style="display:inline-flex;align-items:center;gap:8px;color:var(--accent);text-decoration:none;font-size:14px">📢 личный канал: ${esc(_channelLink(d))}</a>`:''}
+      ${d.bio?`<div style="color:var(--muted);font-size:14px;line-height:1.55;padding-left:2px">${esc(d.bio)}</div>`:''}
+      ${psyBlocks?`<div style="display:grid;gap:10px">${psyBlocks}</div>`:''}
+      ${metaBlocks?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">${metaBlocks}</div>`:''}
+      ${d.photo_analysis?`<div style="padding:11px 14px;border-radius:10px;background:var(--panel);color:var(--muted);font-size:13px;line-height:1.5"><b style="color:var(--text)">По фото:</b> ${esc(d.photo_analysis.replace(/^По фото:\s*/i,''))}</div>`:''}
+      ${d.quotes?`<div style="padding-left:14px;border-left:2px solid var(--border);font-style:italic;color:var(--muted);font-size:14px;line-height:1.6">${esc(d.quotes)}</div>`:''}
+      ${d.rec_message?`<div style="margin-top:2px;padding:18px;border-radius:16px;background:linear-gradient(135deg,rgba(204,255,0,.10),transparent);border:1.5px solid var(--accent2)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--accent2);font-weight:800">🪝 Готовый первый крючок</span>
+          <button style="height:28px;padding:0 12px;font-size:12px" onclick="navigator.clipboard.writeText(this.parentElement.nextElementSibling.textContent);this.textContent='✓ скопировано';setTimeout(()=>this.textContent='копировать текст',1500)">копировать текст</button>
+        </div>
+        <div style="font-size:16px;line-height:1.55;color:var(--text);font-weight:500">${esc(d.rec_message)}</div></div>`:''}
+      ${cid?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+        <button class="primary" onclick="location.hash='#dossier/${cid}'">открыть полную карточку →</button>
+        <button class="sec" title="прямая ссылка на это досье" onclick="navigator.clipboard.writeText(location.origin+'/#dossier/${cid}');this.textContent='✓ ссылка скопирована';setTimeout(()=>this.textContent='🔗 ссылка',1500)">🔗 ссылка</button>
+      </div>`:''}
     </div>
-    ${(d.niche||d.offer)?`<div style="margin:6px 0 10px;padding:10px;border-radius:8px;background:var(--panel)">
-      ${d.niche?`<div><b>🏗 ниша:</b> ${esc(d.niche)}</div>`:''}
-      ${d.offer?`<div><b>💼 что продаёт:</b> ${esc(d.offer)}</div>`:''}
-    </div>`:''}
-    ${_channelLink(d)?`<div style="margin-bottom:8px">📢 канал: <a href="${esc(_channelLink(d))}" target="_blank">${esc(_channelLink(d))}</a></div>`:''}
-    ${d.bio?`<div class="sub" style="margin-bottom:8px">📝 био: ${esc(d.bio)}</div>`:''}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      ${field('😣','Боли',d.pains,'#e07a5f')}
-      ${field('⚠️','Страхи',d.fears,'#e0a35f')}
-      ${field('🎯','Желания',d.desires,'var(--green)')}
-      ${field('🧠','Психотип',d.psychotype)}
-      ${field('💬','Как общаться',d.comm_style)}
-      ${field('⏰','Когда активен',d.best_time)}
-      ${field('🔖','Интересы',d.interests)}
-      ${field('📸','По фото',d.photo_analysis,'var(--muted)')}
-    </div>
-    ${d.quotes?`<div style="margin:10px 0"><span style="font-size:11px;text-transform:uppercase;color:var(--muted)">💬 цитаты</span><div style="font-style:italic;color:var(--muted)">${esc(d.quotes)}</div></div>`:''}
-    ${d.rec_message?`<div style="margin-top:12px;padding:12px;border-radius:10px;background:var(--accent-soft);border:1px solid var(--accent)">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-ink);margin-bottom:4px">🪝 готовый первый крючок</div>
-      <div style="color:var(--text)">${esc(d.rec_message)}</div></div>`:''}
-    ${cid?`<div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-      <button onclick="location.hash='#dossier/${cid}'">открыть полную карточку →</button>
-      <button class="sec" title="скопировать прямую ссылку на это досье" onclick="navigator.clipboard.writeText(location.origin+'/#dossier/${cid}');this.textContent='✓ ссылка скопирована';setTimeout(()=>this.textContent='🔗 ссылка на досье',1500)">🔗 ссылка на досье</button>
-    </div>`:''}
   </div>`;
 }
 // ссылка на личный канал: из web_note («Канал: …») или из полей lookup-результата
@@ -3135,7 +3191,7 @@ async function viewCampaigns(v){
           <div class="hint">Оба → каждому контакту шлём в доступный мессенджер. WhatsApp-отправка заработает с Baileys-мостом; Telegram работает уже сейчас.</div></div>
         <div class="field"><label>Основной аккаунт-отправитель</label>
           <div id="c-main-acc" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);min-height:38px"></div>
-          <div class="hint" style="margin-top:4px">Отметь ⭐ нужный в справочнике ниже.</div></div></div>
+          <div class="hint" style="margin-top:4px">Отметь ⭐ нужный в справочнике ниже — он первым в очереди получает контакты, пока не выберет свой дневной лимит.</div></div></div>
       <div class="field"><label>👥 Команда агентов — справочник аккаунтов (фильтруй, ✓ в команду, ⭐ основной)</label>
         <div class="ttoolbar" style="gap:8px;flex-wrap:wrap;margin:4px 0">
           <input id="c-acc-q" placeholder="поиск: номер / @username / ярлык" style="flex:1;min-width:140px">
@@ -3661,16 +3717,8 @@ async function openDossier(id){
   const hasDossier=(c.score!=null)||c.pains||c.rec_message;
   const pct=v=>v==null?"—":Math.round(v*100)+"%";
   const fld=(label,val)=>val?`<div class="field"><label>${label}</label><div class="v">${esc(val)}</div></div>`:"";
-  const dossierBlock=hasDossier?`<div class="card" style="margin-bottom:14px;background:var(--panel2)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <b style="font-size:13px">🧠 AI-досье (по чатам)</b>
-        <span class="sub">${c.score!=null?`Score <b>${(+c.score).toFixed(2)}</b>`:""}${c.confidence!=null?` · достоверность ${pct(c.confidence)}`:""}</span></div>
-      ${c.segment?`<div class="field"><label>Сегмент</label><div class="v">${esc(c.segment)}</div></div>`:""}
-      ${fld("Боли",c.pains)}${fld("Страхи",c.fears)}${fld("Желания",c.desires)}${fld("Интересы",c.interests)}
-      <div class="row2">${fld("Психотип",c.psychotype)}${fld("Стиль общения",c.comm_style)}</div>
-      ${fld("Лучшее время",c.best_time)}${fld("📷 Анализ фото",c.photo_analysis)}${fld("Цитаты из чатов",c.quotes)}
-      ${c.rec_message?`<div class="field"><label>💬 Рекомендуемое первое сообщение</label><div class="v" style="background:var(--panel);padding:8px;border-radius:6px;border-left:3px solid var(--accent)">${esc(c.rec_message)}</div></div>`:""}
-    </div>`:"";
+  // премиум AI-досье (та же карточка, что в панели «Собрать досье»)
+  const dossierBlock=hasDossier?dossierCard(c,c.id):"";
   const sourceBlock=c.source_chat_title?`<div class="field"><label>📡 Найден в чате</label><div class="v">${
     c.source_chat_link?`<a class="ext" href="${esc(c.source_chat_link)}" target="_blank">${esc(c.source_chat_title)} ↗</a>`:esc(c.source_chat_title)
     }${c.source_chat_id?` <span class="lnk" data-chid="${c.source_chat_id}" style="cursor:pointer;color:var(--accent);margin-left:6px">карточка чата ↗</span>`:""}</div></div>`:"";
@@ -3678,10 +3726,10 @@ async function openDossier(id){
       <img src="/api/contact/${c.id}/photo" alt="фото" style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid var(--border)" onerror="this.style.display='none'">
       <div><div style="font-weight:600">${esc(c.name)||"@"+esc(c.username||id)}</div>${c.username?`<div class="sub">@${esc(c.username)}</div>`:""}</div></div>`:"";
   $("#dr-body").innerHTML=`
-    ${photoBlock}
+    ${hasDossier?"":photoBlock}
+    ${dossierBlock}
     <div class="row2"><div class="field"><label>Статус</label><div class="v">${statusBadge(c.status)}</div></div>
       <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
-    ${dossierBlock}
     ${sourceBlock}
     ${enrichBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>

@@ -3003,6 +3003,10 @@ async function viewCampaigns(v){
   const [camps,accounts,projects]=await Promise.all([api(url),api("/api/accounts"),api("/api/projects")]);
   const accChan=a=>{const b=[];if(a.tg_connected)b.push("TG");if(a.wa_authed)b.push("WA");return b.length?b.join("/"):"—";};
   const accStatusTxt=a=>a.status==="active"?"✅ готов":(a.status==="warming"?("прогрев"+(a.warm_stage?(" ст."+a.warm_stage):"")):(a.status==="banned"?"бан":(a.status||"")));
+  // «Реально живой» — тот же критерий, что подсветка row-ready в разделе «Аккаунты»:
+  // подключён + сессия жива + прокси жив + не забанен. Просто status='active' не значит,
+  // что аккаунтом можно писать прямо сейчас.
+  const isAccReady=a=>!!(a.tg_connected&&a.session_state==='alive'&&a.proxy_alive===1&&a.status!=='banned');
   const projOpts=`<option value="">— без проекта —</option>`+projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   v.innerHTML=`
     <div class="ttoolbar"><button class="primary" id="c-wizard-btn">🚀 Мастер запуска (визард)</button>
@@ -3046,6 +3050,8 @@ async function viewCampaigns(v){
           <input id="c-acc-q" placeholder="поиск: номер / @username / ярлык" style="flex:1;min-width:140px">
           <select id="c-acc-fchan"><option value="">любой канал</option><option value="tg">TG подключён</option><option value="wa">WA подключён</option></select>
           <select id="c-acc-fst"><option value="">любой статус</option><option value="active">готовые</option><option value="warming">на прогреве</option></select>
+          <button type="button" id="c-acc-selready" title="Отметить только реально живых (подключён + сессия жива + прокси жив + не бан) из текущего фильтра, остальных снять">Выделить живых</button>
+          <button type="button" id="c-acc-selnone" title="Снять всё выделение">Снять всё</button>
           <span class="hint" id="c-team-msg">выбрано: 0</span></div>
         <div id="c-team-box" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div></div>
       <div class="field"><label>Лимит контактов в день (на аккаунт)</label><input id="c-limit" type="number" value="15" style="max-width:160px"></div>
@@ -3098,11 +3104,13 @@ async function viewCampaigns(v){
     box.innerHTML=list.length?list.map(a=>{
       const ch=accChan(a);const spam=a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"";
       const isMain=String(a.id)===String(mainAcc);
+      const ready=isAccReady(a);
+      const dot=`<span class="sdot ${ready?'g':(a.status==='banned'?'r':'gy')}" title="${ready?'реально жив':(a.status==='banned'?'бан':'не готов — проверь сессию/прокси')}"></span>`;
       const lim=teamLimits[a.id];
-      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border)">
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border);${ready?'':'opacity:.6'}">
         <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""}>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:13px">${esc(a.label||a.username||("#"+a.id))} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
+          <div style="font-weight:600;font-size:13px">${dot}${esc(a.label||a.username||("#"+a.id))} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
           <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam}</div>
         </div>
         <input type="number" min="0" class="c-acc-lim mono" data-id="${a.id}" value="${lim!=null?lim:''}"
@@ -3122,6 +3130,22 @@ async function viewCampaigns(v){
       mainAcc=b.dataset.id;teamSet.add(+mainAcc);renderMain();renderTeam();});
   };
   ["#c-acc-q","#c-acc-fchan","#c-acc-fst"].forEach(s=>{const el=$(s);if(el){el.oninput=renderTeam;el.onchange=renderTeam;}});
+  const c_selready=$("#c-acc-selready");if(c_selready)c_selready.onclick=()=>{
+    const q=(($("#c-acc-q")||{}).value||"").toLowerCase().trim();
+    const fchan=(($("#c-acc-fchan")||{}).value)||"";
+    const fst=(($("#c-acc-fst")||{}).value)||"";
+    const list=accounts.filter(a=>{
+      if(fchan==="tg"&&!a.tg_connected)return false;
+      if(fchan==="wa"&&!a.wa_authed)return false;
+      if(fst&&a.status!==fst)return false;
+      if(q){const hay=((a.label||"")+" "+(a.phone||"")+" "+(a.username||"")).toLowerCase();if(!hay.includes(q))return false;}
+      return true;
+    });
+    teamSet.clear();
+    list.filter(isAccReady).forEach(a=>teamSet.add(a.id));
+    renderTeam();
+  };
+  const c_selnone=$("#c-acc-selnone");if(c_selnone)c_selnone.onclick=()=>{teamSet.clear();mainAcc="";renderMain();renderTeam();};
   const fill=(c)=>{
     $("#c-name").value=c.name||"";$("#c-product").value=c.product||"";
     $("#c-tag").value=c.audience_tag!=null?c.audience_tag:"Агентства недвижимости";
@@ -3132,6 +3156,10 @@ async function viewCampaigns(v){
     $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
     teamSet.clear();(c.accounts||[]).forEach(id=>teamSet.add(+id));
+    // Новая кампания (нет ни сохранённой команды, ни id) — по умолчанию берём
+    // реально живых, а не всех подряд: раньше форма открывалась пустой и оператор
+    // либо вручную ставил все галки, либо забывал — и в команду попадали банченые.
+    if(!c.id&&!(c.accounts||[]).length)accounts.filter(isAccReady).forEach(a=>teamSet.add(a.id));
     if(mainAcc)teamSet.add(+mainAcc);
     Object.keys(teamLimits).forEach(k=>delete teamLimits[k]);
     Object.entries(c.account_limits||{}).forEach(([id,v])=>teamLimits[+id]=+v);

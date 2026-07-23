@@ -972,8 +972,8 @@ async function viewAgents(v){
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
-      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}</span>`},
-      {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:""}`},
+      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
+      {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}`},
       {key:"country_label",label:"Страна",cls:"sub",render:r=>r.country_label?esc(r.country_label):'<span class="no" title="страна не определена по коду номера">—</span>'},
       {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
       {key:"conn",label:"Подключение",render:r=>{
@@ -3037,6 +3037,11 @@ function dossierCard(d,cid){
     <div style="margin:4px 0 10px">
       ${chips('пол',d.gender)}${chips('город',d.city)}${chips('сегмент',d.segment)}${d.phone?`<span class="badge">${esc(d.phone)}</span>`:''}
     </div>
+    ${(d.niche||d.offer)?`<div style="margin:6px 0 10px;padding:10px;border-radius:8px;background:var(--panel)">
+      ${d.niche?`<div><b>🏗 ниша:</b> ${esc(d.niche)}</div>`:''}
+      ${d.offer?`<div><b>💼 что продаёт:</b> ${esc(d.offer)}</div>`:''}
+    </div>`:''}
+    ${_channelLink(d)?`<div style="margin-bottom:8px">📢 канал: <a href="${esc(_channelLink(d))}" target="_blank">${esc(_channelLink(d))}</a></div>`:''}
     ${d.bio?`<div class="sub" style="margin-bottom:8px">📝 био: ${esc(d.bio)}</div>`:''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       ${field('😣','Боли',d.pains,'#e07a5f')}
@@ -3052,8 +3057,18 @@ function dossierCard(d,cid){
     ${d.rec_message?`<div style="margin-top:12px;padding:12px;border-radius:10px;background:var(--accent-soft);border:1px solid var(--accent)">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-ink);margin-bottom:4px">🪝 готовый первый крючок</div>
       <div style="color:var(--text)">${esc(d.rec_message)}</div></div>`:''}
-    ${cid?`<div style="margin-top:12px"><button onclick="openDossier(STATE.contacts.find(c=>c.id==${cid})||{id:${cid}})">открыть полную карточку →</button></div>`:''}
+    ${cid?`<div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+      <button onclick="location.hash='#dossier/${cid}'">открыть полную карточку →</button>
+      <button class="sec" title="скопировать прямую ссылку на это досье" onclick="navigator.clipboard.writeText(location.origin+'/#dossier/${cid}');this.textContent='✓ ссылка скопирована';setTimeout(()=>this.textContent='🔗 ссылка на досье',1500)">🔗 ссылка на досье</button>
+    </div>`:''}
   </div>`;
+}
+// ссылка на личный канал: из web_note («Канал: …») или из полей lookup-результата
+function _channelLink(d){
+  if(d.channel_link)return d.channel_link;
+  const w=d.web_note||"";
+  const m=w.match(/Канал:\s*(\S+)/);
+  return m?m[1]:null;
 }
 
 async function loadSources(){try{const s=await api("/api/import/sources");const dl=$("#src-list");if(dl)dl.innerHTML=s.map(x=>`<option value="${esc(x)}">`).join("");}catch(e){}}

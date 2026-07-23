@@ -3584,7 +3584,10 @@ function renderCampList(mount,camps){
     if(srcPauseBtn)srcPauseBtn.onclick=()=>{
       const src=document.getElementById(`pg-src-${id}`).value;
       if(!src){msgEl.textContent="выбери источник";return;}
-      const ids=[...box.querySelectorAll(`.pg-cb[data-src="${CSS.escape(src)}"]`)].map(cb=>+cb.dataset.id);
+      // сравниваем значения из уже загруженных данных (p.rows), а не через CSS-селектор
+      // по строке источника — тот бился на источниках со спецсимволами/регистром.
+      const ids=p.rows.filter(r=>!r.sent&&r.source===src).map(r=>r.id);
+      if(!ids.length){msgEl.textContent=`не нашёл контактов с источником «${src}» — обнови «Прогресс» и попробуй снова`;return;}
       doPause(ids);
     };
     const unpauseBtn=document.getElementById(`pg-unpause-${id}`);

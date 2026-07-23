@@ -4104,6 +4104,17 @@ def campaign_test(cid: int) -> JSONResponse:
     return JSONResponse({"ok": True, "test_targets": n_test})
 
 
+@app.post("/api/campaign/{cid}/archive")
+def campaign_archive(cid: int, payload: dict = Body(default={})) -> JSONResponse:
+    """В архив / из архива. Не удаляет ничего — просто прячет из основного списка
+    кампаний, чтобы старые/неактуальные не путались под ногами. Достать обратно
+    можно в любой момент — данные (лог, статистика) остаются нетронутыми."""
+    archived = 1 if payload.get("archived", True) else 0
+    with database.get_conn() as conn:
+        conn.execute("UPDATE campaigns SET archived=? WHERE id=?", (archived, cid))
+    return JSONResponse({"ok": True, "archived": bool(archived)})
+
+
 @app.post("/api/campaign/{cid}/delete")
 def campaign_delete(cid: int) -> JSONResponse:
     with database.get_conn() as conn:

@@ -3166,6 +3166,7 @@ async function viewCampaigns(v){
       <span style="display:inline-flex;align-items:center;gap:6px">создана с <input id="c-date-from" type="date"></span>
       <span style="display:inline-flex;align-items:center;gap:6px">по <input id="c-date-to" type="date"></span>
       <button id="c-date-reset">✕ сбросить фильтр даты</button>
+      <label style="display:inline-flex;align-items:center;gap:6px;margin-left:6px"><input type="checkbox" id="c-show-arch"> показать архив</label>
       <span class="hint" id="c-filt-cnt"></span></div>
     <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="c-form-title">Новая кампания</div>
@@ -3389,7 +3390,10 @@ async function viewCampaigns(v){
     ctAdd.disabled=false;ctAdd.textContent="Добавить в начало очереди";
     if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     msg.innerHTML=`<span style="color:var(--green)">✅ добавлено ${r.added} — теперь запусти кампанию с лимитом ${r.added} (поле у кнопки «▶ Запустить» в списке кампаний), проверь, и уже потом увеличь лимит для боевого захода</span>`;
-    $("#c-test-nums").value="";
+    // поле НЕ очищаем и сразу сохраняем в постоянный список — иначе номера теряются,
+    // если оператор нажал только «Добавить», а не отдельную кнопку «Запомнить».
+    localStorage.setItem("axiom_my_test_nums", text);
+    $("#c-test-saved-hint").textContent=`сохранено: ${text.split("\n").filter(x=>x.trim()).length} номер(ов) — подставится в каждой новой кампании`;
   };
   const cPrev=$("#c-preview");if(cPrev)cPrev.onclick=async()=>{
     const eid=form.dataset.edit;const out=$("#c-preview-out");
@@ -3428,7 +3432,10 @@ async function viewCampaigns(v){
   const applyCampFilters=()=>{
     const sort=$("#c-sort").value;
     const from=$("#c-date-from").value,to=$("#c-date-to").value;
+    const showArch=$("#c-show-arch").checked;
+    const archCount=camps.filter(c=>c.archived).length;
     let list=camps.filter(c=>{
+      if(!showArch&&c.archived)return false;
       const d=(c.created_at||"").slice(0,10);
       if(from&&d<from)return false;
       if(to&&d>to)return false;
@@ -3437,10 +3444,13 @@ async function viewCampaigns(v){
     if(sort==="date_asc")list.sort((a,b)=>(a.created_at||"")<(b.created_at||"")?-1:1);
     else if(sort==="name")list.sort((a,b)=>(a.name||"").localeCompare(b.name||"","ru"));
     else list.sort((a,b)=>(a.created_at||"")>(b.created_at||"")?-1:1);   // date_desc — по умолчанию
-    $("#c-filt-cnt").textContent=(from||to)?`показано ${list.length} из ${camps.length}`:"";
+    const parts=[];
+    if(from||to)parts.push(`показано ${list.length} из ${camps.length}`);
+    if(archCount)parts.push(`в архиве: ${archCount}${showArch?"":" (скрыты)"}`);
+    $("#c-filt-cnt").textContent=parts.join(" · ");
     renderCampList($("#c-list"),list);
   };
-  ["#c-sort","#c-date-from","#c-date-to"].forEach(s=>$(s).onchange=applyCampFilters);
+  ["#c-sort","#c-date-from","#c-date-to","#c-show-arch"].forEach(s=>$(s).onchange=applyCampFilters);
   $("#c-date-reset").onclick=()=>{$("#c-date-from").value="";$("#c-date-to").value="";applyCampFilters();};
   applyCampFilters();
 }
@@ -3475,8 +3485,9 @@ function renderCampList(mount,camps){
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
-          <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" title="${isActive?'Кампания сейчас активна — можно запускать ещё заходы':'Запустить рассылку'}">▶ Запустить</button>
-          ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца">⏸ Стоп</button>`:""}
+          <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" ${isRunning?"disabled":""} title="${isRunning?'Кампания уже работает — жми «Стоп», чтобы снова разрешить запуск':'Запустить рассылку'}">▶ Запустить</button>
+          ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца. После стопа «Запустить» снова станет активной">⏸ Стоп</button>`:""}
+          <button class="cl-arch" data-id="${c.id}" data-archived="${c.archived?1:0}" title="${c.archived?'Вернуть кампанию из архива в основной список':'Убрать в архив — не мешает в списке, данные и статистика сохранятся, достать можно в любой момент'}">${c.archived?"↩ Из архива":"📦 В архив"}</button>
           <button class="cl-del" data-id="${c.id}">✕</button>
         </div></div>
         <div class="cprog" id="pre-${c.id}" style="margin-top:12px"></div>
@@ -3623,6 +3634,10 @@ function renderCampList(mount,camps){
     const r=await api(`/api/campaign/${b.dataset.id}/stop`,{method:"POST"});
     if(r.error){alert(r.error);b.disabled=false;b.textContent="⏸ Стоп";return;}
     route();});
+  mount.querySelectorAll(".cl-arch").forEach(b=>b.onclick=async()=>{
+    const toArchive=b.dataset.archived!=="1";
+    if(toArchive&&!confirm("Убрать кампанию в архив? Она пропадёт из основного списка, но данные и статистика сохранятся — достать можно кнопкой «показать архив»."))return;
+    await api(`/api/campaign/${b.dataset.id}/archive`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({archived:toArchive})});route();});
   mount.querySelectorAll(".cl-del").forEach(b=>b.onclick=async()=>{
     if(!confirm("Удалить кампанию?"))return;
     await api(`/api/campaign/${b.dataset.id}/delete`,{method:"POST"});route();});

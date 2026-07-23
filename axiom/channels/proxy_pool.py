@@ -299,9 +299,21 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
             where += f" AND id IN ({qm})"
             params.extend(ids)
         accs = conn.execute(f"SELECT id FROM accounts WHERE {where}", params).fetchall()
+        # уже занятые прокси (кем-то ДРУГИМ, живым в проверке) — не раздаём их же ещё раз:
+        # антибан держится на «1 прокси = 1 аккаунт», зацикленный round-robin по кругу
+        # (i % len(live)) при нехватке пула молча сажал по 10+ аккаунтов на один IP.
+        taken = {r["proxy"] for r in conn.execute(
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+        ).fetchall()}
+        free = [p for p in live if _mt_link(p["server"], p["port"], p["secret"]) not in taken]
         n = 0
-        for i, a in enumerate(accs):
-            p = live[i % len(live)]
+        for a in accs:
+            if not free:
+                left = len(accs) - n
+                print(f"[assign] прокси кончились: назначено {n}, ещё {left} аккаунт(ов) "
+                      f"БЕЗ прокси — докупи прокси, дублировать один на несколько аккаунтов не буду (антибан)")
+                break
+            p = free.pop(0)
             conn.execute(
                 "UPDATE accounts SET proxy=?, proxy_alive=NULL, proxy_checked_at=NULL WHERE id=?",
                 (_mt_link(p["server"], p["port"], p["secret"]), a["id"]),
@@ -391,8 +403,14 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
     ])
 
     alive_kept = healed = no_pool = 0
-    rr = 0
     with database.get_conn() as conn:
+        # прокси, уже живьём подтверждённые за ДРУГИМИ аккаунтами в этом же прогоне —
+        # не сажаем второго на тот же IP. Старый rr%len(pool) зацикливался по кругу и
+        # копил по 10+ аккаунтов на один прокси при каждом плановом --heal (антибан).
+        taken = {r["proxy"] for r in conn.execute(
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND proxy_alive=1"
+        ).fetchall()}
+        free = [(s, p, sec) for (s, p, sec) in pool if _mt_link(s, p, sec) not in taken]
         for (aid, label, px), ok in zip(accs, results):
             if ok:
                 conn.execute(
@@ -401,13 +419,13 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
                 )
                 alive_kept += 1
                 print(f"  [{label}] прокси жив")
-            elif pool:
-                s, p, sec = pool[rr % len(pool)]
-                rr += 1
+            elif free:
+                s, p, sec = free.pop(0)
                 conn.execute(
                     "UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
                     (_mt_link(s, p, sec), aid),
                 )
+                taken.add(_mt_link(s, p, sec))
                 healed += 1
                 print(f"  [{label}] прокси мёртв → заменён на {s}:{p}")
             else:
@@ -416,7 +434,7 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
                     (aid,),
                 )
                 no_pool += 1
-                print(f"  [{label}] прокси мёртв, пула нет — очищен")
+                print(f"  [{label}] прокси мёртв, пула нет (или все живые уже заняты) — очищен")
     print(f"[heal] проверено:{len(accs)} живых-оставлено:{alive_kept} подставлено:{healed} без-пула:{no_pool}")
     return {"checked": len(accs), "alive_kept": alive_kept, "healed": healed, "no_pool": no_pool}
 

@@ -31,7 +31,7 @@ from channels.antiban import classify_error
 # Пауза перед СЛЕДУЮЩЕЙ строкой опенера (не портянка, ждём — вдруг человек уже ответил).
 # Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток не шлём,
 # см. channels/opener_queue.py.
-OPENER_NEXT_LINE_MIN = (5 * 60, 10 * 60)  # секунды: 5–10 минут
+OPENER_NEXT_LINE_MIN = (1 * 60, 3 * 60)  # секунды: 1–3 минуты (живой темп переписки)
 
 
 def _load_campaign(cid: int) -> dict | None:

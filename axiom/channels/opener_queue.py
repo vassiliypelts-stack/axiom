@@ -28,7 +28,7 @@ from channels.telegram import build_client, _send_parts, _resolve_entity
 from db import database
 
 # Пауза перед ЕЩЁ следующей строкой (если после этой снова есть остаток).
-NEXT_LINE_MIN = (5 * 60, 10 * 60)  # секунды: 5–10 минут
+NEXT_LINE_MIN = (1 * 60, 3 * 60)  # секунды: 1–3 минуты (живой темп переписки)
 
 
 def _due_rows(conn) -> list[dict]:

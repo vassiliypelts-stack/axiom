@@ -1461,11 +1461,41 @@ def _startup_account_report() -> None:
 
 
 @app.on_event("startup")
+def _opener_queue_scheduler() -> None:
+    """Фоновый тик очереди опенера: каждую минуту досылает следующие строки опенера
+    тем, кто ещё не ответил (см. channels/opener_queue). Без этого тика вторая и
+    последующие строки многострочного первого сообщения кладутся в очередь, но
+    никогда не отправляются — уходит только первая строка."""
+    import os
+    import subprocess
+    import sys
+    import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    while True:
+        time.sleep(60)
+        try:
+            # быстрая проверка: есть ли вообще что слать (чтобы не плодить процессы впустую)
+            with database.get_conn() as conn:
+                due = conn.execute(
+                    "SELECT COUNT(*) c FROM opener_queue WHERE next_at <= datetime('now')"
+                ).fetchone()["c"]
+            if not due:
+                continue
+            res = subprocess.run([sys.executable, "-m", "channels.opener_queue", "--tick"],
+                                 cwd=str(BASE_DIR.parent), timeout=600, env=env,
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace")
+            _log_run("opener_queue", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[opener_queue scheduler] {e}")
+
+
 def _start_scheduler() -> None:
     import threading
     database.init_db()
     _startup_account_report()   # быстрая сводка готовности → колокольчик (до запуска прогрева)
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
+    threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:
@@ -2096,6 +2126,33 @@ def enrich_resolve_tg(payload: dict = Body(...)) -> JSONResponse:
     limit = int(payload.get("limit") or 100)
     _spawn("channels.phone_resolve", "--limit", str(limit))
     return JSONResponse({"ok": True, "limit": limit, "message": "запущен пробив TG в фоне. Лог в data/logs/phone_resolve.log"})
+
+
+@app.post("/api/dossier/lookup")
+async def dossier_lookup_api(payload: dict = Body(...)) -> JSONResponse:
+    """Досье по телефону/@username в один клик: заходит в TG-профиль живым аккаунтом,
+    собирает bio + аватар + личный канал, строит AI-портрет (боли/страхи/желания/крючок)
+    и возвращает его. Синхронно (10-40с) — оператор ждёт результат."""
+    query = (payload.get("query") or "").strip()
+    if not query:
+        return JSONResponse({"error": "введите телефон (+7…) или @username"}, status_code=400)
+    from agent.dossier_lookup import lookup
+    res = await lookup(query)
+    if res.get("error"):
+        return JSONResponse(res, status_code=400)
+    # подтягиваем готовое досье из карточки контакта для показа
+    cid = res.get("contact_id")
+    if cid:
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone()
+        if row:
+            keys = row.keys()
+            res["dossier"] = {k: row[k] for k in (
+                "name", "username", "phone", "city", "bio", "pains", "fears", "desires",
+                "interests", "psychotype", "comm_style", "best_time", "segment", "score",
+                "quotes", "rec_message", "photo_analysis", "gender", "summary", "confidence",
+            ) if k in keys}
+    return JSONResponse(res)
 
 
 # ---- Парсинг Telegram (поиск групп / парсер / инвайты) -------------------- #

@@ -188,6 +188,11 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     team = _team(cid)
     senders: list[dict] = []
     if team:
+        # «Основной» (⭐, campaigns.account_id) — первый в очереди ротации: ему
+        # достаются контакты раньше остальных, пока не кончится его дневной лимит.
+        main_id = camp.get("account_id")
+        if main_id:
+            team = sorted(team, key=lambda a: 0 if str(a["id"]) == str(main_id) else 1)
         for acc in team:
             label = acc["label"] or acc["username"] or acc["phone"] or f"#{acc['id']}"
             senders.append({
@@ -319,6 +324,13 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 with database.get_conn() as conn:
                     conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
                 s["remaining"] = 0
+                continue
+            if cat == "blocked":
+                # Контакт заблокировал ЭТОТ аккаунт — не общий "lost", а отдельный
+                # статус: в CRM сразу видно причину, а не гадать по логам.
+                print(f"[{s['label']}] 🚫 контакт {row['id']} заблокировал аккаунт")
+                with database.get_conn() as conn:
+                    database.set_status(conn, row["id"], "blocked")
                 continue
             print(f"[skip] contact {row['id']} ({s['label']}): {e}")
             with database.get_conn() as conn:

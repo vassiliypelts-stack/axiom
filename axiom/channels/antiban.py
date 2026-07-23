@@ -44,18 +44,22 @@ _BAN_ERRORS = {
 }
 _FLOOD_ERRORS = {"FloodWaitError", "FloodError", "SlowModeWaitError"}
 _SPAM_ERRORS = {"PeerFloodError"}
+_BLOCKED_ERRORS = {"UserIsBlockedError"}
 _SKIP_ERRORS = {
     "UserPrivacyRestrictedError", "UsernameNotOccupiedError", "UsernameInvalidError",
-    "PeerIdInvalidError", "UserIsBlockedError", "UserIdInvalidError",
+    "PeerIdInvalidError", "UserIdInvalidError",
 }
 
 
 def classify_error(exc: BaseException) -> str:
-    """Категория ошибки: 'ban' | 'flood' | 'spam' | 'skip' | 'other'.
-    'ban'  — аккаунт мёртв/деактивирован (вывести из работы, статус banned).
-    'flood'— временный лимит (подождать/вывести из ротации на заход).
-    'spam' — PeerFlood: слишком много ЛС незнакомцам (риск бана, притормозить).
-    'skip' — проблема контакта (приватность/нет такого), аккаунт ни при чём.
+    """Категория ошибки: 'ban' | 'flood' | 'spam' | 'blocked' | 'skip' | 'other'.
+    'ban'    — аккаунт мёртв/деактивирован (вывести из работы, статус banned).
+    'flood'  — временный лимит (подождать/вывести из ротации на заход).
+    'spam'   — PeerFlood: слишком много ЛС незнакомцам (риск бана, притормозить).
+    'blocked'— контакт заблокировал НАШ аккаунт (не «потерян» вообще — просто
+               этот отправитель ему больше не пишет; отличать от прочих skip,
+               чтобы в CRM было видно причину, а не общее «Потерян»).
+    'skip'   — прочая проблема контакта (приватность/нет такого), аккаунт ни при чём.
     """
     name = type(exc).__name__
     msg = str(exc).lower()
@@ -65,6 +69,8 @@ def classify_error(exc: BaseException) -> str:
         return "flood"
     if name in _SPAM_ERRORS or "too many requests" in msg:
         return "spam"
+    if name in _BLOCKED_ERRORS or "blocked" in msg:
+        return "blocked"
     if name in _SKIP_ERRORS:
         return "skip"
     return "other"

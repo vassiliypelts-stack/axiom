@@ -85,6 +85,13 @@ async def _send_next_line(row: dict) -> None:
                 conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
                 database.add_event(conn, "account_banned", f"⛔ Аккаунт «{label}» забанен",
                                    f"Telegram: {e}", level="bad", account_id=acc["id"])
+        elif cat == "blocked":
+            # Контакт заблокировал этот аккаунт — остаток опенера не имеет смысла
+            # слать; статус 'blocked' вместо тихого бесконечного ретрая очереди.
+            print(f"[{label}] 🚫 контакт {row['contact_id']} заблокировал аккаунт — остаток опенера отменён")
+            with database.get_conn() as conn:
+                conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
+                database.set_status(conn, row["contact_id"], "blocked")
         else:
             print(f"[{label}] не удалось доотправить строку контакту {row['contact_id']}: {e}")
         try:

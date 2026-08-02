@@ -92,6 +92,11 @@ async def run(limit: int, only_fav: bool = False) -> None:
                "OR (in_account='yes' AND tg_chat_id IS NOT NULL))")
         if only_fav:
             sql += " AND COALESCE(favorite,0)=1"   # слушаем только избранные (лучшие) чаты
+        # РОТАЦИЯ: дольше всех не сканированные — первыми (никогда не сканированные вообще
+        # впереди). Без ORDER BY порядок был стабильным (по rowid), а вызывающий по
+        # расписанию убивает процесс по таймауту — значит хвост каталога не сканировался
+        # бы НИКОГДА, сколько раз задачу ни запусти.
+        sql += " ORDER BY COALESCE(kw_scanned_at,'') ASC, id"
         chats = conn.execute(sql).fetchall()
     if not niches:
         print(json.dumps({"ok": False, "error": "нет активных ниш"}, ensure_ascii=False)); return
@@ -154,6 +159,12 @@ async def run(limit: int, only_fav: bool = False) -> None:
                     conn.execute("UPDATE chats SET kw_last_id=? WHERE id=?", (max_id, ch["id"]))
         except Exception as e:  # noqa: BLE001
             print(f"[kw] {(ch['title'] or target)}: {e}")
+        finally:
+            # Отметку о заходе ставим ВСЕГДА — и когда новых сообщений не было, и когда чат
+            # упал с ошибкой. Иначе пустой или стабильно недоступный чат навечно остаётся
+            # первым в ротации и заслоняет собой весь остальной каталог.
+            with database.get_conn() as conn:
+                conn.execute("UPDATE chats SET kw_scanned_at=datetime('now') WHERE id=?", (ch["id"],))
         await asyncio.sleep(1.5)  # антибан-пауза между чатами
 
     await main_client.disconnect()

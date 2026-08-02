@@ -2926,6 +2926,11 @@ async function viewLeadHits(v){
     <div class="ttoolbar" style="margin:8px 0 0"><span class="hint">Готовые наборы по ИЖС:</span>
       ${NICHE_PRESETS.map((p,i)=>`<button type="button" class="ni-preset" data-i="${i}" title="${esc(p.keywords)}">${esc(p.name)}</button>`).join("")}
       <span class="hint">— подставит название и ключи в поля выше, дальше правь и жми «Ниша»</span></div>
+    <div class="ttoolbar" style="margin:8px 0 0;border-top:1px solid var(--border);padding-top:8px">
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="kw-auto"> 🕒 обходить чаты автоматически</label>
+      <label class="hint" style="display:inline-flex;align-items:center;gap:4px">каждые <input id="kw-int" type="number" min="15" max="1440" value="60" style="width:64px"> мин</label>
+      <button type="button" id="kw-auto-save">Сохранить расписание</button>
+      <span class="hint" id="kw-auto-msg"></span></div>
   </div>
   <div class="ttoolbar"><b>Очередь находок:</b>
     <button id="ht-new" class="primary">Новые</button><button id="ht-lead">В лидах</button><button id="ht-ign">Игнор</button>
@@ -2946,6 +2951,25 @@ async function viewLeadHits(v){
     await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:$("#ni-kw").value})});route();};
   v.querySelectorAll(".ni-preset").forEach(b=>b.onclick=()=>{const p=NICHE_PRESETS[+b.dataset.i];
     $("#ni-name").value=p.name;$("#ni-kw").value=p.keywords;$("#ni-kw").focus();});
+  // расписание авто-обхода. Настройка kw_auto жила только в БД: включить её из пульта
+  // было нечем, поэтому фоновый обход по расписанию у всех стоял выключенным.
+  (async()=>{
+    const cb=$("#kw-auto"),iv=$("#kw-int"),sv=$("#kw-auto-save"),msg=$("#kw-auto-msg");
+    if(!cb)return;
+    try{const a=await api("/api/keywords/auto");
+      cb.checked=!!a.auto;if(a.interval_min)iv.value=a.interval_min;
+      if(a.last_run)msg.textContent="последний обход: "+a.last_run;
+    }catch(e){}
+    sv.onclick=async()=>{
+      sv.disabled=true;const t=sv.textContent;sv.textContent="…";
+      try{const r=await api("/api/keywords/auto",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({auto:cb.checked,interval_min:+iv.value||60})});
+        iv.value=r.interval_min;
+        msg.textContent=r.auto?`включено — обход каждые ${r.interval_min} мин`:"выключено, только вручную";
+      }catch(e){msg.textContent="не сохранилось — сервер не ответил";}
+      finally{sv.disabled=false;sv.textContent=t;}
+    };
+  })();
   nl.querySelectorAll(".ni-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
     const name=nl.querySelector(`input[data-k="name"][data-id="${id}"]`).value;
     const kw=nl.querySelector(`textarea[data-kw="${id}"]`).value;

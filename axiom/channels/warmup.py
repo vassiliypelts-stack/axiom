@@ -356,12 +356,28 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
 
 
 async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
+    """Обёртка: гарантирует, что клиент закроется, чем бы ни кончилась ступень.
+
+    Тело прогрева — ~90 строк сетевых вызовов (вступления, реакции, ЛС), и любой из них
+    может бросить (FloodWait, обрыв прокси, отозванная сессия). Вызывающий цикл ошибку
+    ловит и идёт к следующему аккаунту, но клиент оставался жить с висящими
+    _send_loop/_recv_loop. На 50 прогреваемых аккаунтах это заметная утечка.
+    """
     client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
                           acc.get("api_id"), acc.get("api_hash"))
+    try:
+        await _warm_one_body(client, acc, anchors, peers, ca_mix)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> None:
     await client.connect()
     if not await client.is_user_authorized():
         print(f"[skip #{acc['id']}] сессия не авторизована — перелогинь: python -m channels.account_login --id {acc['id']}")
-        await client.disconnect()
         return
     stage = acc["warm_stage"] or 0
     plan = WARM_PLAN.get(min(stage, max(WARM_PLAN)), WARM_PLAN[max(WARM_PLAN)])
@@ -444,7 +460,7 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
                                "переведён в «активен» — можно ставить в рассылку",
                                level="good", account_id=acc["id"])
     print(f"  стадия → {new_stage} · {summary}{' · ГОТОВ (active)' if activate else ''}")
-    await client.disconnect()
+    # disconnect делает обёртка _warm_one (finally) — здесь он больше не нужен
 
 
 async def run(only_id: int | None = None) -> None:

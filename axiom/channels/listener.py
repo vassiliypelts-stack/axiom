@@ -35,6 +35,7 @@ logging.getLogger("telethon").setLevel(logging.CRITICAL)
 _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
+_LOOP: "asyncio.AbstractEventLoop | None" = None  # event loop потока слушателя (для shutdown)
 STATUS: dict = {"started": None, "accounts": {}, "hits": 0, "enabled": True}  # снимок для веб-статуса
 _NICHES: list[tuple[int | None, list[str]]] = []  # [(niche_id, [ключи]), ...] — кэш ключей
 
@@ -311,12 +312,40 @@ def start_in_thread() -> None:
     import threading
 
     def _runner() -> None:
+        global _LOOP
         try:
-            asyncio.run(run())
+            _LOOP = asyncio.new_event_loop()
+            asyncio.set_event_loop(_LOOP)
+            _LOOP.run_until_complete(run())
         except Exception as e:  # noqa: BLE001
             _log(f"слушатель аварийно остановлен: {e}")
+        finally:
+            _LOOP = None
 
     threading.Thread(target=_runner, name="tg-listener", daemon=True).start()
+
+
+def shutdown(timeout: float = 10.0) -> None:
+    """Корректно попрощаться с Telegram перед остановкой сервера.
+
+    ЗАЧЕМ. Поток демонский: при рестарте сервиса его просто убивают, и сокеты умирают
+    молча. Telegram ещё какое-то время считает сессию подключённой, а поднявшийся процесс
+    logs in снова — и, если фейловер за это время подставил другой прокси, ключ уходит
+    в эфир с ДВУХ IP. Telegram на это отвечает AuthKeyDuplicatedError и сжигает сессию
+    навсегда (так сгорели #17 и #9320 — 12 рестартов за день).
+
+    Вызывается из web.app на события остановки. Мы в другом потоке, поэтому работу
+    планируем в event loop слушателя и ждём результат.
+    """
+    loop = _LOOP
+    if loop is None or loop.is_closed():
+        return
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_disconnect_all(), loop)
+        fut.result(timeout=timeout)
+        _log("слушатель: все аккаунты отключены штатно (graceful shutdown)")
+    except Exception as e:  # noqa: BLE001 — на остановке уже ничего не спасаем
+        _log(f"слушатель: не удалось отключить всех штатно: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":

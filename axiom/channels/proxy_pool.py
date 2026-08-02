@@ -369,7 +369,11 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
     и ставит proxy_alive=0 (аккаунт не выйдет в сеть, но и не уползёт на голый IP сервера).
     Возвращает {checked, alive_kept, healed, no_pool}."""
     import config
-    database.init_db()
+    # init_db — это executescript всей схемы + ALTER-миграции, т.е. секунды блокирующего
+    # sqlite. Раньше heal() жил отдельным процессом и это было безразлично; теперь его
+    # зовёт слушатель прямо из своего event loop, и на время миграции замирали ВСЕ
+    # подключённые Telethon-клиенты (входящие не обрабатывались). Уводим в поток.
+    await asyncio.to_thread(database.init_db)
     api_id = int(config.TG_API_ID)
     api_hash = config.TG_API_HASH
 
@@ -392,6 +396,26 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
             f"SELECT id, label, proxy FROM accounts WHERE {where}", params
         ).fetchall()
         accs = [(a["id"], a["label"] or f"#{a['id']}", a["proxy"] or "") for a in accs_raw]
+
+    # НЕ трогаем тех, кто ПРЯМО СЕЙЧАС подключён слушателем: смена прокси у живого
+    # соединения = та же сессия выходит в эфир со второго IP, а это AuthKeyDuplicatedError
+    # и сожжённый ключ (потеряли так #17 и #9320). Отвалившиеся лечатся штатно — слушатель
+    # сам зовёт heal() для конкретного id ровно в тот момент, когда аккаунт НЕ подключён.
+    # ids задан явно (точечный вызов из слушателя) — доверяем ему, он знает, что делает.
+    if not ids:
+        try:
+            from channels.listener import CLIENTS
+            busy = {aid for aid, cl in list(CLIENTS.items())
+                    if getattr(cl, "is_connected", None) and cl.is_connected()}
+        except Exception:  # noqa: BLE001 — слушатель может быть не запущен
+            busy = set()
+        if busy:
+            before = len(accs)
+            accs = [a for a in accs if a[0] not in busy]
+            skipped = before - len(accs)
+            if skipped:
+                print(f"[heal] пропускаю {skipped} подключённых аккаунтов "
+                      f"(смена прокси под живой сессией сжигает ключ)")
 
     if not accs:
         print("[heal] нет аккаунтов для проверки")

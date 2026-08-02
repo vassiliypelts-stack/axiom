@@ -1506,6 +1506,22 @@ def _start_scheduler() -> None:
         print(f"[listener] не удалось запустить слушатель: {e}")
 
 
+@app.on_event("shutdown")
+def _stop_listener() -> None:
+    """Попрощаться с Telegram до того, как процесс умрёт.
+
+    Без этого рестарт сервиса рвал сокеты молча: Telegram ещё держал сессию активной,
+    новый процесс подключался (возможно, уже через другой прокси после фейловера) — и
+    ключ уходил в эфир с двух IP. Ответ Telegram — AuthKeyDuplicatedError, сессия сгорает
+    безвозвратно. Так потеряли #17 и #9320 за день из 12 перезапусков.
+    """
+    try:
+        from channels import listener
+        listener.shutdown()
+    except Exception as e:  # noqa: BLE001
+        print(f"[listener] штатная остановка не удалась: {e}")
+
+
 @app.get("/api/listener/status")
 def listener_status() -> JSONResponse:
     """Статус слушателя входящих: сколько аккаунтов слушается, кто не подключился."""
@@ -3801,22 +3817,37 @@ def campaign_preflight(cid: int) -> JSONResponse:
     # подряд с одного аккаунта = заявка на бан, поэтому пробив надо делать ОТДЕЛЬНЫМ
     # дозированным шагом заранее, а не во время рассылки.
     tag = (camp.get("audience_tag") or "").strip()
-    tag_cond, tag_args = (" AND tags LIKE ?", (f"%{tag}%",)) if tag else ("", ())
-    base = ("SELECT COUNT(*) c FROM contacts WHERE status='new' "
-            "AND (username IS NOT NULL OR phone IS NOT NULL)" + tag_cond)
+    # База ОБЯЗАНА совпадать с _audience_count: раньше здесь не было ни канального
+    # условия, ни исключения паузы, поэтому confirmed считался по более широкой выборке
+    # и мог превысить aud. Тогда blind=max(aud-confirmed,0) давал 0, и предупреждение про
+    # ImportContacts не показывалось НИКОГДА — вместо него «TG подтверждён у всей
+    # аудитории (N)» с N больше самой аудитории.
+    where = ("status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
+             "AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)")
+    params: list = [cid]
+    cc = _channel_clause(camp.get("channel"))
+    if cc:
+        where += " AND " + cc
+    if tag:
+        where += " AND tags LIKE ?"
+        params.append(f"%{tag}%")
+    base = f"SELECT COUNT(*) c FROM contacts WHERE {where}"
     with database.get_conn() as conn:
         by_uname = conn.execute(
-            base + " AND username IS NOT NULL AND username<>''", tag_args).fetchone()["c"]
+            base + " AND username IS NOT NULL AND username<>''", params).fetchone()["c"]
         confirmed = conn.execute(
             base + " AND (username IS NOT NULL AND username<>'' OR has_tg='yes')",
-            tag_args).fetchone()["c"]
+            params).fetchone()["c"]
     blind = max(aud - confirmed, 0)
-    if blind:
+    # Предупреждение про ImportContacts — про Telegram. Для чисто WhatsApp-кампании
+    # считать TG-достижимость бессмысленно, молчим.
+    tg_campaign = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
+    if blind and tg_campaign:
         add(False, "warn",
             f"Пробив TG не сделан у {blind} из {aud} — их номера будут резолвиться прямо "
             f"во время рассылки (ImportContacts, риск бана). Сначала «Пробить номера в TG», "
             f"потом слать. Сейчас точно достижимы: {confirmed} (из них по @username: {by_uname})")
-    elif aud:
+    elif aud and tg_campaign:
         add(True, "ok", f"TG подтверждён у всей аудитории ({confirmed})")
 
     ready = all(c["ok"] for c in checks if c["level"] == "fail")

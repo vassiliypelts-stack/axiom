@@ -196,6 +196,7 @@ _EXTRA_CHAT_COLS = {
     "in_account": "TEXT",        # yes = чат уже в личном аккаунте
     "city": "TEXT",
     "kw_last_id": "INTEGER",     # watermark: до какого msg_id уже сканировали по ключам
+    "kw_scanned_at": "TEXT",     # когда последний раз проходили по ключам (ротация очереди)
     "favorite": "INTEGER DEFAULT 0",   # ⭐ избранный чат — лучшие, по ним и слушаем в первую очередь
     # СЫРОЙ telegram-id чата (entity.id, БЕЗ приставки -100). Именно его пишет парсер
     # в tg_user_posts.chat_id — по нему и связываем «сырьё досье» с карточкой каталога.

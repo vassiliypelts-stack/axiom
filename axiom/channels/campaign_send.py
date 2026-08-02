@@ -64,6 +64,13 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
         where += " AND has_tg IN ('yes','unknown')"
     if test:
         where += " AND COALESCE(is_test,0)=1"
+    # Тестовый номер принадлежит ТОЙ кампании, куда его добавили. Иначе так: свой номер,
+    # уже бывший реальным лидом кампании A, добавляют в тест кампании B — ему дописывают
+    # тег B и сбрасывают status в 'new'. Тег A при этом никуда не делся, и контакт снова
+    # проходит в аудиторию A, да ещё первым (is_test DESC) — живой лид получает повторное
+    # первое сообщение. NULL — старые записи, для них поведение как раньше.
+    where += " AND (COALESCE(is_test,0)=0 OR test_campaign_id IS NULL OR test_campaign_id=?)"
+    params.append(cid)
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")

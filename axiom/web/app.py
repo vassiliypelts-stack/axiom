@@ -1320,9 +1320,7 @@ def keywords_auto_set(payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/keywords/listen_now")
 def keywords_listen_now() -> JSONResponse:
     """Прослушать чаты по ключам СЕЙЧАС (фоновый процесс)."""
-    import subprocess
-    import sys
-    _spawn("channels.chat_keywords", "--listen")
+    _spawn("channels.chat_keywords", "--limit", "300")
     return JSONResponse({"ok": True})
 
 
@@ -1399,7 +1397,10 @@ def _proxy_scheduler() -> None:
                 with database.get_conn() as conn:
                     database.set_setting(conn, "kw_last_run_ts", str(time.time()))
                     database.set_setting(conn, "kw_last_run", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
-                res = subprocess.run([sys.executable, "-m", "channels.chat_keywords", "--listen"],
+                # «--listen» у chat_keywords нет и не было: argparse молча падал с кодом 2,
+                # и авто-прослушка по расписанию не отрабатывала ни разу — только копила
+                # строки «код выхода 2» в kw_scheduler.log. Догоняющий проход = --limit.
+                res = subprocess.run([sys.executable, "-m", "channels.chat_keywords", "--limit", "300"],
                                      cwd=str(BASE_DIR.parent), timeout=600, env=env,
                                      capture_output=True, text=True, encoding="utf-8", errors="replace")
                 _log_run("kw_scheduler", res)
@@ -1516,13 +1517,34 @@ def listener_status() -> JSONResponse:
                          "ok": info.get("ok"), "err": info.get("err")})
         with database.get_conn() as conn:
             auto_reply = database.get_setting(conn, "tg_auto_reply", "on") == "on"
+            enabled = database.get_setting(conn, "listener_enabled", "on") != "off"
             niches = conn.execute("SELECT COUNT(*) c FROM niches WHERE active=1").fetchone()["c"]
+        # «жив ли поток»: enabled берётся из БД, а listening — из памяти. Если _supervise
+        # упал, пульт продолжал бы показывать бодрый последний снимок. Круг реже RECHECK*3 —
+        # значит поток мёртв и нужен рестарт сервера.
+        tick = listener.STATUS.get("tick")
+        alive = None
+        if tick:
+            import datetime as _dt
+            age = (_dt.datetime.now() - _dt.datetime.fromisoformat(tick)).total_seconds()
+            alive = age < listener.RECHECK_SEC * 3
         return JSONResponse({"started": listener.STATUS.get("started"),
                              "listening": sum(1 for a in accs if a["ok"]),
-                             "accounts": accs, "auto_reply": auto_reply,
+                             "accounts": accs, "auto_reply": auto_reply, "enabled": enabled,
+                             "tick": tick, "thread_alive": alive,
                              "hits": listener.STATUS.get("hits", 0), "niches": niches})
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": str(e)}, status_code=200)
+
+
+@app.post("/api/listener/toggle")
+def listener_toggle(payload: dict = Body(...)) -> JSONResponse:
+    """Стоп/Пуск слушателя. Слушатель сам подхватит флаг в течение POLL_SEC и либо
+    отключит все аккаунты, либо подключит их заново — процесс перезапускать не нужно."""
+    on = "on" if payload.get("enabled") else "off"
+    with database.get_conn() as conn:
+        database.set_setting(conn, "listener_enabled", on)
+    return JSONResponse({"ok": True, "enabled": on == "on"})
 
 
 @app.post("/api/listener/auto_reply")
@@ -2420,7 +2442,9 @@ def chats_join(payload: dict = Body(default={})) -> JSONResponse:
         pass
     return JSONResponse({"ok": res.get("ok") and info.get("ok", True),
                          "joined": info.get("joined"), "failed": info.get("failed"),
+                         "pending": info.get("pending"),
                          "accounts": info.get("accounts"), "report": info.get("report"),
+                         "daily_cap": info.get("daily_cap"), "capped": info.get("capped") or [],
                          "error": info.get("error"), "output": res.get("output")})
 
 
@@ -2792,11 +2816,16 @@ def hit_to_lead(hid: int, payload: dict = Body(default={})) -> JSONResponse:
         conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
         conn.execute("UPDATE chat_hits SET status='lead', contact_id=? WHERE id=?", (cid, hid))
         if h["tg_user_id"] and h["text"]:
+            # chat_hits.chat_id — КАТАЛОЖНЫЙ chats.id, а tg_user_posts.chat_id — СЫРОЙ
+            # telegram-id (по нему джойнят chats.tg_chat_id, см. карточку досье и
+            # agent/segment). Класть сюда каталожный — значит потерять «в каком чате
+            # найден» у лида, заведённого из находки.
+            raw = conn.execute("SELECT tg_chat_id FROM chats WHERE id=?", (h["chat_id"],)).fetchone()
             conn.execute(
                 "INSERT OR IGNORE INTO tg_user_posts (tg_user_id, contact_id, chat_id, chat_title, "
                 "text, msg_id, ts) VALUES (?,?,?,?,?,?,?)",
-                (h["tg_user_id"], cid, h["chat_id"], h["chat_title"], h["text"],
-                 h["source_msg_id"], h["ts"]),
+                (h["tg_user_id"], cid, (raw["tg_chat_id"] if raw else None), h["chat_title"],
+                 h["text"], h["source_msg_id"], h["ts"]),
             )
     from agent import llm
     score = None
@@ -3461,6 +3490,9 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
 @app.post("/api/campaign/{cid}/test_contacts")
 def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
     """Свои номера/юзернеймы для теста ЭТОЙ кампании — без отдельной тестовой кампании.
+    Формат строки: "<номер или @username> [Имя Отчество]" — всё после первого пробела
+    идёт в обращение {name} (см. channels.campaign_send._greeting). Без имени — обращение
+    подставится по номеру/юзернейму, как раньше.
     Помечает is_test=1 (см. channels/campaign_send._audience: тестовые всегда идут первыми
     в очереди), сбрасывает статус в 'new' (даже если контакт уже был раньше) и добавляет
     тег аудитории кампании — иначе не попадут в фильтр _audience по audience_tag."""
@@ -3478,14 +3510,28 @@ def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
             if not line:
                 continue
             if line.startswith("@"):
-                uname = line.lstrip("@")
-                row_id = database.upsert_contact(conn, source="test", username=uname, name=line, tags=tag)
+                first, _, rest = line.partition(" ")
+                uname = first.strip().lstrip("@")
+                display_name = rest.strip()
+                row_id = database.upsert_contact(conn, source="test", username=uname,
+                                                  name=display_name or first.strip(), tags=tag)
             else:
-                p = norm_phone(line)
+                # Номер сам по себе содержит пробелы («+7 999 123-45-67»), поэтому резать
+                # строку по ПЕРВОМУ пробелу нельзя: от номера оставалось «+7», norm_phone
+                # возвращал None и контакт молча выбрасывался. Берём ведущий «телефонный»
+                # кусок, остальное — обращение.
+                import re as _re
+                m = _re.match(r"^([+\d][\d\s()+.-]*)(.*)$", line)
+                p = norm_phone(m.group(1)) if m else None
                 if not p:
                     continue
-                row_id = database.upsert_contact(conn, source="test", phone=p, name=p, tags=tag)
-            conn.execute("UPDATE contacts SET is_test=1, status='new' WHERE id=?", (row_id,))
+                display_name = m.group(2).strip()
+                row_id = database.upsert_contact(conn, source="test", phone=p,
+                                                  name=display_name or p, tags=tag)
+            # test_campaign_id — чтобы тестовый номер не всплыл первым в ЧУЖОЙ кампании,
+            # чьи теги остались на контакте (см. campaign_send._audience)
+            conn.execute("UPDATE contacts SET is_test=1, status='new', test_campaign_id=? WHERE id=?",
+                         (cid, row_id))
             added += 1
     if not added:
         return JSONResponse({"error": "не нашёл ни валидного номера, ни @username"}, status_code=400)
@@ -3749,8 +3795,33 @@ def campaign_preflight(cid: int) -> JSONResponse:
         (f"КП: {kps} под типы" if kps else "КП задано") if (kps or camp.get("kp_text") or camp.get("kp_file"))
         else "КП не задано (не критично — агент пришлёт позже, если добавишь)")
 
+    # Чем аудиторию РЕАЛЬНО достать. У кого нет @username и TG не подтверждён, отправка
+    # резолвит номер прямо в момент выстрела через ImportContacts — самый заметный для
+    # Telegram спам-сигнал (см. предупреждение в channels/phone_resolve). Сотня таких
+    # подряд с одного аккаунта = заявка на бан, поэтому пробив надо делать ОТДЕЛЬНЫМ
+    # дозированным шагом заранее, а не во время рассылки.
+    tag = (camp.get("audience_tag") or "").strip()
+    tag_cond, tag_args = (" AND tags LIKE ?", (f"%{tag}%",)) if tag else ("", ())
+    base = ("SELECT COUNT(*) c FROM contacts WHERE status='new' "
+            "AND (username IS NOT NULL OR phone IS NOT NULL)" + tag_cond)
+    with database.get_conn() as conn:
+        by_uname = conn.execute(
+            base + " AND username IS NOT NULL AND username<>''", tag_args).fetchone()["c"]
+        confirmed = conn.execute(
+            base + " AND (username IS NOT NULL AND username<>'' OR has_tg='yes')",
+            tag_args).fetchone()["c"]
+    blind = max(aud - confirmed, 0)
+    if blind:
+        add(False, "warn",
+            f"Пробив TG не сделан у {blind} из {aud} — их номера будут резолвиться прямо "
+            f"во время рассылки (ImportContacts, риск бана). Сначала «Пробить номера в TG», "
+            f"потом слать. Сейчас точно достижимы: {confirmed} (из них по @username: {by_uname})")
+    elif aud:
+        add(True, "ok", f"TG подтверждён у всей аудитории ({confirmed})")
+
     ready = all(c["ok"] for c in checks if c["level"] == "fail")
-    return JSONResponse({"ready": ready, "checks": checks, "audience": aud, "team": len(team)})
+    return JSONResponse({"ready": ready, "checks": checks, "audience": aud, "team": len(team),
+                         "reachable": confirmed, "unresolved": blind})
 
 
 @app.get("/api/campaign/{cid}/progress")

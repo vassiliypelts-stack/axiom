@@ -40,6 +40,15 @@ class PersonProfile(BaseModel):
     psychotype: str = Field(description="Тип принятия решений/психотип кратко (рациональный/эмоциональный/статусный и т.п.).")
     comm_style: str = Field(description="Как с ним лучше общаться (тон, длина, на 'ты'/'вы', что заходит).")
     best_time: str = Field(description="Когда вероятнее активен/на связи (по времени сообщений), если можно понять. Иначе ''.")
+    niche: str = Field(default="", description="Чем человек занимается / его род деятельности, ниша "
+                       "(по bio и постам канала). Кратко, напр. «риелтор загородной недвижимости», "
+                       "«застройщик ИЖС», «продажа участков». Если не видно — ''.")
+    offer: str = Field(default="", description="Что он ПРОДАЁТ/предлагает — его оффер (часто прямо в bio "
+                       "или в канале). Напр. «участки в КП под Сочи», «строительство каркасных домов». "
+                       "Если не видно — ''.")
+    # ровно male/female — тот же словарь, что у channels/ru_names.gender_of и карточки в UI.
+    # «муж»/«жен» здесь ломали фильтры и показывали в карточке «—» при определённом поле.
+    gender: str = Field(default="", description="Пол: РОВНО «male» или «female» по имени и фото. Не ясно — ''.")
     # словарь общий с agent/segment.py — иначе сегменты в базе разъедутся и по ним
     # нельзя будет ни фильтровать, ни группировать
     segment: SegmentName = Field(description="Сфера деятельности — РОВНО одно значение из "
@@ -54,10 +63,13 @@ class PersonProfile(BaseModel):
 
 
 SYSTEM = (
-    "Ты — профайлер отдела продаж. По РЕАЛЬНЫМ сообщениям человека из Telegram-чатов "
-    "составь психологический портрет для персонального захода в продажах. "
-    "Опирайся ТОЛЬКО на то, что видно в сообщениях и bio — не выдумывай. Если данных мало "
+    "Ты — профайлер отдела продаж. По РЕАЛЬНЫМ сообщениям человека из Telegram-чатов, "
+    "его bio и постам его личного канала (помечены «📢 канал:») составь портрет для "
+    "персонального захода в продажах. "
+    "Опирайся ТОЛЬКО на то, что видно в сообщениях, bio и канале — не выдумывай. Если данных мало "
     "или они обрывочны — честно снижай confidence и оставляй поля пустыми, а не фантазируй. "
+    "ВАЖНО определить: niche (чем человек занимается) и offer (что он ПРОДАЁТ/предлагает) — "
+    "это часто прямо в bio или в постах его канала (оффер, услуги, товары). gender — по имени и фото. "
     "Цель — понять боли/желания человека и дать ОДНО точное первое сообщение, от которого "
     "он захочет ответить (не спам, не «партянка» — живо и по делу). "
     "Если приложено фото аватара — кратко опиши в photo_analysis дресс-код, примерный возраст и "
@@ -121,6 +133,20 @@ def enrich_person(contact: dict, posts: list) -> PersonProfile:
     )
 
 
+def _norm_gender(g: str | None) -> str:
+    """К единому словарю male/female. Модель, несмотря на схему, порой отвечает
+    «муж»/«жен»/«м» — а весь остальной код (ru_names.gender_of, карточка в UI, фильтры)
+    знает только male/female, и такое значение молча превращалось в «пол не указан»."""
+    g = (g or "").strip().lower()
+    if g in ("male", "female"):
+        return g
+    if g.startswith(("муж", "м", "m")):
+        return "male"
+    if g.startswith(("жен", "ж", "f", "w")):
+        return "female"
+    return ""
+
+
 def _save(contact_id: int, p: PersonProfile) -> None:
     with database.get_conn() as conn:
         row = conn.execute("SELECT notes FROM contacts WHERE id=?", (contact_id,)).fetchone()
@@ -130,10 +156,12 @@ def _save(contact_id: int, p: PersonProfile) -> None:
         conn.execute(
             "UPDATE contacts SET pains=?, fears=?, desires=?, interests=?, psychotype=?, "
             "comm_style=?, best_time=?, score=?, segment=?, quotes=?, rec_message=?, "
-            "photo_analysis=?, confidence=?, notes=?, enriched_at=datetime('now'), "
+            "photo_analysis=?, confidence=?, niche=?, offer=?, "
+            "gender=COALESCE(NULLIF(?,''),gender), notes=?, enriched_at=datetime('now'), "
             "updated_at=datetime('now') WHERE id=?",
             (p.pains, p.fears, p.desires, p.interests, p.psychotype, p.comm_style, p.best_time,
              p.score, p.segment, p.quotes, p.rec_message, p.photo_analysis, p.confidence,
+             getattr(p, "niche", ""), getattr(p, "offer", ""), _norm_gender(getattr(p, "gender", "")),
              notes, contact_id),
         )
 

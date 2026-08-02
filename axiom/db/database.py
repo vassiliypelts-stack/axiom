@@ -63,6 +63,7 @@ _EXTRA_CONTACT_COLS = {
     "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
     "email": "TEXT",                  # email из импорта/обогащения
     "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
+    "test_campaign_id": "INTEGER",   # для какой кампании он тестовый (NULL = легаси, для любой)
     # --- карточка человека (bэклог P0): идентификация ---
     "gender": "TEXT",           # male|female — угадан по имени (channels/ru_names.gender_of)
     "is_premium": "INTEGER",    # Telegram Premium: 1/0/NULL=неизвестно (виден при парсинге User-сущности)
@@ -471,21 +472,64 @@ def init_db() -> None:
         )
 
 
+def _merge_tags(old: str | None, new: str | None) -> str | None:
+    """Дописывает новые теги к старым, без повторов. None (нечего добавить) — чтобы
+    COALESCE в UPDATE оставил старое значение нетронутым."""
+    if not new:
+        return None
+    have = [t.strip() for t in (old or "").split(",") if t.strip()]
+    for t in (x.strip() for x in new.split(",")):
+        if t and t not in have:
+            have.append(t)
+    return ", ".join(have)
+
+
 def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
-    """Вставляет или обновляет контакт по phone/username. Возвращает id."""
+    """Вставляет или обновляет контакт. Возвращает id.
+
+    Ключ дедупа — tg_user_id (стабильный, человек его не меняет), затем phone, затем
+    username (с «@» и без). tg_user_id ищется ПЕРВЫМ: у человека из чата часто нет ни
+    телефона, ни @username — раньше обе ветки поиска пропускались и каждая новая находка
+    по тому же человеку молча заводила ещё одну карточку.
+    """
     phone = fields.get("phone")
     username = fields.get("username")
+    tg_user_id = fields.get("tg_user_id")
     row = None
-    if phone:
-        row = conn.execute("SELECT id FROM contacts WHERE phone = ?", (phone,)).fetchone()
+    if tg_user_id:
+        row = conn.execute("SELECT id, tags FROM contacts WHERE tg_user_id = ?",
+                           (tg_user_id,)).fetchone()
+    if row is None and phone:
+        row = conn.execute("SELECT id, tags FROM contacts WHERE phone = ?", (phone,)).fetchone()
     if row is None and username:
-        row = conn.execute("SELECT id FROM contacts WHERE username = ?", (username,)).fetchone()
+        u = username.lstrip("@")
+        row = conn.execute("SELECT id, tags FROM contacts WHERE username = ? OR username = ?",
+                           (u, "@" + u)).fetchone()
 
     cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes",
             "gender", "is_premium", "email", "person_name", "person_role"]
     vals = {c: fields.get(c) for c in cols}
+    # username пишем ВСЕГДА без «@»: раз поиск умеет оба вида, значит легаси-строки с
+    # «@vasya» в базе есть. Записав «vasya» рядом, мы получили бы две неотличимые для
+    # UNIQUE строки на одного человека — то есть вечный дубль вместо дедупа.
+    if vals["username"]:
+        vals["username"] = vals["username"].lstrip("@")
 
     if row:
+        # «где замечен» накапливаем: один человек приходит из нескольких чатов/источников,
+        # а COALESCE(?, tags) затирал прошлый след последним вызовом.
+        vals["tags"] = _merge_tags(row["tags"], vals["tags"])
+        # phone/username — UNIQUE. Карточка, найденная по tg_user_id, может быть не той,
+        # что держит этот номер/@ — тогда запись упала бы на IntegrityError. Чужое не трогаем.
+        # Для username проверяем оба написания — иначе «@vasya» у соседа проскочит мимо.
+        if vals["phone"] and conn.execute(
+                "SELECT 1 FROM contacts WHERE phone = ? AND id <> ?",
+                (vals["phone"], row["id"])).fetchone():
+            vals["phone"] = None
+        if vals["username"] and conn.execute(
+                "SELECT 1 FROM contacts WHERE (username = ? OR username = ?) AND id <> ?",
+                (vals["username"], "@" + vals["username"], row["id"])).fetchone():
+            vals["username"] = None
         sets = ", ".join(f"{c} = COALESCE(?, {c})" for c in cols)
         conn.execute(
             f"UPDATE contacts SET {sets}, updated_at = datetime('now') WHERE id = ?",
@@ -520,8 +564,11 @@ def resolve_catalog_chat(conn: sqlite3.Connection, tg_chat_id: int | None,
         if row:  # чат заводили по @username до появления tg_chat_id — до-заполняем
             conn.execute("UPDATE chats SET tg_chat_id=? WHERE id=?", (tg_chat_id, row["id"]))
             return row["id"]
+    # status='auto' — чат завёлся САМ (слушатель поймал в нём ключ), человек его не выбирал.
+    # 'new' здесь нельзя: chat_join берёт в кандидаты всё, кроме skip/banned, и армия
+    # начала бы вступать в случайные группы, куда наши аккаунты добавили без спроса.
     cur = conn.execute(
-        "INSERT INTO chats (title, username, link, tg_chat_id, status) VALUES (?,?,?,?, 'new')",
+        "INSERT INTO chats (title, username, link, tg_chat_id, status) VALUES (?,?,?,?, 'auto')",
         (title or username or str(tg_chat_id), username,
          f"https://t.me/{username}" if username else None, tg_chat_id),
     )

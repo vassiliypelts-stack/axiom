@@ -76,7 +76,7 @@ async def _resolve(client, query: str):
     phone = "+" + digits
     res = await client(ImportContactsRequest(
         [InputPhoneContact(client_id=random.randint(0, 2**31), phone=phone,
-                           first_name="lead", last_name="")]
+                           first_name="", last_name="")]
     ))
     if not res.users:
         raise RuntimeError(f"по номеру {phone} не нашёлся пользователь Telegram "
@@ -84,29 +84,41 @@ async def _resolve(client, query: str):
     return res.users[0]
 
 
-async def _collect_personal_channel(client, full, tg_user_id: int, conn) -> int:
-    """Если у человека прикреплён личный канал — собрать его посты в tg_user_posts."""
+async def _collect_personal_channel(client, full, tg_user_id: int, conn) -> dict:
+    """Если у человека прикреплён личный канал — собрать посты + вернуть ссылку/название.
+    Возвращает {posts, link, title, username}. Канал — сильный сигнал ниши/оффера."""
+    out = {"posts": 0, "link": None, "title": None, "username": None}
     pch_id = getattr(full.full_user, "personal_channel_id", None)
     if not pch_id:
-        return 0
+        return out
     try:
         ch = await client.get_entity(pch_id)
     except Exception:
-        return 0
+        return out
     title = getattr(ch, "title", "") or "личный канал"
-    n = 0
+    uname = getattr(ch, "username", None)
+    out["title"] = title
+    out["username"] = uname
+    out["link"] = f"https://t.me/{uname}" if uname else None
     try:
+        # save_user_posts(conn, tg_user_id, chat_id, chat_title, posts) — ПЯТЬ аргументов,
+        # posts = [(msg_id, ts, text), ...]. Раньше сюда шло семь позиционных: TypeError на
+        # первом же посте молча съедался except'ом ниже, и посты личного канала не
+        # сохранялись НИКОГДА — при этом ссылка на канал в ответе заполнялась, и всё
+        # выглядело рабочим. ts строкой, как у tg_parser: колонка общая, типы не смешиваем.
+        posts = []
         async for m in client.iter_messages(ch, limit=CHANNEL_POSTS):
             txt = (m.message or "").strip()
             if not txt:
                 continue
-            ts = int(m.date.timestamp()) if m.date else int(time.time())
+            posts.append((m.id, str(m.date) if m.date else None, txt[:1000]))
+        if posts:
             database.save_user_posts(conn, tg_user_id, getattr(ch, "id", None),
-                                     f"📢 канал: {title}", txt, m.id, ts)
-            n += 1
+                                     f"📢 канал: {title}", posts)
+        out["posts"] = len(posts)
     except Exception:
         pass
-    return n
+    return out
 
 
 async def lookup(query: str) -> dict:
@@ -145,7 +157,18 @@ async def lookup(query: str) -> dict:
             database.set_bio_by_tg(conn, user.id, bio)
             if has_photo:
                 database.mark_photos_by_tg(conn, [user.id])
-            channel_posts = await _collect_personal_channel(client, full, user.id, conn)
+            channel = await _collect_personal_channel(client, full, user.id, conn)
+            channel_posts = channel["posts"]
+            # ссылку на канал сохраняем в web_note карточки (видно оператору).
+            # Дописываем, а не перезаписываем: в web_note лежит и прошлое веб-обогащение,
+            # и повторный запуск досье по тому же человеку стирал его подчистую.
+            if channel["link"] or channel["title"]:
+                link_note = f"Канал: {channel['link'] or channel['title']}"
+                cur = conn.execute("SELECT web_note FROM contacts WHERE id=?", (contact_id,)).fetchone()
+                old = (cur["web_note"] if cur else None) or ""
+                if link_note not in old:
+                    conn.execute("UPDATE contacts SET web_note=? WHERE id=?",
+                                 (f"{old} | {link_note}" if old else link_note, contact_id))
     except Exception as e:  # noqa: BLE001
         return {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     finally:
@@ -170,7 +193,9 @@ async def lookup(query: str) -> dict:
 
     return {"ok": True, "contact_id": contact_id, "name": name,
             "username": uname, "phone": phone, "has_photo": has_photo,
-            "channel_posts": channel_posts, "has_bio": bool(bio)}
+            "channel_posts": channel_posts, "has_bio": bool(bio),
+            "channel_link": channel.get("link"), "channel_title": channel.get("title"),
+            "deeplink": f"#dossier/{contact_id}"}
 
 
 def main() -> None:

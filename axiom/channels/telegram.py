@@ -379,6 +379,39 @@ def _record_incoming(contact_id: int, text_in: str, username: str | None,
     return who
 
 
+def _notify_agent_down(contact_id: int, exc: Exception) -> None:
+    """Агент не смог ответить живому человеку — сказать оператору в колокольчик.
+
+    Раньше это была одна строчка в консоли сервера: лид пишет, ответа нет, и об этом
+    никто не знает, пока вручную не залезешь в логи. Самый частый случай — кончились
+    кредиты API (тогда молчат ВСЕ диалоги сразу).
+
+    Дедуп 15 минут по тексту ошибки: при обвале API падает каждое сообщение, и без
+    этого лента колокольчика превратилась бы в простыню из одинаковых записей.
+    """
+    import time
+    msg = f"{type(exc).__name__}: {exc}"
+    low = msg.lower()
+    if "credit balance" in low or "insufficient" in low or "quota" in low:
+        title, hint = "🔴 ИИ-агент не отвечает: кончились кредиты API", \
+            "Пополни баланс на console.anthropic.com → Plans & Billing. Пока диалоги молчат."
+    else:
+        title, hint = "🔴 ИИ-агент не смог ответить", msg[:180]
+    try:
+        with database.get_conn() as conn:
+            last = database.get_setting(conn, "agent_error_ts", "0")
+            prev = database.get_setting(conn, "agent_error_sig", "")
+            sig = title
+            if sig == prev and (time.time() - float(last or 0)) < 900:
+                return
+            database.set_setting(conn, "agent_error_ts", str(time.time()))
+            database.set_setting(conn, "agent_error_sig", sig)
+            database.add_event(conn, "agent_error", title, hint, level="warn",
+                               contact_id=contact_id)
+    except Exception:  # noqa: BLE001 — уведомление не должно ронять обработку сообщения
+        pass
+
+
 async def _agent_reply(event, contact_id: int, username: str | None) -> None:
     """Генерит ответ ИИ-агентом и шлёт его ЧЕРЕЗ аккаунт, получивший сообщение
     (event.client). Входящее уже сохранено вызывающим — здесь только исходящее и
@@ -410,6 +443,7 @@ async def _agent_reply(event, contact_id: int, username: str | None) -> None:
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")
+        _notify_agent_down(contact_id, e)
         return
 
     text_in = messages[-1]["content"]

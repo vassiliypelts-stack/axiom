@@ -35,11 +35,31 @@ logging.getLogger("telethon").setLevel(logging.CRITICAL)
 _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
-STATUS: dict = {"started": None, "accounts": {}, "hits": 0}  # снимок для веб-статуса
+STATUS: dict = {"started": None, "accounts": {}, "hits": 0, "enabled": True}  # снимок для веб-статуса
 _NICHES: list[tuple[int | None, list[str]]] = []  # [(niche_id, [ключи]), ...] — кэш ключей
 
-CONNECT_TIMEOUT = 25    # сек на подключение одного аккаунта (дохлый прокси не повесит всё)
-RECHECK_SEC = 120       # как часто пере-сканировать: новые логины / отвалившиеся
+CONNECT_TIMEOUT = 15    # сек на подключение одного аккаунта (дохлый прокси не повесит всё)
+RECHECK_SEC = 30        # как часто пере-сканировать: новые логины / отвалившиеся / быстрый фейловер прокси
+POLL_SEC = 5            # с какой дробностью проверять тумблер «Стоп/Пуск» внутри паузы
+
+# heal() раздаёт прокси из общего пула: два одновременных вызова выберут один и тот же
+# свободный адрес. Пускаем строго по одному (см. вызов в _try).
+_HEAL_LOCK = asyncio.Lock()
+
+
+async def _enabled() -> bool:
+    """Тумблер «слушать/не слушать» из пульта. Живёт в settings, а не в памяти процесса:
+    поток демонский и переживает только рестарт сервера — намерение оператора должно
+    пережить его тоже.
+
+    Читаем в отдельном потоке: sqlite3.connect + PRAGMA busy_timeout=30000 — блокирующий
+    вызов, а дёргается он раз в POLL_SEC. Прямо в event loop он на время конкуренции с
+    писателями пульта морозил ВСЕХ подключённых клиентов (входящие ждали бы до 30 сек).
+    """
+    def _read() -> bool:
+        with database.get_conn() as conn:
+            return database.get_setting(conn, "listener_enabled", "on") != "off"
+    return await asyncio.to_thread(_read)
 
 
 def _load_niches() -> list[tuple[int | None, list[str]]]:
@@ -139,11 +159,17 @@ async def _scan_group(event, acc_id: int) -> None:
     title = getattr(chat, "title", None) or "чат"
     name = _display_name(sender)
     with database.get_conn() as conn:
+        # chat_hits.chat_id — КАТАЛОЖНЫЙ chats.id (так же пишет chat_keywords). Сюда клался
+        # сырой event.chat_id (помеченный, вида -100123…) — JOIN на chats не находил чат,
+        # и в «Запросах» у находок слушателя пропадала ссылка на чат/сообщение. Резолвим
+        # по chat.id (без -100) — в каталоге tg_chat_id хранится именно в этом виде.
+        cat_id = database.resolve_catalog_chat(
+            conn, getattr(chat, "id", None), title, getattr(chat, "username", None))
         cur = conn.execute(
             "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
             "username, name, text, keyword, source_msg_id, ts, status) "
             "VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
-            (nid, event.chat_id, title, sender.id, sender.username, name,
+            (nid, cat_id, title, sender.id, sender.username, name,
              text[:500], kw, event.message.id,
              str(getattr(event.message, "date", None)) if getattr(event.message, "date", None) else None),
         )
@@ -169,22 +195,61 @@ def _make_handler(acc_id: int):
 async def _connect(acc: dict):
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
                           acc.get("api_id"), acc.get("api_hash"))
-    await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
-    if not await client.is_user_authorized():
+    # Таймаут/ошибка коннекта — клиент ОБЯЗАН быть закрыт: Telethon к этому моменту уже
+    # поднял свои _send_loop/_recv_loop, и брошенный на полпути клиент оставляет их
+    # висеть навсегда («Task was destroyed but it is pending»). На дохлом аккаунте это
+    # повторяется каждый цикл supervise и течёт памятью, пока сервер не начнёт задыхаться.
+    try:
+        await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
+        if not await client.is_user_authorized():
+            raise RuntimeError("сессия не авторизована — нужен повторный вход")
+        client.add_event_handler(_make_handler(acc["id"]),
+                                 events.NewMessage(incoming=True, forwards=False))
+    except BaseException:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        raise RuntimeError("сессия не авторизована — нужен повторный вход")
-    client.add_event_handler(_make_handler(acc["id"]),
-                             events.NewMessage(incoming=True, forwards=False))
+        raise
     return client
+
+
+async def _disconnect_all() -> None:
+    for acc_id, client in list(CLIENTS.items()):
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        CLIENTS.pop(acc_id, None)
+    STATUS["accounts"].clear()
+
+
+async def _nap(total: int, was_enabled: bool) -> None:
+    """Спим порциями и просыпаемся сразу, как только тумблер переключили в пульте —
+    иначе «Стоп» отрабатывал бы только на следующем круге, до полминуты молчком."""
+    slept = 0
+    while slept < total:
+        await asyncio.sleep(min(POLL_SEC, total - slept))
+        slept += POLL_SEC
+        if await _enabled() != was_enabled:
+            return
 
 
 async def _supervise() -> None:
     global _NICHES
     STATUS["started"] = datetime.datetime.now().isoformat()
     while True:
+        on = await _enabled()
+        STATUS["enabled"] = on
+        # отметка живости круга: без неё упавший поток _supervise выглядел бы в пульте
+        # как исправно работающий — со старым снимком STATUS и бодрым «слушаю N из N»
+        STATUS["tick"] = datetime.datetime.now().isoformat()
+        if not on:
+            if CLIENTS:
+                await _disconnect_all()
+                _log("⏸ слушатель остановлен из пульта — все аккаунты отключены")
+            await _nap(RECHECK_SEC, on)
+            continue
         _NICHES = _load_niches()   # свежие ключи ниш (можно править в пульте на лету)
         want = {a["id"]: a for a in _listenable()}
         # 1) отключаем выбывших / отвалившихся (переподключим на следующем круге)
@@ -209,13 +274,30 @@ async def _supervise() -> None:
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": False,
                                                "err": str(e)[:120]}
                 _log(f"[#{a['id']}] не подключился: {str(e)[:120]}")
+                # быстрый фейловер (как автосвитч прокси в TG-клиенте): не ждём
+                # отдельного планировщика — сразу тестируем ТЕКУЩИЙ прокси аккаунта
+                # и, если сдох, подставляем живой с мин. пингом из пула. Если дело
+                # не в прокси (напр. сессия слетела) — heal() его не трогает.
+                #
+                # Под замком и строго по одному: _try идёт через gather, и параллельные
+                # heal() читают список свободных прокси ДО того, как соседний успеет
+                # пометить свой занятым — оба берут один и тот же (минимальный пинг) и
+                # сажают два аккаунта на один IP. Это тот самый баг, что чинил 698adcc.
+                try:
+                    from channels.proxy_pool import heal
+                    async with _HEAL_LOCK:
+                        res = await heal(ids=[a["id"]], warming_only=False)
+                    if res.get("healed"):
+                        _log(f"[#{a['id']}] прокси заменён на живой — переподключусь через {RECHECK_SEC} сек")
+                except Exception:  # noqa: BLE001
+                    pass
 
         if to_add:
             await asyncio.gather(*[_try(a) for a in to_add])
         ok = sum(1 for v in STATUS["accounts"].values() if v.get("ok"))
         kw = sum(len(k) for _, k in _NICHES)
         _log(f"итог: слушаю {ok} из {len(want)} аккаунтов · ниш {len(_NICHES)}/ключей {kw} · найдено запросов {STATUS.get('hits',0)}")
-        await asyncio.sleep(RECHECK_SEC)
+        await _nap(RECHECK_SEC, on)
 
 
 async def run() -> None:

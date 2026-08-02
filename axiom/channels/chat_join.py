@@ -34,23 +34,41 @@ from db import database
 
 JOIN_PAUSE = (35, 90)      # антибан-пауза между вступлениями ОДНОГО аккаунта, сек
 MAX_FLOOD_SKIP = 600       # если FloodWait дольше — пропускаем аккаунт на этот заход
+DAILY_JOIN_CAP = 25        # вступлений в СУТКИ на аккаунт — потолок поверх --per
+MIN_WARM_STAGE = 5         # с какой ступени прогрева аккаунту можно вступать в чаты
 
 
 def _joinable_accounts(only_id: int | None):
     """Кем вступаем. Отсеиваем ЗАВЕДОМО мёртвые сессии (session_alive=0): наличие строки
     tg_session ещё не значит, что она рабочая (см. channels/session_check.py) — иначе
     половина заходов уходила бы в стену. NULL (не проверяли) пропускаем: «не знаю» —
-    не повод не работать."""
+    не повод не работать.
+
+    Свежий аккаунт в чаты не пускаем: 'active' — это уже прошедший прогрев целиком
+    (см. warmup.READY_STAGE), а 'warming' — только с MIN_WARM_STAGE ступени. Вступления
+    с первого дня жизни номера — самый быстрый способ его сжечь.
+    """
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
             "AND status IN ('active','warming') AND COALESCE(protected,0)=0 "
-            "AND COALESCE(session_alive,1)=1"
+            "AND COALESCE(session_alive,1)=1 "
+            "AND (status='active' OR COALESCE(warm_stage,0)>=?)",
+            (MIN_WARM_STAGE,),
         ).fetchall()
     accs = [dict(r) for r in rows]
     if only_id is not None:
         accs = [a for a in accs if a["id"] == only_id]
     return accs
+
+
+def _joined_today() -> dict[int, int]:
+    """Сколько чатов аккаунт уже взял за сегодня. Считаем по account_chats.joined_at —
+    отдельного счётчика нет и не нужен: строка членства и есть факт вступления."""
+    with database.get_conn() as conn:
+        return {r["account_id"]: r["n"] for r in conn.execute(
+            "SELECT account_id, COUNT(*) n FROM account_chats "
+            "WHERE date(joined_at)=date('now') GROUP BY account_id")}
 
 
 def _candidate_chats(favorites: bool, chat_ids: list[int] | None = None):
@@ -61,8 +79,11 @@ def _candidate_chats(favorites: bool, chat_ids: list[int] | None = None):
     if chat_ids is not None and not chat_ids:
         return []
     with database.get_conn() as conn:
+        # 'auto' — чат завёлся сам (слушатель поймал в нём ключ), человек его не выбирал:
+        # вступать туда армией вслепую нельзя. Попадёт в кандидаты, когда оператор
+        # прогонит по нему разбор и статус станет осмысленным.
         sql = ("SELECT id, title, username, link FROM chats "
-               "WHERE COALESCE(status,'') NOT IN ('skip','banned') "
+               "WHERE COALESCE(status,'') NOT IN ('skip','banned','auto') "
                "AND ((username IS NOT NULL AND username<>'') OR (link LIKE '%t.me/+%') "
                "OR (link LIKE '%joinchat%'))")
         params: list = []
@@ -82,19 +103,26 @@ def _already() -> set[tuple[int, int]]:
 
 
 def _plan(accs: list[dict], chats: list[dict], per: int) -> dict[int, list[dict]]:
-    """Round-robin: раздаём чаты по аккаунтам, максимизируя ШИРОТУ охвата."""
+    """Round-robin: раздаём чаты по аккаунтам, максимизируя ШИРОТУ охвата.
+
+    Бюджет аккаунта — min(--per, остаток дневного лимита). Без дневного остатка «--per 3»
+    ограничивал только ОДИН заход: десять запусков подряд давали те же 30 вступлений за
+    час, что и запрет.
+    """
     already = _already()
+    today = _joined_today()
+    budget = {a["id"]: max(0, min(per, DAILY_JOIN_CAP - today.get(a["id"], 0))) for a in accs}
     assign: dict[int, list[dict]] = {a["id"]: [] for a in accs}
     if not accs:
         return assign
     ai = 0
     n = len(accs)
     for ch in chats:
-        if all(len(assign[a["id"]]) >= per for a in accs):
+        if all(len(assign[a["id"]]) >= budget[a["id"]] for a in accs):
             break
         for _ in range(n):
             a = accs[ai % n]; ai += 1
-            if len(assign[a["id"]]) >= per:
+            if len(assign[a["id"]]) >= budget[a["id"]]:
                 continue
             if (a["id"], ch["id"]) in already:
                 continue
@@ -232,20 +260,27 @@ async def run(per: int, favorites: bool, only_id: int | None,
     database.init_db()
     accs = _joinable_accounts(only_id)
     if not accs:
-        return {"ok": False, "error": "нет годных аккаунтов (нужны active/warming с сессией)"}
+        return {"ok": False, "error": f"нет годных аккаунтов: нужна живая сессия и либо "
+                f"status=active, либо прогрев со ступени {MIN_WARM_STAGE} (свежие номера "
+                f"в чаты не пускаем — сгорят)"}
     chats = _candidate_chats(favorites, chat_ids)
     if not chats:
         return {"ok": False, "error": "нет чатов-кандидатов в каталоге"
                 + (" среди избранных" if favorites else "")}
     plan = _plan(accs, chats, per)
+    today = _joined_today()
+    capped = [f"{a.get('label') or ('#' + str(a['id']))}: уже {today.get(a['id'], 0)} за сегодня"
+              for a in accs if today.get(a["id"], 0) >= DAILY_JOIN_CAP]
     report: dict = {}
     # аккаунты идут параллельно (разные IP/сессии), внутри аккаунта — по одному с паузой
     await asyncio.gather(*[_join_one(a, plan[a["id"]], report) for a in accs])
     total_joined = sum(len(r["joined"]) for r in report.values())
     total_failed = sum(len(r["failed"]) for r in report.values())
     total_pending = sum(len(r.get("pending") or []) for r in report.values())
+    # упёршихся в дневной лимит называем поимённо: иначе «вступил 0» читается как поломка
     return {"ok": True, "accounts": len(accs), "joined": total_joined,
-            "failed": total_failed, "pending": total_pending, "report": report}
+            "failed": total_failed, "pending": total_pending,
+            "daily_cap": DAILY_JOIN_CAP, "capped": capped, "report": report}
 
 
 def main() -> None:

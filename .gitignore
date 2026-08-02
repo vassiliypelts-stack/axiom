@@ -20,6 +20,13 @@ axiom/google_token.json
 axiom/data/*.bak*
 axiom/data/*.db.bak*
 
+# Сырые дампы купленных LZT-аккаунтов (auth_key/session) — секреты, только локально/на сервере
+axiom/data/_lzt_import/
+# Архив старых локальных баз и SQL-дампов: внутри те же tg-сессии и 2FA, что и в боевой базе.
+# Шаблон «axiom/data/*.db» подкаталог НЕ ловит, а .sql-дамп не ловит вообще.
+axiom/data/_old_local_db_archive/
+axiom/data/*.sql
+
 # Python
 __pycache__/
 *.pyc

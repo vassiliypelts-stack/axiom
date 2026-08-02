@@ -374,6 +374,9 @@ CREATE TABLE IF NOT EXISTS org_members (
 CREATE INDEX IF NOT EXISTS idx_org_members_dept ON org_members(department_id);
 CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages(contact_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
+-- ключ дедупа (upsert_contact ищет по нему первым); не UNIQUE — в базе уже могли
+-- накопиться дубли по tg_user_id, UNIQUE на живой базе просто не создастся
+CREATE INDEX IF NOT EXISTS idx_contacts_tg_user ON contacts(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);
 CREATE INDEX IF NOT EXISTS idx_user_posts_user ON tg_user_posts(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_opener_queue_due ON opener_queue(next_at);

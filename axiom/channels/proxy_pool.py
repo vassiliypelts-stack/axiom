@@ -142,21 +142,22 @@ async def telethon_test(server: str, port: int, secret: str,
             connection=ConnectionTcpMTProxyRandomizedIntermediate,
             proxy=mt,
         )
+    except Exception:  # noqa: BLE001
+        return None
+    # finally, а не except: отмена задачи прилетает как CancelledError (BaseException),
+    # мимо `except Exception` — и клиент оставался жить с висящими _send_loop/_recv_loop.
+    # Тест гоняется по десяткам прокси за прогон, так что течёт быстро.
+    try:
         await asyncio.wait_for(client.connect(), timeout=TELETHON_TEST_TIMEOUT)
-        if not await client.is_user_authorized():
-            # Прокси работает (коннект есть), но сессия пустая — это ок,
-            # нас интересует что коннект через прокси состоялся.
-            await client.disconnect()
-            return int((time.monotonic() - t0) * 1000)
-        # Даже если есть авторизация — не шлём get_me, disconnect и ок
-        await client.disconnect()
+        # Сессия пустая — это ок: нас интересует только что коннект через прокси состоялся.
         return int((time.monotonic() - t0) * 1000)
     except Exception:  # noqa: BLE001
+        return None
+    finally:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        return None
 
 
 def _store_harvested(conn, proxies: list[tuple[str, int, str]], source: str) -> None:
@@ -364,7 +365,8 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
 
     Для каждого подходящего аккаунта: проверяет его текущий прокси РЕАЛЬНЫМ
     Telethon-подключением. Живой → proxy_alive=1. Мёртвый → подставляет живой
-    из пула (Telethon-проверенный). Если пула нет — чистит и ставит proxy_alive=0.
+    из пула (Telethon-проверенный). Если живого в пуле нет — оставляет прокси как есть
+    и ставит proxy_alive=0 (аккаунт не выйдет в сеть, но и не уползёт на голый IP сервера).
     Возвращает {checked, alive_kept, healed, no_pool}."""
     import config
     database.init_db()
@@ -429,12 +431,18 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
                 healed += 1
                 print(f"  [{label}] прокси мёртв → заменён на {s}:{p}")
             else:
+                # НЕ обнуляем прокси: пустой proxy у build_client означает не «без прокси»,
+                # а «прокси главного аккаунта из .env», а если его нет — прямой коннект
+                # с IP сервера. Тогда все аккаунты, у которых подсох пул, сползают на один
+                # общий IP — ровно тот массовый бан, что чинил коммит 698adcc. Мёртвый
+                # прокси = аккаунт просто не подключится (безопасный отказ), и это видно
+                # оператору по proxy_alive=0.
                 conn.execute(
-                    "UPDATE accounts SET proxy=NULL, proxy_alive=0, proxy_checked_at=datetime('now') WHERE id=?",
+                    "UPDATE accounts SET proxy_alive=0, proxy_checked_at=datetime('now') WHERE id=?",
                     (aid,),
                 )
                 no_pool += 1
-                print(f"  [{label}] прокси мёртв, пула нет (или все живые уже заняты) — очищен")
+                print(f"  [{label}] прокси мёртв, живого в пуле нет — аккаунт до замены не выходит в сеть")
     print(f"[heal] проверено:{len(accs)} живых-оставлено:{alive_kept} подставлено:{healed} без-пула:{no_pool}")
     return {"checked": len(accs), "alive_kept": alive_kept, "healed": healed, "no_pool": no_pool}
 
@@ -454,15 +462,18 @@ async def _test_account_proxy(aid: int, label: str, proxy_raw: str,
             connection=ConnectionTcpMTProxyRandomizedIntermediate,
             proxy=mt,
         )
+    except Exception:  # noqa: BLE001
+        return False
+    try:
         await asyncio.wait_for(client.connect(), timeout=TELETHON_TEST_TIMEOUT)
-        await client.disconnect()
         return True
     except Exception:  # noqa: BLE001
+        return False
+    finally:                    # см. комментарий в telethon_test — CancelledError мимо except
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
-        return False
 
 
 def main() -> None:

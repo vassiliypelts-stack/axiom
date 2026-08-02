@@ -781,6 +781,9 @@ async function viewDashboard(v){
     const el=$("#dash-listener");
     if(el){
       if(ls.error||ls.started==null){el.innerHTML='📡 слушатель: <b style="color:var(--muted)">запускается…</b>';}
+      // остановленный показывал бы «0 из N на связи» — это читается как поломка, хотя
+      // его выключили руками. Говорим прямо, что он на паузе.
+      else if(ls.enabled===false){el.innerHTML='📡 слушатель: <b style="color:var(--muted)">остановлен</b> (включается в разделе «Парсер»)';}
       else{const tot=(ls.accounts||[]).length;
         el.innerHTML=`📡 слушатель: <b style="color:var(--accent2)">${ls.listening}</b> из ${tot} на связи`;}
     }
@@ -2390,7 +2393,7 @@ async function openAgent(id){
 }
 
 // ===== ЧАТЫ (каталог + анализ, Волна C фаза 1) =====
-const CHAT_ST={new:"новый",analyzed:"проанализирован",queued:"в очереди",joined:"вступил",skip:"пропуск"};
+const CHAT_ST={new:"новый",auto:"замечен сам",analyzed:"проанализирован",queued:"в очереди",joined:"вступил",skip:"пропуск"};
 let CHATCAT=[];
 async function loadCoverage(){
   const box=$("#cc-coverage");if(!box)return;
@@ -2420,7 +2423,9 @@ async function loadCoverage(){
     const msg=$("#cc-join-msg");msg.textContent="бойцы заходят в чаты по-человечески, с паузами — подожди…";
     try{const r=await api("/api/chats/join",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({per,favorites:fav})});
       if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
-      else{msg.innerHTML=`✅ вступили в <b>${r.joined||0}</b> чат(ов)${r.pending?`, 📨 заявок на одобрение: <b>${r.pending}</b> (ждут админа — это не ошибка)`:""}${r.failed?", не удалось "+r.failed:""}. Обновляю покрытие…`;}
+      else{msg.innerHTML=`✅ вступили в <b>${r.joined||0}</b> чат(ов)${r.pending?`, 📨 заявок на одобрение: <b>${r.pending}</b> (ждут админа — это не ошибка)`:""}${r.failed?", не удалось "+r.failed:""}. Обновляю покрытие…`
+        // упёршихся в суточный потолок называем поимённо, иначе «вступили в 0» читается как поломка
+        +((r.capped||[]).length?`<div class="hint" style="margin-top:4px">⏳ дневной лимит ${r.daily_cap||""} вступлений исчерпан у: ${esc(r.capped.join("; "))} — продолжат завтра</div>`:"");}
     }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска</span>';}
     jb.disabled=false;jb.textContent="🚀 Разослать армию по чатам";
     loadCoverage();
@@ -2893,6 +2898,15 @@ function showImportChatsDialog(initialText){
 }
 
 // ===== ЗАПРОСЫ (ниши + прослушка чатов по ключам) =====
+// Заготовки ниш под ИЖС: «горячие» ловят клиента, который ищет прямо сейчас, две
+// другие — исполнителей рынка (их же и продаём как аудиторию). Ключи в нижнем регистре
+// и по возможности обрезаны до корня («подрядчик ИЖС» → «подрядчик»), потому что
+// _match_niche ищет подстрокой и так ловит все склонения.
+const NICHE_PRESETS=[
+  {name:"ИЖС — горячие запросы", keywords:"ищу подрядчика, ищу бригаду, посоветуйте строителей, кто строит дома, хочу построить дом, планирую строить дом, построить дом под ключ, ищу проект дома, ищу прораба, нужен подрядчик, нужна бригада, сколько стоит построить"},
+  {name:"ИЖС — застройщики и подряд", keywords:"строительство домов, каркасный дом, газобетон, фундамент под ключ, дом под ключ, свайный фундамент, кровля под ключ, домокомплект, сип-панел, брусовой дом, строим дома, наша бригада"},
+  {name:"Загородная недвижимость", keywords:"риелтор загород, загородная недвижимость, продажа участков, земля ижс, участок ижс, куплю участок, ищу участок, коттеджный посёлок, коттеджный поселок, продам дом, куплю дом, снт участок"},
+];
 let HIT_TAB="new";
 async function viewLeadHits(v){
   const niches=await api("/api/niches");
@@ -2909,6 +2923,9 @@ async function viewLeadHits(v){
     <div class="ttoolbar" style="margin:10px 0 0"><input id="ni-name" placeholder="Название ниши (напр. Загородная)" style="max-width:240px">
       <input id="ni-kw" class="grow" placeholder="ключи через запятую: куплю дом, ищу участок, ...">
       <button id="ni-add">Ниша</button></div>
+    <div class="ttoolbar" style="margin:8px 0 0"><span class="hint">Готовые наборы по ИЖС:</span>
+      ${NICHE_PRESETS.map((p,i)=>`<button type="button" class="ni-preset" data-i="${i}" title="${esc(p.keywords)}">${esc(p.name)}</button>`).join("")}
+      <span class="hint">— подставит название и ключи в поля выше, дальше правь и жми «Ниша»</span></div>
   </div>
   <div class="ttoolbar"><b>Очередь находок:</b>
     <button id="ht-new" class="primary">Новые</button><button id="ht-lead">В лидах</button><button id="ht-ign">Игнор</button>
@@ -2927,6 +2944,8 @@ async function viewLeadHits(v){
     <textarea data-kw="${n.id}" rows="2" style="width:100%;margin-top:6px" placeholder="ключи через запятую">${esc(n.keywords||"")}</textarea></div>`).join("")||'<div class="no">ниш нет</div>';
   $("#ni-add").onclick=async()=>{const name=$("#ni-name").value.trim();if(!name){alert("название ниши");return;}
     await api("/api/niches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:$("#ni-kw").value})});route();};
+  v.querySelectorAll(".ni-preset").forEach(b=>b.onclick=()=>{const p=NICHE_PRESETS[+b.dataset.i];
+    $("#ni-name").value=p.name;$("#ni-kw").value=p.keywords;$("#ni-kw").focus();});
   nl.querySelectorAll(".ni-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
     const name=nl.querySelector(`input[data-k="name"][data-id="${id}"]`).value;
     const kw=nl.querySelector(`textarea[data-kw="${id}"]`).value;
@@ -3181,15 +3200,16 @@ async function viewCampaigns(v){
       <button id="c-date-reset">✕ сбросить фильтр даты</button>
       <label style="display:inline-flex;align-items:center;gap:6px;margin-left:6px"><input type="checkbox" id="c-show-arch"> показать архив</label>
       <span class="hint" id="c-filt-cnt"></span></div>
+    <div id="c-form-anchor"></div>
     <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="c-form-title">Новая кампания</div>
       <div class="row2"><div class="field"><label>Название</label><input id="c-name" placeholder="Агентства Сочи — Фонд доступного жилья"></div>
         <div class="field"><label>Продукт</label><input id="c-product" placeholder="Фонд доступного жилья"></div></div>
       <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
         <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
-      <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании)</label>
+      <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании). Формат строки: номер/@username, потом через пробел — как обращаться (необязательно)</label>
         <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся). Кнопка «💾 Запомнить» сохранит текущий список в браузере — он сам подставится в каждой новой кампании, дописывай к нему что нужно вручную.</div>
-        <textarea id="c-test-nums" rows="3" placeholder="+79991234567&#10;@my_second_account"></textarea>
+        <textarea id="c-test-nums" rows="3" placeholder="+79991234567 Василий Валерьевич&#10;@my_second_account Иван Иванович"></textarea>
         <div class="ttoolbar" style="margin:6px 0 0">
           <button type="button" id="c-test-add">Добавить в начало очереди</button>
           <button type="button" id="c-preview">Предпросмотр — что уйдёт получателям</button>
@@ -3382,6 +3402,7 @@ async function viewCampaigns(v){
     if(fileInp)fileInp.onchange=()=>{if(c.kp_file)doUpload();};
   };
   const openNew=()=>{form.dataset.edit="";$("#c-form-title").textContent="Новая кампания";
+    $("#c-form-anchor").insertAdjacentElement("afterend",form);
     fill({});$("#c-save").textContent="Создать кампанию";form.style.display="block";form.scrollIntoView({behavior:"smooth"});};
   $("#c-new-btn").onclick=()=>{ if(form.style.display==="block"&&!form.dataset.edit){form.style.display="none";} else {openNew();} };
   const wb=$("#c-wizard-btn");if(wb)wb.onclick=()=>startWizard();
@@ -3440,7 +3461,11 @@ async function viewCampaigns(v){
   window.__campEdit=async(id)=>{
     const c=await api(`/api/campaign/${id}`);
     form.dataset.edit=id;$("#c-form-title").textContent="Настройка кампании: "+esc(c.name||("#"+id));
-    fill(c);$("#c-save").textContent="Сохранить изменения";form.style.display="block";form.scrollIntoView({behavior:"smooth"});
+    // шторка спускается ВНИЗ прямо под карточку кампании, а не улетает к форме
+    // наверху страницы — так понятнее, что открылось и откуда.
+    const card=document.getElementById(`camp-card-${id}`);
+    if(card)card.insertAdjacentElement("afterend",form);
+    fill(c);$("#c-save").textContent="Сохранить изменения";form.style.display="block";form.scrollIntoView({behavior:"smooth",block:"nearest"});
   };
   const applyCampFilters=()=>{
     const sort=$("#c-sort").value;
@@ -3468,6 +3493,14 @@ async function viewCampaigns(v){
   applyCampFilters();
 }
 function renderCampList(mount,camps){
+  // если шторка настроек сейчас перенесена внутрь списка (открыта под своей карточкой),
+  // перерисовка mount.innerHTML её физически удалит из DOM — сначала вернуть к якорю наверху,
+  // чтобы форма не пропала молча вместе со старыми карточками.
+  const openForm=document.getElementById("c-form");
+  if(openForm&&mount.contains(openForm)){
+    const anchor=document.getElementById("c-form-anchor");
+    if(anchor)anchor.insertAdjacentElement("afterend",openForm);
+  }
   if(!camps.length){mount.innerHTML='<div class="empty">Кампаний нет — создай первую кнопкой выше</div>';return;}
   mount.innerHTML=camps.map(c=>{
     const left=c.audience, done=c.sent;
@@ -3480,7 +3513,7 @@ function renderCampList(mount,camps){
     const stCls=(isRunning?('b-active'+(isActive?' b-live':'')):c.status==='done'?'b-won':'b-nurture');
     const hasPrompt=c.agent_prompt?'<span class="badge b-active">🤖 промпт задан</span>':'<span class="badge b-nurture">промпт не задан</span>';
     const hasKp=c.kp_file?'<span class="badge b-active">📎 КП-файл</span>':'';
-    return `<div class="card" style="margin-bottom:12px">
+    return `<div class="card" id="camp-card-${c.id}" style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
@@ -3888,9 +3921,39 @@ async function viewParser(v){
   </div>
   <div class="card" style="background:var(--panel2)">
     <b style="font-size:13px">👂 Слушатель по ключам</b>
-    <div class="sub" style="margin:6px 0">Мониторинг чатов в реальном времени работает как фоновый процесс (long-running), поэтому запускается из консоли:</div>
-    <pre style="${POUT}margin-top:6px">python -m channels.tg_listener --keywords "ищу риелтора, куплю квартиру в сочи, нужен ипотечный"</pre>
+    <div class="sub" style="margin:6px 0">Работает сам, фоном, с момента старта пульта. Ключи берутся из активных ниш, находки падают в «🔎 Запросы». Кнопкой ниже можно остановить его, не трогая сервер — например, пока переставляешь прокси или перелогиниваешь аккаунты.</div>
+    <div class="ttoolbar" style="margin:0 0 8px"><button type="button" id="lst-toggle" disabled>…</button></div>
+    <div id="lst-status" class="sub">загружаю статус…</div>
   </div>`;
+  (async()=>{
+    const box=$("#lst-status"),btn=$("#lst-toggle");if(!box)return;
+    const draw=(s)=>{
+      if(!s||s.error){box.innerHTML='<span style="color:#c0392b">статус недоступен: '+esc((s&&s.error)||"нет ответа")+'</span>';return;}
+      const bad=(s.accounts||[]).filter(a=>!a.ok);
+      if(btn){btn.disabled=false;btn.dataset.on=s.enabled?"1":"";btn.textContent=s.enabled?"⏸ Остановить слушатель":"▶ Запустить слушатель";}
+      box.innerHTML=(s.enabled
+          ?`<span class="badge b-active"><span class="sdot g"></span>слушаю ${s.listening} из ${(s.accounts||[]).length}</span>`
+          :`<span class="badge b-nurture"><span class="sdot"></span>остановлен из пульта</span>`)+`
+        <span class="badge b-nurture">ниш активно: ${s.niches}</span>
+        <span class="badge b-nurture">найдено запросов: ${s.hits}</span>
+        ${s.thread_alive===false?`<div class="sub" style="margin-top:6px;color:#c0392b">⚠️ фоновый поток слушателя не отвечает (последний круг ${fmt(s.tick)}) — нужен перезапуск сервера</div>`:""}
+        ${s.started?`<div class="sub" style="margin-top:6px">запущен: ${fmt(s.started)}</div>`:""}
+        ${s.enabled&&bad.length?`<div class="sub" style="margin-top:6px">не подключились: ${bad.map(a=>esc(a.label||("#"+a.id))+(a.err?` — ${esc(a.err)}`:"")).join("; ")}</div>`:""}`;
+    };
+    draw(await api("/api/listener/status"));
+    if(btn)btn.onclick=async()=>{
+      const on=!btn.dataset.on;btn.disabled=true;btn.textContent="…";
+      // без finally кнопка при сетевой ошибке навсегда осталась бы disabled с текстом «…»
+      try{
+        await api("/api/listener/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});
+        // подключение аккаунтов занимает до CONNECT_TIMEOUT на круг, поэтому после «Пуска»
+        // честно говорим «поднимаю», а не показываем «слушаю 0 из 0» — это читается как сбой
+        if(on)box.innerHTML='<span class="badge b-nurture">⏳ поднимаю аккаунты — займёт до полминуты</span>';
+        setTimeout(async()=>{try{draw(await api("/api/listener/status"));}catch(e){}},on?25000:6000);
+      }catch(e){box.innerHTML='<span style="color:#c0392b">не удалось переключить — сервер не ответил</span>';}
+      finally{btn.disabled=false;btn.textContent=on?"⏸ Остановить слушатель":"▶ Запустить слушатель";btn.dataset.on=on?"1":"";}
+    };
+  })();
 
   const run=async(btn,outSel,url,body)=>{
     const out=$(outSel);const t=btn.textContent;btn.disabled=true;btn.textContent="выполняю… (до минуты)";

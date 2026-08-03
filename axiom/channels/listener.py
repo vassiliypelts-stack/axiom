@@ -190,6 +190,11 @@ async def _scan_group(event, acc_id: int) -> None:
         # по chat.id (без -100) — в каталоге tg_chat_id хранится именно в этом виде.
         cat_id = database.resolve_catalog_chat(
             conn, getattr(chat, "id", None), title, getattr(chat, "username", None))
+        # Репост того же объявления (новый msg_id, текст слово в слово) в очередь не
+        # кладём — UNIQUE(chat_id, msg_id) такое не ловит, см. database.hit_is_repost.
+        if database.hit_is_repost(conn, sender.id, text):
+            _log(f"[#{acc_id}] ↩ репост от {name} в «{title}» — уже есть в Запросах, пропуск")
+            return
         cur = conn.execute(
             "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
             "username, name, text, keyword, source_msg_id, ts, status, intent, intent_why) "

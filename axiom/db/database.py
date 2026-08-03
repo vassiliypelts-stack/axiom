@@ -759,6 +759,29 @@ def add_event(conn: sqlite3.Connection, type: str, title: str, text: str | None 
     )
 
 
+def hit_is_repost(conn: sqlite3.Connection, tg_user_id: int | None, text: str | None,
+                  days: int = 30) -> bool:
+    """Этот же автор уже постил ровно этот текст за последние `days`?
+
+    Уникальность chat_hits стоит по (chat_id, source_msg_id), а рассыльщик публикует
+    один и тот же прайс по кругу — каждый раз с новым msg_id. На живой базе это дало
+    очередь из 252 «находок», где восемь подряд оказались одним и тем же объявлением
+    RAVEN STUDIO. Оператору такое показывать нечего: первый пост он уже видел.
+
+    Сравниваем по тексту, а не по хэшу картинки: репост приходит слово в слово, а
+    границы обрезки (500 символов) у обоих путей записи одинаковые.
+    """
+    t = (text or "").strip()
+    if not tg_user_id or not t:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM chat_hits WHERE tg_user_id=? AND text=? "
+        f"AND created_at >= datetime('now','-{int(days)} days') LIMIT 1",
+        (tg_user_id, t[:500]),
+    ).fetchone()
+    return row is not None
+
+
 def add_campaign_log(conn: sqlite3.Connection, campaign_id: int, status: str,
                      contact_id: int | None = None, account_id: int | None = None,
                      detail: str | None = None) -> None:

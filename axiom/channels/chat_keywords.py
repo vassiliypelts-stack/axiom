@@ -21,7 +21,7 @@ from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 from telethon.tl.types import (InputPeerChannel, InputPeerChat, PeerChannel, User)
 
-from channels.telegram import _build_client, build_client
+from channels.telegram import _build_client, build_client, client_for_account
 from channels import hit_intent
 from db import database
 
@@ -148,6 +148,36 @@ async def _remember_peer(client, target, ch) -> None:
         print(f"[kw] не сохранил ключ доступа к чату {ch['id']}: {str(e)[:80]}")
 
 
+LISTEN_ACCOUNT_SETTING = "listen_account_id"  # какой аккаунт опрашивает публичные чаты
+
+
+async def _main_client():
+    """Клиент, которым опрашиваются публичные чаты каталога.
+
+    ПОЧЕМУ НЕ ВСЕГДА .env-аккаунт. Раньше здесь всегда стоял _build_client() — главный
+    аккаунт из .env, а это ЛИЧНЫЙ номер владельца. Активный опрос — это запросы истории
+    по 2.4 тыс. чатов, и именно на нём поймали FloodWait почти на 14 часов (см. _target).
+    Расходовать на это можно рабочий аккаунт из пула — если он забанится, теряется прогретый
+    номер, а не личный Telegram. Настройка выбирается в пульте (⚙️ Аккаунты → «слушает чаты»)
+    и хранится в app_settings под ключом listen_account_id.
+
+    Без настройки — тот же .env, что и раньше (ничего не ломаем по умолчанию), но с
+    явным предупреждением в лог: молчаливый риск хуже явного."""
+    with database.get_conn() as conn:
+        acc_id = database.get_setting(conn, LISTEN_ACCOUNT_SETTING)
+    if not acc_id:
+        print("[kw] ⚠ рабочий аккаунт для прослушки не назначен — опрашиваю с личного "
+              "(.env). Назначь в пульте: Аккаунты → «слушает чаты», чтобы не рисковать личным номером.")
+        return _build_client()
+    try:
+        client, _ = client_for_account(int(acc_id))
+        return client
+    except Exception as e:  # noqa: BLE001 — назначенный аккаунт недоступен, не рискуем личным молча
+        print(f"[kw] ⚠ назначенный аккаунт #{acc_id} недоступен ({str(e)[:80]}) — "
+              f"опрашиваю с личного (.env)")
+        return _build_client()
+
+
 async def _client_for(acc_id: int | None):
     """Клиент того аккаунта, который вступил в чат. Закрытый чат читается ТОЛЬКО его
     участником — главный аккаунт из .env туда не вхож, сколько id ему ни давай."""
@@ -194,7 +224,7 @@ async def run(limit: int, only_fav: bool = False) -> None:
                if only_fav else "нет чатов в каталоге для прослушки")
         print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False)); return
 
-    main_client = _build_client()
+    main_client = await _main_client()
     await main_client.start()
     owned: dict[int, object] = {}      # aid → клиент аккаунта-участника (по одному на аккаунт)
     scanned = hits = 0
@@ -259,6 +289,10 @@ async def run(limit: int, only_fav: bool = False) -> None:
                 if not hit_intent.wanted(intent, hunt):
                     continue
                 with database.get_conn() as conn:
+                    # Репост того же объявления (новый msg_id, текст слово в слово) —
+                    # в очередь не кладём: UNIQUE(chat_id, msg_id) такое не ловит.
+                    if database.hit_is_repost(conn, sender.id, msg.message or ""):
+                        continue
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
                         "username, name, text, keyword, source_msg_id, ts, status, intent, intent_why) "

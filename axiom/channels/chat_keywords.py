@@ -21,25 +21,28 @@ from telethon.sessions import StringSession
 from telethon.tl.types import PeerChannel, PeerChat, User
 
 from channels.telegram import _build_client, build_client
+from channels import hit_intent
 from db import database
 
 
-def _load_niches(conn) -> list[tuple[int, list[str]]]:
-    rows = conn.execute("SELECT id, keywords FROM niches WHERE active=1").fetchall()
+def _load_niches(conn) -> list[tuple[int, list[str], str]]:
+    rows = conn.execute(
+        "SELECT id, keywords, COALESCE(hunt_mode,'clients') AS hunt_mode "
+        "FROM niches WHERE active=1").fetchall()
     out = []
     for r in rows:
         kws = [k.strip().lower() for k in (r["keywords"] or "").split(",") if k.strip()]
         if kws:
-            out.append((r["id"], kws))
+            out.append((r["id"], kws, r["hunt_mode"]))
     return out
 
 
-def _match(text: str, niches: list[tuple[int, list[str]]]):
+def _match(text: str, niches: list[tuple[int, list[str], str]]):
     low = text.lower()
-    for nid, kws in niches:
+    for nid, kws, mode in niches:
         for kw in kws:
             if kw in low:
-                return nid, kw
+                return nid, kw, mode
     return None
 
 
@@ -162,21 +165,27 @@ async def run(limit: int, only_fav: bool = False) -> None:
                 m = _match(msg.message, niches)
                 if not m:
                     continue
-                nid, kw = m
+                nid, kw, hunt = m
                 try:
                     sender = await msg.get_sender()
                 except Exception:  # noqa: BLE001
                     sender = None
                 if not isinstance(sender, User) or sender.bot or sender.deleted:
                     continue
+                # Заказчик или конкурент? Ключевое слово одинаково стоит в «ищу сайт»
+                # и «делаю сайты», поэтому решает отдельный разбор — иначе «Запросы»
+                # забиваются рекламой (см. channels/hit_intent).
+                intent, why = hit_intent.classify(msg.message or "")
+                if not hit_intent.wanted(intent, hunt):
+                    continue
                 with database.get_conn() as conn:
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
-                        "username, name, text, keyword, source_msg_id, ts, status) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
+                        "username, name, text, keyword, source_msg_id, ts, status, intent, intent_why) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?, 'new', ?, ?)",
                         (nid, ch["id"], ch["title"], sender.id, sender.username,
                          _display_name(sender), msg.message.strip()[:500], kw, msg.id,
-                         str(msg.date) if msg.date else None),
+                         str(msg.date) if msg.date else None, intent, why),
                     )
                     if cur.rowcount > 0:
                         hits += 1

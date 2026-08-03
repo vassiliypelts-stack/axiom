@@ -2943,6 +2943,13 @@ async function viewLeadHits(v){
   <div class="ttoolbar"><b>Очередь находок:</b>
     <button id="ht-new" class="primary">Новые</button><button id="ht-lead">В лидах</button><button id="ht-ign">Игнор</button>
     <span class="grow"></span><span class="hint" id="ht-cnt"></span></div>
+  <div class="ttoolbar" id="ht-intent-bar" style="margin:6px 0 10px">
+    <span class="hint">Показать:</span>
+    <button class="hi-f primary" data-i="">все</button>
+    <button class="hi-f" data-i="client">🎯 клиенты</button>
+    <button class="hi-f" data-i="vendor">🏷 конкуренты</button>
+    <button class="hi-f" data-i="unknown">❔ не разобрано</button>
+    <span class="hint" id="ht-intent-cnt"></span></div>
   <div id="ht-body"></div>`;
   api("/api/keywords/status").then(s=>{const el=$("#ni-status");if(!el||s.error)return;
     const chats=(s.sample||[]).map(c=>c.username?("@"+esc(c.username)):esc(c.title||"чат")).slice(0,10).join(", ");
@@ -2953,6 +2960,12 @@ async function viewLeadHits(v){
   nl.innerHTML=niches.map(n=>`<div class="card" style="padding:10px;margin-bottom:8px;background:var(--panel2)">
     <div class="ttoolbar" style="margin:0"><input data-k="name" data-id="${n.id}" value="${esc(n.name||"")}" style="max-width:180px">
       <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" class="ni-act" data-id="${n.id}" ${n.active?"checked":""}> активна</label>
+      <label style="display:inline-flex;align-items:center;gap:5px" title="Одно и то же слово пишут и заказчик, и исполнитель. Здесь выбираешь, кого складывать в находки">кого ловим:
+        <select class="ni-hunt" data-id="${n.id}" style="max-width:170px">
+          <option value="clients"${(n.hunt_mode||"clients")==="clients"?" selected":""}>только клиентов</option>
+          <option value="vendors"${n.hunt_mode==="vendors"?" selected":""}>только конкурентов</option>
+          <option value="all"${n.hunt_mode==="all"?" selected":""}>всех подряд</option>
+        </select></label>
       <button class="ni-save" data-id="${n.id}">💾</button><button class="ni-enrich" data-id="${n.id}" title="Генерировать новые ключевые слова через Claude">🧠</button><button class="ni-del" data-id="${n.id}">🗑</button></div>
     <textarea data-kw="${n.id}" rows="2" style="width:100%;margin-top:6px" placeholder="ключи через запятую">${esc(n.keywords||"")}</textarea></div>`).join("")||'<div class="no">ниш нет</div>';
   $("#ni-add").onclick=async()=>{const name=$("#ni-name").value.trim();if(!name){alert("название ниши");return;}
@@ -2982,7 +2995,8 @@ async function viewLeadHits(v){
     const name=nl.querySelector(`input[data-k="name"][data-id="${id}"]`).value;
     const kw=nl.querySelector(`textarea[data-kw="${id}"]`).value;
     const act=nl.querySelector(`.ni-act[data-id="${id}"]`).checked;
-    await api(`/api/niche/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:kw,active:act})});
+    const hunt=(nl.querySelector(`.ni-hunt[data-id="${id}"]`)||{}).value||"clients";
+    await api(`/api/niche/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,keywords:kw,active:act,hunt_mode:hunt})});
     b.textContent="✓";setTimeout(()=>b.textContent="💾",1200);});
   nl.querySelectorAll(".ni-enrich").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
     b.disabled=true;b.textContent="⏳";const r=await api(`/api/niche/${id}/enrich`,{method:"POST"});
@@ -3001,17 +3015,26 @@ async function viewLeadHits(v){
   setHitTab();renderHits();
 }
 function setHitTab(){["new","lead","ignored"].forEach(t=>{const b=$("#ht-"+(t==="ignored"?"ign":t));if(b)b.classList.toggle("primary",HIT_TAB===t);});}
+let HIT_INTENT="";   // "" | client | vendor | unknown — фильтр «кого показывать»
 async function renderHits(){
   const body=$("#ht-body");if(!body)return;
   if(HIT_TAB==="lead"){await renderTargetLeads(body);return;}
-  const d=await api(`/api/hits?status=${HIT_TAB}`);
+  const d=await api(`/api/hits?status=${HIT_TAB}&intent=${HIT_INTENT}`);
   const cnt=$("#ht-cnt");if(cnt)cnt.textContent=`новых: ${d.counts.new||0} · в лидах: ${d.counts.lead||0} · игнор: ${d.counts.ignored||0}`;
+  const bi=d.by_intent||{},ic=$("#ht-intent-cnt");
+  if(ic)ic.textContent=`клиентов: ${bi.client||0} · конкурентов: ${bi.vendor||0} · не разобрано: ${bi.unknown||0}`;
+  document.querySelectorAll(".hi-f").forEach(b=>{
+    b.classList.toggle("primary",(b.dataset.i||"")===HIT_INTENT);
+    b.onclick=()=>{HIT_INTENT=b.dataset.i||"";renderHits();};});
   if(!d.items.length){body.innerHTML='<div class="empty">Пусто. Добавь чаты в «📡 Чаты», задай ниши и нажми «Прослушать чаты сейчас».</div>';return;}
   body.innerHTML=d.items.map(h=>`<div class="card" style="margin-bottom:10px">
     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:240px">
         <b>${esc(h.name||"—")}</b> ${h.username?`<a class="ext" href="https://t.me/${esc(h.username)}" target="_blank">@${esc(h.username)} ↗</a>`:""}
         <span class="badge b-active" style="margin-left:6px">${esc(h.niche_name||"")}</span>
+        ${h.intent==="client"?`<span class="badge b-won" title="${esc(h.intent_why||"")}">🎯 клиент</span>`
+          :h.intent==="vendor"?`<span class="badge b-stop" title="${esc(h.intent_why||"")}">🏷 конкурент: ${esc(h.intent_why||"")}</span>`
+          :`<span class="badge b-nurture" title="признаков не нашлось — посмотри сам">❔ не разобрано</span>`}
         <div class="sub" style="margin:4px 0">в «${h.msg_link?`<a class="ext" href="${esc(h.msg_link)}" target="_blank">${esc(h.chat_title||"чат")} ↗</a>`:esc(h.chat_title||"")}» · ключ «${esc(h.keyword)}» · ${fmt(h.ts)}</div>
         <div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px">${esc(h.text)}</div>
       </div>

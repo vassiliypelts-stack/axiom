@@ -37,7 +37,10 @@ _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
 _LOOP: "asyncio.AbstractEventLoop | None" = None  # event loop потока слушателя (для shutdown)
 STATUS: dict = {"started": None, "accounts": {}, "hits": 0, "enabled": True}  # снимок для веб-статуса
-_NICHES: list[tuple[int | None, list[str]]] = []  # [(niche_id, [ключи]), ...] — кэш ключей
+# [(niche_id, [ключи], режим охоты), ...] — кэш ниш. Режим лежит рядом с ключами,
+# чтобы решение «нужна ли эта находка» принималось без похода в базу на каждое
+# сообщение чата (их бывают сотни в минуту).
+_NICHES: list[tuple[int | None, list[str], str]] = []
 
 CONNECT_TIMEOUT = 15    # сек на подключение одного аккаунта (дохлый прокси не повесит всё)
 RECHECK_SEC = 30        # как часто пере-сканировать: новые логины / отвалившиеся / быстрый фейловер прокси
@@ -63,21 +66,33 @@ async def _enabled() -> bool:
     return await asyncio.to_thread(_read)
 
 
-def _load_niches() -> list[tuple[int | None, list[str]]]:
-    """Активные ниши (ключи) из БД. Пусто → слушаем только личку, чаты не сканируем."""
+def _load_niches() -> list[tuple[int | None, list[str], str]]:
+    """Активные ниши (ключи + режим охоты) из БД. Пусто → слушаем только личку."""
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT id, keywords FROM niches WHERE active=1").fetchall()
-    out: list[tuple[int | None, list[str]]] = []
+        rows = conn.execute(
+            "SELECT id, keywords, COALESCE(hunt_mode,'clients') AS hunt_mode "
+            "FROM niches WHERE active=1").fetchall()
+    out: list[tuple[int | None, list[str], str]] = []
     for r in rows:
         kws = [k.strip().lower() for k in (r["keywords"] or "").split(",") if k.strip()]
         if kws:
-            out.append((r["id"], kws))
+            out.append((r["id"], kws, r["hunt_mode"]))
     return out
+
+
+def _hunt_mode(niche_id: int | None) -> str:
+    """Кого ловит эта ниша: clients | vendors | all. Берём из кэша ниш, который
+    и так обновляется раз в круг supervise — лезть в базу на каждое сообщение чата
+    накладно, а меняется настройка редко (галочка в интерфейсе)."""
+    for nid, _kws, mode in _NICHES:
+        if nid == niche_id:
+            return mode or "clients"
+    return "clients"
 
 
 def _match_niche(text: str):
     low = text.lower()
-    for nid, kws in _NICHES:
+    for nid, kws, _mode in _NICHES:
         for kw in kws:
             if kw in low:
                 return nid, kw
@@ -159,6 +174,15 @@ async def _scan_group(event, acc_id: int) -> None:
     chat = await event.get_chat()
     title = getattr(chat, "title", None) or "чат"
     name = _display_name(sender)
+    # Кто это написал — заказчик или конкурент, рекламирующий себя. Ключевое слово
+    # само по себе не отличает «ищу сайт» от «делаю сайты», поэтому решает отдельный
+    # разбор (channels/hit_intent). Классифицируем ДО записи: находку, которая нише
+    # не нужна, лучше не заводить вовсе, чем прятать фильтром в интерфейсе.
+    from channels import hit_intent
+    intent, why = await asyncio.to_thread(hit_intent.classify, text)
+    if not hit_intent.wanted(intent, _hunt_mode(nid)):
+        return
+
     with database.get_conn() as conn:
         # chat_hits.chat_id — КАТАЛОЖНЫЙ chats.id (так же пишет chat_keywords). Сюда клался
         # сырой event.chat_id (помеченный, вида -100123…) — JOIN на chats не находил чат,
@@ -168,11 +192,12 @@ async def _scan_group(event, acc_id: int) -> None:
             conn, getattr(chat, "id", None), title, getattr(chat, "username", None))
         cur = conn.execute(
             "INSERT OR IGNORE INTO chat_hits (niche_id, chat_id, chat_title, tg_user_id, "
-            "username, name, text, keyword, source_msg_id, ts, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?, 'new')",
+            "username, name, text, keyword, source_msg_id, ts, status, intent, intent_why) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?, 'new', ?, ?)",
             (nid, cat_id, title, sender.id, sender.username, name,
              text[:500], kw, event.message.id,
-             str(getattr(event.message, "date", None)) if getattr(event.message, "date", None) else None),
+             str(getattr(event.message, "date", None)) if getattr(event.message, "date", None) else None,
+             intent, why),
         )
         if cur.rowcount > 0:
             STATUS["hits"] = STATUS.get("hits", 0) + 1
@@ -311,7 +336,7 @@ async def _supervise() -> None:
         if to_add:
             await asyncio.gather(*[_try(a) for a in to_add])
         ok = sum(1 for v in STATUS["accounts"].values() if v.get("ok"))
-        kw = sum(len(k) for _, k in _NICHES)
+        kw = sum(len(k) for _, k, _m in _NICHES)
         _log(f"итог: слушаю {ok} из {len(want)} аккаунтов · ниш {len(_NICHES)}/ключей {kw} · найдено запросов {STATUS.get('hits',0)}")
         await _nap(RECHECK_SEC, on)
 

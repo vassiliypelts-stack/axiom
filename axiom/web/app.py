@@ -2797,17 +2797,30 @@ def niche_create(payload: dict = Body(...)) -> JSONResponse:
     if not name:
         return JSONResponse({"error": "нужно название ниши"}, status_code=400)
     with database.get_conn() as conn:
-        cur = conn.execute("INSERT INTO niches (name, keywords, active) VALUES (?,?,1)",
-                           (name, payload.get("keywords") or ""))
+        # hunt_mode — кого эта ниша складывает в «Запросы»: clients (по умолчанию),
+        # vendors (изучать рынок/продавать исполнителям) или all.
+        mode = (payload.get("hunt_mode") or "clients").strip()
+        if mode not in ("clients", "vendors", "all"):
+            mode = "clients"
+        cur = conn.execute(
+            "INSERT INTO niches (name, keywords, active, hunt_mode) VALUES (?,?,1,?)",
+            (name, payload.get("keywords") or "", mode))
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
 
 @app.post("/api/niche/{nid}/update")
 def niche_update(nid: int, payload: dict = Body(...)) -> JSONResponse:
     sets, vals = [], []
-    for k in ("name", "keywords", "active"):
+    for k in ("name", "keywords", "active", "hunt_mode"):
         if k in payload:
-            v = int(bool(payload[k])) if k == "active" else (payload.get(k) or "")
+            if k == "active":
+                v = int(bool(payload[k]))
+            elif k == "hunt_mode":
+                v = (payload.get(k) or "clients").strip()
+                if v not in ("clients", "vendors", "all"):
+                    v = "clients"
+            else:
+                v = payload.get(k) or ""
             sets.append(f"{k}=?"); vals.append(v)
     if not sets:
         return JSONResponse({"ok": True})
@@ -2871,18 +2884,34 @@ def niche_enrich(nid: int) -> JSONResponse:
 
 
 @app.get("/api/hits")
-def hits_list(status: str = "new") -> JSONResponse:
+def hits_list(status: str = "new", intent: str = "") -> JSONResponse:
+    """Находки по ключам. intent — кого показывать: client (ищет услугу),
+    vendor (сам предлагает), unknown (не разобрали), пусто — всех.
+
+    Классификация лежит в chat_hits.intent, её ставит channels/hit_intent при записи.
+    У находок, сделанных до появления фильтра, поле пустое — они попадают в «не
+    разобрано», а не теряются."""
     database.init_db()
+    where, args = "h.status=?", [status]
+    if intent == "unknown":
+        where += " AND COALESCE(h.intent,'unknown')='unknown'"
+    elif intent in ("client", "vendor"):
+        where += " AND h.intent=?"
+        args.append(intent)
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT h.*, n.name AS niche_name, c.username AS chat_username, c.link AS chat_link "
             "FROM chat_hits h "
             "LEFT JOIN niches n ON n.id=h.niche_id "
             "LEFT JOIN chats c ON c.id=h.chat_id "
-            "WHERE h.status=? ORDER BY h.id DESC LIMIT 500", (status,)
+            f"WHERE {where} ORDER BY h.id DESC LIMIT 500", args
         ).fetchall()
         counts = {r["status"]: r["c"] for r in conn.execute(
             "SELECT status, COUNT(*) c FROM chat_hits GROUP BY status")}
+        # счётчики по типу — для вкладок «клиенты / конкуренты / не разобрано»
+        by_intent = {r["i"]: r["c"] for r in conn.execute(
+            "SELECT COALESCE(intent,'unknown') i, COUNT(*) c FROM chat_hits "
+            "WHERE status=? GROUP BY i", (status,))}
     items = []
     for r in rows:
         d = dict(r)
@@ -2892,7 +2921,7 @@ def hits_list(status: str = "new") -> JSONResponse:
         else:
             d["msg_link"] = d.get("chat_link") or None    # приватный чат — хотя бы ссылка на сам чат
         items.append(d)
-    return JSONResponse({"items": items, "counts": counts})
+    return JSONResponse({"items": items, "counts": counts, "by_intent": by_intent})
 
 
 @app.post("/api/hit/{hid}/lead")

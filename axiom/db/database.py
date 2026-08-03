@@ -190,6 +190,19 @@ _EXTRA_CAMPAIGN_CONTACT_COLS = {
 
 
 # Поля каталога чатов (добавляются миграцией к уже созданной таблице chats).
+# Кто написал найденное сообщение: клиент (ищет услугу) или исполнитель (рекламирует
+# себя). Одно и то же ключевое слово стоит и в запросе, и в объявлении, поэтому без
+# этой пометки «Запросы» забиваются рекламой конкурентов — см. channels/hit_intent.py.
+_EXTRA_HIT_COLS = {
+    "intent": "TEXT",        # client | vendor | unknown
+    "intent_why": "TEXT",    # причина решения — оператор должен видеть, почему так
+}
+
+# Что ниша складывает в «Запросы»: clients (по умолчанию) | vendors | all.
+_EXTRA_NICHE_COLS = {
+    "hunt_mode": "TEXT DEFAULT 'clients'",
+}
+
 _EXTRA_CHAT_COLS = {
     "can_write": "TEXT",         # да|только админы|ограничено|заблокирован|не вступил
     "members_visible": "TEXT",   # да|нет
@@ -259,11 +272,27 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         for col, typ in _EXTRA_CHAT_COLS.items():
             if col not in chat:
                 conn.execute(f"ALTER TABLE chats ADD COLUMN {col} {typ}")
+    hit = {r["name"] for r in conn.execute("PRAGMA table_info(chat_hits)")}
+    if hit:
+        for col, typ in _EXTRA_HIT_COLS.items():
+            if col not in hit:
+                conn.execute(f"ALTER TABLE chat_hits ADD COLUMN {col} {typ}")
+    nich = {r["name"] for r in conn.execute("PRAGMA table_info(niches)")}
+    if nich:
+        for col, typ in _EXTRA_NICHE_COLS.items():
+            if col not in nich:
+                conn.execute(f"ALTER TABLE niches ADD COLUMN {col} {typ}")
     om = {r["name"] for r in conn.execute("PRAGMA table_info(org_members)")}
     if om:
         for col, typ in _EXTRA_ORG_MEMBER_COLS.items():
             if col not in om:
                 conn.execute(f"ALTER TABLE org_members ADD COLUMN {col} {typ}")
+    # С какого аккаунта ушло/пришло сообщение. Аккаунт был известен и раньше (слушатель
+    # передаёт его в _record_incoming), но терялся при записи — и в карточке события
+    # нельзя было ответить на вопрос «кто именно это написал».
+    msg = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    if msg and "account_id" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN account_id INTEGER")
 
 
 def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
@@ -610,10 +639,11 @@ def mark_photos_by_tg(conn: sqlite3.Connection, tg_user_ids) -> None:
     conn.execute(f"UPDATE contacts SET has_photo=1 WHERE tg_user_id IN ({qm})", ids)
 
 
-def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str, intent: str | None = None) -> None:
+def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str,
+                intent: str | None = None, account_id: int | None = None) -> None:
     conn.execute(
-        "INSERT INTO messages (contact_id, direction, text, intent) VALUES (?, ?, ?, ?)",
-        (contact_id, direction, text, intent),
+        "INSERT INTO messages (contact_id, direction, text, intent, account_id) VALUES (?, ?, ?, ?, ?)",
+        (contact_id, direction, text, intent, account_id),
     )
 
 

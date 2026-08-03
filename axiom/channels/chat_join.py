@@ -157,6 +157,16 @@ def _record_membership(acc_id: int, chat: dict, cw: str | None, kind: str | None
             "tg_chat_id=COALESCE(?,tg_chat_id) WHERE id=?",
             (acc_id, cw, kind, tg_chat_id, chat["id"]),
         )
+        # В ленту: вступление — заметное действие аккаунта (и расход дневного лимита),
+        # а раньше оно нигде не всплывало, кроме отчёта разового запуска.
+        acc = conn.execute("SELECT label FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        who = (acc["label"] if acc else None) or f"#{acc_id}"
+        title = (chat.get("title") or chat.get("username") or "чат")
+        database.add_event(
+            conn, "chat_join", f"➕ {who} вступил в «{title}»",
+            (f"@{chat['username']}" if chat.get("username") else "закрытый чат по инвайту")
+            + (f" · писать: {cw}" if cw else ""),
+            account_id=acc_id)
 
 
 async def _join_one(acc: dict, chats: list[dict], report: dict) -> None:

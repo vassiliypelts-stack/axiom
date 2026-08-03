@@ -367,7 +367,7 @@ def _record_incoming(contact_id: int, text_in: str, username: str | None,
     with database.get_conn() as conn:
         row = conn.execute("SELECT status, name, person_name FROM contacts WHERE id=?",
                            (contact_id,)).fetchone()
-        database.add_message(conn, contact_id, "in", text_in)
+        database.add_message(conn, contact_id, "in", text_in, account_id=account_id)
         # не сбиваем терминальные статусы (встреча/сделка) назад в «диалог»
         if row and (row["status"] or "") in ("new", "messaged", "nurture", "in_dialog", ""):
             database.set_status(conn, contact_id, "in_dialog")
@@ -412,7 +412,8 @@ def _notify_agent_down(contact_id: int, exc: Exception) -> None:
         pass
 
 
-async def _agent_reply(event, contact_id: int, username: str | None) -> None:
+async def _agent_reply(event, contact_id: int, username: str | None,
+                       account_id: int | None = None) -> None:
     """Генерит ответ ИИ-агентом и шлёт его ЧЕРЕЗ аккаунт, получивший сообщение
     (event.client). Входящее уже сохранено вызывающим — здесь только исходящее и
     события (встреча/тёплый лид). Историю берём из книжки — она уже содержит
@@ -496,7 +497,8 @@ async def _agent_reply(event, contact_id: int, username: str | None) -> None:
         conn.execute("UPDATE messages SET intent=? WHERE id=("
                      "SELECT id FROM messages WHERE contact_id=? AND direction='in' "
                      "ORDER BY id DESC LIMIT 1)", (reply.intent, contact_id))
-        database.add_message(conn, contact_id, "out", reply_text, intent=None)
+        database.add_message(conn, contact_id, "out", reply_text, intent=None,
+                             account_id=account_id)
         who = contact_info.get("name") or contact_info.get("person_name") or (f"@{username}" if username else str(contact_id))
         if meeting is not None:
             database.record_meeting(

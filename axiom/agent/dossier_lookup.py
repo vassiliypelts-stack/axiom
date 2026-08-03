@@ -116,8 +116,11 @@ async def _collect_personal_channel(client, full, tg_user_id: int, conn) -> dict
             database.save_user_posts(conn, tg_user_id, getattr(ch, "id", None),
                                      f"📢 канал: {title}", posts)
         out["posts"] = len(posts)
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        # НЕ молчим: именно немой `except: pass` прятал здесь TypeError, из-за которого
+        # посты канала не сохранялись никогда, а досье выглядело собранным. Канал может
+        # быть просто недоступен — это не повод валить весь разбор, но знать надо.
+        print(f"[досье] посты канала не собрались ({tg_user_id}): {type(e).__name__}: {str(e)[:120]}")
     return out
 
 

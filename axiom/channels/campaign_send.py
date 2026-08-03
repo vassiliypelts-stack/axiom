@@ -22,11 +22,18 @@ from telethon.tl.functions.contacts import AddContactRequest
 from telethon.tl.types import InputPhoneContact
 
 from db import database
+from channels import opener_lint
 from channels.telegram import (
     _build_client, build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE,
 )
 from channels.warmup import _setup_profile
 from channels.antiban import classify_error
+
+
+class OpenerIsPromptError(RuntimeError):
+    """В шаблоне первого сообщения лежит промпт/инструкция, а не текст письма.
+    Раз каждая строка шаблона уходит человеку отдельным сообщением (см. _parts),
+    такой «опенер» нельзя слать вообще ни по одному каналу."""
 
 # Пауза перед СЛЕДУЮЩЕЙ строкой опенера (не портянка, ждём — вдруг человек уже ответил).
 # Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток не шлём,
@@ -103,20 +110,44 @@ def _humanize(line: str) -> str:
     return s
 
 
-def _parts(template: str | None, name: str, agency: str = "", decision: str = "") -> list[str]:
+def _parts(template: str | None, name: str, agency: str = "", decision: str = "",
+           sender: str = "", strict: bool = True) -> list[str]:
     """Шаблон → список сообщений. Каждая непустая строка — отдельное сообщение.
     {name}/{имя} — обращение (ФИО директора, если известно), {agency}/{агентство} —
     название агентства, {decision} — «с Романом Анатольевичем» (если ФИО известно)
     либо «с тем, кто у вас отвечает за развитие бизнеса» (мягкий обход секретаря,
     без давления на первого встречного, если ЛПР ещё не выявлен).
+    {sender}/{от_кого} — имя ТОГО АККАУНТА, с которого реально уходит сообщение:
+    команда кампании ротирует несколько аккаунтов, и зашитое в текст «меня зовут
+    Александр» с аккаунта «Наталья Соколова» палит связку с первой же строки.
     {a|b|c} — синонимизация (случайный вариант на каждый контакт, антибан).
-    Плюс лёгкая человечность (см. _humanize)."""
+    Плюс лёгкая человечность (см. _humanize).
+
+    strict=True (по умолчанию) — перед рендером проверяем, что в поле лежит текст,
+    а не промпт (opener_lint), и при грубых признаках промпта кидаем
+    OpenerIsPromptError. Так «# Формат вывода первого сообщения» не уйдёт людям ни
+    из рассылки, ни из прогрева, ни из WA-моста. strict=False — только рендер
+    (предпросмотр и проверка «шаблон вообще не пустой»)."""
+    if strict:
+        problems = opener_lint.lint(template)
+        if opener_lint.severe(problems):
+            raise OpenerIsPromptError(opener_lint.blocking_message(problems))
     ag = agency or name or ""
     text = _spin(template or "")
     text = (text.replace("{name}", name or "").replace("{имя}", name or "")
                 .replace("{agency}", ag).replace("{агентство}", ag)
-                .replace("{decision}", decision or ""))
+                .replace("{decision}", decision or "")
+                .replace("{sender}", sender or "").replace("{от_кого}", sender or ""))
     return [_humanize(ln) for ln in text.splitlines() if ln.strip()]
+
+
+def _sender_name(acc: dict | None) -> str:
+    """Имя для {sender}: как аккаунт подписан в самом Telegram (tg_name), иначе метка.
+    Берём первое слово — в личке представляются именем, а не «Наталья Соколова 7928…»."""
+    if not acc:
+        return ""
+    raw = (acc.get("tg_name") or acc.get("label") or "").strip()
+    return raw.split()[0] if raw else ""
 
 
 def _greeting(row) -> str:
@@ -155,7 +186,7 @@ def _team(cid: int) -> list[dict]:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT a.id, a.label, a.username, a.phone, a.tg_session, a.proxy, "
-            "a.api_id, a.api_hash, a.description, a.avatar, a.status, "
+            "a.api_id, a.api_hash, a.description, a.avatar, a.status, a.tg_name, "
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
@@ -195,9 +226,27 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         return
     if test:
         print(f"[ТЕСТ] шлём только на свои номера (is_test=1): {len(rows)} шт.")
-    if not _parts(camp["message_template"], ""):
+    if not _parts(camp["message_template"], "", strict=False):
         print("пустой шаблон сообщения — нечего слать")
         return
+    # ГЕЙТ «это промпт, а не письмо». Первое касание не генерит модель: шаблон режется
+    # по строкам и каждая строка уходит человеку отдельным сообщением. Если оператор
+    # (или копайлот визарда) оставил в поле инструкцию — «# Формат вывода первого
+    # сообщения», «ВАЖНО:», «- каждая новая строка = отдельное сообщение» — она уйдёт
+    # как 15 сообщений подряд. Ловим ДО подключения аккаунтов, кампанию ставим на
+    # паузу и пишем в колокольчик, чтобы не тикало молча.
+    problems = opener_lint.lint(camp["message_template"])
+    if opener_lint.severe(problems):
+        msg = opener_lint.blocking_message(problems)
+        print(msg)
+        with database.get_conn() as conn:
+            conn.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
+            database.add_event(conn, "campaign_blocked",
+                               f"🛑 Кампания «{camp['name']}»: в первом сообщении промпт, не текст",
+                               msg, level="bad", campaign_id=cid)
+        return
+    if problems:  # мягкие замечания: слать можно, но оператор должен знать
+        print("предупреждения по шаблону:\n" + opener_lint.report(problems))
 
     # Команда кампании (мультиаккаунт). Если команда не задана/без сессий —
     # откатываемся на основной аккаунт из .env (старое поведение, ничего не ломаем).
@@ -228,6 +277,7 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     # (warming/paused) пропускаем — иначе свежий аккаунт сгорит на первой же рассылке.
     live: list[dict] = []
     skipped_warm: list[str] = []
+    needs_sender = any(v in (camp["message_template"] or "") for v in ("{sender}", "{от_кого}"))
     for s in senders:
         acc = s["acc"]
         # В тест-режиме гейт прогрева НЕ применяем: тест уходит только на свои номера
@@ -245,6 +295,13 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 except Exception as e:  # оформление не критично для отправки
                     print(f"[{s['label']}] профиль: {e}")
             me = await s["client"].get_me()
+            # Шаблон представляется от имени аккаунта, а имени у аккаунта нет —
+            # ушло бы «меня зовут ,». Такой отправитель в заход не идёт.
+            if needs_sender and not _sender_name(s["acc"]):
+                print(f"[{s['label']}] ⏭ пропуск: в шаблоне есть {{sender}}, а у аккаунта "
+                      f"не заполнено имя (tg_name/label) — представиться нечем")
+                await s["client"].disconnect()
+                continue
             print(f"[{s['label']}] готов: @{me.username or me.id}, квота {s['remaining']}")
             live.append(s)
         except Exception as e:
@@ -287,7 +344,10 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             continue
         # обращение: из ФИО директора берём «Имя Отчество», иначе имя/название агентства
         name = _greeting(row)
-        parts = _parts(camp["message_template"], name, row["agency"] or row["name"], _decision_phrase(row))
+        # sender — имя ИМЕННО того аккаунта, что сейчас шлёт (ротация команды):
+        # «меня зовут {sender}» вместо зашитого в текст чужого имени.
+        parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
+                       _decision_phrase(row), sender=_sender_name(s["acc"]))
         try:
             entity = await _resolve_entity(s["client"], row)
             # антибан: добавить контакт в книжку перед первым сообщением

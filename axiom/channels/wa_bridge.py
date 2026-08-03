@@ -77,6 +77,13 @@ def wa_campaign_outreach(cid: int, limit: int = 10) -> JSONResponse:
             params.append(f"%{tag}%")
         rows = conn.execute(f"SELECT * FROM contacts WHERE {where} ORDER BY id LIMIT ?", (*params, limit)).fetchall()
     tmpl = camp.get("message_template") or ""
+    # Тот же гейт, что в Telegram-рассылке: если в поле первого сообщения лежит
+    # промпт, а не письмо, — мост не должен получить его на отправку.
+    from channels import opener_lint
+    problems = opener_lint.severe(opener_lint.lint(tmpl))
+    if problems:
+        return JSONResponse({"contacts": [], "cid": cid,
+                             "error": opener_lint.blocking_message(problems)}, status_code=400)
     out = []
     for r in rows:
         ag = (r["agency"] if "agency" in r.keys() and r["agency"] else None) or r["name"] or ""

@@ -59,14 +59,20 @@ def generate_reply(
     канале диалог начинает наше исходящее сообщение — его передавай через `opener`,
     а в history клади только то, что идёт начиная с ответа собеседника.
     """
+    # Промпт делится надвое: СНАЧАЛА всё общее для кампании, ПОТОМ персональное.
+    # Порядок не косметика — Anthropic кэширует префикс до отметки, поэтому любая
+    # персональная строка выше по тексту обнулила бы кэш для всех остальных
+    # контактов. Общая часть у нас ~7 тыс. токенов и уходит заново на каждую
+    # реплику диалога, так что на ней и держится вся экономия (см. llm.cached).
     system = build_system(slots, campaign_prompt)
+    personal = ""
     if contact:
         who = ", ".join(f"{k}: {v}" for k, v in contact.items() if v)
-        system += f"\n\nЧТО ИЗВЕСТНО О СОБЕСЕДНИКЕ: {who}"
+        personal += f"\n\nЧТО ИЗВЕСТНО О СОБЕСЕДНИКЕ: {who}"
     if opener:
-        system += f"\n\nТЫ УЖЕ НАПИСАЛ ЕМУ ПЕРВЫМ (контекст, не повторяйся дословно): {opener}"
+        personal += f"\n\nТЫ УЖЕ НАПИСАЛ ЕМУ ПЕРВЫМ (контекст, не повторяйся дословно): {opener}"
     if extra_context and extra_context.strip():
-        system += (
+        personal += (
             "\n\nКОНТЕКСТ ОБЩЕНИЯ С ЭТИМ ЧЕЛОВЕКОМ (важно, обязательно учитывай — "
             "вы уже знакомы/общались, опирайся на это, не пиши как в холодную):\n"
             + extra_context.strip()
@@ -102,7 +108,7 @@ def generate_reply(
         kwargs["thinking"] = {"type": "adaptive"}
 
     return llm.structured(
-        config.AGENT_MODEL, system=system, messages=history,
+        config.AGENT_MODEL, system=llm.cached(system, personal), messages=history,
         output_format=Reply, max_tokens=1000, **kwargs,
     )
 

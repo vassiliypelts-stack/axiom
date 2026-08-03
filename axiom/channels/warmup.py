@@ -315,7 +315,7 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     cap = min(max(stage - 4, 0), 3)
     if cap <= 0:
         return 0
-    from channels.campaign_send import _add_tag, _audience, _greeting, _parts
+    from channels.campaign_send import _add_tag, _audience, _greeting, _parts, _sender_name
     from channels.telegram import _resolve_entity, _send_parts
     with database.get_conn() as conn:
         camp = conn.execute(
@@ -326,13 +326,20 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     if not camp:
         return 0
     camp = dict(camp)
+    # Тот же гейт, что и в рассылке: в ЦА-микс идут РЕАЛЬНЫЕ люди, и если в шаблоне
+    # кампании лежит промпт, а не письмо, — прогрев не должен его разослать.
+    from channels import opener_lint
+    if opener_lint.severe(opener_lint.lint(camp["message_template"])):
+        print(f"  [ca-mix] пропуск: у кампании #{camp['id']} в первом сообщении промпт, не текст")
+        return 0
     rows = _audience(camp["id"], camp["audience_tag"], "telegram", cap)
     sent = 0
     for row in rows:
         if sent >= cap:
             break
         name = _greeting(row)
-        parts = _parts(camp["message_template"], name, row["agency"] or row["name"])
+        parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
+                       sender=_sender_name(acc))
         if not parts:
             break
         try:

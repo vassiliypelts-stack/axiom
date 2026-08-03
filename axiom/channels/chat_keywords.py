@@ -48,6 +48,22 @@ def _display_name(u: User) -> str:
     return name or (u.username and f"@{u.username}") or str(u.id)
 
 
+def _mark_scanned(chat_id: int) -> None:
+    """Отметка «заходили» — двигает чат в конец ротации. Ставится ВСЕГДА: и когда новых
+    сообщений не было, и когда чат упал с ошибкой, и когда его нечем читать. Иначе такой
+    чат навечно остаётся первым в очереди и заслоняет весь остальной каталог.
+
+    Ошибку глушим намеренно: вызов стоит в finally, а «database is locked» оттуда выбросил
+    бы исключение мимо цикла — прогон оборвался бы без disconnect'а клиентов и без отчёта.
+    Не проставленная отметка стоит лишнего захода, необорванный прогон — висящих сессий.
+    """
+    try:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE chats SET kw_scanned_at=datetime('now') WHERE id=?", (chat_id,))
+    except Exception as e:  # noqa: BLE001
+        print(f"[kw] не отметил чат {chat_id} как просканированный: {str(e)[:80]}")
+
+
 def _target(ch) -> object:
     """Что скармливать Telethon. Публичный — «@username». Закрытый — PeerChannel(tg_chat_id),
     а НЕ голый int: от голого числа Telethon гадает тип и принимает id супергруппы за
@@ -123,12 +139,23 @@ async def run(limit: int, only_fav: bool = False) -> None:
             if client is None:
                 if not ch["joined_by"]:
                     skipped.append(f"{(ch['title'] or '')[:24]} — не вступил ни один аккаунт")
+                # Отмечаем и пропущенный: иначе чат с мёртвым joined_by навсегда остаётся
+                # в голове ротации (kw_scanned_at=NULL) и каждый прогон начинается с
+                # бесполезной попытки коннекта по нему же.
+                _mark_scanned(ch["id"])
                 continue
         target = _target(ch)
         last_id = ch["kw_last_id"] or 0
         max_id = last_id
         try:
-            async for msg in client.iter_messages(target, limit=limit, min_id=last_id):
+            # reverse=True — идём от СТАРЫХ к новым, начиная от watermark. Без него
+            # Telethon отдаёт свежие сначала: при >limit новых сообщений мы читали
+            # последние 300, но kw_last_id двигали на самый новый id — середина
+            # пропускалась безвозвратно. С ротацией чат навещается реже, и такой разрыв
+            # из редкого стал бы штатным. Теперь непрочитанное просто доберётся
+            # следующим кругом.
+            async for msg in client.iter_messages(target, limit=limit, min_id=last_id,
+                                                  reverse=True):
                 if not (msg.message and msg.sender_id and msg.sender_id > 0):
                     continue
                 max_id = max(max_id, msg.id)
@@ -160,11 +187,7 @@ async def run(limit: int, only_fav: bool = False) -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[kw] {(ch['title'] or target)}: {e}")
         finally:
-            # Отметку о заходе ставим ВСЕГДА — и когда новых сообщений не было, и когда чат
-            # упал с ошибкой. Иначе пустой или стабильно недоступный чат навечно остаётся
-            # первым в ротации и заслоняет собой весь остальной каталог.
-            with database.get_conn() as conn:
-                conn.execute("UPDATE chats SET kw_scanned_at=datetime('now') WHERE id=?", (ch["id"],))
+            _mark_scanned(ch["id"])
         await asyncio.sleep(1.5)  # антибан-пауза между чатами
 
     await main_client.disconnect()

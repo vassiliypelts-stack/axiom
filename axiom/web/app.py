@@ -3413,17 +3413,32 @@ def _channel_clause(channel: str | None) -> str:
     return "(" + " OR ".join(conds) + ")" if conds else ""
 
 
-def _audience_count(conn, cid, tag, channel) -> int:
+def _audience_where(cid, tag, channel, channel_clause: str | None = None) -> tuple[str, list]:
+    """Условие «кто сейчас в очереди этой кампании» — ЕДИНСТВЕННЫЙ источник правды.
+
+    Раньше те же условия дублировались в preflight, и копии разъехались: там tag шёл
+    через .strip(), здесь — сырой, а `audience_tag` при сохранении не тримится. Хвостовой
+    пробел в теге давал разные выборки, из-за чего «достижимо» оказывалось больше самой
+    аудитории и предупреждение про ImportContacts пропадало. Считаем в одном месте.
+
+    channel_clause — подменить канальное условие (preflight меряет ТОЛЬКО TG-достижимость).
+    """
     # На паузе — не в счёт "в очереди": они пока не уйдут, пока не снимут паузу.
     where = ("status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
              "AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)")
-    params = [cid]
-    cc = _channel_clause(channel)
+    params: list = [cid]
+    cc = _channel_clause(channel) if channel_clause is None else channel_clause
     if cc:
         where += " AND " + cc
+    tag = (tag or "").strip()
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
+    return where, params
+
+
+def _audience_count(conn, cid, tag, channel) -> int:
+    where, params = _audience_where(cid, tag, channel)
     return conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where}", params).fetchone()["c"]
 
 
@@ -3559,13 +3574,23 @@ def campaign_preview(cid: int) -> JSONResponse:
     """Показать РЕАЛЬНЫЙ текст, который уйдёт каждому получателю — без единой отправки
     в Telegram. Рендерит тот же шаблон (обращение по ФИО, синонимизация {a|b|c}), что и
     боевая рассылка, на тестовых (is_test=1) и на первых из обычной аудитории контактах."""
-    from channels.campaign_send import _parts, _greeting, _decision_phrase
+    from channels.campaign_send import _parts, _greeting, _decision_phrase, _sender_name
+    from channels import opener_lint
     database.init_db()
     with database.get_conn() as conn:
         camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not camp:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         camp = dict(camp)
+        # {sender} показываем как у реального отправителя: основной аккаунт кампании,
+        # иначе первый из команды — иначе оператор не увидит, чьим именем представляется.
+        acc = conn.execute(
+            "SELECT a.tg_name, a.label FROM accounts a "
+            "LEFT JOIN campaign_accounts ca ON ca.account_id=a.id AND ca.campaign_id=? "
+            "WHERE a.id=? OR ca.campaign_id=? ORDER BY (a.id=?) DESC, a.id LIMIT 1",
+            (cid, camp.get("account_id") or 0, cid, camp.get("account_id") or 0),
+        ).fetchone()
+        sender = _sender_name(dict(acc)) if acc else ""
         tag = (camp.get("audience_tag") or "").strip()
         where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
         params: list = []
@@ -3579,14 +3604,20 @@ def campaign_preview(cid: int) -> JSONResponse:
     out = []
     for r in rows:
         name = _greeting(r)
-        parts = _parts(camp.get("message_template"), name, r["agency"] or r["name"], _decision_phrase(r))
+        # strict=False: предпросмотр обязан ПОКАЗАТЬ даже испорченный шаблон —
+        # именно чтобы оператор увидел, что уйдёт, и починил (проблемы рядом, в warnings).
+        parts = _parts(camp.get("message_template"), name, r["agency"] or r["name"],
+                       _decision_phrase(r), sender=sender, strict=False)
         out.append({
             "contact_id": r["id"], "handle": ("@" + r["username"]) if r["username"] else (r["phone"] or "—"),
             "greeting": name or "(без имени — обращение будет пустым)",
             "is_test": bool(r["is_test"]) if "is_test" in r.keys() else False,
             "parts": parts,
         })
-    return JSONResponse({"campaign": camp.get("name"), "count": len(out), "items": out})
+    problems = opener_lint.lint(camp.get("message_template"))
+    return JSONResponse({"campaign": camp.get("name"), "count": len(out), "items": out,
+                         "blocked": bool(opener_lint.severe(problems)),
+                         "warnings": opener_lint.report(problems)})
 
 
 def _safe_kp_name(cid: int, filename: str) -> str:
@@ -3816,39 +3847,33 @@ def campaign_preflight(cid: int) -> JSONResponse:
     # Telegram спам-сигнал (см. предупреждение в channels/phone_resolve). Сотня таких
     # подряд с одного аккаунта = заявка на бан, поэтому пробив надо делать ОТДЕЛЬНЫМ
     # дозированным шагом заранее, а не во время рассылки.
-    tag = (camp.get("audience_tag") or "").strip()
-    # База ОБЯЗАНА совпадать с _audience_count: раньше здесь не было ни канального
-    # условия, ни исключения паузы, поэтому confirmed считался по более широкой выборке
-    # и мог превысить aud. Тогда blind=max(aud-confirmed,0) давал 0, и предупреждение про
-    # ImportContacts не показывалось НИКОГДА — вместо него «TG подтверждён у всей
-    # аудитории (N)» с N больше самой аудитории.
-    where = ("status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
-             "AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)")
-    params: list = [cid]
-    cc = _channel_clause(camp.get("channel"))
-    if cc:
-        where += " AND " + cc
-    if tag:
-        where += " AND tags LIKE ?"
-        params.append(f"%{tag}%")
-    base = f"SELECT COUNT(*) c FROM contacts WHERE {where}"
-    with database.get_conn() as conn:
-        by_uname = conn.execute(
-            base + " AND username IS NOT NULL AND username<>''", params).fetchone()["c"]
-        confirmed = conn.execute(
-            base + " AND (username IS NOT NULL AND username<>'' OR has_tg='yes')",
-            params).fetchone()["c"]
-    blind = max(aud - confirmed, 0)
-    # Предупреждение про ImportContacts — про Telegram. Для чисто WhatsApp-кампании
-    # считать TG-достижимость бессмысленно, молчим.
     tg_campaign = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
-    if blind and tg_campaign:
-        add(False, "warn",
-            f"Пробив TG не сделан у {blind} из {aud} — их номера будут резолвиться прямо "
-            f"во время рассылки (ImportContacts, риск бана). Сначала «Пробить номера в TG», "
-            f"потом слать. Сейчас точно достижимы: {confirmed} (из них по @username: {by_uname})")
-    elif aud and tg_campaign:
-        add(True, "ok", f"TG подтверждён у всей аудитории ({confirmed})")
+    if tg_campaign:
+        # Считаем ТОЛЬКО по TG-подмножеству, а не по общей канальной клаузе: у кампании
+        # «telegram,whatsapp» клауза пропускает и WA-only контакты (has_tg='no'), а в
+        # confirmed они не попадут никогда — и висели бы в «непробитых» вечно, сколько
+        # ни жми «Пробить номера в TG». where/params — из общей _audience_where, чтобы
+        # выборка не разъехалась с той, по которой считается сама аудитория.
+        where, params = _audience_where(cid, camp.get("audience_tag"), camp.get("channel"),
+                                        channel_clause="has_tg IN ('yes','unknown')")
+        base = f"SELECT COUNT(*) c FROM contacts WHERE {where}"
+        with database.get_conn() as conn:
+            tg_aud = conn.execute(base, params).fetchone()["c"]
+            by_uname = conn.execute(
+                base + " AND username IS NOT NULL AND username<>''", params).fetchone()["c"]
+            confirmed = conn.execute(
+                base + " AND (username IS NOT NULL AND username<>'' OR has_tg='yes')",
+                params).fetchone()["c"]
+        blind = max(tg_aud - confirmed, 0)
+        if blind:
+            add(False, "warn",
+                f"Пробив TG не сделан у {blind} из {tg_aud} — их номера будут резолвиться прямо "
+                f"во время рассылки (ImportContacts, риск бана). Сначала «Пробить номера в TG», "
+                f"потом слать. Сейчас точно достижимы: {confirmed} (из них по @username: {by_uname})")
+        elif tg_aud:
+            add(True, "ok", f"TG подтверждён у всей аудитории ({confirmed})")
+    else:
+        confirmed = blind = 0
 
     ready = all(c["ok"] for c in checks if c["level"] == "fail")
     return JSONResponse({"ready": ready, "checks": checks, "audience": aud, "team": len(team),
@@ -4140,6 +4165,21 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         if not (row["message_template"] or "").strip():
             return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        # Гейт «в поле промпт, а не письмо». Каждая строка этого поля уходит человеку
+        # ОТДЕЛЬНЫМ сообщением, поэтому оставленная инструкция («# Формат вывода…»,
+        # «ВАЖНО:», «- каждая новая строка = отдельное сообщение») превращается в
+        # десяток сообщений живым людям. Грубые признаки — жёсткий отказ (правь текст,
+        # обхода нет), мягкие — обычное подтверждение оператором.
+        from channels import opener_lint
+        problems = opener_lint.lint(row["message_template"])
+        block = opener_lint.blocking_message(problems)
+        if block:
+            return JSONResponse({"error": block}, status_code=400)
+        if problems and not force:
+            return JSONResponse({"needs_confirm": True,
+                                 "warn": "Шаблон первого сообщения выглядит подозрительно:\n"
+                                         + opener_lint.report(problems)
+                                         + "\n\nВсё равно отправить живым людям?"})
         # Защита от повторного запуска: если запускали < 10 мин назад — просим подтверждение.
         recent = conn.execute(
             "SELECT ts FROM events WHERE campaign_id=? AND type='campaign_start' "
@@ -4193,6 +4233,12 @@ def campaign_test(cid: int) -> JSONResponse:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         if not (row["message_template"] or "").strip():
             return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        # Тест шлёт на свои номера, но смотреть, во что превратился промпт, надо в
+        # предпросмотре, а не 15 сообщениями себе в Telegram по одному в 2 минуты.
+        from channels import opener_lint
+        block = opener_lint.blocking_message(opener_lint.lint(row["message_template"]))
+        if block:
+            return JSONResponse({"error": block}, status_code=400)
         # Сбрасываем статус тестовых контактов — чтобы тест срабатывал повторно
         tag = (row["audience_tag"] or "").strip()
         test_ids: list[int] = []

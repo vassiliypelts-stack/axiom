@@ -141,10 +141,42 @@ def call(fn):
 
 # ---- OpenAI-совместимые провайдеры (DeepSeek / Gemini / OpenAI) ---------- #
 
-def _to_openai(system: str | None, messages: list[dict]) -> list[dict]:
+def cached(stable: str, dynamic: str = "") -> list[dict]:
+    """Собрать system из ДВУХ частей так, чтобы неизменную половину кэшировал Anthropic.
+
+    Кэш у Anthropic — это совпадение ПРЕФИКСА: всё до отметки `cache_control`
+    считается один раз, а дальше при каждом запросе платится только 10% цены.
+    Поэтому порядок обязателен: сперва то, что не меняется (правила агента, промпт
+    кампании), потом всё персональное (кто собеседник, что мы ему уже писали).
+
+    Экономия заметная: в диалоге история отправляется заново на каждую реплику, а
+    неизменная часть у нас ~7 тыс. токенов из ~8,5 тыс. — то есть почти всё.
+
+    Кэш живёт 5 минут и продлевается при каждом обращении, так что внутри одного
+    живого диалога он не успевает остыть. Слишком короткий стабильный кусок
+    Anthropic просто не станет кэшировать (порог зависит от модели) — это не ошибка,
+    просто экономии не будет.
+    """
+    blocks: list[dict] = [{"type": "text", "text": stable,
+                           "cache_control": {"type": "ephemeral"}}]
+    if dynamic and dynamic.strip():
+        blocks.append({"type": "text", "text": dynamic})
+    return blocks
+
+
+def _system_text(system) -> str | None:
+    """system → плоская строка. Чужие провайдеры блоков с кэшем не понимают —
+    для них склеиваем обратно в текст (кэш есть только у Anthropic)."""
+    if system is None or isinstance(system, str):
+        return system
+    return "\n\n".join(b.get("text", "") for b in system if b.get("text"))
+
+
+def _to_openai(system, messages: list[dict]) -> list[dict]:
     """Anthropic-формат → OpenAI-формат. system становится первым сообщением,
     image-блоки — image_url с data:-URI."""
     out: list[dict] = []
+    system = _system_text(system)
     if system:
         out.append({"role": "system", "content": system})
     for m in messages:
@@ -209,7 +241,7 @@ def _compat_content(data: dict) -> str:
 
 # ---- Единый фасад: text() и structured() -------------------------------- #
 
-def text(spec: str, system: str | None, messages: list[dict], max_tokens: int = 500,
+def text(spec: str, system: "str | list[dict] | None", messages: list[dict], max_tokens: int = 500,
          timeout: float | None = None, **kw) -> str:
     """Обычный текстовый ответ, любой провайдер. Возвращает строку.
     timeout — на один запрос (важно для массовых прогонов: подвисшая сеть иначе
@@ -227,11 +259,15 @@ def text(spec: str, system: str | None, messages: list[dict], max_tokens: int = 
     return (_compat_content(data) or "").strip()
 
 
-def structured(spec: str, system: str | None, messages: list[dict],
+def structured(spec: str, system: "str | list[dict] | None", messages: list[dict],
                output_format: type[BaseModel], max_tokens: int = 900,
                timeout: float | None = None, **kw):
     """Ответ по схеме (pydantic-модель), любой провайдер. Возвращает экземпляр модели."""
     prov, model = split(spec)
+    if prov != "anthropic":
+        # дальше system дописывается строкой (режим json_object) — блоки с кэшем
+        # схлопываем заранее, они всё равно только для Anthropic
+        system = _system_text(system)
     if prov == "anthropic":
         if timeout is not None:
             kw["timeout"] = timeout

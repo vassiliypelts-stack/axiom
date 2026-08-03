@@ -18,7 +18,8 @@ import asyncio
 import json
 
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerChannel, PeerChat, User
+from telethon.errors import FloodWaitError
+from telethon.tl.types import (InputPeerChannel, InputPeerChat, PeerChannel, User)
 
 from channels.telegram import _build_client, build_client
 from channels import hit_intent
@@ -67,16 +68,84 @@ def _mark_scanned(chat_id: int) -> None:
         print(f"[kw] не отметил чат {chat_id} как просканированный: {str(e)[:80]}")
 
 
+# Сколько чатов за один прогон разрешено «знакомить» с аккаунтом (спросить у Telegram
+# номер и ключ доступа). Именно эти запросы — ResolveUsernameRequest — и сожгли основной
+# аккаунт на 13.8 часа, когда код резолвил все 2.4 тысячи чатов каждый обход. Теперь
+# знакомство разовое: узнали — записали в базу — больше никогда не спрашиваем. Но первый
+# круг всё равно требует по запросу на чат, поэтому размазываем его по прогонам.
+# 40 за прогон при почасовом запуске — весь каталог за пару суток и без ограничений.
+RESOLVE_BUDGET = 40
+
+
+def _is_channel(ch) -> bool:
+    """Супергруппа/канал (адресуются с ключом доступа) против обычной группы (без него)."""
+    return (ch["kind"] or "") in ("супергруппа", "канал") or bool(ch["username"])
+
+
+def _cached_peer(ch):
+    """Обращение к чату, не стоящее ни одного сетевого запроса, — или None, если нечем.
+
+    ЗАЧЕМ. Строка «@name» заставляет Telethon сходить в Telegram за ResolveUsernameRequest:
+    отдельный запрос на КАЖДЫЙ чат в КАЖДЫЙ обход. На каталоге в 2.4 тысячи чатов это
+    тысячи резолвов в сутки, и Telegram ответил ограничением на 49684 секунды (13.8 часа)
+    — по основному аккаунту, то есть по личному номеру.
+
+    Одного номера чата для этого мало: к супергруппе и каналу Telegram пускает только с
+    парой «номер + ключ доступа» (access_hash), выданной конкретному аккаунту. Голый
+    PeerChannel(id) работает лишь пока сущность лежит в кэше Telethon, а строковая сессия
+    свой кэш между запусками не хранит — отсюда «Could not find the input entity» на
+    ровном месте. Поэтому ключ храним у себя (chats.tg_access_hash) и собираем
+    InputPeerChannel сами: он самодостаточен и резолва не требует вовсе.
+
+    Обычной группе (не супергруппе) ключ не нужен — там хватает номера."""
+    cid = ch["tg_chat_id"]
+    if not cid:
+        return None
+    if not _is_channel(ch):
+        return InputPeerChat(int(cid))
+    ah = ch["tg_access_hash"] if "tg_access_hash" in ch.keys() else None
+    if ah:
+        return InputPeerChannel(int(cid), int(ah))
+    # Ключа нет — вдруг сущность всё же осела в кэше сессии за этот же прогон.
+    # Не сработает — вызывающий откатится на «@username».
+    return PeerChannel(int(cid)) if not ch["username"] else None
+
+
 def _target(ch) -> object:
-    """Что скармливать Telethon. Публичный — «@username». Закрытый — PeerChannel(tg_chat_id),
-    а НЕ голый int: от голого числа Telethon гадает тип и принимает id супергруппы за
-    PeerUser («Could not find the input entity»). И уж точно не ch["id"] — это номер строки
-    в нашем каталоге, для Telegram он пустой звук."""
+    """Чем адресовать чат: сначала бесплатный путь, иначе «@username» с резолвом."""
+    peer = _cached_peer(ch)
+    if peer is not None:
+        return peer
     if ch["username"]:
         return "@" + ch["username"]
-    if (ch["kind"] or "") in ("супергруппа", "канал"):
-        return PeerChannel(ch["tg_chat_id"])
-    return PeerChat(ch["tg_chat_id"])
+    return PeerChannel(int(ch["tg_chat_id"])) if _is_channel(ch) else InputPeerChat(int(ch["tg_chat_id"]))
+
+
+async def _remember_peer(client, target, ch) -> None:
+    """Сохранить номер и ключ доступа чата, чтобы следующий обход обошёлся без резолва.
+
+    Вызывается только после успешного чтения: Telethon к этому моменту уже разрешил
+    сущность и отдаёт её из своей памяти, так что лишнего запроса в Telegram здесь нет.
+
+    Ключ пишем строкой: access_hash — 64-битное знаковое число, и в SQLite INTEGER
+    часть значений легла бы с потерей."""
+    if ch["tg_chat_id"] and (not _is_channel(ch) or (
+            "tg_access_hash" in ch.keys() and ch["tg_access_hash"])):
+        return
+    try:
+        ent = await client.get_input_entity(target)
+    except Exception:  # noqa: BLE001 — не вышло, попробуем в следующий обход
+        return
+    cid = getattr(ent, "channel_id", None) or getattr(ent, "chat_id", None)
+    if not cid:
+        return
+    ah = getattr(ent, "access_hash", None)
+    try:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE chats SET tg_chat_id=?, tg_access_hash=? WHERE id=?",
+                         (int(cid), str(ah) if ah is not None else None, ch["id"]))
+    except Exception as e:  # noqa: BLE001
+        print(f"[kw] не сохранил ключ доступа к чату {ch['id']}: {str(e)[:80]}")
 
 
 async def _client_for(acc_id: int | None):
@@ -106,7 +175,8 @@ async def run(limit: int, only_fav: bool = False) -> None:
     database.init_db()
     with database.get_conn() as conn:
         niches = _load_niches(conn)
-        sql = ("SELECT id, title, username, tg_chat_id, kind, joined_by, kw_last_id FROM chats "
+        sql = ("SELECT id, title, username, tg_chat_id, tg_access_hash, kind, joined_by, "
+               "kw_last_id FROM chats "
                "WHERE ((username IS NOT NULL AND username<>'') "
                "OR (in_account='yes' AND tg_chat_id IS NOT NULL))")
         if only_fav:
@@ -128,6 +198,8 @@ async def run(limit: int, only_fav: bool = False) -> None:
     await main_client.start()
     owned: dict[int, object] = {}      # aid → клиент аккаунта-участника (по одному на аккаунт)
     scanned = hits = 0
+    resolves = deferred = 0
+    flood_wait = 0
     skipped: list[str] = []
     for ch in chats:
         # Публичный читаем главным аккаунтом; закрытый — только тем, кто в нём состоит.
@@ -148,6 +220,14 @@ async def run(limit: int, only_fav: bool = False) -> None:
                 _mark_scanned(ch["id"])
                 continue
         target = _target(ch)
+        # Чат, который придётся «знакомить» заново, — только в пределах квоты.
+        # Не отмечаем просканированным: пусть дождётся своей очереди в следующий прогон,
+        # иначе он уедет в хвост ротации и ключ доступа мы не узнаем ещё сутки.
+        if isinstance(target, str):
+            if resolves >= RESOLVE_BUDGET:
+                deferred += 1
+                continue
+            resolves += 1
         last_id = ch["kw_last_id"] or 0
         max_id = last_id
         try:
@@ -193,6 +273,16 @@ async def run(limit: int, only_fav: bool = False) -> None:
             if max_id > last_id:
                 with database.get_conn() as conn:
                     conn.execute("UPDATE chats SET kw_last_id=? WHERE id=?", (max_id, ch["id"]))
+            await _remember_peer(client, target, ch)
+        except FloodWaitError as e:
+            # Telegram сказал «хватит». Раньше цикл шёл дальше и получал ту же ошибку
+            # на каждом оставшемся чате — сотни запросов в стену, что только продлевает
+            # ограничение. Выходим сразу и честно сообщаем, сколько ждать.
+            flood_wait = int(getattr(e, "seconds", 0) or 0)
+            print(f"[kw] Telegram ограничил аккаунт на {flood_wait} с "
+                  f"({flood_wait // 3600} ч) — обход остановлен")
+            _mark_scanned(ch["id"])
+            break
         except Exception as e:  # noqa: BLE001
             print(f"[kw] {(ch['title'] or target)}: {e}")
         finally:
@@ -208,8 +298,17 @@ async def run(limit: int, only_fav: bool = False) -> None:
                 pass
     for s in skipped:
         print(f"[kw] пропущен: {s}")
-    print(json.dumps({"ok": True, "scanned_chats": scanned, "hits_new": hits,
-                      "skipped": skipped}, ensure_ascii=False))
+    out = {"ok": True, "scanned_chats": scanned, "hits_new": hits, "skipped": skipped}
+    if deferred:
+        # Молча урезанный охват читался бы как «обошли всё» — говорим вслух.
+        out["deferred_chats"] = deferred
+        out["note"] = (f"{deferred} чатов отложены до следующего прогона: за раз знакомимся "
+                       f"максимум с {RESOLVE_BUDGET}, чтобы не поймать ограничение Telegram")
+    if flood_wait:
+        out["flood_wait_sec"] = flood_wait
+        out["error"] = (f"Telegram ограничил аккаунт на {flood_wait // 3600} ч "
+                        f"— обход остановлен, повтори позже")
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def main() -> None:

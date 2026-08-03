@@ -1033,6 +1033,9 @@ async function viewAgents(v){
         return `<span class="badge b-nurture" title="ещё не проверялся — нажми «Проверить прокси»"><span class="sdot gy"></span>не проверен</span>`;
       }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
+      {key:"listener",label:"Слушает чаты",render:r=>r.is_listener
+        ?`<button class="acc-listen" data-id="${r.id}" title="Этот аккаунт опрашивает публичные чаты каталога. Нажми, чтобы снять — вернётся личный (.env)"><span class="badge b-active">👂 слушает</span></button>`
+        :`<button class="acc-listen" data-id="${r.id}" title="Назначить: активный опрос чатов (кнопка «Прослушать чаты сейчас») пойдёт через этот аккаунт, а не через личный номер" style="opacity:.55">👂 назначить</button>`},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
         const badge=(r.days_alive!=null)?`<span class="badge b-${r.status==='banned'?'stop':'active'}" title="дней с даты покупки — живучесть аккаунта">🕒 ${r.days_alive} дн</span>`:'<span class="no">—</span>';
@@ -1052,6 +1055,12 @@ async function viewAgents(v){
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
     const eye=e.target.closest(".acc-eye");
     if(eye){e.stopPropagation();showInspectModal(eye.dataset.id,eye.dataset.label);return;}
+    const lst=e.target.closest(".acc-listen");
+    if(lst){e.stopPropagation();
+      const id=lst.dataset.id, wasOn=lst.querySelector(".badge")?.textContent.includes("слушает");
+      await api("/api/settings/listen_account",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:wasOn?null:id})});
+      route();return;}
   });
   tbl.addEventListener("change",(e)=>{
     const cb=e.target.closest(".acc-sel");

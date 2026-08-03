@@ -501,17 +501,38 @@ def accounts_list() -> JSONResponse:
         chats_by = {r["aid"]: r["c"] for r in conn.execute(
             "SELECT joined_by aid, COUNT(*) c FROM chats WHERE joined_by IS NOT NULL "
             "AND in_account='yes' GROUP BY joined_by")}
+        listen_id = database.get_setting(conn, "listen_account_id")
     out = []
     for r in rows:
         d = dict(r)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
         d["chats_count"] = chats_by.get(d["id"], 0)
+        # кто сейчас опрашивает публичные чаты каталога (channels.chat_keywords) — по
+        # умолчанию личный номер из .env, назначить рабочий аккаунт можно тут же в таблице
+        d["is_listener"] = bool(listen_id) and str(d["id"]) == str(listen_id)
         # страна: сохранённый ISO2 или определяем по номеру на лету (+ готовая надпись с флагом)
         code = d.get("country") or phone_geo.detect(d.get("phone"))
         d["country_label"] = phone_geo.label(code) if code else ""
         d["days_alive"] = _days_since(d.get("bought_at") or d.get("created_at"))
         out.append(d)
     return JSONResponse(out)
+
+
+@app.post("/api/settings/listen_account")
+def settings_listen_account(payload: dict = Body(...)) -> JSONResponse:
+    """Какой аккаунт опрашивает публичные чаты (channels.chat_keywords). По умолчанию —
+    личный номер из .env; здесь его можно подменить на рабочий, чтобы не рисковать личным
+    Telegram (см. FloodWait-инцидент на 13.8ч — chat_keywords._main_client)."""
+    acc_id = payload.get("account_id")
+    with database.get_conn() as conn:
+        if acc_id:
+            row = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
+            if not row:
+                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
+            database.set_setting(conn, "listen_account_id", str(acc_id))
+        else:
+            database.set_setting(conn, "listen_account_id", "")
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/accounts")

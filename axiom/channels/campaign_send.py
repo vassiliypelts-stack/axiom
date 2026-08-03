@@ -132,12 +132,15 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
         problems = opener_lint.lint(template)
         if opener_lint.severe(problems):
             raise OpenerIsPromptError(opener_lint.blocking_message(problems))
+    import re
     ag = agency or name or ""
+    values = {"name": name or "", "имя": name or "", "agency": ag, "агентство": ag,
+              "decision": decision or "", "sender": sender or "", "от_кого": sender or ""}
     text = _spin(template or "")
-    text = (text.replace("{name}", name or "").replace("{имя}", name or "")
-                .replace("{agency}", ag).replace("{агентство}", ag)
-                .replace("{decision}", decision or "")
-                .replace("{sender}", sender or "").replace("{от_кого}", sender or ""))
+    # Регистр и пробелы внутри скобок оператору не видны: «{ИМЯ}», «{Name}», «{ name }»
+    # раньше молча уезжали получателю фигурными скобками. Подставляем как есть.
+    text = re.sub(r"\{\s*([^{}|]+?)\s*\}",
+                  lambda m: values.get(m.group(1).lower(), m.group(0)), text)
     return [_humanize(ln) for ln in text.splitlines() if ln.strip()]
 
 
@@ -432,7 +435,8 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         rest = parts[1:]   # остальные строки опенера — не портянкой, а с паузой (см. opener_queue)
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
-            database.add_message(conn, row["id"], "out", parts[0], intent=None)
+            database.add_message(conn, row["id"], "out", parts[0], intent=None,
+                                 account_id=s["id"])
             database.set_status(conn, row["id"], "messaged")
             conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
             conn.execute(
@@ -447,6 +451,13 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                     "VALUES (?,?,?,?,?)",
                     (row["id"], s["id"], cid, json.dumps(rest, ensure_ascii=False), next_at),
                 )
+            # В ленту: кому и ЧТО именно ушло. Раньше отправка жила только в campaign_logs,
+            # и в колокольчике нельзя было увидеть текст первого сообщения.
+            to = name or (f"@{row['username']}" if row["username"] else row["phone"])
+            database.add_event(
+                conn, "outreach", f"📨 {s['label']} → {to}",
+                parts[0][:400] + (f" (+{len(rest)} строк(и) следом)" if rest else ""),
+                contact_id=row["id"], campaign_id=cid, account_id=s["id"])
         s["remaining"] -= 1
         sent += 1
         print(f"[sent {sent}/{cap}] {s['label']} -> {name or row['username'] or row['phone']}"

@@ -136,7 +136,7 @@ async def _handle_private(event, acc_id: int) -> None:
     _record_incoming(contact["id"], text_in, username, account_id=acc_id)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
     if _should_reply(acc_id):
-        await _agent_reply(event, contact["id"], username)
+        await _agent_reply(event, contact["id"], username, account_id=acc_id)
         _log(f"[#{acc_id}] → авто-ответ контакту {contact['id']}")
 
 
@@ -176,9 +176,24 @@ async def _scan_group(event, acc_id: int) -> None:
         )
         if cur.rowcount > 0:
             STATUS["hits"] = STATUS.get("hits", 0) + 1
-            database.add_event(conn, "hit", f"🎯 Запрос в «{title}»: {name}",
-                               f"«{kw}» — {text[:140]}", level="good")
-            _log(f"[#{acc_id}] 🎯 запрос «{kw}» от {name} в «{title}» → Запросы")
+            # Сам запрос сохраняем ВСЕГДА (в «Запросах» видно всё), а колокольчик
+            # бережём: рассыльщики постят один и тот же прайс в чат каждые несколько
+            # минут, и лента превращалась в пять одинаковых «🎯 Запрос в …: ORDISON»
+            # за полчаса. Первое сообщение автора в этом чате показываем, повторы в
+            # течение часа — молча копим в «Запросы».
+            repeat = conn.execute(
+                "SELECT COUNT(*) FROM chat_hits WHERE tg_user_id=? "
+                "AND IFNULL(chat_id,-1)=IFNULL(?,-1) AND id<>? "
+                "AND created_at >= datetime('now','-1 hour')",
+                (sender.id, cat_id, cur.lastrowid),
+            ).fetchone()[0]
+            if repeat:
+                _log(f"[#{acc_id}] 🎯 повтор от {name} в «{title}» ({repeat + 1}-й за час) "
+                     f"→ только в Запросы, колокольчик не трогаем")
+            else:
+                database.add_event(conn, "hit", f"🎯 Запрос в «{title}»: {name}",
+                                   f"«{kw}» — {text[:140]}", level="good")
+                _log(f"[#{acc_id}] 🎯 запрос «{kw}» от {name} в «{title}» → Запросы")
 
 
 def _make_handler(acc_id: int):

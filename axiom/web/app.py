@@ -1637,19 +1637,104 @@ def notifications() -> JSONResponse:
             "WHERE d.meeting_at IS NOT NULL AND d.meeting_at >= datetime('now','-1 day') "
             "ORDER BY d.meeting_at LIMIT 25"
         ).fetchall()
+        # account_id и метка аккаунта — чтобы в ленте было видно, КТО сделал (раньше
+        # поле молча терялось, и «вступил/отправил» выглядело как действие ниоткуда).
         evs = conn.execute(
-            "SELECT id, type, level, title, text, contact_id, campaign_id, ts "
-            "FROM events ORDER BY id DESC LIMIT 40"
+            "SELECT e.id, e.type, e.level, e.title, e.text, e.contact_id, e.campaign_id, "
+            "e.account_id, e.ts, a.label AS account "
+            "FROM events e LEFT JOIN accounts a ON a.id=e.account_id "
+            "ORDER BY e.id DESC LIMIT 40"
         ).fetchall()
+    # Входящее пишется в базу ДВАЖДЫ: строкой в messages и событием 'reply'
+    # (см. channels/telegram._record_incoming) — и лента показывала каждый ответ
+    # парой одинаковых строк подряд. Сырое сообщение прячем: событие несёт то же
+    # самое плюс аккаунт и «глазок» с полной карточкой.
+    from datetime import datetime as _dt
+
+    def _sec(ts: str | None):
+        for f in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return _dt.strptime((ts or "")[:19], f)
+            except ValueError:
+                continue
+        return None
+
+    replies = [(e["contact_id"], _sec(e["ts"])) for e in evs if e["type"] == "reply"]
+
+    def _dup(m) -> bool:
+        t = _sec(m["ts"])
+        return any(cid == m["contact_id"] and t and ets and abs((t - ets).total_seconds()) <= 5
+                   for cid, ets in replies)
+
     items = [{"type": "msg", "text": m["text"], "who": m["who"], "ts": m["ts"],
-              "contact_id": m["contact_id"]} for m in msgs]
+              "contact_id": m["contact_id"]} for m in msgs if not _dup(m)]
     items += [{"type": "meeting", "text": "назначена встреча", "who": m["who"],
                "ts": m["meeting_at"], "contact_id": m["contact_id"]} for m in meets]
-    items += [{"type": "event", "event_type": e["type"], "level": e["level"],
+    items += [{"type": "event", "id": e["id"], "event_type": e["type"], "level": e["level"],
                "title": e["title"], "text": e["text"], "contact_id": e["contact_id"],
-               "campaign_id": e["campaign_id"], "ts": e["ts"]} for e in evs]
+               "campaign_id": e["campaign_id"], "account_id": e["account_id"],
+               "account": e["account"], "ts": e["ts"]} for e in evs]
     items.sort(key=lambda x: x["ts"] or "", reverse=True)
     return JSONResponse({"items": items})
+
+
+@app.get("/api/event/{eid}")
+def event_detail(eid: int) -> JSONResponse:
+    """Полная карточка события для «глазка» в колокольчике.
+
+    В ленте строка обрезана до одной строки и не отвечает на главные вопросы: КТО это
+    сделал, КОМУ и ЧТО именно ушло. Здесь собираем полный текст плюс контекст вокруг:
+    аккаунт-исполнитель, контакт, кампания, реальная переписка и что этот аккаунт
+    делал рядом по времени (вступления, отправки).
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        e = conn.execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone()
+        if not e:
+            return JSONResponse({"error": "событие не найдено"}, status_code=404)
+        e = dict(e)
+        out: dict = {"id": e["id"], "type": e["type"], "level": e["level"],
+                     "title": e["title"], "text": e["text"], "ts": e["ts"]}
+
+        if e.get("account_id"):
+            a = conn.execute("SELECT id, label, phone, username, tg_name, status, country "
+                             "FROM accounts WHERE id=?", (e["account_id"],)).fetchone()
+            out["account"] = dict(a) if a else {"id": e["account_id"], "label": "аккаунт удалён"}
+        if e.get("campaign_id"):
+            c = conn.execute("SELECT id, name, product, status FROM campaigns WHERE id=?",
+                             (e["campaign_id"],)).fetchone()
+            out["campaign"] = dict(c) if c else None
+        if e.get("contact_id"):
+            c = conn.execute(
+                "SELECT id, name, person_name, username, phone, agency, city, status, tags, "
+                "segment, niche, offer FROM contacts WHERE id=?", (e["contact_id"],)).fetchone()
+            out["contact"] = dict(c) if c else None
+            # ЧТО именно ушло человеку и что он ответил — с указанием аккаунта-отправителя
+            out["messages"] = [dict(m) for m in conn.execute(
+                "SELECT m.direction, m.text, m.ts, a.label AS account "
+                "FROM messages m LEFT JOIN accounts a ON a.id=m.account_id "
+                "WHERE m.contact_id=? ORDER BY m.id DESC LIMIT 12", (e["contact_id"],))][::-1]
+
+        # Чем занимался этот аккаунт вокруг события: куда вступил и кому отправил.
+        if e.get("account_id"):
+            out["joined"] = [dict(r) for r in conn.execute(
+                "SELECT ch.title, ch.username, ac.joined_at "
+                "FROM account_chats ac JOIN chats ch ON ch.id=ac.chat_id "
+                "WHERE ac.account_id=? ORDER BY ac.joined_at DESC LIMIT 10",
+                (e["account_id"],))]
+            out["sent"] = [dict(r) for r in conn.execute(
+                "SELECT l.status, l.detail, l.ts, COALESCE(c.person_name, c.name) AS who, "
+                "c.id AS contact_id FROM campaign_logs l "
+                "LEFT JOIN contacts c ON c.id=l.contact_id "
+                "WHERE l.account_id=? ORDER BY l.id DESC LIMIT 10", (e["account_id"],))]
+        elif e.get("campaign_id"):
+            out["sent"] = [dict(r) for r in conn.execute(
+                "SELECT l.status, l.detail, l.ts, COALESCE(c.person_name, c.name) AS who, "
+                "c.id AS contact_id, a.label AS account FROM campaign_logs l "
+                "LEFT JOIN contacts c ON c.id=l.contact_id "
+                "LEFT JOIN accounts a ON a.id=l.account_id "
+                "WHERE l.campaign_id=? ORDER BY l.id DESC LIMIT 10", (e["campaign_id"],))]
+    return JSONResponse(out)
 
 
 # ---- CRM / Контакты ------------------------------------------------------- #
@@ -4205,18 +4290,33 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
 def campaign_stop(cid: int) -> JSONResponse:
     """Остановить кампанию: новые заходы (▶ Запустить / автопланировщик опенера)
     больше не запускаются. Уже отправляющийся в фоне процесс (если запущен только
-    что) доработает свою пачку — он короткоживущий и сам завершится."""
+    что) доработает свою пачку — он короткоживущий и сам завершится.
+
+    ВАЖНО: чистим и очередь доотправки опенера (opener_queue). Раньше «Стоп» её не
+    трогал — статус кампании менялся, а фоновый тик продолжал доливать оставшиеся
+    строки первого сообщения по одной раз в 1-3 минуты. Со стороны это выглядело как
+    «нажал стоп, а оно всё равно пишет людям» ещё полчаса."""
     with database.get_conn() as conn:
         row = conn.execute("SELECT name, status FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        # Даже если кампания уже не 'running', очередь могла остаться висеть — стоп
+        # обязан её погасить, иначе остановить недописанные опенеры нечем вообще.
+        dropped = conn.execute("DELETE FROM opener_queue WHERE campaign_id=?", (cid,)).rowcount
         if row["status"] != "running":
-            return JSONResponse({"error": f"кампания не запущена (статус: {row['status']})"}, status_code=400)
+            if not dropped:
+                return JSONResponse({"error": f"кампания не запущена (статус: {row['status']})"},
+                                    status_code=400)
+            database.add_event(conn, "campaign_stop", f"⏸ Догашена очередь опенера «{row['name']}»",
+                               f"снято недоотправленных опенеров: {dropped}",
+                               level="info", campaign_id=cid)
+            return JSONResponse({"ok": True, "dropped_openers": dropped})
         conn.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
         database.add_event(conn, "campaign_stop", f"⏸ Кампания остановлена «{row['name']}»",
-                           "новые заходы не запускаются, пока не нажмёшь «▶ Запустить» заново",
+                           "новые заходы не запускаются, пока не нажмёшь «▶ Запустить» заново"
+                           + (f"; снято недоотправленных опенеров: {dropped}" if dropped else ""),
                            level="info", campaign_id=cid)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "dropped_openers": dropped})
 
 
 @app.post("/api/campaign/{cid}/test")

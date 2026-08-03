@@ -352,6 +352,14 @@
   .notif .ni .who{font-weight:600;font-size:13px;}
   .notif .ni .msg{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .notif .ni .tm{color:var(--muted);font-size:11px;white-space:nowrap;}
+  /* глазок «подробнее». Был opacity:.35 и проявлялся только на наведении — его
+     физически не замечали и жаловались, что подробностей в ленте нет. Теперь виден
+     сразу, с рамкой; наведение только усиливает. */
+  .notif .ni .ni-eye{padding:2px 6px;font-size:14px;line-height:1;background:var(--panel2);
+    border:1px solid var(--border);border-radius:6px;cursor:pointer;opacity:.85;
+    transition:opacity .12s,border-color .12s;}
+  .notif .ni:hover .ni-eye{opacity:1;border-color:var(--accent);}
+  .notif .ni .ni-eye:focus-visible{opacity:1;border-color:var(--accent);}
   /* ---- Skeleton loader ---- */
   @keyframes skel-pulse{0%,100%{opacity:.06}50%{opacity:.15}}
   .skel-wrap{padding:26px 30px;max-width:860px;display:flex;flex-direction:column;gap:16px;}
@@ -4524,7 +4532,8 @@ async function refreshNotif(){
   const b=$("#bell-badge");
   if(unseen>0){b.textContent=unseen>99?"99+":unseen;b.style.display="";}else b.style.display="none";
 }
-const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️"};
+const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️",
+  chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}
@@ -4533,20 +4542,74 @@ function renderNotif(){
       const ic=EVENT_IC[n.event_type]||"•";
       const col=n.level==="warn"?"#c0392b":(n.level==="good"?"var(--green)":"var(--muted)");
       const nav=n.contact_id?`data-cid="${n.contact_id}"`:(n.campaign_id?`data-camp="${n.campaign_id}"`:"");
+      // глазок открывает подробности, не уводя со страницы: в строке текст обрезан,
+      // а понять «кто именно и что написал» без полной карточки нельзя
+      const eye=n.id?`<button class="ni-eye" data-eid="${n.id}" title="Подробности">👁</button>`:"";
       return `<div class="ni" ${nav}>
         <span class="ic">${ic}</span>
         <div class="tx"><div class="who" style="color:${col}">${esc(n.title||"")}</div>
-          ${n.text?`<div class="msg">${esc(n.text)}</div>`:""}</div>
-        <span class="tm">${fmt(n.ts)}</span></div>`;
+          ${n.text?`<div class="msg">${esc(n.text)}</div>`:""}
+          ${n.account?`<div class="msg" style="opacity:.75">с аккаунта: ${esc(n.account)}</div>`:""}</div>
+        ${eye}<span class="tm">${fmt(n.ts)}</span></div>`;
     }
     return `<div class="ni" data-cid="${n.contact_id}">
       <span class="ic">${n.type==="meeting"?"📅":"💬"}</span>
       <div class="tx"><div class="who">${esc(n.who||"—")}</div>
         <div class="msg">${n.type==="meeting"?"назначена встреча":esc(n.text)}</div></div>
       <span class="tm">${fmt(n.ts)}</span></div>`;}).join("");
+  box.querySelectorAll(".ni-eye").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();          // иначе клик по строке уведёт в досье и окно не увидят
+    showEvent(+b.dataset.eid);});
   box.querySelectorAll(".ni").forEach(el=>el.onclick=()=>{$("#notif").style.display="none";
     if(el.dataset.cid)openDossier(+el.dataset.cid);
     else if(el.dataset.camp){location.hash="campaigns";}});
+}
+
+// Полная карточка события: кто сделал, кому, что именно ушло + что аккаунт делал рядом.
+async function showEvent(eid){
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  wrap.innerHTML='<div class="org-mform-inner" style="max-width:620px">загружаю…</div>';
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)close();};
+  document.addEventListener("keydown",function esc2(e){
+    if(e.key==="Escape"){close();document.removeEventListener("keydown",esc2);}});
+  let d;
+  try{d=await api(`/api/event/${eid}`);}catch(e){d=null;}
+  const inner=wrap.querySelector(".org-mform-inner");
+  if(!d||d.error){inner.innerHTML=`<div style="color:#c0392b">не удалось загрузить: ${esc((d&&d.error)||"нет ответа")}</div>
+    <div style="margin-top:12px"><button class="modal-close">закрыть</button></div>`;
+    inner.querySelector(".modal-close").onclick=close;return;}
+  const row=(k,v)=>v?`<div style="display:flex;gap:10px;margin-bottom:4px"><span class="hint" style="min-width:96px">${k}</span><span>${v}</span></div>`:"";
+  const a=d.account,c=d.contact,cm=d.campaign;
+  const msgs=(d.messages||[]).map(m=>`<div style="margin-bottom:6px;padding:7px 9px;border-radius:8px;background:var(--panel2);
+      border-left:3px solid ${m.direction==="out"?"var(--accent)":"var(--green)"}">
+      <div class="hint">${m.direction==="out"?"мы →":"← он"}${m.account?" · "+esc(m.account):""} · ${fmt(m.ts)}</div>
+      <div style="white-space:pre-wrap;word-break:break-word">${esc(m.text||"")}</div></div>`).join("");
+  const joined=(d.joined||[]).map(j=>`<div class="hint">➕ ${esc(j.title||"чат")}${j.username?" (@"+esc(j.username)+")":""} — ${fmt(j.joined_at)}</div>`).join("");
+  const sent=(d.sent||[]).map(s=>`<div class="hint">📨 ${esc(s.who||"—")}${s.account?" · "+esc(s.account):""} — ${esc(s.status||"")}${s.detail?": "+esc(s.detail):""} · ${fmt(s.ts)}</div>`).join("");
+  inner.innerHTML=`
+    <div style="font-weight:700;font-size:15px;margin-bottom:2px">${esc(d.title||"Событие")}</div>
+    <div class="hint" style="margin-bottom:12px">${fmt(d.ts)} · тип: ${esc(d.type||"")}</div>
+    ${d.text?`<div style="white-space:pre-wrap;word-break:break-word;padding:10px 12px;border-radius:10px;
+        background:var(--panel2);margin-bottom:14px">${esc(d.text)}</div>`:""}
+    ${a?`<div style="font-weight:600;margin:12px 0 6px">Кто сделал</div>
+      ${row("аккаунт",esc(a.label||("#"+a.id)))}${row("телефон",esc(a.phone||""))}
+      ${row("в Telegram",a.username?"@"+esc(a.username):esc(a.tg_name||""))}
+      ${row("статус",esc(a.status||""))}${row("страна",esc(a.country||""))}`:""}
+    ${c?`<div style="font-weight:600;margin:12px 0 6px">Кому</div>
+      ${row("контакт",esc(c.person_name||c.name||""))}${row("@",c.username?"@"+esc(c.username):"")}
+      ${row("телефон",esc(c.phone||""))}${row("город",esc(c.city||""))}
+      ${row("ниша",esc(c.niche||""))}${row("продаёт",esc(c.offer||""))}${row("статус",esc(c.status||""))}
+      <div style="margin-top:8px"><button class="primary" id="ev-open">открыть карточку →</button></div>`:""}
+    ${cm?`<div style="font-weight:600;margin:12px 0 6px">Кампания</div>${row("название",esc(cm.name||""))}${row("статус",esc(cm.status||""))}`:""}
+    ${msgs?`<div style="font-weight:600;margin:14px 0 6px">Переписка</div>${msgs}`:""}
+    ${joined?`<div style="font-weight:600;margin:14px 0 6px">Куда этот аккаунт вступал</div>${joined}`:""}
+    ${sent?`<div style="font-weight:600;margin:14px 0 6px">Что отправлял</div>${sent}`:""}
+    <div style="margin-top:16px"><button class="modal-close">закрыть</button></div>`;
+  inner.querySelector(".modal-close").onclick=close;
+  const ob=inner.querySelector("#ev-open");
+  if(ob)ob.onclick=()=>{close();$("#notif").style.display="none";openDossier(c.id);};
 }
 $("#bell").onclick=()=>{const box=$("#notif");const open=box.style.display==="none";
   if(open){renderNotif();box.style.display="block";

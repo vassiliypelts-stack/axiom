@@ -2959,19 +2959,31 @@ def hit_to_lead(hid: int, payload: dict = Body(default={})) -> JSONResponse:
             )
     from agent import llm
     score = None
-    if payload.get("auto_enrich", True) and llm.available(config.MODEL):
+    # Почему скоринга нет — обязательно наружу. Раньше ошибка модели (протухший ключ,
+    # лимит, нет сырья) уходила только в лог сервера, а оператор видел карточку с
+    # прочерком и решал, что перенос не сработал вообще.
+    score_error = None
+    if not payload.get("auto_enrich", True):
+        score_error = "скоринг пропущен (auto_enrich=false)"
+    elif not llm.available(config.MODEL):
+        score_error = f"нет рабочего ключа под модель {config.MODEL} — скоринг не считался"
+    else:
         try:
             from agent.enrich_person import _posts_for, _save, enrich_person
             with database.get_conn() as conn:
                 contact = dict(conn.execute("SELECT * FROM contacts WHERE id=?", (cid,)).fetchone())
                 posts = _posts_for(conn, contact["tg_user_id"]) if contact.get("tg_user_id") else []
-            if posts:
+            if not posts:
+                score_error = "нечего скорить: у контакта нет ни одного собранного сообщения"
+            else:
                 profile = enrich_person(contact, posts)
                 _save(cid, profile)
                 score = profile.score
         except Exception as e:  # noqa: BLE001 — скоринг best-effort, лид всё равно заведён
             print(f"[hit_to_lead enrich] contact {cid}: {e}")
-    return JSONResponse({"ok": True, "contact_id": cid, "score": score})
+            score_error = f"скоринг не посчитался: {str(e)[:160]}"
+    return JSONResponse({"ok": True, "contact_id": cid, "score": score,
+                         "score_error": score_error})
 
 
 @app.get("/api/target_leads")

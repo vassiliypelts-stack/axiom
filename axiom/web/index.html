@@ -2916,6 +2916,7 @@ const NICHE_PRESETS=[
   {name:"Загородная недвижимость", keywords:"риелтор загород, загородная недвижимость, продажа участков, земля ижс, участок ижс, куплю участок, ищу участок, коттеджный посёлок, коттеджный поселок, продам дом, куплю дом, снт участок"},
 ];
 let HIT_TAB="new";
+let HIT_FLASH="";   // что показать после переноса находки (куда именно она уехала)
 async function viewLeadHits(v){
   const niches=await api("/api/niches");
   v.innerHTML=`
@@ -3026,8 +3027,17 @@ async function renderHits(){
   document.querySelectorAll(".hi-f").forEach(b=>{
     b.classList.toggle("primary",(b.dataset.i||"")===HIT_INTENT);
     b.onclick=()=>{HIT_INTENT=b.dataset.i||"";renderHits();};});
-  if(!d.items.length){body.innerHTML='<div class="empty">Пусто. Добавь чаты в «📡 Чаты», задай ниши и нажми «Прослушать чаты сейчас».</div>';return;}
-  body.innerHTML=d.items.map(h=>`<div class="card" style="margin-bottom:10px">
+  // Куда уехала находка после переноса. Раздел меню «Лиды» — это лиды на КВАЛИФИКАЦИЮ
+  // (status messaged/in_dialog), а перенесённая находка заводится со статусом «новый»
+  // и живёт во вкладке «Целевые лиды» рядом. Без этой подсказки оператор жмёт «в лиды»,
+  // идёт в «Лиды» и видит пустоту.
+  const flash=HIT_FLASH?`<div class="card" style="margin-bottom:10px;padding:10px 12px;background:var(--green-soft)">
+    ✅ ${esc(HIT_FLASH)} <button id="ht-go-lead" style="margin-left:8px">смотреть в «Целевые лиды» →</button>
+    <div class="hint" style="margin-top:5px">В разделе меню «Лиды» его не будет: там лежат те, кому уже написали и кто в диалоге.</div></div>`:"";
+  HIT_FLASH="";
+  if(!d.items.length){body.innerHTML=flash+'<div class="empty">Пусто. Добавь чаты в «📡 Чаты», задай ниши и нажми «Прослушать чаты сейчас».</div>';
+    const g=$("#ht-go-lead");if(g)g.onclick=()=>{HIT_TAB="lead";setHitTab();renderHits();};return;}
+  body.innerHTML=flash+d.items.map(h=>`<div class="card" style="margin-bottom:10px">
     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:240px">
         <b>${esc(h.name||"—")}</b> ${h.username?`<a class="ext" href="https://t.me/${esc(h.username)}" target="_blank">@${esc(h.username)} ↗</a>`:""}
@@ -3040,13 +3050,15 @@ async function renderHits(){
       </div>
       <div class="ttoolbar" style="margin:0;flex-direction:column">
         ${h.msg_link?`<a class="btn ext" href="${esc(h.msg_link)}" target="_blank" style="text-decoration:none">💬 Открыть сообщение</a>`:""}
-        ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в лиды (+ AI-скоринг)</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
+        ${h.status==="new"?`<button class="primary ht-lead" data-id="${h.id}">→ в Целевые лиды (+ AI-скоринг)</button><button class="ht-ign" data-id="${h.id}">игнор</button>`
           :h.status==="lead"?`<span class="badge b-won">в CRM${h.contact_id?" #"+h.contact_id:""}</span>${h.contact_id?`<button class="primary ht-deal" data-cid="${h.contact_id}">✅ В сделку</button>`:""}`:`<span class="badge b-stop">игнор</span>`}
       </div></div></div>`).join("");
   body.querySelectorAll(".ht-lead").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="⏳ скорю…";
     const r=await api(`/api/hit/${b.dataset.id}/lead`,{method:"POST"});
-    if(r.error){alert(r.error);b.disabled=false;b.textContent="→ в лиды (+ AI-скоринг)";return;}
+    if(r.error){alert(r.error);b.disabled=false;b.textContent="→ в Целевые лиды (+ AI-скоринг)";return;}
+    HIT_FLASH=`Контакт #${r.contact_id} заведён в CRM`+(r.score!=null?`, AI-скоринг ${(+r.score).toFixed(2)}.`:`. ⚠️ ${r.score_error||"скоринг не посчитан"}`);
     renderHits();});
+  const gl=$("#ht-go-lead");if(gl)gl.onclick=()=>{HIT_TAB="lead";setHitTab();renderHits();};
   body.querySelectorAll(".ht-deal").forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent="…";
     await convertToDeal(+b.dataset.cid);b.disabled=false;b.textContent="✅ В сделку";});
   body.querySelectorAll(".ht-ign").forEach(b=>b.onclick=async()=>{

@@ -20,11 +20,11 @@ from __future__ import annotations
 import argparse
 import base64
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import config
 from agent import llm
-from agent.segment import SEGMENTS, SegmentName
+from agent.segment import SEGMENTS, SegmentName, normalize_segment
 from db import database
 
 AVATAR_DIR = config.BASE_DIR / "data" / "avatars"  # этап 4: фото аватара для vision
@@ -60,6 +60,14 @@ class PersonProfile(BaseModel):
                                 "признаки статуса/настроения (с оговоркой «по фото»). Если фото нет — ''.")
     summary: str = Field(description="1-2 фразы досье для CRM.")
     confidence: float = Field(description="Достоверность портрета 0.0..1.0: мало сообщений/обрывочно → ниже.", ge=0, le=1)
+
+    @field_validator("segment", mode="before")
+    @classmethod
+    def _norm_segment(cls, v):
+        """Нестрогие провайдеры отвечают мимо словаря («образование» вместо
+        «инфобизнес/обучение»), и pydantic ронял ВЕСЬ портрет из-за одного поля —
+        готовые боли/желания/цитаты летели в мусор. Огрубляем, а не теряем."""
+        return normalize_segment(v)
 
 
 SYSTEM = (

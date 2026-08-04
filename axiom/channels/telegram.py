@@ -520,6 +520,8 @@ async def _agent_reply(event, contact_id: int, username: str | None,
               f"zoom={'yes' if meeting.zoom_link else 'no'} | cal={'yes' if meeting.calendar_event_id else 'no'}")
         if meeting.zoom_link:
             await _send_parts(event.client, peer, [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"])
+        from channels import notify
+        await notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes, meeting.zoom_link)
     print(f"[reply -> {contact_info.get('name', contact_id)}] intent={reply.intent} agreed={reply.meeting_agreed}")
 
 

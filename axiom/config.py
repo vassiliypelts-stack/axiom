@@ -64,6 +64,10 @@ TG_PROXY = os.getenv("TG_PROXY", "")
 INBOX_BOT_TOKEN = os.getenv("INBOX_BOT_TOKEN", "")   # токен бота от @BotFather
 INBOX_BOT_OWNER = os.getenv("INBOX_BOT_OWNER", "")   # ТВОЙ telegram user id — принимаем только от тебя
 
+# Публичный адрес пульта — для ссылок на карточку контакта в уведомлениях (channels/notify.py),
+# которые уходят человеку в личку и должны открываться сразу, без ручного набора IP:порта.
+PUBLIC_URL = os.getenv("AXIOM_PUBLIC_URL", "http://34.16.12.181:8000")
+
 # --- hero-sms.com: SMS-активация для саморегистрации TG-номеров (см. ТЗ_саморегистрация_TG_hero-sms.md) ---
 HERO_SMS_API_KEY = os.getenv("HERO_SMS_API_KEY", "")
 

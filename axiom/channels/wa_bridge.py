@@ -213,8 +213,14 @@ def incoming(msg: Incoming) -> JSONResponse:
             database.set_status(conn, contact_id, "in_dialog")
 
     extra_parts: list[str] = []
-    if meeting is not None and meeting.zoom_link:
-        extra_parts = [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"]
+    if meeting is not None:
+        if meeting.zoom_link:
+            extra_parts = [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"]
+        import asyncio
+        from channels import notify
+        # эндпоинт синхронный (FastAPI гонит его в threadpool) — своего event loop
+        # тут нет, поэтому просто asyncio.run(), а не await
+        asyncio.run(notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes, meeting.zoom_link))
 
     print(f"[wa reply -> {contact_info.get('name', contact_id)}] "
           f"intent={reply.intent} agreed={reply.meeting_agreed}")

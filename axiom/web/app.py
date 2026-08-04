@@ -502,11 +502,14 @@ def accounts_list() -> JSONResponse:
             "SELECT joined_by aid, COUNT(*) c FROM chats WHERE joined_by IS NOT NULL "
             "AND in_account='yes' GROUP BY joined_by")}
         listen_id = database.get_setting(conn, "listen_account_id")
+        notify_id = database.get_setting(conn, "notify_sender_account_id")
     out = []
     for r in rows:
         d = dict(r)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
         d["chats_count"] = chats_by.get(d["id"], 0)
+        # кто шлёт владельцу личное уведомление при назначенной встрече (channels/notify.py)
+        d["is_notifier"] = bool(notify_id) and str(d["id"]) == str(notify_id)
         # кто сейчас опрашивает публичные чаты каталога (channels.chat_keywords) — по
         # умолчанию личный номер из .env, назначить рабочий аккаунт можно тут же в таблице
         d["is_listener"] = bool(listen_id) and str(d["id"]) == str(listen_id)
@@ -533,6 +536,41 @@ def settings_listen_account(payload: dict = Body(...)) -> JSONResponse:
         else:
             database.set_setting(conn, "listen_account_id", "")
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/settings/notify")
+def settings_notify_get() -> JSONResponse:
+    """Кто уведомляет владельца о назначенных встречах и куда (см. channels/notify.py)."""
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "sender_account_id": database.get_setting(conn, "notify_sender_account_id", "") or None,
+            "target": database.get_setting(conn, "notify_owner_target", "") or "",
+        })
+
+
+@app.post("/api/settings/notify_sender")
+def settings_notify_sender(payload: dict = Body(...)) -> JSONResponse:
+    """Какой аккаунт шлёт уведомления о встречах в личку владельцу — обычно «родной»
+    номер, чтобы сообщение выглядело как обычная переписка, а не служебный алерт."""
+    acc_id = payload.get("account_id")
+    with database.get_conn() as conn:
+        if acc_id:
+            row = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
+            if not row:
+                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
+            database.set_setting(conn, "notify_sender_account_id", str(acc_id))
+        else:
+            database.set_setting(conn, "notify_sender_account_id", "")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/settings/notify_target")
+def settings_notify_target(payload: dict = Body(...)) -> JSONResponse:
+    """Кому слать уведомления о встречах — телефон (+7...) или @username получателя."""
+    target = (payload.get("target") or "").strip()
+    with database.get_conn() as conn:
+        database.set_setting(conn, "notify_owner_target", target)
+    return JSONResponse({"ok": True, "target": target})
 
 
 @app.post("/api/accounts")

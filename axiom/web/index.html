@@ -894,6 +894,15 @@ async function viewAgents(v){
       <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «<span class="sdot gy"></span>нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">🔔 Уведомления о встречах</b>
+        <span class="hint">кому слать в личку, когда агент договорился о звонке</span>
+        <input id="ntf-target" type="text" placeholder="+7900... или @username" style="max-width:220px">
+        <button id="ntf-save">сохранить</button>
+        <span class="hint" id="ntf-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Отправитель назначается кнопкой «🔔 назначить» в колонке «Уведомляет о встречах» в таблице ниже — обычно «родной» номер, чтобы сообщение выглядело как обычная переписка. Без назначенного отправителя И получателя уведомление просто не уходит, остальное (карточка встречи в колокольчике) работает как раньше.</div></div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">Автопрогрев</b>
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="wa-auto"> в фоне, ступень каждые</label>
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
@@ -966,6 +975,11 @@ async function viewAgents(v){
     $("#a-label").focus();
     _fillIdx++;
   });
+  // ── уведомления о встречах: кому слать ──
+  api("/api/settings/notify").then(s=>{const t=$("#ntf-target");if(t)t.value=s.target||"";});
+  $("#ntf-save").onclick=async()=>{
+    const r=await api("/api/settings/notify_target",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:$("#ntf-target").value.trim()})});
+    $("#ntf-msg").textContent=r.target?"✓ сохранено — уведомления пойдут на "+r.target:"✓ сохранено — получатель очищен, уведомления не уходят";};
   // ── автопрогрев: глобальные настройки + запуск всех в фоне ──
   api("/api/warmup/settings").then(s=>{const c=$("#wa-auto"),i=$("#wa-int"),m=$("#wa-msg");
     if(c)c.checked=!!s.auto; if(i)i.value=s.interval_h||24;
@@ -1036,6 +1050,9 @@ async function viewAgents(v){
       {key:"listener",label:"Слушает чаты",render:r=>r.is_listener
         ?`<button class="acc-listen" data-id="${r.id}" title="Этот аккаунт опрашивает публичные чаты каталога. Нажми, чтобы снять — вернётся личный (.env)"><span class="badge b-active">👂 слушает</span></button>`
         :`<button class="acc-listen" data-id="${r.id}" title="Назначить: активный опрос чатов (кнопка «Прослушать чаты сейчас») пойдёт через этот аккаунт, а не через личный номер" style="opacity:.55">👂 назначить</button>`},
+      {key:"notifier",label:"Уведомляет о встречах",render:r=>r.is_notifier
+        ?`<button class="acc-notify" data-id="${r.id}" title="Этот аккаунт пишет тебе в личку, когда агент договорился о встрече. Нажми, чтобы снять"><span class="badge b-active">🔔 уведомляет</span></button>`
+        :`<button class="acc-notify" data-id="${r.id}" title="Назначить: при согласованной встрече этот аккаунт пришлёт тебе личное сообщение с деталями (кто, о чём, ссылка на карточку)" style="opacity:.55">🔔 назначить</button>`},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
         const badge=(r.days_alive!=null)?`<span class="badge b-${r.status==='banned'?'stop':'active'}" title="дней с даты покупки — живучесть аккаунта">🕒 ${r.days_alive} дн</span>`:'<span class="no">—</span>';
@@ -1059,6 +1076,12 @@ async function viewAgents(v){
     if(lst){e.stopPropagation();
       const id=lst.dataset.id, wasOn=lst.querySelector(".badge")?.textContent.includes("слушает");
       await api("/api/settings/listen_account",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:wasOn?null:id})});
+      route();return;}
+    const ntf=e.target.closest(".acc-notify");
+    if(ntf){e.stopPropagation();
+      const id=ntf.dataset.id, wasOn=ntf.querySelector(".badge")?.textContent.includes("уведомляет");
+      await api("/api/settings/notify_sender",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({account_id:wasOn?null:id})});
       route();return;}
   });

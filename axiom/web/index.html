@@ -2493,6 +2493,34 @@ async function loadCoverage(){
     jb.disabled=false;jb.textContent="🚀 Разослать армию по чатам";
     loadCoverage();
   };
+  loadBackfill();
+}
+// Дозаполнение tg_chat_id. Без него в досье лида пропадает «в каком чате найден»:
+// связка идёт через tg_user_posts.chat_id → chats.tg_chat_id. Резолвить всё разом
+// нельзя — на ~280 запросах подряд прилетает FloodWait на сутки, поэтому капаем
+// порциями по расписанию.
+async function loadBackfill(){
+  const box=$("#cc-backfill");if(!box)return;
+  let d;try{d=await api("/api/chatcat/backfill");}catch(e){return;}
+  if(!d.left){box.style.display="none";return;}
+  box.style.display="";
+  const total=d.left+d.done, pct=total?Math.round(100*d.done/total):0;
+  box.innerHTML=`<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <div><b>🔗 Связка чатов с досье:</b> заполнено ${d.done.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} (${pct}%)</div>
+    <div style="flex:1;min-width:140px;background:var(--panel2);border-radius:5px;height:10px;overflow:hidden">
+      <div style="width:${pct}%;height:100%;background:var(--accent)"></div></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="bf-auto" ${d.auto?"checked":""}> дозаполнять само</label>
+    <label class="hint" style="display:inline-flex;align-items:center;gap:4px">по <input id="bf-limit" type="number" value="${d.limit}" min="10" max="500" style="width:64px"> за раз, каждые <input id="bf-int" type="number" value="${d.interval_h}" min="1" max="48" style="width:52px"> ч</label>
+    <button id="bf-run">Прогнать порцию сейчас</button>
+    <span class="hint" id="bf-msg">${d.last_run?"последний проход: "+esc(d.last_run):""}</span></div>
+    <div class="hint" style="margin-top:5px">Осталось ${d.left.toLocaleString("ru-RU")} чатов без telegram-id — из-за этого в досье лида не видно, в каком чате он найден. Разом резолвить нельзя: Telegram выдаёт суточный флуд-лимит, поэтому идём порциями.</div>`;
+  const save=async(extra)=>api("/api/chatcat/backfill",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({auto:$("#bf-auto").checked,limit:+$("#bf-limit").value||100,interval_h:+$("#bf-int").value||6,...(extra||{})})});
+  $("#bf-auto").onchange=()=>save().then(()=>{$("#bf-msg").textContent=$("#bf-auto").checked?"включено — идёт фоном":"выключено";});
+  [$("#bf-limit"),$("#bf-int")].forEach(el=>el.onchange=()=>save().then(()=>{$("#bf-msg").textContent="сохранено";}));
+  $("#bf-run").onclick=async()=>{const b=$("#bf-run"),m=$("#bf-msg");
+    b.disabled=true;b.textContent="резолвлю…";m.textContent="аккаунты по очереди спрашивают Telegram — до нескольких минут";
+    await save({run:true});b.disabled=false;b.textContent="Прогнать порцию сейчас";loadBackfill();};
 }
 // Вердикт = решение ХОЗЯИНА (годен ли чат в работу). НЕ путать со status — тот про
 // стадию робота (new→analyzed→joined). Раньше оси были склеены, и «analyzed» ошибочно
@@ -2704,6 +2732,7 @@ async function viewChatCatalog(v){
 
     <div class="cc-tab" data-tab="cat">
       <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
+      <div class="card" id="cc-backfill" style="margin-bottom:12px;padding:10px 12px;display:none"></div>
       <div class="ttoolbar" style="margin-bottom:10px">
         <input id="cc-target" class="grow" placeholder="@username или ссылка чата — добавить вручную">
         <button class="primary" id="cc-add">Добавить</button>

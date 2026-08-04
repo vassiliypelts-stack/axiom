@@ -1485,6 +1485,31 @@ def _proxy_scheduler() -> None:
                 _log_run("kw_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[kw scheduler] {e}")
+        # --- дозаполнение tg_chat_id у чатов каталога (backfill) ---
+        # 1637 чатов из 2477 без tg_chat_id — из-за этого рвётся связка «в каком чате
+        # найден человек» в досье. Чинится одним модулем, но резолвить их разом нельзя:
+        # 16.07 на ~280 резолвах подряд прилетел FloodWait на 22.8 часа. Поэтому не
+        # «запустить и ждать», а капать порциями: за сутки очередь уходит сама, а
+        # профиль нагрузки остаётся человеческим. Порции и паузу решает backfill —
+        # у него есть пул аккаунтов, лимит на номер и отсечка по ступени прогрева.
+        try:
+            with database.get_conn() as conn:
+                bauto = database.get_setting(conn, "backfill_auto", "off")
+                bint = int(database.get_setting(conn, "backfill_interval_min", "360"))
+                blast = database.get_setting(conn, "backfill_last_run_ts", "0")
+                blimit = int(database.get_setting(conn, "backfill_limit", "100"))
+            if bauto == "on" and (time.time() - float(blast or 0)) >= bint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "backfill_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "backfill_last_run",
+                                         __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                res = subprocess.run([sys.executable, "-m", "channels.backfill", "--chats",
+                                      "--limit", str(max(10, min(blimit, 500)))],
+                                     cwd=str(BASE_DIR.parent), timeout=1800, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("backfill_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[backfill scheduler] {e}")
         time.sleep(60)
 
 
@@ -2466,6 +2491,46 @@ def chatcat_scan_progress() -> JSONResponse:
         return JSONResponse(json.loads(raw))
     except ValueError:
         return JSONResponse({"running": False})
+
+
+@app.get("/api/chatcat/backfill")
+def chatcat_backfill_status() -> JSONResponse:
+    """Сколько чатов ещё без tg_chat_id + настройки авто-дозаполнения.
+
+    Без tg_chat_id рвётся связка «в каком чате найден человек» (досье джойнит
+    tg_user_posts.chat_id → chats.tg_chat_id), и в карточке лида пропадает источник."""
+    database.init_db()
+    with database.get_conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE tg_chat_id IS NULL "
+            "AND username IS NOT NULL AND username<>''").fetchone()["c"]
+        done = conn.execute("SELECT COUNT(*) c FROM chats WHERE tg_chat_id IS NOT NULL").fetchone()["c"]
+        return JSONResponse({
+            "left": left, "done": done,
+            "auto": database.get_setting(conn, "backfill_auto", "off") == "on",
+            "interval_h": int(database.get_setting(conn, "backfill_interval_min", "360")) // 60,
+            "limit": int(database.get_setting(conn, "backfill_limit", "100")),
+            "last_run": database.get_setting(conn, "backfill_last_run", None),
+        })
+
+
+@app.post("/api/chatcat/backfill")
+def chatcat_backfill_set(payload: dict = Body(default={})) -> JSONResponse:
+    """Включить/настроить авто-дозаполнение. run=true — прогнать одну порцию сейчас."""
+    with database.get_conn() as conn:
+        if "auto" in payload:
+            database.set_setting(conn, "backfill_auto", "on" if payload.get("auto") else "off")
+        if payload.get("interval_h"):
+            database.set_setting(conn, "backfill_interval_min",
+                                 str(max(1, int(payload["interval_h"])) * 60))
+        if payload.get("limit"):
+            database.set_setting(conn, "backfill_limit",
+                                 str(max(10, min(int(payload["limit"]), 500))))
+    if payload.get("run"):
+        return JSONResponse(_run_capture(
+            ["channels.backfill", "--chats", "--limit", str(payload.get("limit") or 100)],
+            timeout=1800))
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/chatcat/tgstat")

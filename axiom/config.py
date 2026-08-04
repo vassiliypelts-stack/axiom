@@ -79,6 +79,12 @@ DAILY_FIRST_MESSAGES = int(os.getenv("DAILY_FIRST_MESSAGES", "15"))
 DADATA_API_KEY = os.getenv("DADATA_API_KEY", "")
 
 # --- Встречи (Calendar + Zoom) ---
+# ПОСТОЯННАЯ ссылка на созвон (Zoom Personal Meeting Room, Яндекс Телемост, Google
+# Meet — что угодно, что не протухает). Задана — агент даёт её сразу и НЕ ходит в
+# Zoom API под каждый слот. Это не только быстрее: Google Calendar и часть Zoom API
+# недоступны из РФ, и без обходного пути встреча оставалась без ссылки вовсе —
+# человек соглашался на созвон и не получал, куда подключаться.
+PERMANENT_MEETING_URL = os.getenv("PERMANENT_MEETING_URL", "")
 MEETING_TZ = os.getenv("MEETING_TZ", "Europe/Moscow")
 MEETING_DURATION_MIN = int(os.getenv("MEETING_DURATION_MIN", "30"))
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE") or str(BASE_DIR / "google_credentials.json")

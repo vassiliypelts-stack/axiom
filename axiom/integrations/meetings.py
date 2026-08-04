@@ -73,8 +73,16 @@ def arrange(contact: dict, slot: str | None) -> MeetingResult:
         return MeetingResult(meeting_at_iso=slot, zoom_link=None, calendar_event_id=None, parsed=False)
 
     topic = f"AXIOM: созвон с {name}"
-    z = zoom.create_meeting(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ)
-    zoom_link = z["join_url"] if z else None
+    # Постоянная ссылка (личная комната Zoom, Телемост, Meet) — если задана, берём её
+    # и в Zoom API не идём вовсе. Так встреча получает ссылку даже когда внешние
+    # сервисы недоступны (Google Calendar и часть Zoom API закрыты из РФ) — раньше в
+    # этом случае человек соглашался на созвон и оставался без адреса подключения.
+    permanent = (config.PERMANENT_MEETING_URL or "").strip()
+    if permanent:
+        zoom_link = permanent
+    else:
+        z = zoom.create_meeting(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ)
+        zoom_link = z["join_url"] if z else None
 
     desc = f"Созвон с {name}. {('Zoom: ' + zoom_link) if zoom_link else ''}".strip()
     ev = gcal.create_event(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ, description=desc)

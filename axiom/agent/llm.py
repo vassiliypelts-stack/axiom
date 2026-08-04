@@ -283,7 +283,18 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
         # JSON-схемой: на схему модель охотно отвечает... этой же схемой (ловили на живом
         # прогоне). Слово «json» в промпте для этого режима обязательно — иначе пустота.
         props = schema.get("properties", {})
-        tmpl = {k: f"<{(v.get('description') or k)}>" for k, v in props.items()}
+        # enum лежит в json_schema_extra поля, а не в description — если не подмешать
+        # его сюда явно, модель в json_object-режиме (DeepSeek и т.п.) не видит СПИСОК
+        # допустимых значений вообще и придумывает произвольный текст вместо одного из
+        # enum (ловили вживую: intent="Готов слушать, открыт к диалогу" вместо "positive").
+        def _hint(v: dict) -> str:
+            base = v.get("description") or ""
+            enum_vals = v.get("enum")
+            if enum_vals:
+                choices = " | ".join(str(e) for e in enum_vals)
+                return f"{base} — РОВНО ОДНО ИЗ: {choices}" if base else f"ОДНО ИЗ: {choices}"
+            return base
+        tmpl = {k: f"<{_hint(v) or k}>" for k, v in props.items()}
         system = ((system + "\n\n") if system else "") + (
             "Верни РОВНО один json-объект и ничего больше — без пояснений и без ```.\n"
             "Ниже ключи и что класть в каждый; подставь ЗНАЧЕНИЯ вместо <…>, "

@@ -312,9 +312,14 @@ def main() -> None:
     p.add_argument("--save", action="store_true", help="записать найденных в книжку (иначе только печать)")
     p.add_argument("--harvest", action="store_true", help="H1: собрать тексты+bio авторов в tg_user_posts (сырьё для досье)")
     p.add_argument("--days", type=int, default=HARVEST_DAYS, help="окно сбора сообщений для --harvest (дней)")
+    p.add_argument("--account", type=int, default=None, dest="account_id",
+                   help="аккаунт из БД, которым парсить (по id) — обязателен для ЗАКРЫТЫХ чатов: "
+                        "список участников видит только тот, кто реально в чате состоит. "
+                        "Не задан — используется главный аккаунт из .env (годится только для "
+                        "публичных @чатов, куда .env-аккаунт не обязан быть вступившим)")
     args = p.parse_args()
     asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
-                    harvest=args.harvest, days=args.days))
+                    harvest=args.harvest, days=args.days, account_id=args.account_id))
 
 
 if __name__ == "__main__":

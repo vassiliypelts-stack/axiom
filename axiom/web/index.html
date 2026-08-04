@@ -2453,9 +2453,116 @@ async function loadCoverage(){
 // читали как «одобрен», хотя это лишь «робот прочитал».
 const CHAT_VERDICT={"годен":"✅ годен","не годен":"🚫 не годен","на проверку":"🤔 на проверку","мёртвый":"💀 мёртвый"};
 const CHAT_VERDICT_CLS={"годен":"active","не годен":"stop","на проверку":"nurture","мёртвый":"stop"};
+// Откуда чат приехал в каталог. Пачка из «похожих» имеет общую природу — по этому
+// полю её можно отобрать целиком и разобрать разом, а не выискивать глазами в notes.
+const CHAT_SRC={similar:"🔗 похожий",discover:"🔍 поиск",tgstat:"📈 tgstat",inventory:"👤 мой аккаунт",keyword:"🎯 по ключам",manual:"✍️ вручную"};
 let CC_SCAN_TIMER=null;
 let CC_TABLE=null;                     // ручка таблицы чатов — обновлять без пересборки страницы
 let CC_FILTER={fav:false,good:false,canwrite:false,notrash:false};  // быстрые чипы-фильтры
+
+// ─── Отчёт по каналу: о чём пишут, как часто, что заходит ────────────────────
+// Диаграммы рисуем сами (inline SVG + CSS-бары): пульт обязан работать в закрытом
+// контуре, а внешний Chart.js тянул бы CDN. Данные считает channels/channel_report.
+let CR_DAYS=30;
+function crBars(items,valKey,labKey,color){
+  const max=Math.max(1,...items.map(i=>+i[valKey]||0));
+  return items.map(i=>{
+    const v=+i[valKey]||0,h=Math.round(100*v/max);
+    return `<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;min-width:0">
+      <div title="${esc(String(i[labKey]))}: ${v}" style="width:100%;background:${color};border-radius:3px 3px 0 0;height:${Math.max(h,v?3:0)}%"></div>
+      <div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden">${esc(String(i[labKey]))}</div>
+    </div>`;}).join("");
+}
+function crSpark(byDay){
+  if(!byDay.length)return "";
+  const max=Math.max(1,...byDay.map(d=>d.posts));
+  const w=Math.max(320,byDay.length*14),h=70;
+  const pts=byDay.map((d,i)=>{
+    const x=byDay.length>1?(i*(w-12)/(byDay.length-1))+6:w/2;
+    return `${x.toFixed(1)},${(h-8-(h-20)*d.posts/max).toFixed(1)}`;}).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:70px">
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+  </svg>`;
+}
+async function openChatReport(cid){
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  wrap.innerHTML='<div class="org-mform-inner" style="max-width:760px">гружу отчёт…</div>';
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)close();};
+  document.addEventListener("keydown",function esc3(e){
+    if(e.key==="Escape"){close();document.removeEventListener("keydown",esc3);}});
+  const draw=async()=>{
+    const inner=wrap.querySelector(".org-mform-inner");
+    let d;try{d=await api(`/api/chatcat/${cid}/report?days=${CR_DAYS}`);}catch(e){d=null;}
+    if(!d||d.error){inner.innerHTML=`<div style="color:#c0392b">${esc((d&&d.error)||"не загрузилось")}</div>
+      <div style="margin-top:12px"><button class="modal-close">закрыть</button></div>`;
+      inner.querySelector(".modal-close").onclick=close;return;}
+    const ch=d.chat||{};
+    const head=`<div style="font-weight:700;font-size:16px">📊 ${esc(ch.title||"канал")}</div>
+      <div class="hint" style="margin-bottom:10px">${esc(ch.kind||"")}${ch.members_count?" · "+Number(ch.members_count).toLocaleString("ru-RU")+" подписчиков":""}${ch.username?' · <a class="ext" href="https://t.me/'+esc(ch.username)+'" target="_blank">@'+esc(ch.username)+" ↗</a>":""}</div>
+      <div class="ttoolbar" style="margin:0 0 12px">
+        ${[7,30,90].map(n=>`<button class="cr-d ${CR_DAYS===n?"primary":""}" data-d="${n}">${n} дней</button>`).join("")}
+        <button id="cr-collect" title="сходить в Telegram за свежими постами">⟳ Обновить из Telegram</button>
+        <span class="hint" id="cr-msg"></span></div>`;
+    if(!d.posts){
+      inner.innerHTML=head+`<div class="empty">${esc(d.hint||"постов за период нет")}<div class="hint" style="margin-top:8px">Нажми «⟳ Обновить из Telegram» — соберём посты и посчитаем.</div></div>
+        <div style="margin-top:14px"><button class="modal-close">закрыть</button></div>`;
+    }else{
+      const p=d.pace,r=d.reach;
+      const kpi=(v,l,t)=>`<div style="flex:1;min-width:110px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:9px 11px" title="${esc(t||"")}">
+        <div style="font-size:18px;font-weight:700">${v}</div><div class="hint">${l}</div></div>`;
+      inner.innerHTML=head+`
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          ${kpi(d.posts,"постов","за период "+(d.period.from||"")+" → "+(d.period.to||""))}
+          ${kpi(p.per_day,"в день",p.per_week+" в неделю")}
+          ${kpi(Number(r.avg_views).toLocaleString("ru-RU"),"просмотров","среднее по «отстоявшимся» постам (старше суток): "+r.mature_posts+" шт.")}
+          ${kpi(r.avg_reactions,"реакций","в среднем на пост")}
+          ${kpi(r.avg_replies,"комментов","в среднем на пост")}
+          ${r.views_per_member!=null?kpi(r.views_per_member+"%","охват","просмотров к числу подписчиков — сравнимо между каналами"):""}
+        </div>
+        <div style="font-weight:600;margin:0 0 4px">Публикации по дням</div>
+        ${crSpark(p.by_day)}
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin:12px 0 4px">
+          <div style="flex:1;min-width:240px">
+            <div style="font-weight:600;margin-bottom:6px">Дни недели</div>
+            <div style="display:flex;gap:4px;height:90px;align-items:flex-end">${crBars(p.by_weekday,"posts","day","var(--accent)")}</div>
+          </div>
+          <div style="flex:1.4;min-width:280px">
+            <div style="font-weight:600;margin-bottom:6px">Часы публикации</div>
+            <div style="display:flex;gap:2px;height:90px;align-items:flex-end">${crBars(p.by_hour.filter((_,i)=>i%2===0),"posts","hour","var(--green)")}</div>
+          </div>
+        </div>
+        <div style="font-weight:600;margin:14px 0 6px">О чём пишут <span class="hint">— доля постов, где встречается тема</span></div>
+        ${d.themes.map(t=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <div style="min-width:130px;font-size:13px">${esc(t.term)}</div>
+          <div style="flex:1;background:var(--panel2);border-radius:4px;height:14px;overflow:hidden">
+            <div style="width:${Math.min(100,t.share)}%;height:100%;background:var(--accent)"></div></div>
+          <div class="hint" style="min-width:74px;text-align:right">${t.posts} · ${t.share}%</div></div>`).join("")}
+        ${d.phrases.length?`<div style="font-weight:600;margin:14px 0 6px">Устойчивые связки</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${d.phrases.map(t=>`<span class="badge b-active" title="${t.posts} постов">${esc(t.term)} · ${t.share}%</span>`).join("")}</div>`:""}
+        ${(d.voices&&d.voices.length)?`<div style="font-weight:600;margin:14px 0 6px">Кто задаёт тон <span class="hint">— по собранным сообщениям участников</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${d.voices.slice(0,12).map(v=>`<span class="badge b-nurture" title="${v.msgs} сообщений, последнее ${esc(v.last_ts||"")}">${esc(v.name)} · ${v.msgs}</span>`).join("")}</div>`:""}
+        <div style="font-weight:600;margin:14px 0 6px">Что зашло лучше всего <span class="hint">— отклик к охвату</span></div>
+        ${d.top_posts.map(t=>`<div style="background:var(--panel2);border-left:3px solid var(--green);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+          <div class="hint">${t.engagement}% отклика · 👁 ${Number(t.views||0).toLocaleString("ru-RU")} · ❤ ${t.reactions||0} · 💬 ${t.replies||0} · ${fmt(t.ts)}${t.link?' · <a class="ext" href="'+esc(t.link)+'" target="_blank">открыть ↗</a>':""}</div>
+          <div style="font-size:13px;margin-top:3px">${esc(t.text||"")}</div></div>`).join("")}
+        <div style="margin-top:14px"><button class="modal-close">закрыть</button></div>`;
+    }
+    inner.querySelector(".modal-close").onclick=close;
+    inner.querySelectorAll(".cr-d").forEach(b=>b.onclick=()=>{CR_DAYS=+b.dataset.d;draw();});
+    const cb=inner.querySelector("#cr-collect");
+    if(cb)cb.onclick=async()=>{
+      const m=inner.querySelector("#cr-msg");cb.disabled=true;cb.textContent="собираю…";
+      m.textContent="иду в Telegram за постами, это до пары минут";
+      const res=await api(`/api/chatcat/${cid}/report/collect`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({days:CR_DAYS})});
+      cb.disabled=false;cb.textContent="⟳ Обновить из Telegram";
+      if(res.error){m.innerHTML='<span style="color:#c0392b">'+esc(res.error)+"</span>";return;}
+      m.textContent="готово";draw();
+    };
+  };
+  await draw();
+}
 
 // Тихо обновить данные чатов и перерисовать ТОЛЬКО таблицу — без route(), чтобы страница
 // не прыгала под пользователем (частая жалоба: скан заканчивался и сбрасывал прокрутку/фильтр).
@@ -2725,8 +2832,9 @@ async function viewChatCatalog(v){
       if(CC_FILTER.notrash && (r.verdict==='мёртвый'||r.verdict==='не годен'))return false;
       return true;},
     onDraw:rows=>{ccFiltered=rows;},
-    groupOptions:[{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"}],
-    groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):k==="verdict"?(CHAT_VERDICT[val]||"без вердикта"):val,
+    groupOptions:[{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"},{key:"source",label:"откуда"},{key:"parent_title",label:"похож на"}],
+    groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):k==="verdict"?(CHAT_VERDICT[val]||"без вердикта")
+      :k==="source"?(CHAT_SRC[val]||val||"источник не указан"):k==="parent_title"?(val||"не из похожих"):val,
     onRowClick:openChat,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="cc-sel" data-id="${r.id}" onclick="event.stopPropagation()" ${selChat.has(r.id)?"checked":""}>`},
@@ -2741,6 +2849,11 @@ async function viewChatCatalog(v){
       {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
       {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
+      {key:"source",label:"Откуда",cls:"sub",render:r=>{
+        if(!r.source)return "—";
+        const lbl=CHAT_SRC[r.source]||esc(r.source);
+        return r.parent_title?`<span title="приехал из похожих на «${esc(r.parent_title)}»">${lbl}</span>`:lbl;}},
+      {key:"report",label:"Отчёт",render:r=>`<button class="cc-rep" data-id="${r.id}" onclick="event.stopPropagation()" title="о чём пишут, как часто, что заходит">📊${r.posts_count?" "+r.posts_count:""}</button>`},
       {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
       {key:"topic",label:"Тема",cls:"sub",render:r=>esc(r.topic)||"—"},
       {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—"},
@@ -2764,6 +2877,8 @@ async function viewChatCatalog(v){
     emptyText:"Чатов нет. «Инвентаризация» подтянет твои чаты, или добавь @username вручную → «Анализ».",
   });
   $("#cc-body").addEventListener("click",async(e)=>{
+    const rep=e.target.closest(".cc-rep");
+    if(rep){e.stopPropagation();openChatReport(+rep.dataset.id);return;}
     const b=e.target.closest(".cc-fav");if(!b)return;e.stopPropagation();
     const id=+b.dataset.id,row=CHATCAT.find(c=>c.id===id);const nv=row&&row.favorite?0:1;
     b.textContent=nv?"⭐":"☆";if(row)row.favorite=nv;

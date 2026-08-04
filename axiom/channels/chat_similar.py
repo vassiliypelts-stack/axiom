@@ -91,8 +91,13 @@ async def _recommend(client, seed: dict) -> list[Channel]:
     return [c for c in res.chats if isinstance(c, Channel)]
 
 
-def _upsert(c: Channel, topic: str | None, seed_title: str) -> tuple[str, int | None]:
-    """Чат в каталог. Возвращает ('added'|'updated', id новой записи). Дедуп: tg_chat_id → username."""
+def _upsert(c: Channel, topic: str | None, seed_title: str,
+            parent_id: int | None = None) -> tuple[str, int | None]:
+    """Чат в каталог. Возвращает ('added'|'updated', id новой записи). Дедуп: tg_chat_id → username.
+
+    Происхождение пишем В ПОЛЯ (source/parent_chat_id), а не только прозой в notes:
+    «покажи всё, что приехало из похожих на Хартманна» — рабочий запрос, а по тексту
+    заметки он не строится. Заметку оставляем для человека."""
     link = f"https://t.me/{c.username}" if c.username else None
     members = getattr(c, "participants_count", None)
     with database.get_conn() as conn:
@@ -100,18 +105,23 @@ def _upsert(c: Channel, topic: str | None, seed_title: str) -> tuple[str, int | 
         if not ex and c.username:
             ex = conn.execute("SELECT id FROM chats WHERE username=?", (c.username,)).fetchone()
         if ex:
+            # У существующей записи source не перетираем: чат мог прийти из инвентаря
+            # или ручного ввода, и «похож на X» — не главная правда о нём.
             conn.execute(
                 "UPDATE chats SET title=?, kind=?, members_count=COALESCE(?,members_count), "
-                "tg_chat_id=COALESCE(?,tg_chat_id), link=COALESCE(link,?), topic=COALESCE(topic,?) "
+                "tg_chat_id=COALESCE(?,tg_chat_id), link=COALESCE(link,?), topic=COALESCE(topic,?), "
+                "source=COALESCE(source,'similar'), parent_chat_id=COALESCE(parent_chat_id,?) "
                 "WHERE id=?",
-                (c.title, _kind(c), members, c.id, link, topic, ex["id"]),
+                (c.title, _kind(c), members, c.id, link, topic, parent_id, ex["id"]),
             )
-            return "updated", None
+            # id отдаём и здесь: следующий круг размножения должен знать, от кого
+            # приплыла находка, даже если сама запись уже была в каталоге.
+            return "updated", ex["id"]
         cur = conn.execute(
             "INSERT INTO chats (title, username, link, kind, members_count, tg_chat_id, topic, "
-            "status, notes) VALUES (?,?,?,?,?,?,?, 'new', ?)",
+            "status, notes, source, parent_chat_id) VALUES (?,?,?,?,?,?,?, 'new', ?, 'similar', ?)",
             (c.title, c.username, link, _kind(c), members, c.id, topic,
-             f"похож на «{seed_title}» (рекомендации TG)"),
+             f"похож на «{seed_title}» (рекомендации TG)", parent_id),
         )
         return "added", cur.lastrowid
 
@@ -169,16 +179,18 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
                     if min_members and members is not None and members < min_members:
                         skipped += 1
                         continue
-                    res, new_id = _upsert(c, seed.get("topic"), seed.get("title") or "?")
+                    res, row_id = _upsert(c, seed.get("topic"), seed.get("title") or "?",
+                                          parent_id=seed.get("id"))
                     if res == "added":
                         added += 1
                         c_added += 1
-                        if new_id:
-                            new_ids.append(new_id)
+                        if row_id:
+                            new_ids.append(row_id)
                     else:
                         updated += 1
-                    # kind обязателен: по нему _target выбирает PeerChannel vs PeerChat
-                    next_wave.append({"title": c.title, "username": c.username,
+                    # kind обязателен: по нему _target выбирает PeerChannel vs PeerChat.
+                    # id — чтобы находка следующего круга знала своего родителя.
+                    next_wave.append({"id": row_id, "title": c.title, "username": c.username,
                                       "tg_chat_id": c.id, "kind": _kind(c),
                                       "topic": seed.get("topic")})
                     if added >= max_new:

@@ -2383,7 +2383,11 @@ def chatcat_list() -> JSONResponse:
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute(
-            "SELECT c.*, (SELECT COUNT(*) FROM chat_admins a WHERE a.chat_id=c.id) AS admins_count "
+            "SELECT c.*, (SELECT COUNT(*) FROM chat_admins a WHERE a.chat_id=c.id) AS admins_count, "
+            # откуда чат приехал: «похож на Хартманна» должно читаться в карточке,
+            # а не восстанавливаться из прозы в notes
+            "(SELECT p.title FROM chats p WHERE p.id=c.parent_chat_id) AS parent_title, "
+            "(SELECT COUNT(*) FROM channel_posts cp WHERE cp.chat_id=c.id) AS posts_count "
             "FROM chats c ORDER BY c.members_count DESC, c.id DESC"
         ).fetchall()
     return JSONResponse([dict(r) for r in rows])
@@ -2545,6 +2549,36 @@ def chatcat_enrich(chat_id: int) -> JSONResponse:
     if not target:
         return JSONResponse({"error": "у чата нет ни @username, ни ссылки"}, status_code=400)
     res = _run_capture(["channels.chat_scan", "--target", target, "--id", str(chat_id)], timeout=180)
+    return JSONResponse(res)
+
+
+@app.get("/api/chatcat/{chat_id}/report")
+def chatcat_report(chat_id: int, days: int = 30) -> JSONResponse:
+    """Отчёт по каналу: объём, ритм, охват, о чём пишут, что зашло.
+
+    Только чтение базы — Telegram не трогаем. Поэтому периоды можно перебирать
+    сколько угодно: сбор постов делается отдельной кнопкой (см. /report/collect)."""
+    from channels.channel_report import analyze
+    return JSONResponse(analyze(chat_id, max(1, min(int(days or 30), 365))))
+
+
+@app.post("/api/chatcat/{chat_id}/report/collect")
+def chatcat_report_collect(chat_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Сходить в Telegram за свежими постами канала (долго — отдельным процессом)."""
+    days = max(1, min(int(payload.get("days") or 30), 365))
+    limit = max(10, min(int(payload.get("limit") or 500), 3000))
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT title, username, tg_chat_id FROM chats WHERE id=?",
+                           (chat_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "чат не найден"}, status_code=404)
+    if not row["username"] and not row["tg_chat_id"]:
+        return JSONResponse({"error": "у чата нет ни @username, ни telegram-id — "
+                                      "нечем адресовать. Сначала «Просканировать»."},
+                            status_code=400)
+    res = _run_capture(["channels.channel_report", "--chat", str(chat_id),
+                        "--collect", "--days", str(days), "--limit", str(limit)],
+                       timeout=600)
     return JSONResponse(res)
 
 

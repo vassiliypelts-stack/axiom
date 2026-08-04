@@ -251,6 +251,27 @@ CREATE TABLE IF NOT EXISTS tg_user_posts (
     UNIQUE(tg_user_id, chat_id, msg_id)      -- дедуп: повторный прогон не плодит
 );
 
+-- Посты САМОГО канала (не участников — для тех есть tg_user_posts).
+-- Сырьё для отчёта по конкуренту: сколько публикует, как часто, о чём, что заходит.
+-- Одна строка = один пост. Метрики (просмотры/пересылки/реакции/комментарии) снимаются
+-- на момент сбора: у свежего поста они ещё растут, поэтому сравнивать честно можно
+-- только посты сопоставимого возраста — отчёт это учитывает.
+CREATE TABLE IF NOT EXISTS channel_posts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,           -- каталожный chats.id
+    tg_chat_id  INTEGER,                    -- сырой telegram-id (без -100)
+    msg_id      INTEGER NOT NULL,
+    text        TEXT,
+    views       INTEGER,
+    forwards    INTEGER,
+    replies     INTEGER,                    -- комментариев под постом
+    reactions   INTEGER,
+    ts          TEXT,                       -- дата публикации (UTC, 'YYYY-MM-DD HH:MM:SS')
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(chat_id, msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_posts_chat_ts ON channel_posts(chat_id, ts);
+
 -- Простые настройки приложения (ключ-значение): расписание прокси и т.п.
 -- ИИ-агенты: роль + тип задачи + промпт + привязка к аккаунту-исполнителю.
 -- Один аккаунт может играть разные роли (нетворкинг/лидген/инвайтинг) разными агентами.

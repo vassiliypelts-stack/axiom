@@ -61,9 +61,9 @@ TYPING_CPS = (12, 22)     # «скорость печати» — знаков/�
 MAX_TYPING_SEC = 9.0      # потолок имитации набора одного сообщения
 PART_PAUSE = (1.2, 3.5)   # пауза между соседними сообщениями
 # Человекоподобная РЕАКЦИЯ на входящее (как реальный человек, не бот-молния):
-NOTICE_DELAY = (3, 12)    # «заметил уведомление» — прежде чем открыть/прочитать чат
-LONG_THINK_CHANCE = 0.30  # с такой вероятностью человек «отвлёкся» и отвечает не сразу
-LONG_THINK = (45, 210)    # длинная пауза (сек), когда отвлёкся — от 45 сек до ~3.5 мин
+# диапазон настраивается в пульте (Аккаунты → «⏱ скорость ответа»), см. _reply_delay_range().
+# По умолчанию 30-60с — быстро для лида (не теряет теплоту диалога), но не мгновенно.
+REPLY_DELAY_DEFAULT = (30.0, 60.0)
 
 
 def _default_slots() -> list[str]:
@@ -241,23 +241,31 @@ def _contact_dict(row) -> dict:
     return {k: row[k] for k in ("name", "city", "agency") if row[k]}
 
 
+def _reply_delay_range() -> tuple[float, float]:
+    """Диапазон паузы «увидел → ответил», настраивается в пульте (app_settings
+    reply_delay_min_sec/max_sec). Не настроено — берём REPLY_DELAY_DEFAULT (30-60с)."""
+    with database.get_conn() as conn:
+        lo_raw = database.get_setting(conn, "reply_delay_min_sec")
+        hi_raw = database.get_setting(conn, "reply_delay_max_sec")
+    try:
+        lo = float(lo_raw) if lo_raw else REPLY_DELAY_DEFAULT[0]
+        hi = float(hi_raw) if hi_raw else REPLY_DELAY_DEFAULT[1]
+    except ValueError:
+        lo, hi = REPLY_DELAY_DEFAULT
+    return (lo, hi) if hi >= lo > 0 else REPLY_DELAY_DEFAULT
+
+
 async def _humanize_before_reply(client, peer) -> None:
     """Ведёт себя как живой человек ПЕРЕД ответом на входящее:
-    1) не отвечает мгновенно — «замечает» уведомление через паузу;
-    2) отмечает сообщение прочитанным (собеседник видит галочки «прочитано»);
-    3) иногда «отвлекается» и отвечает заметно позже (LONG_THINK).
-    Так у собеседника складывается картина живого человека, который увидел, прочитал
-    и через некоторое время ответил — а не бота, отвечающего за 1 секунду."""
-    # 1) заметил уведомление
-    await asyncio.sleep(random.uniform(*NOTICE_DELAY))
-    # 2) прочитал (шлём read-квитанцию — у собеседника появятся галочки «прочитано»)
+    1) отмечает сообщение прочитанным (собеседник видит галочки «прочитано»);
+    2) выдерживает паузу в настроенном диапазоне (см. _reply_delay_range) — у
+    собеседника складывается картина живого человека, который увидел, прочитал и
+    через некоторое время ответил, а не бота, отвечающего мгновенно или спящего часами."""
     try:
         await client.send_read_acknowledge(peer)
     except Exception:
         pass
-    # 3) иногда человек отвлёкся — отвечает не сразу
-    if random.random() < LONG_THINK_CHANCE:
-        await asyncio.sleep(random.uniform(*LONG_THINK))
+    await asyncio.sleep(random.uniform(*_reply_delay_range()))
 
 
 async def _send_parts(client, peer, parts: list[str]) -> None:

@@ -21,6 +21,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import AddContactRequest
 from telethon.tl.types import InputPhoneContact
 
+import config
 from db import database
 from channels import opener_lint
 from channels.telegram import (
@@ -110,6 +111,21 @@ def _humanize(line: str) -> str:
     return s
 
 
+def _time_greeting() -> str:
+    """{greeting}/{приветствие}: «добрый день» в 20:30 читается ботом — время суток
+    берём по MEETING_TZ (тот же часовой пояс, что и у встреч/созвонов)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    hour = datetime.now(ZoneInfo(config.MEETING_TZ)).hour
+    if 5 <= hour < 12:
+        return "доброе утро"
+    if 12 <= hour < 18:
+        return "добрый день"
+    if 18 <= hour < 23:
+        return "добрый вечер"
+    return "доброй ночи"
+
+
 def _parts(template: str | None, name: str, agency: str = "", decision: str = "",
            sender: str = "", strict: bool = True) -> list[str]:
     """Шаблон → список сообщений. Каждая непустая строка — отдельное сообщение.
@@ -120,6 +136,8 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
     {sender}/{от_кого} — имя ТОГО АККАУНТА, с которого реально уходит сообщение:
     команда кампании ротирует несколько аккаунтов, и зашитое в текст «меня зовут
     Александр» с аккаунта «Наталья Соколова» палит связку с первой же строки.
+    {greeting}/{приветствие} — «добрый день/вечер/утро» по факту времени отправки,
+    а не зашитое статично в шаблоне (иначе «добрый день» уходит и в 20:30).
     {a|b|c} — синонимизация (случайный вариант на каждый контакт, антибан).
     Плюс лёгкая человечность (см. _humanize).
 
@@ -134,8 +152,10 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
             raise OpenerIsPromptError(opener_lint.blocking_message(problems))
     import re
     ag = agency or name or ""
+    greet = _time_greeting()
     values = {"name": name or "", "имя": name or "", "agency": ag, "агентство": ag,
-              "decision": decision or "", "sender": sender or "", "от_кого": sender or ""}
+              "decision": decision or "", "sender": sender or "", "от_кого": sender or "",
+              "greeting": greet, "приветствие": greet}
     text = _spin(template or "")
     # Регистр и пробелы внутри скобок оператору не видны: «{ИМЯ}», «{Name}», «{ name }»
     # раньше молча уезжали получателю фигурными скобками. Подставляем как есть.
@@ -146,10 +166,20 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
 
 def _sender_name(acc: dict | None) -> str:
     """Имя для {sender}: как аккаунт подписан в самом Telegram (tg_name), иначе метка.
-    Берём первое слово — в личке представляются именем, а не «Наталья Соколова 7928…»."""
+    Берём первое слово — в личке представляются именем, а не «Наталья Соколова 7928…».
+
+    label — ВНУТРЕННИЙ ярлык вида «Василий928» (имя + последние цифры номера, см.
+    ru_names.make_label) — цифры там нужны нам для узнавания в таблице, но в текст
+    получателю они уходить не должны («Меня зовут Василий928» — живой человек так не
+    представляется, выдаёт автоматику с полпинка). Если tg_name не заполнен (типичный
+    случай для «родных» личных номеров — упаковку личности сама автоматика на них не
+    гоняет), отрезаем цифровой хвост от label."""
     if not acc:
         return ""
-    raw = (acc.get("tg_name") or acc.get("label") or "").strip()
+    raw = (acc.get("tg_name") or "").strip()
+    if not raw:
+        import re
+        raw = re.sub(r"\d+$", "", (acc.get("label") or "")).strip()
     return raw.split()[0] if raw else ""
 
 

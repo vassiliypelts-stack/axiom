@@ -573,6 +573,26 @@ def settings_notify_target(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "target": target})
 
 
+@app.get("/api/settings/reply_delay")
+def settings_reply_delay_get() -> JSONResponse:
+    """Диапазон паузы «увидел → ответил» в диалоге (channels/telegram.py::_reply_delay_range)."""
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "min_sec": int(database.get_setting(conn, "reply_delay_min_sec", "30") or 30),
+            "max_sec": int(database.get_setting(conn, "reply_delay_max_sec", "60") or 60),
+        })
+
+
+@app.post("/api/settings/reply_delay")
+def settings_reply_delay_set(payload: dict = Body(...)) -> JSONResponse:
+    lo = max(1, int(payload.get("min_sec") or 30))
+    hi = max(lo, int(payload.get("max_sec") or 60))
+    with database.get_conn() as conn:
+        database.set_setting(conn, "reply_delay_min_sec", str(lo))
+        database.set_setting(conn, "reply_delay_max_sec", str(hi))
+    return JSONResponse({"ok": True, "min_sec": lo, "max_sec": hi})
+
+
 @app.post("/api/accounts")
 def accounts_add(payload: dict = Body(...)) -> JSONResponse:
     import phone_geo

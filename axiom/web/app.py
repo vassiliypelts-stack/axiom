@@ -2928,10 +2928,39 @@ def maintenance_backfill(payload: dict = Body(default={})) -> JSONResponse:
 # ---- Ниши и прослушка чатов по ключам (лиды по нишам) --------------------- #
 @app.get("/api/niches")
 def niches_list() -> JSONResponse:
+    """Ниши + КАЧЕСТВО их улова.
+
+    Ниша, набранная из названий услуг («нужен сайт», «разработка лендинга»), ловит
+    не заказчиков, а конкурентов: этими же словами исполнитель описывает себя в
+    рекламе. На живой базе это дало 275 конкурентов на 3 клиента — и понять причину
+    по интерфейсу было нельзя, находки просто «не появлялись» в фильтре «клиенты».
+    Теперь доля видна прямо на карточке ниши, а при явном перекосе пульт говорит,
+    что менять."""
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute("SELECT * FROM niches ORDER BY id").fetchall()
-    return JSONResponse([dict(r) for r in rows])
+        out = []
+        for r in rows:
+            d = dict(r)
+            st = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN intent='client' THEN 1 ELSE 0 END) AS client, "
+                "SUM(CASE WHEN intent='vendor' THEN 1 ELSE 0 END) AS vendor "
+                "FROM chat_hits WHERE niche_id=?", (r["id"],)
+            ).fetchone()
+            total = st["total"] or 0
+            client = st["client"] or 0
+            d["hits"] = {"total": total, "client": client, "vendor": st["vendor"] or 0,
+                         "client_share": round(100.0 * client / total, 1) if total else None}
+            # Совет даём только когда выборки хватает, чтобы не пугать на пяти находках.
+            d["advice"] = ("Ключи ловят рекламу, а не заказчиков: почти все находки — "
+                           "конкуренты. Так бывает, когда ключи это названия услуг "
+                           "(«нужен сайт», «разработка бота») — ими исполнитель "
+                           "описывает себя. Замени на то, КАК просит клиент: "
+                           "«посоветуйте», «кто может сделать», «ищу подрядчика»."
+                           ) if total >= 30 and client / total < 0.05 else None
+            out.append(d)
+    return JSONResponse(out)
 
 
 @app.post("/api/niches")

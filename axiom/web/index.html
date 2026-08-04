@@ -251,6 +251,14 @@
   .rsz{position:absolute;right:0;top:0;height:100%;width:7px;cursor:col-resize;}
   .rsz:hover{background:var(--accent);opacity:.45;}
   tr.filtrow th{background:var(--panel);padding:4px 8px;text-transform:none;}
+  /* Шапка большой таблицы (smartTable) остаётся видна при прокрутке страницы вниз —
+     прилипает сразу под топбаром (не под ним, иначе заголовки колонок перекрывались бы).
+     overflow:visible переопределяет общий table{overflow:hidden} только для #st-tbl:
+     иначе position:sticky внутри тихо не работает — hidden делает table своим же
+     "контейнером прокрутки", и шапка залипает внутри таблицы, а не относительно окна. */
+  #st-tbl table{overflow:visible;}
+  #st-tbl thead{position:sticky;top:var(--topbar-h,60px);z-index:3;}
+  #st-tbl thead tr:first-child th{box-shadow:0 1px 0 var(--border);}
   .colrow:hover{border-color:var(--accent)!important;}
   tr:last-child td{border-bottom:none;}
   tbody tr:hover td{background:var(--row-hov);}
@@ -4841,6 +4849,13 @@ function openEntityDeep(section,id){
     }catch(e){}
   },400);
 }
+// Высота топбара разная на разных страницах (кнопки справа переносятся на узких экранах) —
+// шапка smartTable должна прилипать РОВНО под ним, а не под жёстко зашитым числом.
+function _syncTopbarH(){
+  const tb=document.querySelector(".topbar");
+  if(tb)document.documentElement.style.setProperty("--topbar-h",tb.offsetHeight+"px");
+}
+window.addEventListener("resize",_syncTopbarH);
 async function route(){
   const raw=(location.hash||"#dashboard").slice(1);
   const slash=raw.indexOf("/");
@@ -4853,6 +4868,7 @@ async function route(){
   if(entityId)openEntityDeep(section,entityId);
   $("#upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
   refreshNotif();
+  _syncTopbarH();
 }
 window.addEventListener("hashchange",route);
 $("#refresh").onclick=route;

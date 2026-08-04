@@ -62,7 +62,7 @@ def _norm(phone: str | None) -> str | None:
     return "+" + d
 
 
-def _targets(limit: int | None, recheck: bool) -> list[dict]:
+def _targets(limit: int | None, recheck: bool, tag: str | None = None) -> list[dict]:
     """Кого пробиваем: есть телефон, нет tg_user_id, ещё НЕ пробивали.
 
     Признак «пробивали» — tg_checked_at, а НЕ has_tg. Это разные вещи, и их легко
@@ -70,15 +70,22 @@ def _targets(limit: int | None, recheck: bool) -> list[dict]:
     ссылки t.me в карточке 2ГИС — то есть это ДОГАДКА по ссылке, без tg_user_id и без
     единого запроса в Telegram. Фильтруй по has_tg — и как раз самые перспективные
     («у них точно есть TG») никогда не пробьются.
-    """
+
+    tag — сузить до аудитории конкретной кампании (contacts.tags LIKE). Без него порядок
+    ORDER BY id тянет самые старые контакты в базе, и свежая кампания с высокими id может
+    не дождаться своей очереди неделями, пока дневной потолок съедают чужие номера."""
     where = ["phone IS NOT NULL", "phone<>''", "tg_user_id IS NULL"]
+    params: list = []
     if not recheck:
         where.append("tg_checked_at IS NULL")
+    if tag:
+        where.append("tags LIKE ?")
+        params.append(f"%{tag}%")
     sql = f"SELECT id, name, phone FROM contacts WHERE {' AND '.join(where)} ORDER BY id"
     if limit:
         sql += f" LIMIT {int(limit)}"
     with database.get_conn() as conn:
-        return [dict(r) for r in conn.execute(sql)]
+        return [dict(r) for r in conn.execute(sql, params)]
 
 
 def _workers() -> list[int]:
@@ -220,9 +227,9 @@ def _save_progress(state: dict, tally: dict) -> None:
             ensure_ascii=False))
 
 
-async def run(limit: int | None, per: int, recheck: bool) -> None:
+async def run(limit: int | None, per: int, recheck: bool, tag: str | None = None) -> None:
     database.init_db()
-    people = _targets(limit, recheck)
+    people = _targets(limit, recheck, tag)
     if not people:
         print(json.dumps({"ok": False, "error": "нет номеров для пробива"}, ensure_ascii=False))
         return
@@ -262,8 +269,11 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=None, help="сколько номеров всего за заход")
     p.add_argument("--per", type=int, default=PER_ACCOUNT, help="потолок номеров на аккаунт")
     p.add_argument("--recheck", action="store_true", help="и те, кого раньше не нашли")
+    p.add_argument("--tag", type=str, default=None,
+                   help="только аудитория с этим тегом (напр. audience_tag кампании) — "
+                        "иначе идёт по ORDER BY id и свежая кампания ждёт очереди неделями")
     args = p.parse_args()
-    asyncio.run(run(args.limit, args.per, args.recheck))
+    asyncio.run(run(args.limit, args.per, args.recheck, args.tag))
 
 
 if __name__ == "__main__":

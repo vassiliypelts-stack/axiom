@@ -2266,9 +2266,16 @@ def enrich_batch(payload: dict = Body(...)) -> JSONResponse:
 
 @app.post("/api/enrich/resolve-tg")
 def enrich_resolve_tg(payload: dict = Body(...)) -> JSONResponse:
-    """Пробив номеров контактов в Telegram (phone_resolve) — узнать tg_user_id, username, аватар, bio."""
+    """Пробив номеров контактов в Telegram (phone_resolve) — узнать tg_user_id, username, аватар, bio.
+
+    tag — сузить до аудитории одной кампании; без него порядок ORDER BY id съедает
+    дневной потолок на самых старых контактах в базе, и свежая кампания ждёт очереди."""
     limit = int(payload.get("limit") or 100)
-    _spawn("channels.phone_resolve", "--limit", str(limit))
+    tag = (payload.get("tag") or "").strip()
+    args = ["channels.phone_resolve", "--limit", str(limit)]
+    if tag:
+        args += ["--tag", tag]
+    _spawn(*args)
     return JSONResponse({"ok": True, "limit": limit, "message": "запущен пробив TG в фоне. Лог в data/logs/phone_resolve.log"})
 
 

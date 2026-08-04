@@ -861,6 +861,23 @@ def org_tree() -> JSONResponse:
     return JSONResponse({"departments": tree})
 
 
+def _dept_descendants(conn, did: int) -> set[int]:
+    """Все потомки отдела (чтобы не дать перетащить отдел внутрь самого себя)."""
+    rows = conn.execute("SELECT id, parent_id FROM departments").fetchall()
+    kids: dict[int, list[int]] = {}
+    for r in rows:
+        kids.setdefault(r["parent_id"] or 0, []).append(r["id"])
+    out: set[int] = set()
+    stack = list(kids.get(did, []))
+    while stack:
+        x = stack.pop()
+        if x in out:
+            continue
+        out.add(x)
+        stack.extend(kids.get(x, []))
+    return out
+
+
 @app.post("/api/org/department")
 def org_department_save(payload: dict = Body(...)) -> JSONResponse:
     did = payload.get("id")
@@ -869,26 +886,82 @@ def org_department_save(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"error": "нужно название отдела"}, status_code=400)
     description = (payload.get("description") or "").strip() or None
     parent_id = payload.get("parent_id") or None
+    color = (payload.get("color") or "").strip() or None
+    head_member_id = payload.get("head_member_id") or None
     if did and parent_id and int(parent_id) == int(did):
         return JSONResponse({"error": "отдел не может быть родителем самого себя"}, status_code=400)
     with database.get_conn() as conn:
+        if did and parent_id and int(parent_id) in _dept_descendants(conn, int(did)):
+            return JSONResponse(
+                {"error": "нельзя вложить отдел в собственный подотдел"}, status_code=400
+            )
         if did:
             conn.execute(
-                "UPDATE departments SET name=?, description=?, parent_id=? WHERE id=?",
-                (name, description, parent_id, int(did)),
+                "UPDATE departments SET name=?, description=?, parent_id=?, color=?, head_member_id=? "
+                "WHERE id=?",
+                (name, description, parent_id, color, head_member_id, int(did)),
             )
             new_id = int(did)
         else:
+            # Новый отдел встаёт последним среди соседей по уровню.
+            nxt = conn.execute(
+                "SELECT COALESCE(MAX(sort_order),0)+1 n FROM departments "
+                "WHERE IFNULL(parent_id,0)=IFNULL(?,0)",
+                (parent_id,),
+            ).fetchone()["n"]
             cur = conn.execute(
-                "INSERT INTO departments (name, description, parent_id) VALUES (?,?,?)",
-                (name, description, parent_id),
+                "INSERT INTO departments (name, description, parent_id, sort_order, color) "
+                "VALUES (?,?,?,?,?)",
+                (name, description, parent_id, nxt, color),
             )
             new_id = cur.lastrowid
     return JSONResponse({"ok": True, "id": new_id})
 
 
+@app.post("/api/org/department/{did}/move")
+def org_department_move(did: int, payload: dict = Body(...)) -> JSONResponse:
+    """Перетаскивание отдела на схеме: смена родителя и/или порядка среди соседей.
+
+    `parent_id` = null — поднять на верхний уровень. `index` — позиция среди соседей
+    (0 = первым); если не передан, отдел встаёт последним.
+    """
+    parent_id = payload.get("parent_id") or None
+    index = payload.get("index")
+    if parent_id and int(parent_id) == did:
+        return JSONResponse({"error": "отдел не может быть родителем самого себя"}, status_code=400)
+    with database.get_conn() as conn:
+        if not conn.execute("SELECT 1 FROM departments WHERE id=?", (did,)).fetchone():
+            return JSONResponse({"error": "отдел не найден"}, status_code=404)
+        if parent_id and int(parent_id) in _dept_descendants(conn, did):
+            return JSONResponse(
+                {"error": "нельзя вложить отдел в собственный подотдел"}, status_code=400
+            )
+        conn.execute("UPDATE departments SET parent_id=? WHERE id=?", (parent_id, did))
+        # Пересобираем порядок соседей: вынимаем переносимый и вставляем на нужное место.
+        sibs = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM departments WHERE IFNULL(parent_id,0)=IFNULL(?,0) "
+                "ORDER BY sort_order, id",
+                (parent_id,),
+            ).fetchall()
+        ]
+        sibs = [x for x in sibs if x != did]
+        pos = len(sibs) if index is None else max(0, min(int(index), len(sibs)))
+        sibs.insert(pos, did)
+        for i, x in enumerate(sibs):
+            conn.execute("UPDATE departments SET sort_order=? WHERE id=?", (i, x))
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/org/department/{did}/delete")
-def org_department_delete(did: int) -> JSONResponse:
+def org_department_delete(did: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Удаление отдела. `move_to` — куда переселить сотрудников и подотделы.
+
+    Без `move_to` непустой отдел удалить нельзя (защита от случайной потери людей):
+    фронт в этом случае спрашивает, в какой отдел переносить.
+    """
+    move_to = (payload or {}).get("move_to") or None
     with database.get_conn() as conn:
         n_members = conn.execute(
             "SELECT COUNT(*) c FROM org_members WHERE department_id=?", (did,)
@@ -897,9 +970,29 @@ def org_department_delete(did: int) -> JSONResponse:
             "SELECT COUNT(*) c FROM departments WHERE parent_id=?", (did,)
         ).fetchone()["c"]
         if n_members or n_children:
-            return JSONResponse(
-                {"error": "сначала перенеси сотрудников/подотделы из этого отдела"}, status_code=400
+            if not move_to:
+                return JSONResponse(
+                    {
+                        "error": "сначала перенеси сотрудников/подотделы из этого отдела",
+                        "need_move": True,
+                        "members": n_members,
+                        "children": n_children,
+                    },
+                    status_code=400,
+                )
+            if int(move_to) == did:
+                return JSONResponse({"error": "нельзя перенести в удаляемый отдел"}, status_code=400)
+            if not conn.execute("SELECT 1 FROM departments WHERE id=?", (int(move_to),)).fetchone():
+                return JSONResponse({"error": "отдел-приёмник не найден"}, status_code=400)
+            conn.execute(
+                "UPDATE org_members SET department_id=? WHERE department_id=?", (int(move_to), did)
             )
+            # Подотделы поднимаем к родителю удаляемого, а не в приёмник — так ветка
+            # сохраняет форму; в приёмник уходят только люди.
+            parent = conn.execute(
+                "SELECT parent_id FROM departments WHERE id=?", (did,)
+            ).fetchone()["parent_id"]
+            conn.execute("UPDATE departments SET parent_id=? WHERE parent_id=?", (parent, did))
         conn.execute("DELETE FROM departments WHERE id=?", (did,))
     return JSONResponse({"ok": True})
 
@@ -966,18 +1059,40 @@ def org_member_save(payload: dict = Body(...)) -> JSONResponse:
 
 @app.post("/api/org/member/{mid}/move")
 def org_member_move(mid: int, payload: dict = Body(...)) -> JSONResponse:
-    """Переместить сотрудника в другой отдел (drag-and-drop на схеме)."""
+    """Переместить сотрудника в другой отдел (drag-and-drop на схеме).
+
+    `index` — позиция внутри отдела; без него сотрудник встаёт последним. Порядок
+    внутри отдела пересобирается целиком, чтобы sort_order не разъезжался.
+    """
     department_id = payload.get("department_id")
+    index = payload.get("index")
     if not department_id:
         return JSONResponse({"error": "нужно выбрать отдел"}, status_code=400)
+    department_id = int(department_id)
     with database.get_conn() as conn:
-        conn.execute("UPDATE org_members SET department_id=? WHERE id=?", (int(department_id), mid))
+        if not conn.execute("SELECT 1 FROM departments WHERE id=?", (department_id,)).fetchone():
+            return JSONResponse({"error": "отдел не найден"}, status_code=400)
+        conn.execute("UPDATE org_members SET department_id=? WHERE id=?", (department_id, mid))
+        sibs = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM org_members WHERE department_id=? ORDER BY sort_order, id",
+                (department_id,),
+            ).fetchall()
+        ]
+        sibs = [x for x in sibs if x != mid]
+        pos = len(sibs) if index is None else max(0, min(int(index), len(sibs)))
+        sibs.insert(pos, mid)
+        for i, x in enumerate(sibs):
+            conn.execute("UPDATE org_members SET sort_order=? WHERE id=?", (i, x))
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/org/member/{mid}/delete")
 def org_member_delete(mid: int) -> JSONResponse:
     with database.get_conn() as conn:
+        # Если удаляем руководителя — снимаем его с отдела, иначе останется битая ссылка.
+        conn.execute("UPDATE departments SET head_member_id=NULL WHERE head_member_id=?", (mid,))
         conn.execute("DELETE FROM org_members WHERE id=?", (mid,))
     return JSONResponse({"ok": True})
 
@@ -2218,6 +2333,51 @@ def deal_create(payload: dict = Body(...)) -> JSONResponse:
              payload.get("product") or None, payload.get("amount") or None),
         )
     return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.get("/api/today")
+def today_tasks() -> JSONResponse:
+    """Задачи на сегодня: кому напомнить о встрече, кого дожать, кто не дошёл.
+
+    Ядро (scheduler.collect_due) считало это давно, но результат жил только внутри
+    фонового цикла: увидеть «что система собирается сделать за меня» было негде.
+    Здесь тот же расчёт показывается человеку — с готовым текстом, который уйдёт,
+    и ссылкой на карточку, чтобы можно было вмешаться до отправки.
+
+    Только чтение: ничего не отправляет и не помечает. Отправкой занимается
+    планировщик в channels/telegram.run_loop()."""
+    from scheduler import collect_due
+    database.init_db()
+    with database.get_conn() as conn:
+        actions = collect_due(conn)
+        out = []
+        for a in actions:
+            row = conn.execute(
+                "SELECT COALESCE(person_name, name) AS who, username, phone, status, "
+                "(SELECT MAX(ts) FROM messages m WHERE m.contact_id=contacts.id) AS last_ts "
+                "FROM contacts WHERE id=?", (a.contact_id,)).fetchone()
+            out.append({
+                "kind": a.kind,                       # reminder | followup | noshow
+                "contact_id": a.contact_id,
+                "who": (row["who"] if row else None) or a.name or f"#{a.contact_id}",
+                "username": row["username"] if row else None,
+                "status": row["status"] if row else None,
+                "last_ts": row["last_ts"] if row else None,
+                "text": a.text,                       # что именно уйдёт человеку
+                "followup_n": getattr(a, "followup_n", None),
+                "deal_id": getattr(a, "deal_id", None),
+                # Без tg_user_id планировщик отправить не сможет — честно помечаем,
+                # иначе задача вечно висит в списке и выглядит как зависшая.
+                "sendable": bool(a.tg_user_id),
+            })
+    order = {"reminder": 0, "noshow": 1, "followup": 2}   # срочное выше
+    out.sort(key=lambda x: (order.get(x["kind"], 9), x["who"] or ""))
+    return JSONResponse({
+        "items": out,
+        "counts": {k: sum(1 for x in out if x["kind"] == k)
+                   for k in ("reminder", "noshow", "followup")},
+        "unsendable": sum(1 for x in out if not x["sendable"]),
+    })
 
 
 @app.get("/api/leads")

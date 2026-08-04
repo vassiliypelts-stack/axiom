@@ -403,49 +403,155 @@
   .fin-val{display:block;font-weight:700;font-size:15px;color:var(--accent)}
   .fin-label{font-size:10px;color:var(--muted);line-height:1.3}
 
-  /* ---- Оргструктура: визуальная org-диаграмма ---- */
-  .org-chart{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 0 20px;overflow-x:auto}
-  .org-chart .root-card{background:linear-gradient(135deg,#5b6cff,#7c5cff);color:#fff;padding:8px 22px;border-radius:10px;font-weight:700;font-size:14px;text-align:center;border:0;white-space:nowrap}
-  .org-chart .root-card .rsub{font-weight:400;font-size:11px;color:rgba(255,255,255,.75);margin-top:1px}
-  .org-chart .root-line{width:2px;height:10px;background:var(--border)}
-  .org-levels{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;width:100%;position:relative}
-  .org-levels::before{content:'';position:absolute;top:0;left:10%;width:80%;height:2px;background:var(--border)}
-  .org-dept{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:160px;max-width:220px;position:relative}
-  .org-dept::before{content:'';width:2px;height:10px;background:var(--border)}
-  .org-dept-hdr{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-weight:700;font-size:12px;text-align:center;width:100%;box-sizing:border-box;position:relative}
-  .org-dept-hdr .dsub{font-weight:400;font-size:10px;color:var(--muted);margin-top:1px}
-  .org-dept-hdr .dtools{position:absolute;right:4px;top:4px;display:none;gap:2px}
-  .org-dept-hdr:hover .dtools{display:flex}
-  .org-dept-hdr .dtools button{background:none;border:0;cursor:pointer;font-size:11px;padding:1px 4px;color:var(--muted);border-radius:3px}
-  .org-dept-hdr .dtools button:hover{background:var(--bg);color:var(--text)}
-  .org-dept-members{display:flex;flex-direction:column;gap:4px;width:100%}
-  .org-card{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;cursor:pointer;transition:all .12s;display:flex;align-items:center;gap:6px;position:relative}
-  .org-card:hover{border-color:var(--accent);box-shadow:0 0 0 2px rgba(91,108,255,.12);background:var(--bg)}
-  .org-card .oic{font-size:16px;width:20px;text-align:center;flex-shrink:0}
-  .org-card .oinfo{flex:1;min-width:0;line-height:1.3}
-  .org-card .oiname{font-weight:600;font-size:12px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
-  .org-card .oirole{font-size:10px;color:var(--muted)}
-  .org-card .oiacc{font-size:10px;color:var(--muted-lighter,var(--muted));background:var(--bg);padding:0 4px;border-radius:3px;white-space:nowrap}
-  .org-card .obadge{font-size:9px;padding:1px 6px;border-radius:4px;font-weight:600;flex-shrink:0}
-  .org-card .obadge.human{background:rgba(75,192,120,.15);color:#4bc078}
-  .org-card .obadge.agent{background:rgba(91,108,255,.15);color:#5b6cff}
-  .org-card .ocard-tools{position:absolute;right:-2px;top:-2px;display:none;gap:1px}
-  .org-card:hover .ocard-tools{display:flex}
-  .org-card .ocard-tools button{background:var(--panel);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:10px;padding:1px 5px;color:var(--muted);line-height:1.4}
-  .org-card .ocard-tools button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .org-pool{margin-top:16px;padding:12px 14px;border:1px dashed var(--border);border-radius:10px;background:var(--panel2)}
-  .org-pool-title{font-size:13px;font-weight:600;margin-bottom:6px}
-  .org-pool-grid{display:flex;flex-wrap:wrap;gap:4px}
-  .org-pool-chip{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:2px 8px;font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;transition:all .1s}
-  .org-pool-chip:hover{border-color:var(--accent)}
-  .org-pool-chip .odot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
-  .org-pool-chip .odot.green{background:#4bc078}
-  .org-pool-chip .odot.yellow{background:#ffc832}
-  .org-pool-chip .odot.red{background:#ff5c5c}
+  /* ═══════════ Оргструктура: живая org-диаграмма ═══════════
+     Дерево строится классическими CSS-коннекторами (::before/::after у ветки),
+     поэтому линии всегда идут точно от родителя к детям — без «нарисованных на глаз»
+     полосок, которые разъезжались в прошлой версии. */
+  .orgwrap{--oconn:color-mix(in srgb,var(--border) 100%,transparent);--oz:1}
+  .orgbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;margin-bottom:12px;
+    background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-sm);position:sticky;top:64px;z-index:3;}
+  .orgbar .osearch{position:relative;flex:1;min-width:170px;max-width:280px}
+  .orgbar .osearch input{width:100%;padding-left:30px}
+  .orgbar .osearch::before{content:'🔍';position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:12px;opacity:.6;pointer-events:none}
+  .ozoom{display:flex;align-items:center;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:2px}
+  .ozoom button{padding:2px 9px;font-size:13px;background:none;border:0;box-shadow:none;color:var(--muted);border-radius:6px;min-width:26px}
+  .ozoom button:hover{background:var(--bg);color:var(--text)}
+  .ozoom .olevel{font-size:11px;color:var(--muted);min-width:38px;text-align:center;font-variant-numeric:tabular-nums;cursor:pointer}
+  .orgstat{font-size:11px;color:var(--muted);display:flex;gap:10px;align-items:center;white-space:nowrap}
+  .orgstat b{color:var(--text);font-weight:700}
+
+  /* канвас: точечная сетка + перетаскивание пустого места (pan) */
+  .orgcanvas{position:relative;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);
+    background:var(--panel2);background-image:radial-gradient(color-mix(in srgb,var(--border) 70%,transparent) 1px,transparent 1px);
+    background-size:22px 22px;min-height:340px;max-height:76vh;cursor:grab;overscroll-behavior:contain;}
+  .orgcanvas.panning{cursor:grabbing}
+  .orgstage{display:flex;justify-content:center;min-width:max-content;padding:26px 30px 34px;
+    transform:scale(var(--oz));transform-origin:top center;transition:transform .14s ease-out}
+
+  /* ── скелет дерева ── */
+  .otree{display:inline-block}
+  .okids{display:flex;justify-content:center;position:relative;padding-top:24px;list-style:none;margin:0}
+  .okids::before{content:'';position:absolute;top:0;left:50%;border-left:2px solid var(--oconn);width:0;height:24px}
+  .obranch{position:relative;padding:24px 8px 0;display:flex;flex-direction:column;align-items:center}
+  .obranch::before,.obranch::after{content:'';position:absolute;top:0;right:50%;width:50%;height:24px;border-top:2px solid var(--oconn)}
+  .obranch::after{right:auto;left:50%;border-left:2px solid var(--oconn)}
+  .obranch:first-child::before,.obranch:last-child::after{border:0 none}
+  .obranch:last-child::before{border-right:2px solid var(--oconn);border-radius:0 7px 0 0}
+  .obranch:first-child::after{border-radius:7px 0 0 0}
+  .obranch:only-child{padding-top:0}
+  .obranch:only-child::before,.obranch:only-child::after{display:none}
+  .obranch.collapsed>.okids{display:none}
+
+  /* ── карточка отдела ── */
+  .odept{--dc:var(--accent);width:250px;background:var(--panel);border:1px solid var(--border);border-radius:13px;
+    box-shadow:var(--shadow-sm);overflow:hidden;transition:border-color .14s,box-shadow .14s,transform .14s;position:relative}
+  .odept:hover{border-color:color-mix(in srgb,var(--dc) 55%,var(--border));box-shadow:var(--shadow)}
+  .odept.dragging{opacity:.45}
+  .odept.dropinto{border-color:var(--dc);box-shadow:0 0 0 3px color-mix(in srgb,var(--dc) 25%,transparent)}
+  .odept.dim{opacity:.32;filter:saturate(.4)}
+  .odept.hitmatch{border-color:var(--accent2);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent2) 28%,transparent)}
+  .odept-hd{padding:9px 11px 8px;background:linear-gradient(180deg,color-mix(in srgb,var(--dc) 13%,transparent),transparent);
+    border-bottom:1px solid var(--border);position:relative;cursor:grab}
+  .odept-hd::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--dc)}
+  .odept-hd .dname{font-weight:700;font-size:13.5px;line-height:1.25;padding-right:22px;display:flex;align-items:center;gap:6px}
+  .odept-hd .dname .dico{color:var(--dc);flex-shrink:0;display:flex}
+  .odept-hd .dsub{font-size:10.5px;color:var(--muted);margin-top:2px;line-height:1.35}
+  .odept-hd .dmenu{position:absolute;right:5px;top:6px;background:none;border:0;box-shadow:none;color:var(--muted);
+    font-size:15px;line-height:1;padding:2px 5px;border-radius:6px;opacity:0;transition:opacity .12s}
+  .odept:hover .dmenu{opacity:1}
+  .odept-hd .dmenu:hover{background:var(--panel2);color:var(--text)}
+  .ocount{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap}
+  .ocount span{font-size:10px;font-weight:600;padding:1px 7px;border-radius:20px;border:1px solid var(--border);
+    background:var(--panel2);color:var(--muted);display:inline-flex;gap:3px;align-items:center}
+  .ocount span.hum{color:var(--green);border-color:color-mix(in srgb,var(--green) 35%,transparent);background:var(--green-soft)}
+  .ocount span.ai{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,transparent);background:var(--accent-soft)}
+  .ocount span.br{color:var(--purple);border-color:color-mix(in srgb,var(--purple) 35%,transparent);
+    background:color-mix(in srgb,var(--purple) 13%,transparent)}
+
+  /* ── список сотрудников внутри отдела ── */
+  .omembers{padding:7px;display:flex;flex-direction:column;gap:4px;min-height:34px;transition:background .12s}
+  .omembers.dropzone{background:var(--accent-soft);outline:2px dashed var(--accent);outline-offset:-4px;border-radius:9px}
+  .omember{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:9px;cursor:grab;position:relative;
+    border:1px solid transparent;transition:background .12s,border-color .12s}
+  .omember:hover{background:var(--panel2);border-color:var(--border)}
+  .omember.dragging{opacity:.4}
+  .omember.head{background:linear-gradient(90deg,color-mix(in srgb,var(--dc) 15%,transparent),transparent);
+    border-color:color-mix(in srgb,var(--dc) 32%,transparent)}
+  .omember.hitmatch{background:color-mix(in srgb,var(--accent2) 18%,transparent);border-color:var(--accent2)}
+  .oava{width:26px;height:26px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;
+    font-size:10.5px;font-weight:800;letter-spacing:.02em;color:#fff;position:relative}
+  .oava.ai{border-radius:8px;font-size:13px;font-weight:400}
+  .oava .olive{position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;border-radius:50%;border:2px solid var(--panel)}
+  .oava .olive.g{background:var(--green)} .oava .olive.r{background:var(--red)} .oava .olive.y{background:var(--faint)}
+  .ominfo{flex:1;min-width:0;line-height:1.3}
+  .omname{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px}
+  .omrole{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .omcrown{font-size:10px;flex-shrink:0}
+  .omkey{font-size:9px;flex-shrink:0;opacity:.8}
+  .omempty{font-size:10.5px;color:var(--faint);text-align:center;padding:7px 0;border:1px dashed var(--border);border-radius:9px}
+  .oadd{border:1px dashed var(--border);background:none;box-shadow:none;color:var(--muted);font-size:11px;
+    padding:4px;border-radius:9px;width:100%;transition:color .12s,border-color .12s}
+  .oadd:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+  /* сворачивание ветки */
+  .ocollapse{position:absolute;left:50%;bottom:-11px;transform:translateX(-50%);z-index:2;
+    background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;height:20px;
+    font-size:10px;font-weight:700;color:var(--muted);display:flex;align-items:center;gap:4px;box-shadow:var(--shadow-sm)}
+  .ocollapse:hover{border-color:var(--accent);color:var(--accent)}
+  .ocollapse .chev{transition:transform .15s;font-size:9px}
+  .obranch.collapsed>.odept .ocollapse .chev{transform:rotate(-90deg)}
+
+  /* корневая карточка «компания» */
+  .oroot{width:230px;background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--purple) 70%,var(--accent)));
+    color:#fff;border:0;border-radius:14px;padding:12px 16px;text-align:center;box-shadow:var(--shadow);position:relative}
+  .oroot .rname{font-weight:800;font-size:15px;letter-spacing:.02em}
+  .oroot .rsub{font-size:11px;opacity:.82;margin-top:2px}
+
+  /* ── компактный режим «Иерархия» (список с отступами) ── */
+  .olist{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
+  .olrow{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);transition:background .12s}
+  .olrow:last-child{border-bottom:0}
+  .olrow:hover{background:var(--panel2)}
+  .olrow.dept{cursor:pointer;font-weight:700}
+  .olrow.dept .obar{width:3px;height:16px;border-radius:3px;flex-shrink:0}
+  .olrow.mem{font-size:12.5px}
+  .olrow .olname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .olrow .olsub{color:var(--muted);font-size:11px;font-weight:400}
+  .olrow .olchev{font-size:10px;color:var(--muted);width:12px;flex-shrink:0;transition:transform .15s}
+  .olrow.dept.col .olchev{transform:rotate(-90deg)}
+  .olrow.hitmatch{background:color-mix(in srgb,var(--accent2) 15%,transparent)}
+  .olacts{display:flex;gap:3px;opacity:0;transition:opacity .12s}
+  .olrow:hover .olacts{opacity:1}
+  .olacts button{padding:1px 7px;font-size:11px;box-shadow:none}
+
+  /* ── пул непривязанных аккаунтов ── */
+  .org-pool{margin-top:14px;padding:12px 14px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--panel2)}
+  .org-pool-title{font-size:12.5px;font-weight:700;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+  .org-pool-grid{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .org-pool-chip{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:3px 9px;font-size:11px;
+    display:flex;align-items:center;gap:5px;cursor:grab;transition:border-color .12s,transform .12s}
+  .org-pool-chip:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .org-pool-chip.dragging{opacity:.4}
+  .org-pool-chip .odot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .org-pool-chip .odot.green{background:var(--green)}
+  .org-pool-chip .odot.yellow{background:var(--faint)}
+  .org-pool-chip .odot.red{background:var(--red)}
+
+  /* контекстное меню отдела */
+  .omenu{position:fixed;z-index:1200;background:var(--panel);border:1px solid var(--border);border-radius:11px;
+    box-shadow:var(--shadow);padding:5px;min-width:198px}
+  .omenu button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:0;box-shadow:none;
+    padding:7px 10px;border-radius:8px;font-size:12.5px;color:var(--text)}
+  .omenu button:hover{background:var(--panel2)}
+  .omenu button.dang{color:var(--red)}
+  .omenu hr{border:0;border-top:1px solid var(--border);margin:4px 6px}
+  .omenu .swatches{display:flex;gap:5px;padding:7px 10px 5px;flex-wrap:wrap}
+  .omenu .swatches i{width:19px;height:19px;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:transform .1s}
+  .omenu .swatches i:hover{transform:scale(1.15)}
+  .omenu .swatches i.on{border-color:var(--text)}
+
   .org-mform-wrap{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
   .org-mform-inner{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%;max-height:85vh;overflow-y:auto}
-  .org-dept-members.org-drop-hi{background:rgba(91,108,255,.08);border:2px dashed var(--accent);border-radius:8px;min-height:40px}
-  .org-dept-members{transition:background .12s,border-color .12s;min-height:30px}
 </style>
 </head>
 <body>
@@ -705,6 +811,39 @@ function bindTags(scope){
 }
 
 // ----------------------------------------------------------------- views
+// Задачи на сегодня: то, что планировщик собирается сделать за тебя — напомнить о
+// встрече, дожать молчуна, вернуть не дошедшего. Расчёт (scheduler.collect_due) был
+// давно, но жил внутри фонового цикла: увидеть заранее, что уйдёт человеку, было
+// негде. Здесь только показ, отправляет по-прежнему планировщик.
+const TASK_KIND={reminder:{ic:"⏰",label:"напомнить о встрече",cls:"b-active"},
+  noshow:{ic:"🔁",label:"не дошёл — вернуть",cls:"b-stop"},
+  followup:{ic:"👋",label:"дожать молчуна",cls:"b-nurture"}};
+async function loadTodayTasks(){
+  const box=$("#dash-today");if(!box)return;
+  let d;try{d=await api("/api/today");}catch(e){return;}
+  const items=d.items||[];
+  if(!items.length){box.style.display="none";return;}
+  box.style.display="";
+  const c=d.counts||{};
+  box.innerHTML=`<div class="dash-chh"><span class="ic">📋</span><h3>Задачи на сегодня</h3>
+      <span class="tag">${items.length}</span></div>
+    <div class="hint" style="margin:-4px 0 8px">Это сделает планировщик сам. Смотри заранее — если что-то не то, открой карточку и вмешайся.
+      ${c.reminder?` · ⏰ напомнить: ${c.reminder}`:""}${c.noshow?` · 🔁 вернуть: ${c.noshow}`:""}${c.followup?` · 👋 дожать: ${c.followup}`:""}</div>
+    ${items.slice(0,12).map(t=>{const k=TASK_KIND[t.kind]||{ic:"•",label:t.kind,cls:""};
+      return `<div class="card tt-row" data-cid="${t.contact_id}" style="margin-bottom:6px;padding:8px 10px;cursor:pointer;background:var(--panel2)">
+        <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+          <span>${k.ic}</span><b>${esc(t.who)}</b>
+          ${t.username?`<span class="tg">@${esc(t.username)}</span>`:""}
+          <span class="badge ${k.cls}">${k.label}${t.followup_n?` #${t.followup_n}`:""}</span>
+          ${t.sendable?"":'<span class="badge b-stop" title="нет telegram-id — планировщик не сможет отправить, задача повиснет">не отправится</span>'}
+          <span style="flex:1"></span><span class="hint">${t.last_ts?"последнее: "+fmt(t.last_ts):""}</span>
+        </div>
+        <div class="hint" style="margin-top:4px;font-style:italic">«${esc(t.text)}»</div>
+      </div>`;}).join("")}
+    ${items.length>12?`<div class="hint">…и ещё ${items.length-12}</div>`:""}
+    ${d.unsendable?`<div class="hint" style="margin-top:6px;color:#c0392b">⚠️ ${d.unsendable} задач(и) не уйдут: у контакта нет telegram-id. Пробей номер или открой диалог вручную.</div>`:""}`;
+  box.querySelectorAll(".tt-row").forEach(el=>el.onclick=()=>openDossier(+el.dataset.cid));
+}
 async function viewDashboard(v){
   const s=STATE.stats=await api("/api/stats");
   const a=s.accounts||{},r=s.resources||{},m=s.marketing||{},t=s.tasks||{};
@@ -746,6 +885,7 @@ async function viewDashboard(v){
         <button class="dash-run" id="conv-run"><span class="d"></span>Запустить конвейер</button></div>
       <div class="conv" id="conv"><div class="belt"></div><div class="pkg a"></div><div class="pkg b"></div><div class="pkg c"></div>${conv}</div>
     </section>
+    <section class="dash-glass dash-card" id="dash-today" style="display:none;margin-bottom:14px"></section>
     <div class="dash-grid">
       <section class="dash-glass dash-card d-sales">
         <div class="dash-chh"><span class="ic"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><circle cx="9" cy="9" r="3"/><circle cx="9" cy="9" r="1" fill="currentColor"/></svg></span><h3>Продажи · CRM</h3><span class="tag">${s.total||0} контакт</span></div>
@@ -786,6 +926,8 @@ async function viewDashboard(v){
       <span>AXIOM · LeadMachine — «Конвейер работает — клиенты приходят»</span>
     </footer>
   </div>`;
+
+  loadTodayTasks();
 
   // живые часы «обновлено» в шапке
   const clockEl=$("#dash-clock");if(clockEl){clockEl.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}

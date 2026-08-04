@@ -41,6 +41,12 @@ AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
 # Gemini берёт ключ из GEMINI_API_KEY (см. ниже, он же для авто-фото).
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
+# --- TGStat (каталог каналов/чатов) ---
+# Официальный API (api.tgstat.ru), а не парсинг сайта: tgstat.ru отдаёт 403 на
+# автоматические запросы, и обходить эту защиту мы не будем — у сервиса есть
+# документированный API с бесплатным тарифом. Токен: https://api.tgstat.ru/docs
+TGSTAT_TOKEN = os.getenv("TGSTAT_TOKEN", "")
+
 # --- БД ---
 DB_PATH = BASE_DIR / "data" / "axiom.db"
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"

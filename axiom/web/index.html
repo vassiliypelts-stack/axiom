@@ -2662,6 +2662,13 @@ async function viewChatCatalog(v){
         <input id="cc-target" class="grow" placeholder="@username или ссылка чата — добавить вручную">
         <button class="primary" id="cc-add">Добавить</button>
       </div>
+      <div class="ttoolbar" style="margin-bottom:10px">
+        <input id="cc-ts-q" class="grow" placeholder="📈 поиск по каталогу TGStat: «инвестиции», «ижс», «недвижимость сочи»…">
+        <input id="cc-ts-min" type="number" placeholder="от N подписчиков" style="max-width:150px">
+        <select id="cc-ts-kind"><option value="">каналы и чаты</option><option value="channels">только каналы</option><option value="groups">только чаты</option></select>
+        <button id="cc-ts-go" title="ищет по каталогу TGStat и заносит найденное сюда с пометкой «📈 tgstat»">Найти в TGStat</button>
+        <span class="hint" id="cc-ts-msg"></span>
+      </div>
       <div class="card" style="margin:0 0 10px;background:var(--panel2);display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px">
         <b style="font-size:13px">Показать:</b>
         <button class="ccf" data-f="fav" title="только помеченные ⭐ (звёздочка в первой колонке)">⭐ Избранные</button>
@@ -2812,6 +2819,22 @@ async function viewChatCatalog(v){
   $("#cc-add").onclick=async()=>{const t=$("#cc-target").value.trim();if(!t)return;
     const r=await api("/api/chatcat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:t})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openChat(r.id),200);};
+  const tsGo=$("#cc-ts-go");
+  if(tsGo)tsGo.onclick=async()=>{
+    const q=$("#cc-ts-q").value.trim(),m=$("#cc-ts-msg");
+    if(!q){m.textContent="введи запрос";return;}
+    const kind=$("#cc-ts-kind").value;
+    tsGo.disabled=true;tsGo.textContent="ищу…";m.textContent="запрашиваю каталог TGStat…";
+    const r=await api("/api/chatcat/tgstat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({q,min_members:+$("#cc-ts-min").value||0,
+        groups_only:kind==="groups",channels_only:kind==="channels"})});
+    tsGo.disabled=false;tsGo.textContent="Найти в TGStat";
+    // Модуль печатает JSON последней строкой — вытаскиваем его из вывода процесса.
+    let res=null;try{res=JSON.parse((r.output||"").trim().split("\n").pop());}catch(e){}
+    if(res&&res.ok===false){m.innerHTML='<span style="color:#c0392b">'+esc(res.error)+'</span>';return;}
+    if(!res){m.innerHTML='<span style="color:#c0392b">не разобрал ответ — лог: '+esc((r.output||"").slice(-200))+'</span>';return;}
+    m.textContent=`найдено ${res.found}, добавлено ${res.added||0}, обновлено ${res.updated||0}`;
+    route();};
   const impBtn=$("#cc-import");
   if(impBtn){impBtn.onclick=function(){showImportChatsDialog("");};};
   $("#cc-inv").onclick=async()=>{const b=$("#cc-inv"),m=$("#cc-inv-msg");b.disabled=true;b.textContent="сканирую…";m.textContent="аккаунт читает свои чаты и заносит в каталог (до ~1-2 мин)…";

@@ -2410,6 +2410,29 @@ def chatcat_scan_progress() -> JSONResponse:
         return JSONResponse({"running": False})
 
 
+@app.post("/api/chatcat/tgstat")
+def chatcat_tgstat(payload: dict = Body(...)) -> JSONResponse:
+    """Пополнить каталог из TGStat по фильтрам (категория/страна/размер).
+
+    ВАЖНО: объявлен ДО /api/chatcat/{chat_id} — иначе FastAPI попытается привести
+    «tgstat» к int (та же ловушка, что со scan_progress выше)."""
+    q = (payload.get("q") or "").strip()
+    if not q:
+        return JSONResponse({"error": "нужен поисковый запрос"}, status_code=400)
+    args = ["channels.tgstat", "--search", q, "--save",
+            "--limit", str(max(1, min(int(payload.get("limit") or 100), 500))),
+            "--country", (payload.get("country") or "ru")]
+    if payload.get("category"):
+        args += ["--category", str(payload["category"])]
+    if payload.get("min_members"):
+        args += ["--min-members", str(int(payload["min_members"]))]
+    if payload.get("groups_only"):
+        args.append("--groups-only")
+    elif payload.get("channels_only"):
+        args.append("--channels-only")
+    return JSONResponse(_run_capture(args, timeout=300))
+
+
 @app.get("/api/chatcat/{chat_id}")
 def chatcat_detail(chat_id: int) -> JSONResponse:
     database.init_db()

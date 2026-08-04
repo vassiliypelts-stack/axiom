@@ -79,6 +79,17 @@ def supports_batch(spec: str) -> bool:
     return is_anthropic(spec)
 
 
+# Провайдеры, НЕ понимающие картинки в запросе. DeepSeek на image_url отвечает
+# 400 «unknown variant image_url» и роняет ВЕСЬ запрос — не деградирует до текста.
+# Значит картинку нельзя даже прикладывать: вызывающий код обязан спросить заранее.
+_NO_VISION = {"deepseek"}
+
+
+def supports_vision(spec: str) -> bool:
+    """Можно ли слать этой модели изображения. False → шли только текст, иначе 400."""
+    return provider_of(spec) not in _NO_VISION
+
+
 def available(spec: str) -> bool:
     """Есть ли ключ под этого провайдера — чтобы гейтить шаг, а не падать в рантайме."""
     prov = provider_of(spec)

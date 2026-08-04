@@ -114,8 +114,12 @@ def _avatar_b64(tg_user_id: int | None) -> str | None:
 
 
 def _user_content(ctx: str, tg_user_id: int | None):
-    """Контент сообщения: текст, а при наличии аватара — ещё и картинка (vision)."""
-    img = _avatar_b64(tg_user_id)
+    """Контент сообщения: текст, а при наличии аватара — ещё и картинка (vision).
+
+    Если модель картинок не понимает (DeepSeek), фото НЕ прикладываем: он не
+    деградирует до текста, а роняет весь запрос 400-й ошибкой — на живом прогоне
+    так упало 9 из 10 досье, прошло только одно (у того человека не было аватара)."""
+    img = _avatar_b64(tg_user_id) if llm.supports_vision(config.MODEL) else None
     if not img:
         return ctx
     return [

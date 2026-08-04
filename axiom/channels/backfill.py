@@ -21,18 +21,26 @@ import random
 
 from telethon.errors import FloodWaitError
 
+from telethon.sessions import StringSession
+
 import config
-from channels.telegram import _build_client
+from channels.telegram import _build_client, build_client
 from db import database
 
 RESOLVE_PAUSE = (0.6, 1.4)   # антибан: дозируем резолвы сущностей
 PHOTO_PAUSE = (0.5, 1.2)     # антибан: дозируем скачивания фото
-# FloodWait дольше — не ждём, а выходим (как MAX_FLOOD_SKIP в chat_join).
+# FloodWait дольше — не ждём, а передаём работу следующему аккаунту пула.
 # Ловили вживую 16.07: после ~280 резолвов подряд Telegram выдал FloodWait 82169с (22.8ч),
-# и прогон послушно уснул на сутки. Резолв тысяч @username с ОДНОГО аккаунта упирается в
-# суточный лимит — это нормальная реакция Telegram, а не сбой: надо выйти, сказать
-# оператору правду и продолжить порциями/позже.
+# и прогон послушно уснул на сутки. Суточный лимит резолвов — на АККАУНТ, а не на задачу:
+# упёрся один — работать может следующий (см. ResolverPool).
 MAX_FLOOD_WAIT = 600
+# Сколько резолвов даём одному аккаунту за прогон. Ограничение не техническое, а
+# антибанное: 1.5 тыс. запросов подряд с одного номера — ровно тот профиль нагрузки,
+# на котором и словили сутки блокировки. Порция * размер пула ≈ вся очередь за прогон.
+PER_ACCOUNT_RESOLVES = 150
+# Ступень прогрева, ниже которой аккаунт к массовым резолвам не допускаем: у «вчера
+# зарегистрированного» номера тысяча запросов к API — самый быстрый путь в бан.
+MIN_WARM_STAGE = 3
 
 
 def _mark_photos_from_disk() -> int:
@@ -61,11 +69,142 @@ _RESOLVABLE = ("tg_chat_id IS NULL AND username IS NOT NULL AND username<>'' "
 
 
 class FloodStop(Exception):
-    """Telegram сказал ждать слишком долго — прогон надо прекратить, а не спать сутки."""
+    """Telegram сказал ждать слишком долго — этот аккаунт своё отработал.
+    Не приговор прогону: работу подхватит следующий аккаунт пула."""
 
     def __init__(self, seconds: int):
         self.seconds = seconds
         super().__init__(f"FloodWait {seconds}с")
+
+
+def _resolver_accounts() -> list[dict]:
+    """Рабочие аккаунты, которыми можно молотить резолвы.
+
+    «Родные» (protected) исключены жёстко — это личные номера владельца, автоматика их
+    не трогает нигде в проекте, и массовый резолв не исключение (именно на личном и
+    словили сутки FloodWait). Нужны живая сессия, не бан и прогрев от MIN_WARM_STAGE.
+    Назначенный в пульте «слушает чаты» идёт первым: оператор уже выбрал, какой номер
+    не жалко расходовать на такую работу."""
+    with database.get_conn() as conn:
+        listen_id = database.get_setting(conn, "listen_account_id")
+        rows = conn.execute(
+            "SELECT id, label, username, phone, tg_session, proxy, api_id, api_hash "
+            "FROM accounts "
+            "WHERE COALESCE(protected,0)=0 AND COALESCE(status,'') <> 'banned' "
+            "AND tg_session IS NOT NULL AND tg_session <> '' "
+            "AND COALESCE(session_alive,1) <> 0 "
+            "AND (COALESCE(status,'')='active' OR COALESCE(warm_stage,0) >= ?) "
+            "ORDER BY id",
+            (MIN_WARM_STAGE,),
+        ).fetchall()
+    accs = []
+    for r in rows:
+        a = dict(r)
+        a["label"] = a["label"] or a["username"] or a["phone"] or f"#{a['id']}"
+        accs.append(a)
+    if listen_id:
+        accs.sort(key=lambda a: 0 if str(a["id"]) == str(listen_id) else 1)
+    return accs
+
+
+class ResolverPool:
+    """Очередь аккаунтов для массовых обращений к Telegram (резолв @username, аватары).
+
+    ЗАЧЕМ. Суточный лимит таких запросов Telegram считает НА АККАУНТ. Пока вся работа шла
+    одним клиентом (и по умолчанию — личным номером из .env), 1.5 тыс. чатов упирались в
+    стену: ~280 резолвов, FloodWait 22.8ч, прогон стоит до завтра. Пул раздаёт работу
+    порциями: аккаунт отработал свою порцию (или получил FloodWait) — отходит, дальше
+    молотит следующий. Десять рабочих номеров по 150 запросов закрывают очередь за прогон.
+
+    Пул сам НЕ решает, что делать с ошибками резолва — только выдаёт клиента с остатком
+    квоты и принимает сигнал «этот всё»."""
+
+    def __init__(self, per_account: int = PER_ACCOUNT_RESOLVES):
+        self._accounts = _resolver_accounts()
+        self._per = per_account
+        self._idx = -1
+        self._client = None
+        self._acc: dict | None = None
+        self._used = 0
+        self.burned: list[str] = []     # кто упёрся в FloodWait
+        self.worked: list[str] = []     # кто реально поработал (для отчёта оператору)
+        self.fallback = False           # пришлось взять .env-аккаунт (пул пуст)
+
+    def available(self) -> int:
+        return len(self._accounts)
+
+    async def client(self):
+        """Клиент с непотраченной квотой. None — рабочие аккаунты кончились."""
+        if self._client is not None and self._used < self._per:
+            return self._client
+        await self._rotate()
+        return self._client
+
+    async def _rotate(self) -> None:
+        await self._drop_current()
+        while self._idx + 1 < len(self._accounts):
+            self._idx += 1
+            acc = self._accounts[self._idx]
+            try:
+                cl = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                                  acc.get("api_id"), acc.get("api_hash"))
+                await cl.connect()
+                if not await cl.is_user_authorized():
+                    await cl.disconnect()
+                    print(f"[пул] {acc['label']}: сессия не авторизована — пропускаю")
+                    continue
+            except Exception as e:  # noqa: BLE001
+                print(f"[пул] {acc['label']}: не подключился — {str(e)[:70]}")
+                continue
+            self._client, self._acc, self._used = cl, acc, 0
+            self.worked.append(acc["label"])
+            print(f"[пул] работает {acc['label']} (порция до {self._per})")
+            return
+        self._client, self._acc = None, None
+
+    async def _drop_current(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:  # noqa: BLE001 — отключение не должно ронять прогон
+                pass
+        self._client, self._acc = None, None
+
+    def spend(self) -> None:
+        self._used += 1
+
+    async def flood(self, seconds: int) -> None:
+        """Текущий аккаунт поймал длинный FloodWait — снимаем с работы досрочно."""
+        if self._acc:
+            self.burned.append(f"{self._acc['label']} ({seconds // 3600}ч)")
+            print(f"[пул] {self._acc['label']}: FloodWait {seconds}с "
+                  f"({seconds // 3600}ч) — передаю работу следующему")
+        self._used = self._per      # следующий client() возьмёт другой аккаунт
+
+    async def start_fallback(self) -> None:
+        """Пул пуст (нет ни одного подходящего рабочего аккаунта) — работаем .env-номером.
+        Раньше это было поведением по умолчанию и молча жгло личный аккаунт; теперь это
+        аварийный путь с явным предупреждением."""
+        print("[пул] ⚠ нет рабочих аккаунтов для резолва (нужны живая сессия, не «родной», "
+              f"прогрев ≥{MIN_WARM_STAGE}) — работаю ЛИЧНЫМ аккаунтом из .env. "
+              "Назначь рабочие номера, чтобы не рисковать личным.")
+        self._client = _build_client()
+        await self._client.start()
+        self._acc = {"label": "личный (.env)"}
+        self._used = 0
+        self.fallback = True
+        self.worked.append("личный (.env)")
+
+    async def close(self) -> None:
+        await self._drop_current()
+
+    def report(self) -> dict:
+        out: dict = {"accounts_used": self.worked}
+        if self.burned:
+            out["flood_limited"] = self.burned
+        if self.fallback:
+            out["fallback_env_account"] = True
+        return out
 
 
 async def _resolve(client, username: str):
@@ -88,8 +227,11 @@ async def _resolve(client, username: str):
     return None
 
 
-async def _backfill_chats(client, limit: int) -> dict:
-    """chats без tg_chat_id, но с @username → резолвим сущность → дозаполняем id."""
+async def _backfill_chats(pool: ResolverPool, limit: int) -> dict:
+    """chats без tg_chat_id, но с @username → резолвим сущность → дозаполняем id.
+
+    Резолвим не одним клиентом, а пулом рабочих аккаунтов: упёрся один в суточный лимит —
+    ту же запись доделывает следующий, прогон не встаёт до завтра."""
     conn = database.get_conn()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -98,16 +240,24 @@ async def _backfill_chats(client, limit: int) -> dict:
             (limit,)
         ).fetchall()]
         filled = failed = 0
-        flood: int | None = None
-        for i, ch in enumerate(rows):
+        exhausted = False   # рабочие аккаунты кончились, очередь не дочищена
+        i = 0
+        while i < len(rows):
+            ch = rows[i]
+            client = await pool.client()
+            if client is None:
+                exhausted = True
+                print(f"[стоп] рабочие аккаунты кончились: дозаполнено {filled}, "
+                      f"осталось {len(rows) - i} из этой порции — продолжи позже.")
+                break
             try:
                 e = await _resolve(client, ch["username"])
             except FloodStop as fs:
-                # аккаунт упёрся в суточный лимит: выходим, сохранив сделанное
-                flood = fs.seconds
-                print(f"[стоп] Telegram просит ждать {fs.seconds}с ({fs.seconds // 3600}ч) — "
-                      f"аккаунт упёрся в лимит резолвов. Дозаполнено {filled}, продолжи позже.")
-                break
+                # ЭТОТ аккаунт упёрся в суточный лимит — не теряем запись,
+                # а отдаём её следующему (i намеренно не двигаем)
+                await pool.flood(fs.seconds)
+                continue
+            pool.spend()
             tg_id = getattr(e, "id", None) if e else None
             if not tg_id:
                 failed += 1
@@ -133,21 +283,22 @@ async def _backfill_chats(client, limit: int) -> dict:
                                      "members_count=COALESCE(members_count,?) WHERE id=?",
                                      (tg_id, members, ch["id"]))
                         filled += 1
-            if i < len(rows) - 1:
+            i += 1
+            if i < len(rows):
                 await asyncio.sleep(random.uniform(*RESOLVE_PAUSE))
         left = conn.execute(f"SELECT COUNT(*) FROM chats WHERE {_RESOLVABLE}").fetchone()[0]
     finally:
         conn.close()
-    out = {"candidates": len(rows), "filled": filled, "failed": failed, "left": left}
-    if flood:
-        out["flood_wait"] = flood
-        out["note"] = (f"Telegram ограничил аккаунт на {flood // 3600}ч — дозаполнено {filled}, "
-                       f"остальное позже (лимит резолвов на аккаунт за сутки)")
+    out = {"candidates": len(rows), "filled": filled, "failed": failed, "left": left, **pool.report()}
+    if exhausted:
+        out["note"] = (f"дозаполнено {filled} из {len(rows)} этой порции — рабочие аккаунты "
+                       f"исчерпали дневную квоту резолвов, продолжи прогон позже")
     return out
 
 
-async def _backfill_photos(client, limit: int) -> dict:
-    """Лиды с tg_user_id, но без фото → качаем аватар в data/avatars/{tg_user_id}.jpg."""
+async def _backfill_photos(pool: ResolverPool, limit: int) -> dict:
+    """Лиды с tg_user_id, но без фото → качаем аватар в data/avatars/{tg_user_id}.jpg.
+    Тот же пул рабочих аккаунтов, что и для чатов — тот же суточный лимит на резолв."""
     from channels.tg_parser import _download_avatar
     with database.get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
@@ -156,37 +307,46 @@ async def _backfill_photos(client, limit: int) -> dict:
         ).fetchall()]
     got: set[int] = set()
     nophoto = failed = 0
-    flood: int | None = None
-    for i, ct in enumerate(rows):
+    exhausted = False
+    i = 0
+    while i < len(rows):
+        ct = rows[i]
+        client = await pool.client()
+        if client is None:
+            exhausted = True
+            print(f"[стоп] рабочие аккаунты кончились: скачано {len(got)}, "
+                  f"осталось {len(rows) - i} из этой порции — продолжи позже.")
+            break
         try:
             u = await client.get_entity(int(ct["tg_user_id"]))
         except FloodWaitError as ex:
             if ex.seconds > MAX_FLOOD_WAIT:
-                flood = ex.seconds   # аккаунт упёрся в лимит — выходим, а не спим сутки
-                print(f"[стоп] Telegram просит ждать {ex.seconds}с ({ex.seconds // 3600}ч) — "
-                      f"скачано {len(got)}, продолжи позже.")
-                break
+                await pool.flood(ex.seconds)   # этот аккаунт всё — передаём следующему, запись не теряем
+                continue
             print(f"[floodwait] жду {ex.seconds}с")
             await asyncio.sleep(ex.seconds + 5)
             continue
         except Exception as ex:  # noqa: BLE001
+            pool.spend()
             failed += 1   # удалён/недоступен по приватности
             print(f"[skip] #{ct['id']} ({ct['tg_user_id']}): {str(ex)[:70]}")
+            i += 1
             await asyncio.sleep(random.uniform(*PHOTO_PAUSE))
             continue
+        pool.spend()
         if await _download_avatar(client, u):
             got.add(int(ct["tg_user_id"]))
         else:
             nophoto += 1   # аватара просто нет или скрыт приватностью
-        if i < len(rows) - 1:
+        i += 1
+        if i < len(rows):
             await asyncio.sleep(random.uniform(*PHOTO_PAUSE))
     if got:
         with database.get_conn() as conn:
             database.mark_photos_by_tg(conn, got)
-    out = {"candidates": len(rows), "downloaded": len(got), "no_photo": nophoto, "failed": failed}
-    if flood:
-        out["flood_wait"] = flood
-        out["note"] = f"Telegram ограничил аккаунт на {flood // 3600}ч — остальное позже"
+    out = {"candidates": len(rows), "downloaded": len(got), "no_photo": nophoto, "failed": failed, **pool.report()}
+    if exhausted:
+        out["note"] = f"скачано {len(got)} из {len(rows)} этой порции — квота исчерпана, продолжи позже"
     return out
 
 
@@ -203,17 +363,18 @@ async def run(do_chats: bool, do_photos: bool, limit: int) -> None:
         print(json.dumps(summary, ensure_ascii=False))
         return
 
-    client = _build_client()
-    await client.start()
+    pool = ResolverPool()
+    if not pool.available():
+        await pool.start_fallback()
     try:
         if do_chats:
-            summary["chats"] = await _backfill_chats(client, limit)
+            summary["chats"] = await _backfill_chats(pool, limit)
             print(f"[chats] {summary['chats']}")
         if do_photos:
-            summary["photos"] = await _backfill_photos(client, limit)
+            summary["photos"] = await _backfill_photos(pool, limit)
             print(f"[photos] {summary['photos']}")
     finally:
-        await client.disconnect()
+        await pool.close()
 
     print(json.dumps(summary, ensure_ascii=False))
 

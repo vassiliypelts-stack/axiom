@@ -305,14 +305,30 @@ async def _resolve_entity(client: TelegramClient, row):
             if not row["phone"]:
                 raise
     if row["phone"]:
+        # Номер нормализуем ТЕМ ЖЕ способом, что и массовый пробив: Telegram капризен к
+        # формату, и «8 (988) 111-22-33» из 2ГИС он просто не найдёт. Без этого мы бы
+        # записали живому человеку has_tg='no' из-за скобок в номере.
+        from channels.phone_resolve import _norm
+        phone = _norm(row["phone"]) or row["phone"]
         res = await client(
             ImportContactsRequest(
-                [InputPhoneContact(client_id=0, phone=row["phone"], first_name=row["name"] or "lead", last_name="")]
+                [InputPhoneContact(client_id=0, phone=phone, first_name=row["name"] or "lead", last_name="")]
             )
         )
         if res.users:
             return res.users[0]
-        raise ValueError(f"номер {row['phone']} не найден в Telegram")
+        # Промах фиксируем в карточке. Иначе номер остаётся has_tg='unknown' и его снова
+        # потянет и эта кампания, и следующая, и массовый пробив — каждый раз новый
+        # ImportContacts по номеру, которого в Telegram нет. Именно повторяющиеся
+        # промахи и читаются как спам.
+        try:
+            with database.get_conn() as conn:
+                conn.execute(
+                    "UPDATE contacts SET has_tg='no', tg_checked_at=datetime('now') WHERE id=?",
+                    (row["id"],))
+        except Exception:  # noqa: BLE001
+            pass          # пометка — не повод ронять отправку
+        raise ValueError(f"номер {phone} не найден в Telegram")
     raise ValueError("у контакта нет ни username, ни phone")
 
 

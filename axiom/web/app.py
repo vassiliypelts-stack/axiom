@@ -3973,7 +3973,8 @@ def _channel_clause(channel: str | None) -> str:
     return "(" + " OR ".join(conds) + ")" if conds else ""
 
 
-def _audience_where(cid, tag, channel, channel_clause: str | None = None) -> tuple[str, list]:
+def _audience_where(cid, tag, channel, channel_clause: str | None = None,
+                    verified_only: bool = False) -> tuple[str, list]:
     """Условие «кто сейчас в очереди этой кампании» — ЕДИНСТВЕННЫЙ источник правды.
 
     Раньше те же условия дублировались в preflight, и копии разъехались: там tag шёл
@@ -3990,6 +3991,11 @@ def _audience_where(cid, tag, channel, channel_clause: str | None = None) -> tup
     cc = _channel_clause(channel) if channel_clause is None else channel_clause
     if cc:
         where += " AND " + cc
+    # verified_only повторяет фильтр отправки (campaign_send._audience): когда защита от
+    # бана включена, непробитые в очередь не идут, и счётчик аудитории обязан это учесть —
+    # иначе карточка обещает 992, а уходит 170, и расхождение опять не объяснить.
+    if verified_only and "telegram" in [c.strip() for c in (channel or "").split(",")]:
+        where += " AND " + database.TG_REACHABLE_SQL
     tag = (tag or "").strip()
     if tag:
         where += " AND tags LIKE ?"
@@ -3997,14 +4003,20 @@ def _audience_where(cid, tag, channel, channel_clause: str | None = None) -> tup
     return where, params
 
 
-def _audience_count(conn, cid, tag, channel) -> int:
-    where, params = _audience_where(cid, tag, channel)
+def _audience_count(conn, cid, tag, channel, verified_only: bool = False) -> int:
+    where, params = _audience_where(cid, tag, channel, verified_only=verified_only)
     return conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where}", params).fetchone()["c"]
 
 
 def _camp_row(conn, r) -> dict:
     d = dict(r)
-    d["audience"] = _audience_count(conn, d["id"], d.get("audience_tag"), d.get("channel"))
+    d["tg_verified_only"] = 1 if d.get("tg_verified_only", 1) in (1, "1", True, None) else 0
+    d["audience"] = _audience_count(conn, d["id"], d.get("audience_tag"), d.get("channel"),
+                                    verified_only=bool(d["tg_verified_only"]))
+    # Сколько ещё подтянется само по мере пробива — чтобы «аудитория 170» не выглядела
+    # как потеря базы: остальные не выброшены, они ждут очереди на пробив.
+    d["audience_pending_check"] = max(
+        _audience_count(conn, d["id"], d.get("audience_tag"), d.get("channel")) - d["audience"], 0)
     d["sent"] = conn.execute(
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
     ).fetchone()["c"]
@@ -4041,12 +4053,16 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
     project_id = payload.get("project_id") or None
     account_ids = payload.get("account_ids") or []
     account_limits = payload.get("account_limits") or {}
+    # Защита от бана по умолчанию ВКЛЮЧЕНА: новая кампания не должна начинать жизнь
+    # с резолва сотен непробитых номеров прямо во время рассылки.
+    vonly = 1 if payload.get("tg_verified_only", True) else 0
     with database.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO campaigns (name, product, audience_tag, channel, account_id, daily_limit, "
-            "message_template, agent_prompt, kp_text, project_id, status) VALUES (?,?,?,?,?,?,?,?,?,?, 'draft')",
+            "message_template, agent_prompt, kp_text, project_id, tg_verified_only, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'draft')",
             (f["name"], f["product"], f["audience_tag"], f["channel"], account_id, daily_limit,
-             f["message_template"], f["agent_prompt"], f["kp_text"], project_id),
+             f["message_template"], f["agent_prompt"], f["kp_text"], project_id, vonly),
         )
         _sync_campaign_accounts(conn, cur.lastrowid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cur.lastrowid})
@@ -4067,12 +4083,17 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
         row = conn.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        # Флаг шлём только если он реально пришёл: частичные сохранения (из других форм,
+        # не содержащих галочку) не должны молча снимать защиту от бана.
         conn.execute(
             "UPDATE campaigns SET name=?, product=?, audience_tag=?, channel=?, account_id=?, "
             "daily_limit=?, message_template=?, agent_prompt=?, kp_text=?, project_id=? WHERE id=?",
             (f["name"], f["product"], f["audience_tag"], f["channel"], account_id, daily_limit,
              f["message_template"], f["agent_prompt"], f["kp_text"], project_id, cid),
         )
+        if "tg_verified_only" in payload:
+            conn.execute("UPDATE campaigns SET tg_verified_only=? WHERE id=?",
+                         (1 if payload.get("tg_verified_only") else 0, cid))
         if account_ids is not None:
             _sync_campaign_accounts(conn, cid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cid})
@@ -4421,15 +4442,25 @@ def campaign_preflight(cid: int) -> JSONResponse:
             tg_aud = conn.execute(base, params).fetchone()["c"]
             by_uname = conn.execute(
                 base + " AND username IS NOT NULL AND username<>''", params).fetchone()["c"]
+            # Достижимость считаем ТЕМ ЖЕ условием, которым отбирает отправка
+            # (database.TG_REACHABLE_SQL). Раньше здесь в «достижимые» шло has_tg='yes' —
+            # но это догадка импортёра 2ГИС по ссылке t.me, без запроса в Telegram:
+            # 14 таких контактов без username и tg_user_id считались готовыми, а на деле
+            # резолвились ImportContacts во время рассылки. Предупреждение занижало риск.
             confirmed = conn.execute(
-                base + " AND (username IS NOT NULL AND username<>'' OR has_tg='yes')",
-                params).fetchone()["c"]
+                base + " AND " + database.TG_REACHABLE_SQL, params).fetchone()["c"]
         blind = max(tg_aud - confirmed, 0)
-        if blind:
+        vonly = bool(camp.get("tg_verified_only", 1))
+        if blind and vonly:
+            add(True, "ok",
+                f"🛡 Защита от бана включена: слать будем только {confirmed} достижимым "
+                f"(по @username: {by_uname}). Ещё {blind} ждут пробива и в рассылку НЕ пойдут — "
+                f"жми «Пробить номера в TG», по мере пробива они добавятся сами")
+        elif blind:
             add(False, "warn",
-                f"Пробив TG не сделан у {blind} из {tg_aud} — их номера будут резолвиться прямо "
-                f"во время рассылки (ImportContacts, риск бана). Сначала «Пробить номера в TG», "
-                f"потом слать. Сейчас точно достижимы: {confirmed} (из них по @username: {by_uname})")
+                f"⚠️ Защита выключена: {blind} из {tg_aud} непробиты, их номера будут резолвиться "
+                f"прямо во время рассылки (ImportContacts, риск бана). Включи «слать только "
+                f"подтверждённым» или сначала «Пробить номера в TG». Достижимы сейчас: {confirmed}")
         elif tg_aud:
             add(True, "ok", f"TG подтверждён у всей аудитории ({confirmed})")
     else:
@@ -4861,7 +4892,48 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
         [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", str(limit)],
         cwd=str(BASE_DIR.parent),
     )
-    return JSONResponse({"ok": True, "launched": limit})
+    checking = _kick_tgcheck(cid)
+    return JSONResponse({"ok": True, "launched": limit, "tgcheck_started": checking})
+
+
+def _kick_tgcheck(cid: int) -> int:
+    """Догнать пробивом аудиторию кампании, у которой включена защита от бана.
+
+    Без этого защита выглядит как поломка: галочка стоит, непробитых 180, в очередь
+    попадает 0 — и кампания «молча не шлёт». Пробив дозированный (25 номеров на аккаунт
+    в сутки, контакт удаляется из книги сразу), поэтому запускать его можно смело: он
+    не «долбит» Telegram, а капает. --tag сужает до аудитории ИМЕННО этой кампании,
+    иначе phone_resolve идёт по ORDER BY id и свежая кампания ждёт очереди неделями.
+
+    Возвращает, сколько номеров ждут пробива (0 = догонять нечего).
+    """
+    import subprocess    # как и в остальных запускающих функциях этого модуля —
+    import sys           # sys/subprocess тут импортируются локально, не на уровне файла
+    try:
+        with database.get_conn() as conn:
+            camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+            if not camp or not camp["tg_verified_only"]:
+                return 0
+            camp = dict(camp)
+            if "telegram" not in [c.strip() for c in (camp.get("channel") or "").split(",")]:
+                return 0
+            where, params = _audience_where(cid, camp.get("audience_tag"), camp.get("channel"))
+            pending = conn.execute(
+                f"SELECT COUNT(*) c FROM contacts WHERE {where} AND NOT {database.TG_REACHABLE_SQL}"
+                " AND phone IS NOT NULL AND phone<>'' AND tg_checked_at IS NULL",
+                params).fetchone()["c"]
+            per = int(database.get_setting(conn, "tgcheck_per", "25"))
+        if not pending:
+            return 0
+        args = [sys.executable, "-m", "channels.phone_resolve", "--per", str(per)]
+        tag = (camp.get("audience_tag") or "").strip()
+        if tag:
+            args += ["--tag", tag]
+        subprocess.Popen(args, cwd=str(BASE_DIR.parent))
+        return pending
+    except Exception as e:  # noqa: BLE001
+        print(f"[tgcheck kick] {e}")
+        return 0
 
 
 @app.post("/api/campaign/{cid}/stop")

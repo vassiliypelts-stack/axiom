@@ -4390,6 +4390,17 @@ async function viewCampaigns(v){
         <div class="field"><label>Продукт</label><input id="c-product" placeholder="Фонд доступного жилья"></div></div>
       <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
         <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
+      <label class="field" style="display:flex;align-items:flex-start;gap:9px;background:var(--green-soft);
+             border:1px solid color-mix(in srgb,var(--green) 35%,transparent);border-radius:10px;padding:10px 12px">
+        <input type="checkbox" id="c-verified" checked style="margin-top:3px;flex-shrink:0">
+        <span><b>🛡 Слать только тем, у кого Telegram подтверждён</b>
+          <div class="hint" style="margin-top:3px">Настоятельно рекомендую держать включённым.
+            Непробитый номер рассылка резолвит прямо в момент отправки (ImportContacts), и если
+            Telegram у номера нет — это промах. Серия промахов подряд с одного аккаунта — самый
+            явный признак спамера и прямая дорога в бан. Непробитые из очереди не выпадают: их
+            дозированно пробьёт фоновый пробив (25 номеров на аккаунт в сутки), и они добавятся сами.</div>
+          <div class="hint" id="c-verified-stat" style="margin-top:4px"></div></span>
+      </label>
       <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании). Формат строки: номер/@username, потом через пробел — как обращаться (необязательно)</label>
         <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся). Кнопка «💾 Запомнить» сохранит текущий список в браузере — он сам подставится в каждой новой кампании, дописывай к нему что нужно вручную.</div>
         <textarea id="c-test-nums" rows="3" placeholder="+79991234567 Василий Валерьевич&#10;@my_second_account Иван Иванович"></textarea>
@@ -4513,6 +4524,12 @@ async function viewCampaigns(v){
   const fill=(c)=>{
     $("#c-name").value=c.name||"";$("#c-product").value=c.product||"";
     $("#c-tag").value=c.audience_tag!=null?c.audience_tag:"Агентства недвижимости";
+    // Защита от бана: у новой кампании включена, у существующей — как сохранено
+    $("#c-verified").checked=c.id?c.tg_verified_only!==0:true;
+    const vst=$("#c-verified-stat");
+    if(vst)vst.innerHTML=c.id&&c.audience_pending_check
+      ? `Сейчас в очереди <b>${c.audience}</b> достижимых, ещё <b>${c.audience_pending_check}</b> ждут пробива.`
+      : "";
     const chans=new Set((c.channel||"telegram").split(",").map(x=>x.trim()).filter(Boolean));
     document.querySelectorAll(".c-chan-chk").forEach(ch=>{ch.checked=chans.has(ch.value);});
     mainAcc=c.account_id?String(c.account_id):"";
@@ -4640,6 +4657,7 @@ async function viewCampaigns(v){
     const body={name:$("#c-name").value,product:$("#c-product").value,audience_tag:$("#c-tag").value,
       channel:chans.join(","),account_id:mainAcc||"",project_id:$("#c-project").value||null,
       account_ids:team,account_limits:limits,daily_limit:$("#c-limit").value,
+      tg_verified_only:$("#c-verified").checked,
       message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",
@@ -4918,7 +4936,9 @@ function renderCampList(mount,camps){
       r=await send(true);
     }
     if(r.error){alert(r.error);b.textContent="▶ Запустить";return;}
-    alert(`Запущено: до ${r.launched} контактов. Отправка идёт в фоне с паузами.\n\n⚠️ Если придёт уведомление про флуд-лимит — аккаунту нужен прогрев и медленнее темп. Следи в колокольчике 🔔 и «Прогресс».`);
+    alert(`Запущено: до ${r.launched} контактов. Отправка идёт в фоне с паузами.`
+      +(r.tgcheck_started?`\n\n🛡 Защита от бана: ${r.tgcheck_started} номеров ещё не пробиты в Telegram — им сейчас НЕ пишем. Параллельно запустил пробив (25 номеров на аккаунт в сутки, безопасный темп); по мере пробива они сами добавятся в очередь. Если очередь сейчас пустая — это не поломка, дождись пробива.`:"")
+      +`\n\n⚠️ Если придёт уведомление про флуд-лимит — аккаунту нужен прогрев и медленнее темп. Следи в колокольчике 🔔 и «Прогресс».`);
     setTimeout(route,2000);
   });
   mount.querySelectorAll(".cl-stop").forEach(b=>b.onclick=async()=>{

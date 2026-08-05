@@ -53,7 +53,7 @@ def _channels(channel: str | None) -> list[str]:
 
 
 def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = False,
-              exclude_paused: bool = True):
+              exclude_paused: bool = True, verified_only: bool | None = None):
     """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram.
     test=True — ТОЛЬКО тестовые (is_test=1): «кнопка Тест» шлёт исключительно на свои
     номера, боевой аудитории коснуться не может даже при большом лимите.
@@ -61,7 +61,14 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     пропускаем при РЕАЛЬНОЙ отправке (exclude_paused=True) — частичная пауза без
     остановки всей рассылки. Но при проверке «аудитория исчерпана ли» пауза не в счёт
     (exclude_paused=False) — поставленные на паузу контакты НЕ ушли навсегда, кампания
-    не должна помечаться done только из-за того, что все оставшиеся сейчас на паузе."""
+    не должна помечаться done только из-за того, что все оставшиеся сейчас на паузе.
+
+    verified_only — брать только тех, кого достанем БЕЗ ImportContacts (@username или
+    уже пробитый tg_user_id). None = взять флаг campaigns.tg_verified_only. Зачем: у
+    непробитого номера отправка резолвит его прямо в момент выстрела, и если номера в
+    Telegram нет — это промах. Промахов у нас 38% от проверенных, а серия промахов
+    подряд с одного аккаунта — самый явный признак спамера. Пробив делает отдельный
+    дозированный phone_resolve (25/аккаунт в сутки, контакт удаляется сразу)."""
     where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
     params: list = []
     if exclude_paused:
@@ -70,6 +77,14 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
     if "telegram" in _channels(channel):
         where += " AND has_tg IN ('yes','unknown')"
+        if verified_only is None:
+            with database.get_conn() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(tg_verified_only,1) v FROM campaigns WHERE id=?", (cid,)
+                ).fetchone()
+            verified_only = bool(row["v"]) if row else True
+        if verified_only:
+            where += " AND " + database.TG_REACHABLE_SQL
     if test:
         where += " AND COALESCE(is_test,0)=1"
     # Тестовый номер принадлежит ТОЙ кампании, куда его добавили. Иначе так: свой номер,

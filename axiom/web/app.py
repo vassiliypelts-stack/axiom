@@ -2885,7 +2885,19 @@ def chatcat_report_collect(chat_id: int, payload: dict = Body(default={})) -> JS
     res = _run_capture(["channels.channel_report", "--chat", str(chat_id),
                         "--collect", "--days", str(days), "--limit", str(limit)],
                        timeout=600)
-    return JSONResponse(res)
+    # Модуль печатает сводку JSON последней строкой. Без разбора наружу уходило
+    # только {ok, output}, и фронт показывал «готово» даже когда сбор упал (нет
+    # сессии у аккаунта прослушки, канал недоступен, FloodWait) — кнопка молчала,
+    # а постов не прибавлялось. Отдаём разобранный результат и причину.
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-400:]
+        return JSONResponse({"ok": False,
+                             "error": "модуль не вернул результат. Лог: " + (tail or "(пусто)")},
+                            status_code=200)
+    if not data.get("ok"):
+        data.setdefault("error", "сбор не удался")
+    return JSONResponse(data)
 
 
 @app.post("/api/chatcat/inventory")

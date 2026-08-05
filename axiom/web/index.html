@@ -3405,11 +3405,19 @@ async function openChatReport(cid){
     const cb=inner.querySelector("#cr-collect");
     if(cb)cb.onclick=async()=>{
       const m=inner.querySelector("#cr-msg");cb.disabled=true;cb.textContent="собираю…";
-      m.textContent="иду в Telegram за постами, это до пары минут";
-      const res=await api(`/api/chatcat/${cid}/report/collect`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({days:CR_DAYS})});
+      // Сбор идёт до нескольких минут и всё это время наружу нет ни звука — без
+      // счётчика кнопка выглядит мёртвой, и её жмут повторно.
+      let sec=0;const tick=setInterval(()=>{sec++;m.textContent=`иду в Telegram за постами… ${sec} с (обычно 30-120 с)`;},1000);
+      m.textContent="иду в Telegram за постами…";
+      let res;
+      try{res=await api(`/api/chatcat/${cid}/report/collect`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({days:CR_DAYS})});}
+      catch(e){res={error:"запрос оборвался: "+e.message};}
+      clearInterval(tick);
       cb.disabled=false;cb.textContent="⟳ Обновить из Telegram";
-      if(res.error){m.innerHTML='<span style="color:#c0392b">'+esc(res.error)+"</span>";return;}
-      m.textContent="готово";draw();
+      if(!res||res.ok===false||res.error){
+        m.innerHTML='<span style="color:#c0392b">'+esc((res&&res.error)||"не удалось собрать")+"</span>";return;}
+      m.textContent=`собрано: новых ${res.new||0}, обновлено ${res.refreshed||0}`;
+      draw();
     };
   };
   await draw();

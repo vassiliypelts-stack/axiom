@@ -1625,6 +1625,31 @@ def _proxy_scheduler() -> None:
                 _log_run("backfill_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[backfill scheduler] {e}")
+        # --- фоновый пробив номеров в Telegram (has_tg) ---
+        # Пока номер не пробит, рассылка резолвит его ПРЯМО в момент отправки
+        # (ImportContacts) — самый заметный для Telegram спам-сигнал. Отсюда правило
+        # «сначала пробей, потом шли», но вручную это делать никто не будет: в
+        # кампании 180 номеров и 0 пробитых. Пусть капает само — phone_resolve уже
+        # умеет главное: 25 номеров на аккаунт в сутки, удаление контакта сразу после
+        # пробива и уход аккаунта с дистанции при FloodWait.
+        try:
+            with database.get_conn() as conn:
+                tauto = database.get_setting(conn, "tgcheck_auto", "off")
+                tint = int(database.get_setting(conn, "tgcheck_interval_min", "720"))
+                tlast = database.get_setting(conn, "tgcheck_last_run_ts", "0")
+                tper = int(database.get_setting(conn, "tgcheck_per", "25"))
+            if tauto == "on" and (time.time() - float(tlast or 0)) >= tint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "tgcheck_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "tgcheck_last_run",
+                                         __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                res = subprocess.run([sys.executable, "-m", "channels.phone_resolve",
+                                      "--per", str(max(1, min(tper, 50)))],
+                                     cwd=str(BASE_DIR.parent), timeout=3600, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("tgcheck_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[tgcheck scheduler] {e}")
         time.sleep(60)
 
 
@@ -4478,6 +4503,109 @@ def campaign_progress(cid: int) -> JSONResponse:
         })
     return JSONResponse({"account": acc, "account_name": acc_name, "sent_count": len(sent_ids),
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
+
+
+@app.get("/api/tgcheck")
+def tgcheck_status() -> JSONResponse:
+    """Сколько номеров ещё не пробито в Telegram + настройки фонового пробива."""
+    database.init_db()
+    with database.get_conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM contacts WHERE phone IS NOT NULL AND phone<>'' "
+            "AND COALESCE(has_tg,'unknown')='unknown'").fetchone()["c"]
+        yes = conn.execute("SELECT COUNT(*) c FROM contacts WHERE has_tg='yes'").fetchone()["c"]
+        no = conn.execute("SELECT COUNT(*) c FROM contacts WHERE has_tg='no'").fetchone()["c"]
+        return JSONResponse({
+            "left": left, "found": yes, "absent": no,
+            "auto": database.get_setting(conn, "tgcheck_auto", "off") == "on",
+            "interval_h": int(database.get_setting(conn, "tgcheck_interval_min", "720")) // 60,
+            "per": int(database.get_setting(conn, "tgcheck_per", "25")),
+            "last_run": database.get_setting(conn, "tgcheck_last_run", None),
+        })
+
+
+@app.post("/api/tgcheck")
+def tgcheck_set(payload: dict = Body(default={})) -> JSONResponse:
+    """Включить/настроить фоновый пробив. run=true — прогнать порцию сейчас."""
+    with database.get_conn() as conn:
+        if "auto" in payload:
+            database.set_setting(conn, "tgcheck_auto", "on" if payload.get("auto") else "off")
+        if payload.get("interval_h"):
+            database.set_setting(conn, "tgcheck_interval_min",
+                                 str(max(1, int(payload["interval_h"])) * 60))
+        if payload.get("per"):
+            database.set_setting(conn, "tgcheck_per", str(max(1, min(int(payload["per"]), 50))))
+    if payload.get("run"):
+        args = ["channels.phone_resolve", "--per", str(payload.get("per") or 25)]
+        if payload.get("tag"):
+            args += ["--tag", str(payload["tag"])]
+        res = _run_capture(args, timeout=3600)
+        return JSONResponse(_last_json(res.get("output")) or res)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/campaign/{cid}/audience")
+def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
+    """Поимённо: кто в рассылке этой кампании, а кто выпал и ПОЧЕМУ.
+
+    Расхождение «выбрал 288 — в очереди 180» до сих пор нельзя было объяснить, не
+    залезая в базу: карточка показывала итог, а причины отсева молчали. Здесь по
+    каждому контакту с тегом кампании видно, пойдёт он или нет и что мешает —
+    и тут же снимается галочка с ненужных (пауза именно в этой кампании,
+    глобальный статус контакта не трогаем)."""
+    database.init_db()
+    with database.get_conn() as conn:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not camp:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        camp = dict(camp)
+        tag = (camp.get("audience_tag") or "").strip()
+        where = "1=1"
+        params: list = []
+        if tag:
+            where = "tags LIKE ?"
+            params.append(f"%{tag}%")
+        rows = conn.execute(
+            f"SELECT id, COALESCE(person_name, name) AS who, username, phone, status, "
+            f"has_tg, has_wa, tg_checked_at, checked_at, tags, agency, city "
+            f"FROM contacts WHERE {where} "
+            f"ORDER BY (status='new') DESC, id LIMIT ?", (*params, max(1, min(limit, 5000)))
+        ).fetchall()
+        paused = {r["contact_id"] for r in conn.execute(
+            "SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?", (cid,)).fetchall()}
+        sent = {r["contact_id"] for r in conn.execute(
+            "SELECT contact_id FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchall()}
+
+    is_tg = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
+    items, reasons = [], {}
+    for r in rows:
+        d = dict(r)
+        why = None
+        if d["id"] in paused:
+            why = "снят вручную"
+        elif d["status"] != "new":
+            why = ("уже написали" if d["id"] in sent else f"статус «{d['status']}»")
+        elif not (d["username"] or d["phone"]):
+            why = "нет ни @username, ни телефона"
+        elif is_tg and (d["has_tg"] or "unknown") == "no":
+            why = "в Telegram не найден"
+        d["blocked_by"] = why
+        d["in_queue"] = why is None
+        d["paused"] = d["id"] in paused
+        if why:
+            reasons[why] = reasons.get(why, 0) + 1
+        items.append(d)
+    return JSONResponse({
+        "campaign": camp.get("name"), "tag": tag, "channel": camp.get("channel"),
+        "total": len(items),
+        "in_queue": sum(1 for i in items if i["in_queue"]),
+        "reasons": reasons,          # почему остальные не пойдут, с количеством
+        # Сколько ещё не проверено: пока номер не пробит, рассылка резолвит его прямо
+        # в момент отправки (ImportContacts) — самый быстрый способ поймать бан.
+        "unchecked_tg": sum(1 for i in items if (i.get("has_tg") or "unknown") == "unknown"),
+        "unchecked_wa": sum(1 for i in items if (i.get("has_wa") or "unknown") == "unknown"),
+        "items": items,
+    })
 
 
 @app.post("/api/campaign/{cid}/pause_contacts")

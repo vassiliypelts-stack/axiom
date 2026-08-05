@@ -905,6 +905,93 @@ async function loadTodayTasks(){
     ${d.unsendable?`<div class="hint" style="margin-top:6px;color:#c0392b">⚠️ ${d.unsendable} задач(и) не уйдут: у контакта нет telegram-id. Пробей номер или открой диалог вручную.</div>`:""}`;
   box.querySelectorAll(".tt-row").forEach(el=>el.onclick=()=>openDossier(+el.dataset.cid));
 }
+// Кто в рассылке: поимённый список аудитории кампании. Отвечает на вопрос, который
+// раньше требовал похода в базу — «выбрал 288, а в очереди 180, куда делись?».
+// Галочка = участвует; снятая кладёт контакт в campaign_paused_contacts (пауза
+// именно в этой кампании, глобальный статус не трогаем — он же в других кампаниях).
+const MSG_MARK={yes:'<span class="badge b-active" title="проверено — есть">✓</span>',
+  no:'<span class="badge b-stop" title="проверено — нет">✕</span>',
+  unknown:'<span class="badge b-nurture" title="ещё не проверяли">?</span>'};
+async function openAudience(cid){
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  wrap.innerHTML='<div class="org-mform-inner" style="max-width:900px">гружу список…</div>';
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)close();};
+  document.addEventListener("keydown",function esc4(e){
+    if(e.key==="Escape"){close();document.removeEventListener("keydown",esc4);}});
+  let AUD_ONLY="";    // "" | queue | blocked
+  const draw=async()=>{
+    const inner=wrap.querySelector(".org-mform-inner");
+    let d;try{d=await api(`/api/campaign/${cid}/audience`);}catch(e){d=null;}
+    if(!d||d.error){inner.innerHTML=`<div style="color:#c0392b">${esc((d&&d.error)||"не загрузилось")}</div>
+      <div style="margin-top:12px"><button class="modal-close">закрыть</button></div>`;
+      inner.querySelector(".modal-close").onclick=close;return;}
+    const rows=d.items.filter(r=>AUD_ONLY==="queue"?r.in_queue:AUD_ONLY==="blocked"?!r.in_queue:true);
+    const reasons=Object.entries(d.reasons||{}).map(([k,v])=>`${esc(k)}: <b>${v}</b>`).join(" · ");
+    inner.innerHTML=`
+      <div style="font-weight:700;font-size:15px">👥 Кто в рассылке — ${esc(d.campaign||"")}</div>
+      <div class="hint" style="margin-bottom:10px">тег аудитории: ${d.tag?esc(d.tag):"<i>не задан (вся база)</i>"} · канал: ${esc(d.channel||"")}</div>
+      <div class="card" style="background:var(--panel2);padding:9px 11px;margin-bottom:10px">
+        <b>${d.in_queue}</b> из <b>${d.total}</b> пойдут в рассылку.
+        ${reasons?`<div class="hint" style="margin-top:4px">Остальные не пойдут — ${reasons}</div>`:""}
+        ${(d.unchecked_tg||d.unchecked_wa)?`<div class="hint" style="margin-top:4px;color:#c0392b">⚠️ не проверено: Telegram у ${d.unchecked_tg}, WhatsApp у ${d.unchecked_wa}. Непробитый номер резолвится прямо во время рассылки — это прямой путь к бану аккаунта.</div>
+        <div class="ttoolbar" style="margin:6px 0 0">
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="фоном, по 25 номеров на аккаунт в сутки — безопасный темп"><input type="checkbox" id="aud-tgauto"> пробивать Telegram фоном</label>
+          <button id="aud-tgrun" title="пробить порцию прямо сейчас (25 на аккаунт)">Пробить сейчас</button>
+          <span class="hint" id="aud-tgmsg"></span></div>`:""}
+      </div>
+      <div class="ttoolbar" style="margin:0 0 8px">
+        ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"]].map(([k,l])=>
+          `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}</button>`).join("")}
+        <span class="grow"></span><span class="hint">${rows.length} строк</span>
+      </div>
+      <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="position:sticky;top:0;background:var(--panel)">
+          <th style="padding:6px 8px;text-align:left">шлём</th><th style="text-align:left">кто</th>
+          <th>TG</th><th>WA</th><th style="text-align:left">статус</th><th style="text-align:left">почему не пойдёт</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--border);${r.in_queue?"":"opacity:.6"}">
+          <td style="padding:5px 8px"><input type="checkbox" class="aud-chk" data-id="${r.id}" ${r.paused?"":"checked"} ${(!r.in_queue&&!r.paused)?"disabled title='не пойдёт по другой причине'":""}></td>
+          <td><b>${esc(r.who||("#"+r.id))}</b>${r.username?` <span class="tg">@${esc(r.username)}</span>`:""}${r.phone?` <span class="hint">${esc(r.phone)}</span>`:""}</td>
+          <td style="text-align:center">${MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown}</td>
+          <td style="text-align:center">${MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown}</td>
+          <td class="hint">${esc(r.status||"")}</td>
+          <td class="hint">${r.blocked_by?esc(r.blocked_by):""}</td></tr>`).join("")}</tbody>
+      </table></div>
+      <div class="ttoolbar" style="margin:10px 0 0"><span class="hint" id="aud-msg">Снятая галочка = контакт пропускается ИМЕННО в этой кампании. В других он остаётся.</span>
+        <span class="grow"></span><button class="modal-close">закрыть</button></div>`;
+    inner.querySelector(".modal-close").onclick=close;
+    inner.querySelectorAll(".aud-f").forEach(b=>b.onclick=()=>{AUD_ONLY=b.dataset.f;draw();});
+    // Пробив TG — прямо здесь, где проблема и видна: иначе оператор читает
+    // предупреждение и не знает, куда идти его лечить.
+    const tgAuto=inner.querySelector("#aud-tgauto"),tgRun=inner.querySelector("#aud-tgrun");
+    if(tgAuto){
+      api("/api/tgcheck").then(s=>{if(s&&!s.error){tgAuto.checked=!!s.auto;
+        const m=inner.querySelector("#aud-tgmsg");
+        if(m)m.textContent=`не пробито всего: ${s.left} · найдено в TG: ${s.found} · нет в TG: ${s.absent}`+(s.last_run?` · последний проход ${s.last_run}`:"");}});
+      tgAuto.onchange=async()=>{await api("/api/tgcheck",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({auto:tgAuto.checked})});
+        inner.querySelector("#aud-tgmsg").textContent=tgAuto.checked?"включено — пойдёт фоном, по 25 на аккаунт в сутки":"выключено";};
+      tgRun.onclick=async()=>{const m=inner.querySelector("#aud-tgmsg");
+        tgRun.disabled=true;tgRun.textContent="пробиваю…";
+        let sec=0;const t=setInterval(()=>{sec++;m.textContent=`аккаунты пробивают номера… ${sec} с`;},1000);
+        const r=await api("/api/tgcheck",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({run:true,tag:d.tag||null})});
+        clearInterval(t);tgRun.disabled=false;tgRun.textContent="Пробить сейчас";
+        m.textContent=r&&r.error?("ошибка: "+r.error):`готово: ${JSON.stringify(r).slice(0,160)}`;
+        draw();};
+    }
+    inner.querySelectorAll(".aud-chk").forEach(ch=>ch.onchange=async()=>{
+      const id=+ch.dataset.id,m=inner.querySelector("#aud-msg");
+      const url=ch.checked?"unpause_contacts":"pause_contacts";
+      const r=await api(`/api/campaign/${cid}/${url}`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({contact_ids:[id]})});
+      m.textContent=r.error?("ошибка: "+r.error):(ch.checked?"вернули в рассылку":"снят из этой кампании");
+      if(!r.error)route();});
+  };
+  await draw();
+}
 async function viewDashboard(v){
   const s=STATE.stats=await api("/api/stats");
   const a=s.accounts||{},r=s.resources||{},m=s.marketing||{},t=s.tasks||{};
@@ -4629,6 +4716,7 @@ function renderCampList(mount,camps){
           <button class="cl-pre" data-id="${c.id}" title="что готово/мешает запуску">🚦 Готовность</button>
           <button class="cl-prog" data-id="${c.id}">Прогресс</button>
           <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
+          <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
@@ -4818,6 +4906,7 @@ function renderCampList(mount,camps){
     }catch(e){alert("ошибка запуска теста");}
     b.textContent=t;
   });
+  mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;
     if(!confirm(`Отправить первое сообщение ${n} контактам?\nЭто РЕАЛЬНАЯ отправка живым людям с аккаунта.`))return;

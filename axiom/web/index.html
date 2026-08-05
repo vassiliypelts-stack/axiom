@@ -304,17 +304,73 @@
   .tag-add{cursor:pointer;color:var(--muted);border:1px dashed var(--border);border-radius:7px;padding:0 8px;font-size:12px;}
   .tag-add:hover{color:var(--accent);border-color:var(--accent);}
 
-  /* ---- Kanban ---- */
-  .kanban{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;}
-  .kcol{flex:0 0 230px;background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);display:flex;flex-direction:column;max-height:72vh;}
-  .kcol h3{margin:0;padding:12px 14px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-weight:700;}
-  .kcol h3 .n{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;color:var(--text);}
-  .kbody{padding:10px;overflow-y:auto;flex:1;min-height:60px;}
-  .kbody.over{background:var(--accent-soft);outline:1px dashed var(--accent);outline-offset:-4px;}
-  .kcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:11px;margin-bottom:9px;cursor:grab;box-shadow:var(--shadow-sm);transition:border-color .12s,box-shadow .12s;}
-  .kcard:hover{border-color:var(--accent);box-shadow:var(--shadow);}
-  .kcard .nm{font-weight:600;font-size:13px;}
-  .kcard .mt{color:var(--muted);font-size:11px;margin-top:3px;}
+  /* ---- Kanban / воронка сделок ---- */
+  /* Полоса-воронка над доской: видно, где деньги и где затык */
+  .funnelbar{display:flex;gap:3px;margin:0 0 14px;border-radius:11px;overflow:hidden;
+    border:1px solid var(--border);background:var(--panel2);box-shadow:var(--shadow-sm)}
+  .fseg{flex:1 1 0;min-width:0;padding:9px 10px;position:relative;cursor:pointer;
+    background:var(--panel);transition:background .12s;border-right:1px solid var(--border)}
+  .fseg:last-child{border-right:0}
+  .fseg:hover{background:var(--panel2)}
+  .fseg.on{background:color-mix(in srgb,var(--sc) 15%,var(--panel))}
+  .fseg::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--sc);opacity:.9}
+  .fseg .fl{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+  .fseg .fv{font-size:15px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
+  .fseg .fs{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+  .kanban{display:flex;gap:12px;overflow-x:auto;padding-bottom:10px;}
+  .kcol{--sc:var(--accent);flex:0 0 254px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:var(--radius);display:flex;flex-direction:column;max-height:72vh;overflow:hidden;transition:box-shadow .12s}
+  .kcol.dimmed{opacity:.42}
+  .kcol h3{margin:0;padding:10px 12px 9px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);border-bottom:1px solid var(--border);font-weight:700;
+    background:linear-gradient(180deg,color-mix(in srgb,var(--sc) 13%,transparent),transparent);position:relative}
+  .kcol h3::before{content:'';position:absolute;left:0;right:0;top:0;height:3px;background:var(--sc)}
+  .kcol h3 .hr1{display:flex;justify-content:space-between;align-items:center;gap:6px}
+  .kcol h3 .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+  .kcol h3 .n{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;color:var(--text);flex-shrink:0}
+  .kcol h3 .sum{margin-top:4px;font-size:12px;font-weight:800;color:var(--sc);letter-spacing:0;
+    text-transform:none;font-variant-numeric:tabular-nums}
+  .kbody{padding:9px;overflow-y:auto;flex:1;min-height:70px;}
+  .kbody.over{background:var(--accent-soft);outline:2px dashed var(--accent);outline-offset:-5px;}
+  .kadd{width:100%;border:1px dashed var(--border);background:none;box-shadow:none;color:var(--muted);
+    font-size:11.5px;padding:5px;border-radius:9px}
+  .kadd:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+  .kcard{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--sc);
+    border-radius:10px;padding:9px 11px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow-sm);
+    transition:border-color .12s,box-shadow .12s,transform .12s;}
+  .kcard:hover{border-color:var(--accent);border-left-color:var(--sc);box-shadow:var(--shadow);transform:translateY(-1px)}
+  .kcard.dragging{opacity:.4}
+  .kcard .ktop{display:flex;align-items:flex-start;gap:7px}
+  .kcard .kava{width:24px;height:24px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;
+    font-size:9.5px;font-weight:800;color:#fff}
+  .kcard .nm{font-weight:600;font-size:13px;line-height:1.3;flex:1;min-width:0;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .kcard .kamt{font-size:13px;font-weight:800;margin-top:5px;font-variant-numeric:tabular-nums;color:var(--accent-ink)}
+  .kcard .mt{color:var(--muted);font-size:11px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kcard .kfoot{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .kcard .kchip{font-size:9.5px;padding:1px 6px;border-radius:20px;border:1px solid var(--border);
+    background:var(--panel2);color:var(--muted);white-space:nowrap}
+  .kcard .kchip.warn{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 40%,transparent);
+    background:color-mix(in srgb,var(--accent2) 12%,transparent)}
+  .kcard .kchip.hot{color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,transparent);
+    background:color-mix(in srgb,var(--red) 12%,transparent)}
+
+  /* Шкала стадий в карточке сделки (как в Битрикс24). Не переносим на вторую строку —
+     воронка должна читаться одной линией, поэтому при нехватке места она прокручивается. */
+  .stagebar{display:flex;gap:2px;margin:2px 0 14px;flex-wrap:nowrap;overflow-x:auto;
+    scrollbar-width:thin;padding-bottom:2px}
+  .stagebar button{flex:1 0 auto;min-width:62px;max-width:120px;padding:6px 6px 5px;font-size:10px;font-weight:700;
+    border:0;border-radius:0;box-shadow:none;background:var(--panel2);color:var(--muted);
+    border-bottom:3px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:all .12s}
+  .stagebar button:first-child{border-radius:8px 0 0 8px}
+  .stagebar button:last-child{border-radius:0 8px 8px 0}
+  .stagebar button:hover{color:var(--text);background:var(--panel)}
+  .stagebar button.done{border-bottom-color:var(--sc2);color:var(--text)}
+  .stagebar button.cur{background:color-mix(in srgb,var(--sc2) 18%,var(--panel));color:var(--text);
+    border-bottom-color:var(--sc2);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sc2) 40%,transparent)}
 
   /* ---- Chats ---- */
   .chat-wrap{display:flex;gap:16px;height:74vh;}
@@ -470,6 +526,9 @@
 
   /* ── список сотрудников внутри отдела ── */
   .omembers{padding:7px;display:flex;flex-direction:column;gap:4px;min-height:34px;transition:background .12s}
+  /* У отдела с подотделами по нижней кромке висит кнопка сворачивания — освобождаем
+     под неё место, иначе она перекрывает «＋ должность» и та не нажимается */
+  .odept.haskids .omembers{padding-bottom:17px}
   .omembers.dropzone{background:var(--accent-soft);outline:2px dashed var(--accent);outline-offset:-4px;border-radius:9px}
   .omember{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:9px;cursor:grab;position:relative;
     border:1px solid transparent;transition:background .12s,border-color .12s}
@@ -493,13 +552,15 @@
     padding:4px;border-radius:9px;width:100%;transition:color .12s,border-color .12s}
   .oadd:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 
-  /* сворачивание ветки */
+  /* сворачивание ветки — кнопка живёт в обёртке, а не в карточке: у карточки
+     overflow:hidden (скругление шапки), она бы её обрезала */
+  .ocardwrap{position:relative;display:flex;flex-direction:column;align-items:center}
   .ocollapse{position:absolute;left:50%;bottom:-11px;transform:translateX(-50%);z-index:2;
-    background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;height:20px;
+    background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:0 8px;height:21px;
     font-size:10px;font-weight:700;color:var(--muted);display:flex;align-items:center;gap:4px;box-shadow:var(--shadow-sm)}
   .ocollapse:hover{border-color:var(--accent);color:var(--accent)}
   .ocollapse .chev{transition:transform .15s;font-size:9px}
-  .obranch.collapsed>.odept .ocollapse .chev{transform:rotate(-90deg)}
+  .obranch.collapsed .ocollapse .chev{transform:rotate(-90deg)}
 
   /* корневая карточка «компания» */
   .oroot{width:230px;background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--purple) 70%,var(--accent)));
@@ -1719,13 +1780,42 @@ async function viewAiAgents(v){
 }
 
 // ----------------------------------------------------------------- оргструктура
+// Три взгляда на одну структуру: «Схема» — org-диаграмма с деревом и перетаскиванием,
+// «Иерархия» — компактный список с отступами (удобно, когда отделов много),
+// «Список» — плоская таблица должностей.
+const ORG_VIEWS=[["chart","🗺️ Схема"],["tree","🌳 Иерархия"],["members","👥 Список"]];
 let ORG_TAB="chart";
-function setOrgTab(){["chart","members"].forEach(t=>{const b=$("#ot-"+t);if(b)b.classList.toggle("primary",ORG_TAB===t);});}
+let ORG_ZOOM=1;                      // масштаб схемы (0.4…1.6)
+let ORG_ZOOM_SET=false;              // трогал ли масштаб пользователь (иначе — авто «по размеру»)
+let ORG_Q="";                        // строка поиска по схеме
+let ORG_COLLAPSED=new Set();         // id свёрнутых отделов
+let ORG_ROOT_NAME="Компания";        // подпись корневой карточки (только в браузере)
+// Палитра веток. Первый цвет — фирменный акцент, дальше — по кругу.
+const ORG_COLORS=["#00B4D8","#4AA3FF","#A78BFA","#3EE08A","#F4B740","#FF5D73","#7CC800","#2DD4BF"];
+
+function orgLoadState(){
+  try{
+    const s=JSON.parse(localStorage.getItem("axiom_org")||"{}");
+    if(s.tab&&ORG_VIEWS.some(([k])=>k===s.tab))ORG_TAB=s.tab;
+    if(s.zoom){ORG_ZOOM=s.zoom;ORG_ZOOM_SET=true;}
+    if(Array.isArray(s.collapsed))ORG_COLLAPSED=new Set(s.collapsed);
+    if(s.root)ORG_ROOT_NAME=s.root;
+  }catch(e){}
+}
+function orgSaveState(){
+  try{localStorage.setItem("axiom_org",JSON.stringify(
+    {tab:ORG_TAB,zoom:ORG_ZOOM,collapsed:[...ORG_COLLAPSED],root:ORG_ROOT_NAME}));}catch(e){}
+}
+function setOrgTab(){ORG_VIEWS.forEach(([k])=>{const b=$("#ot-"+k);if(b)b.classList.toggle("primary",ORG_TAB===k);});}
 async function viewOrgChart(v){
-  v.innerHTML=`<div class="ttoolbar" style="margin-bottom:8px"><button id="ot-chart" class="primary">🗺️ Схема</button><button id="ot-members">👥 Список</button></div>
-    <div id="ot-body" style="margin-top:8px"></div>`;
-  $("#ot-chart").onclick=()=>{ORG_TAB="chart";setOrgTab();renderOrgBody();};
-  $("#ot-members").onclick=()=>{ORG_TAB="members";setOrgTab();renderOrgBody();};
+  orgLoadState();
+  v.innerHTML=`<div class="orgwrap">
+      <div class="ttoolbar" style="margin-bottom:10px">
+        ${ORG_VIEWS.map(([k,l])=>`<button id="ot-${k}">${l}</button>`).join("")}
+      </div>
+      <div id="ot-body"></div>
+    </div>`;
+  ORG_VIEWS.forEach(([k])=>{$("#ot-"+k).onclick=()=>{ORG_TAB=k;orgSaveState();setOrgTab();renderOrgBody();};});
   setOrgTab();renderOrgBody();
 }
 let ORG_ACCOUNTS=[], ORG_AGENTS=[];   // общие данные для формы/таблицы оргструктуры
@@ -1743,19 +1833,28 @@ async function renderOrgBody(){
   const body=$("#ot-body");if(!body)return;
   [ORG_AGENTS,ORG_ACCOUNTS]=await Promise.all([api("/api/aiagents"),api("/api/accounts")]);
   if(ORG_TAB==="members"){await renderOrgMembers(body);return;}
-  await renderOrgChart(body,ORG_AGENTS);
+  await renderOrgChart(body,ORG_TAB==="tree");
 }
 function orgKindOpts(m){
   return `<option value="human" ${(!m||m.kind==='human')?'selected':''}>👤 живой человек</option><option value="agent" ${m&&m.kind==='agent'?'selected':''}>🤖 ИИ-агент</option>`;
 }
-function orgAgentOpts(agents,m){
-  return `<option value="">— выбери агента —</option>`+agents.map(a=>`<option value="${a.id}" ${m&&String(m.ai_agent_id)===String(a.id)?"selected":""}>${esc(a.name||("#"+a.id))}${a.task?(" · "+esc(AI_TASKS[a.task]||a.task)):""}</option>`).join("");
-}
+// Список отделов для «подчиняется отделу». Исключаем сам отдел и всю его ветку —
+// иначе можно выбрать собственный подотдел и оторвать кусок дерева от корня.
 function orgParentOpts(depts,selId,excludeId){
-  return `<option value="">— без родителя (верхний уровень) —</option>`+depts.filter(d=>d.id!==excludeId).map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?"selected":""}>${esc(d.name)}</option>`).join("");
+  let banned=new Set();
+  if(excludeId){
+    banned.add(+excludeId);
+    const kids={};depts.forEach(d=>{(kids[d.parent_id||0]=kids[d.parent_id||0]||[]).push(d.id);});
+    const stack=[...(kids[+excludeId]||[])];
+    while(stack.length){const x=stack.pop();if(banned.has(x))continue;banned.add(x);stack.push(...(kids[x]||[]));}
+  }
+  return `<option value="">— без родителя (верхний уровень) —</option>`+
+    depts.filter(d=>!banned.has(d.id)).map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?"selected":""}>${esc(d.name)}</option>`).join("");
 }
 function orgMemberFormHtml(deptId,m){
-  const id=m?m.id:"";
+  // Форму зовут и с «заготовкой» ({account_id, kind}) — у неё нет id, и в data-id
+  // не должно попасть "undefined": иначе сохранение уйдёт как правка несуществующей должности.
+  const id=(m&&m.id)?m.id:"";
   const isAgent=m&&m.kind==='agent';
   const accId=(m&&m.account_id)||"";
   return `<div class="row2">
@@ -1800,217 +1899,633 @@ function wireOrgMemberForm(wrap){
     renderOrgBody();
   };
 }
-function orgMemberChip(m){
-  const ic=m.kind==='agent'?'🤖':'👤';
-  const sub=[m.role, m.kind==='agent'?(AI_TASKS[m.task||m.agent_task]||''):null].filter(Boolean).join(" · ");
-  const acc=m.account_id?`<div class="hint" style="margin-top:2px">${m.account_alive===1?'<span class=\"sdot g\"></span>':(m.account_alive===0?'<span class=\"sdot r\"></span>':'<span class=\"sdot gy\"></span>')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}</div>`
-    :'<div class="hint" style="margin-top:2px;color:var(--muted)">аккаунт не назначен</div>';
-  return `<div class="card" data-id="${m.id}" style="padding:8px 10px;min-width:180px">
-    <div style="font-weight:600">${ic} ${esc(m.name||m.role||'без имени')}</div>
-    ${sub?`<div class="hint">${esc(sub)}</div>`:""}
-    ${acc}
-    ${m.needs_access?'<span class="badge b-active" style="margin-top:4px;display:inline-block">🔑 нужен доступ</span>':''}
-    <div class="ttoolbar" style="margin:6px 0 0"><button class="om-edit" data-id="${m.id}">✏️</button><button class="om-del" data-id="${m.id}">🗑</button></div>
-  </div>`;
+// ═══ Схема оргструктуры: дерево, зум, поиск, перетаскивание ═══════════════
+// Дерево строится рекурсивно, линии рисует CSS (.obranch::before/::after), поэтому
+// связь «родитель → дети» всегда геометрически верна независимо от числа веток.
+
+function orgAvaColor(s){                       // стабильный цвет аватара по имени
+  let h=0;for(let i=0;i<String(s).length;i++)h=(h*31+String(s).charCodeAt(i))>>>0;
+  return ORG_COLORS[h%ORG_COLORS.length];
+}
+function orgInitials(n){
+  const p=String(n||"?").trim().split(/\s+/);
+  return ((p[0]||"?")[0]+(p[1]?p[1][0]:"")).toUpperCase();
+}
+function orgDeptColor(d){return d.color||ORG_COLORS[(d.id*3)%ORG_COLORS.length];}
+function orgAccDot(m){                          // состояние аккаунта-исполнителя
+  if(!m.account_id)return null;
+  return m.account_alive===1?"g":(m.account_alive===0?"r":"y");
+}
+function orgMemberLabel(m){return m.name||m.role||"без имени";}
+function orgMemberSub(m){
+  return [m.role,m.kind==="agent"?(AI_TASKS[m.task||m.agent_task]||m.task):null]
+    .filter(Boolean).join(" · ")||(m.kind==="agent"?"ИИ-роль":"сотрудник");
+}
+function orgAccName(m){
+  return m.account_id?(m.account_label||m.account_username||("#"+m.account_id)):"аккаунт не назначен";
+}
+// Строка поиска по сотруднику/отделу — всё, по чему можно найти
+function orgMemberSearchStr(m){
+  return [m.name,m.role,m.task,AI_TASKS[m.task||m.agent_task],m.account_label,m.account_username,m.phone,m.email]
+    .filter(Boolean).join(" ").toLowerCase();
 }
 
-// ─── Новая визуальная org-диаграмма (дерево) ────────────────────────────────
-function orgCardHtml(m){
-  const ic=m.kind==='agent'?'🤖':'👤';
-  const badge=m.kind==='agent'?'agent':'human';
-  const badgeLabel=m.kind==='agent'?'ИИ':'живой';
-  const accStr=m.account_id?`<span class="oiacc">${m.account_alive===1?'<span class=\"sdot g\"></span>':'<span class=\"sdot gy\"></span>'} ${esc(m.account_label||m.account_username||'#'+m.account_id)}</span>`:'';
-  return `<div class="org-card" draggable="true" data-id="${m.id}" data-dept="${m.department_id}">
-    <span class="oic">${ic}</span>
-    <div class="oinfo">
-      <div class="oiname">${esc(m.name||m.role||'без имени')} ${accStr}</div>
-      <div class="oirole">${esc(m.role||'')}${m.kind==='agent'&&(m.task||m.agent_task)?' · '+(AI_TASKS[m.task||m.agent_task]||m.task):''}</div>
+// Раскладываем плоский список отделов в дерево и считаем агрегаты по веткам.
+// Сироты (parent_id указывает на несуществующий/зациклённый отдел) поднимаются
+// в корень — иначе они бы просто исчезли со схемы.
+function orgBuildTree(depts){
+  const byId={};depts.forEach(d=>{byId[d.id]=d;d._kids=[];});
+  const roots=[];
+  depts.forEach(d=>{
+    const p=d.parent_id&&byId[d.parent_id]&&d.parent_id!==d.id?byId[d.parent_id]:null;
+    (p?p._kids:roots).push(d);
+  });
+  const seen=new Set();
+  const calc=d=>{
+    if(seen.has(d.id)){d._kids=[];return {h:0,a:0,sub:0};}   // страховка от цикла
+    seen.add(d.id);
+    const ms=d.members||[];
+    d._ownH=ms.filter(m=>m.kind!=="agent").length;
+    d._ownA=ms.filter(m=>m.kind==="agent").length;
+    let h=d._ownH,a=d._ownA,sub=0;
+    d._kids.forEach(k=>{const r=calc(k);h+=r.h;a+=r.a;sub+=1+r.sub;});
+    d._h=h;d._a=a;d._sub=sub;
+    return {h,a,sub};
+  };
+  roots.forEach(calc);
+  // Отделы, до которых не дошли (замкнутый цикл) — вытаскиваем в корень
+  depts.forEach(d=>{if(!seen.has(d.id)){d._kids=[];calc(d);roots.push(d);}});
+  return {byId,roots};
+}
+function orgDescendants(d){
+  const out=new Set(),stack=[...(d._kids||[])];
+  while(stack.length){const x=stack.pop();if(out.has(x.id))continue;out.add(x.id);stack.push(...(x._kids||[]));}
+  return out;
+}
+
+// ── карточка сотрудника внутри отдела ──
+function orgMemberHtml(m,isHead){
+  const ai=m.kind==="agent";
+  const nm=orgMemberLabel(m), dot=orgAccDot(m);
+  const ava=ai
+    ? `<div class="oava ai" style="background:linear-gradient(135deg,var(--accent),var(--purple))">🤖${dot?`<i class="olive ${dot}"></i>`:""}</div>`
+    : `<div class="oava" style="background:${orgAvaColor(nm)}">${esc(orgInitials(nm))}${dot?`<i class="olive ${dot}"></i>`:""}</div>`;
+  const tip=`${nm}${m.role?" · "+m.role:""}\n🔑 ${orgAccName(m)}${m.phone?"\n📞 "+m.phone:""}`;
+  return `<div class="omember ${isHead?"head":""}" draggable="true" data-mid="${m.id}"
+      data-s="${esc(orgMemberSearchStr(m))}" title="${esc(tip)}">
+    ${ava}
+    <div class="ominfo">
+      <div class="omname">${esc(nm)}${isHead?'<span class="omcrown" title="руководитель отдела">👑</span>':""}${m.needs_access?'<span class="omkey" title="нужен доступ в пульт">🔑</span>':""}</div>
+      <div class="omrole">${esc(orgMemberSub(m))}</div>
     </div>
-    <span class="obadge ${badge}">${badgeLabel}</span>
-    <div class="ocard-tools"><button class="oc-edit" data-id="${m.id}" title="редактировать">✏️</button><button class="oc-del" data-id="${m.id}" title="удалить">🗑</button></div>
   </div>`;
 }
 
-function orgDeptHtml(d, depth, byParent){
-  const kids=byParent[d.id]||[];
-  const members=d.members||[];
-  const indentStyle=depth>0?'style="margin-left:'+(depth*28)+'px"':'';
-  return `<div class="org-dept" ${indentStyle}>
-    <div class="org-dept-hdr">
-      🏛️ ${esc(d.name)}${d.description?`<div class="dsub">${esc(d.description)}</div>`:''}
-      <div class="dtools">
-        <button class="od-addmember" data-id="${d.id}" title="добавить сотрудника">➕</button>
-        <button class="od-addsub" data-id="${d.id}" title="добавить подотдел">📂</button>
-        <button class="od-del" data-id="${d.id}" title="удалить отдел">🗑</button>
+// ── ветка дерева: карточка отдела + рекурсивно дети ──
+function orgBranchHtml(d){
+  const kids=d._kids||[];
+  const collapsed=kids.length&&ORG_COLLAPSED.has(d.id);
+  const color=orgDeptColor(d);
+  // Руководитель всегда первым — как в структуре компании Битрикс24
+  const ms=(d.members||[]).slice().sort((a,b)=>
+    (b.id===d.head_member_id)-(a.id===d.head_member_id));
+  const counts=[
+    d._ownH?`<span class="hum" title="живых людей в отделе">👤 ${d._ownH}</span>`:"",
+    d._ownA?`<span class="ai" title="ИИ-ролей в отделе">🤖 ${d._ownA}</span>`:"",
+    d._sub?`<span class="br" title="подотделов в ветке · всего людей и ИИ ниже">🌿 ${d._sub} · ${d._h+d._a}</span>`:"",
+  ].filter(Boolean).join("");
+  return `<div class="obranch ${collapsed?"collapsed":""}" data-branch="${d.id}">
+    <div class="ocardwrap">
+      <div class="odept ${kids.length?"haskids":""}" style="--dc:${esc(color)}" data-dept="${d.id}"
+           data-s="${esc(((d.name||"")+" "+(d.description||"")).toLowerCase())}">
+        <div class="odept-hd" draggable="true" data-dept="${d.id}" title="перетащи, чтобы переподчинить отдел">
+          <div class="dname"><span class="dico">🏛</span><span>${esc(d.name)}</span></div>
+          ${d.description?`<div class="dsub">${esc(d.description)}</div>`:""}
+          ${counts?`<div class="ocount">${counts}</div>`:""}
+          <button class="dmenu" data-dept="${d.id}" title="действия с отделом">⋯</button>
+        </div>
+        <div class="omembers" data-dept="${d.id}">
+          ${ms.map(m=>orgMemberHtml(m,m.id===d.head_member_id)).join("")}
+          ${ms.length?"":'<div class="omempty">пусто — перетащи сюда сотрудника</div>'}
+          <button class="oadd" data-dept="${d.id}">＋ должность</button>
+        </div>
       </div>
+      ${kids.length?`<button class="ocollapse" data-dept="${d.id}"><span class="chev">▼</span>${kids.length}</button>`:""}
     </div>
-    <div class="org-dept-members" data-id="${d.id}">
-      ${members.map(m=>orgCardHtml(m)).join('')}
-      ${!members.length?'<div class="hint" style="font-size:10px;text-align:center;padding:4px 0">нет сотрудников</div>':''}
-    </div>
-  </div>` + kids.map(k=>orgDeptHtml(k, depth+1, byParent)).join('');
+    ${kids.length?`<div class="okids">${kids.map(orgBranchHtml).join("")}</div>`:""}
+  </div>`;
 }
 
-async function renderOrgChart(body,agents){
-  const data=await api("/api/org/tree");
-  const unlinked=await api("/api/org/unlinked-accounts");
-  const depts=data.departments||[];
-  body.innerHTML='<div id="org-chart-mount"></div><div id="org-pool-mount"></div>';
+// ── компактный режим «Иерархия»: список с отступами ──
+function orgListHtml(nodes,depth){
+  return nodes.map(d=>{
+    const col=ORG_COLLAPSED.has(d.id);
+    const ms=(d.members||[]).slice().sort((a,b)=>(b.id===d.head_member_id)-(a.id===d.head_member_id));
+    const kids=d._kids||[];
+    const rows=col?"":ms.map(m=>`<div class="olrow mem" data-mid="${m.id}" data-s="${esc(orgMemberSearchStr(m))}"
+        style="padding-left:${18+depth*20+22}px">
+        <span>${m.kind==="agent"?"🤖":"👤"}</span>
+        <span class="olname">${esc(orgMemberLabel(m))}${m.id===d.head_member_id?" 👑":""}
+          <span class="olsub">${esc(orgMemberSub(m))} · ${esc(orgAccName(m))}</span></span>
+        <span class="olacts"><button class="ol-medit" data-mid="${m.id}">✏️</button><button class="ol-mdel" data-mid="${m.id}">🗑</button></span>
+      </div>`).join("");
+    return `<div class="olrow dept ${col?"col":""}" data-dept="${d.id}"
+        data-s="${esc(((d.name||"")+" "+(d.description||"")).toLowerCase())}" style="padding-left:${12+depth*20}px">
+        <span class="olchev">${kids.length||ms.length?"▼":"·"}</span>
+        <i class="obar" style="background:${esc(orgDeptColor(d))}"></i>
+        <span class="olname">${esc(d.name)} <span class="olsub">${d.description?esc(d.description)+" · ":""}👤${d._ownH} 🤖${d._ownA}</span></span>
+        <span class="olacts">
+          <button class="ol-add" data-dept="${d.id}" title="добавить должность">＋</button>
+          <button class="ol-sub" data-dept="${d.id}" title="добавить подотдел">📂</button>
+          <button class="ol-edit" data-dept="${d.id}" title="настроить">✏️</button>
+          <button class="ol-del" data-dept="${d.id}" title="удалить">🗑</button>
+        </span>
+      </div>${rows}${col?"":orgListHtml(kids,depth+1)}`;
+  }).join("");
+}
 
-  // ── действие добавления отдела (форма в модалке) ──
-  function showAddDept(parentId){
-    const wrap=document.createElement('div'); wrap.className='org-mform-wrap';
-    wrap.innerHTML=`<div class="org-mform-inner">
-      <div style="font-weight:700;margin-bottom:10px">📂 Новый отдел${parentId?' (подотдел)':''}</div>
-      <div class="field"><label>Название</label><input id="modal-od-name" placeholder="Продажи Сочи"></div>
-      <div class="field"><label>Родительский отдел</label><select id="modal-od-parent">${orgParentOpts(depts,null,parentId||null)}</select></div>
-      <div class="field"><label>Зона ответственности</label><input id="modal-od-desc" placeholder="Прогрев и рассылка по агентствам"></div>
-      <div style="margin-top:10px"><button class="primary" id="modal-od-add">💾 Создать</button> <button class="modal-close">отмена</button> <span class="hint" id="modal-od-msg"></span></div>
-    </div>`;
-    document.body.appendChild(wrap);
-    wrap.querySelector('.modal-close').onclick=()=>wrap.remove();
-    wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
-    if(parentId){const sel=wrap.querySelector('#modal-od-parent');if(sel)sel.value=parentId;}
-    wrap.querySelector('#modal-od-add').onclick=async()=>{
-      const name=wrap.querySelector('#modal-od-name').value.trim();if(!name){wrap.querySelector('#modal-od-msg').textContent='нужно название';return;}
-      const r=await api('/api/org/department',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({name,description:wrap.querySelector('#modal-od-desc').value,parent_id:wrap.querySelector('#modal-od-parent').value||null})});
-      if(r.error){wrap.querySelector('#modal-od-msg').textContent=r.error;return;}
-      wrap.remove();renderOrgBody();
-    };
-    wrap.querySelector('#modal-od-name').focus();
-  }
-
-  // ── орг-схема ──
-  const mount=$('#org-chart-mount');
-  if(!depts.length){
-    mount.innerHTML=`<div class="empty">Отделов нет. <button class="primary" id="chart-add-first-dept">➕ Создать первый отдел</button></div>`;
-    $('#chart-add-first-dept').onclick=()=>showAddDept(null);
-  }else{
-    // Строим дерево: группируем по parent_id
-    const byParent={};depts.forEach(d=>{const p=d.parent_id||0;(byParent[p]=byParent[p]||[]).push(d);});
-    const root=byParent[0]||[];
-    // Находим корень: первый отдел без parent (или виртуальный CEO)
-    const hasCeo=depts.some(d=>d.name.toLowerCase().includes('ceo')||d.name.toLowerCase().includes('василий'));
-    let html='<div class="org-chart">';
-    if(!hasCeo&&root.length>1){
-      // Показываем CEO-заглушку
-      html+=`<div class="root-card">🧑‍💼 Руководство<div class="rsub">${root.length} отдела</div></div><div class="root-line"></div>`;
-    }else if(hasCeo){
-      const ceoDept=depts.find(d=>d.name.toLowerCase().includes('ceo')||d.name.toLowerCase().includes('василий'));
-      html+=`<div class="root-card">🧑‍💼 ${esc(ceoDept.name)}<div class="rsub">${ceoDept.description||''}</div></div><div class="root-line"></div>`;
+// ── всплывающее меню отдела ──
+function orgCloseMenu(){const m=document.querySelector(".omenu");if(m)m.remove();}
+function orgDeptMenu(x,y,d,depts,onDone){
+  orgCloseMenu();
+  const el=document.createElement("div");el.className="omenu";
+  el.innerHTML=`
+    <button data-a="edit">⚙️ Настроить отдел</button>
+    <button data-a="member">➕ Добавить должность</button>
+    <button data-a="sub">📂 Добавить подотдел</button>
+    <hr>
+    <div class="swatches">${ORG_COLORS.map(c=>`<i data-c="${c}" style="background:${c}" class="${orgDeptColor(d)===c?"on":""}"></i>`).join("")}</div>
+    <hr>
+    ${d.parent_id?'<button data-a="unparent">⬆️ Поднять на верхний уровень</button>':""}
+    <button data-a="del" class="dang">🗑 Удалить отдел</button>`;
+  document.body.appendChild(el);
+  const r=el.getBoundingClientRect();
+  el.style.left=Math.min(x,innerWidth-r.width-10)+"px";
+  el.style.top=Math.min(y,innerHeight-r.height-10)+"px";
+  const close=()=>{orgCloseMenu();document.removeEventListener("mousedown",out);};
+  const out=e=>{if(!el.contains(e.target))close();};
+  setTimeout(()=>document.addEventListener("mousedown",out),0);
+  el.querySelectorAll("[data-c]").forEach(i=>i.onclick=async()=>{
+    close();
+    await api("/api/org/department",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:d.id,name:d.name,description:d.description,parent_id:d.parent_id,
+        head_member_id:d.head_member_id,color:i.dataset.c})});
+    onDone();
+  });
+  el.querySelectorAll("[data-a]").forEach(b=>b.onclick=async()=>{
+    const a=b.dataset.a;close();
+    if(a==="edit")orgDeptModal(d,depts,null,onDone);
+    else if(a==="member")orgMemberModal(d.id,null,onDone);
+    else if(a==="sub")orgDeptModal(null,depts,d.id,onDone);
+    else if(a==="unparent"){
+      const r2=await api(`/api/org/department/${d.id}/move`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({parent_id:null})});
+      if(r2.error)alert(r2.error);onDone();
     }
-    html+=`<div class="org-levels">${root.map(d=>orgDeptHtml(d,0,byParent)).join('')}</div></div>`;
-    mount.innerHTML=html;
+    else if(a==="del")orgDeleteDept(d,depts,onDone);
+  });
+}
 
-    // ── интерактив ──
-    mount.querySelectorAll('.od-del').forEach(b=>b.onclick=async e=>{
-      e.stopPropagation();
-      if(!confirm('Удалить отдел?'))return;
-      const r=await api(`/api/org/department/${b.dataset.id}/delete`,{method:'POST'});
-      if(r.error){alert(r.error);return;}
-      renderOrgBody();
-    });
-    mount.querySelectorAll('.od-addsub').forEach(b=>b.onclick=e=>{
-      e.stopPropagation();showAddDept(b.dataset.id);
-    });
-    mount.querySelectorAll('.od-addmember').forEach(b=>b.onclick=e=>{
-      e.stopPropagation();
-      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
-      const inner=document.createElement('div');inner.className='org-mform-inner';
-      inner.innerHTML=orgMemberFormHtml(b.dataset.id,null)+'<div><span class="hint">или нажми отмена</span></div>';
-      wrap.appendChild(inner);document.body.appendChild(wrap);
-      wireOrgMemberForm(inner);
-      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
-      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
-    });
-    mount.querySelectorAll('.oc-edit').forEach(b=>b.onclick=e=>{
-      e.stopPropagation();
-      const mid=+b.dataset.id;
-      let member=null,deptId=null;
-      depts.forEach(d=>(d.members||[]).forEach(m=>{if(m.id===mid){member=m;deptId=d.id;}}));
-      if(!member)return;
-      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
-      const inner=document.createElement('div');inner.className='org-mform-inner';
-      inner.innerHTML=orgMemberFormHtml(deptId,member);
-      wrap.appendChild(inner);document.body.appendChild(wrap);
-      wireOrgMemberForm(inner);
-      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
-      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
-    });
-    mount.querySelectorAll('.oc-del').forEach(b=>b.onclick=async e=>{
-      e.stopPropagation();
-      if(!confirm('Удалить сотрудника из отдела?'))return;
-      await api(`/api/org/member/${b.dataset.id}/delete`,{method:'POST'});
-      renderOrgBody();
-    });
+// ── модалка отдела (создание и настройка) ──
+function orgDeptModal(dept,depts,parentPreset,onDone){
+  const isNew=!dept, cur=dept||{};
+  let color=cur.color||"";
+  const members=cur.members||[];
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  const inner=document.createElement("div");inner.className="org-mform-inner";
+  inner.innerHTML=`<div style="font-weight:800;font-size:15px;margin-bottom:12px">${isNew?"📂 Новый отдел":"⚙️ Настройка отдела"}</div>
+    <div class="field"><label>Название</label><input id="od-name" value="${esc(cur.name||"")}" placeholder="Продажи Сочи"></div>
+    <div class="field"><label>Зона ответственности</label><input id="od-desc" value="${esc(cur.description||"")}" placeholder="Прогрев и рассылка по агентствам"></div>
+    <div class="field"><label>Подчиняется отделу</label><select id="od-parent">${orgParentOpts(depts,parentPreset||cur.parent_id,cur.id)}</select></div>
+    ${members.length?`<div class="field"><label>👑 Руководитель отдела</label><select id="od-head">
+        <option value="">— не назначен —</option>
+        ${members.map(m=>`<option value="${m.id}" ${String(cur.head_member_id)===String(m.id)?"selected":""}>${esc(orgMemberLabel(m))}${m.role?" · "+esc(m.role):""}</option>`).join("")}
+      </select></div>`:""}
+    <div class="field"><label>Цвет ветки</label><div class="swatches" id="od-colors" style="display:flex;gap:7px;flex-wrap:wrap">
+      ${ORG_COLORS.map(c=>`<i data-c="${c}" style="width:26px;height:26px;border-radius:8px;cursor:pointer;background:${c};border:2px solid ${color===c?"var(--text)":"transparent"}"></i>`).join("")}
+    </div></div>
+    <div class="ttoolbar" style="margin-top:14px"><button class="primary" id="od-save">💾 ${isNew?"Создать":"Сохранить"}</button>
+      <button id="od-cancel">отмена</button><span class="hint" id="od-msg"></span></div>`;
+  wrap.appendChild(inner);document.body.appendChild(wrap);
+  const closeM=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)closeM();};
+  inner.querySelector("#od-cancel").onclick=closeM;
+  inner.querySelectorAll("#od-colors i").forEach(i=>i.onclick=()=>{
+    color=i.dataset.c;
+    inner.querySelectorAll("#od-colors i").forEach(j=>j.style.borderColor=j.dataset.c===color?"var(--text)":"transparent");
+  });
+  inner.querySelector("#od-save").onclick=async()=>{
+    const name=inner.querySelector("#od-name").value.trim();
+    const msg=inner.querySelector("#od-msg");
+    if(!name){msg.textContent="нужно название";return;}
+    const headSel=inner.querySelector("#od-head");
+    const r=await api("/api/org/department",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:cur.id||null,name,description:inner.querySelector("#od-desc").value,
+        parent_id:inner.querySelector("#od-parent").value||null,color:color||null,
+        head_member_id:headSel?(headSel.value||null):(cur.head_member_id||null)})});
+    if(r.error){msg.textContent=r.error;return;}
+    closeM();onDone();
+  };
+  inner.querySelector("#od-name").focus();
+}
 
-    // ── drag-and-drop сотрудников между отделами ──
-    let dragMemberId=null;
-    mount.querySelectorAll('.org-card').forEach(card=>{
-      card.ondragstart=e=>{dragMemberId=+card.dataset.id;card.style.opacity='.4';e.stopPropagation();};
-      card.ondragend=()=>{card.style.opacity='1';dragMemberId=null;
-        mount.querySelectorAll('.org-dept-members').forEach(d=>d.classList.remove('org-drop-hi'));};
-    });
-    mount.querySelectorAll('.org-dept-members').forEach(zone=>{
-      zone.ondragover=e=>{if(dragMemberId){e.preventDefault();zone.classList.add('org-drop-hi');}};
-      zone.ondragleave=()=>zone.classList.remove('org-drop-hi');
-      zone.ondrop=async e=>{e.preventDefault();zone.classList.remove('org-drop-hi');
-        if(!dragMemberId)return;
-        const newDeptId=+zone.dataset.id;
-        const oldDept=depts.find(d=>(d.members||[]).some(m=>m.id===dragMemberId));
-        if(oldDept&&oldDept.id===newDeptId){dragMemberId=null;return;}
-        const r=await api(`/api/org/member/${dragMemberId}/move`,{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({department_id:newDeptId})});
-        if(r.error){alert(r.error);}
-        dragMemberId=null;
-        renderOrgBody();
-      };
-    });
-  }
+// ── модалка должности (та же форма, что и в таблице) ──
+// onDone не вызываем: wireOrgMemberForm после успешного сохранения сам зовёт
+// renderOrgBody() — это и есть перерисовка. Параметр оставлен ради единого вызова.
+function orgMemberModal(deptId,member,onDone){
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  const inner=document.createElement("div");inner.className="org-mform-inner";
+  inner.innerHTML=`<div style="font-weight:800;font-size:15px;margin-bottom:12px">${member?"✏️ Должность":"➕ Новая должность"}</div>`
+    +orgMemberFormHtml(deptId,member);
+  wrap.appendChild(inner);document.body.appendChild(wrap);
+  wireOrgMemberForm(inner);
+  wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
+  inner.querySelector(".om-cancel").onclick=()=>wrap.remove();
+  // Форма сама зовёт renderOrgBody() после сохранения — модалку убираем следом
+  const save=inner.querySelector(".om-save"), prev=save.onclick;
+  save.onclick=async()=>{await prev();if(!inner.querySelector(".om-msg").textContent)wrap.remove();};
+}
 
-  // ── панель действий ──
-  const actions=document.createElement('div');
-  actions.style.cssText='display:flex;gap:8px;margin:10px 0 0;flex-wrap:wrap';
-  actions.innerHTML=`
-    <button class="primary" id="chart-add-dept">➕ Добавить отдел</button>
-    <button id="chart-sync-pool">🔄 Синхр. ресурсы</button>`;
-  mount.parentNode.insertBefore(actions,mount);
-  $('#chart-add-dept').onclick=()=>showAddDept(null);
-  $('#chart-sync-pool').onclick=()=>{renderOrgBody();};
+// ── удаление отдела: если он не пуст — спрашиваем, куда переселить людей ──
+async function orgDeleteDept(d,depts,onDone){
+  const post=body=>api(`/api/org/department/${d.id}/delete`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+  let r=await post();
+  if(r.ok){onDone();return;}
+  if(!r.need_move){alert(r.error||"не удалось удалить отдел");return;}
+  const others=depts.filter(x=>x.id!==d.id);
+  if(!others.length){alert("Некуда переносить сотрудников — сначала создай другой отдел.");return;}
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  const inner=document.createElement("div");inner.className="org-mform-inner";
+  inner.innerHTML=`<div style="font-weight:800;font-size:15px;margin-bottom:10px">🗑 Удалить «${esc(d.name)}»</div>
+    <div class="hint" style="margin-bottom:12px">В отделе ${r.members||0} сотрудник(ов) и ${r.children||0} подотдел(ов).
+      Сотрудники переедут в выбранный отдел, подотделы поднимутся на уровень выше — никто не потеряется.</div>
+    <div class="field"><label>Перенести сотрудников в</label><select id="odm-to">
+      ${others.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select></div>
+    <div class="ttoolbar" style="margin-top:12px"><button class="primary" id="odm-go">Перенести и удалить</button>
+      <button id="odm-cancel">отмена</button><span class="hint" id="odm-msg"></span></div>`;
+  wrap.appendChild(inner);document.body.appendChild(wrap);
+  wrap.onclick=e=>{if(e.target===wrap)wrap.remove();};
+  inner.querySelector("#odm-cancel").onclick=()=>wrap.remove();
+  inner.querySelector("#odm-go").onclick=async()=>{
+    const r2=await post({move_to:+inner.querySelector("#odm-to").value});
+    if(r2.error){inner.querySelector("#odm-msg").textContent=r2.error;return;}
+    wrap.remove();onDone();
+  };
+}
 
-  // ── пул ресурсов ──
-  const poolMount=$('#org-pool-mount');
-  if(!unlinked||!unlinked.length){
-    poolMount.innerHTML='';
+// ── зум ──
+function orgSetZoom(z,byUser){
+  ORG_ZOOM=Math.max(.4,Math.min(1.6,Math.round(z*100)/100));
+  const st=$("#org-stage");if(st)st.style.setProperty("--oz",ORG_ZOOM);
+  const l=$("#oz-level");if(l)l.textContent=Math.round(ORG_ZOOM*100)+"%";
+  if(byUser){ORG_ZOOM_SET=true;orgSaveState();}
+}
+// Прокрутить канвас так, чтобы дерево оказалось по центру — иначе широкая схема
+// открывается прижатой к левому краю и корень «уезжает» из поля зрения.
+function orgCenter(){
+  const c=$("#org-canvas");if(!c)return;
+  c.scrollLeft=Math.max(0,(c.scrollWidth-c.clientWidth)/2);
+}
+// «По размеру»: подобрать масштаб так, чтобы дерево целиком влезло по ширине
+function orgFit(byUser){
+  const c=$("#org-canvas"), tree=c&&c.querySelector(".otree");
+  if(!tree)return;
+  const w=tree.offsetWidth+72;                     // +поля канваса
+  orgSetZoom(w>0?Math.min(1,c.clientWidth/w):1,byUser);
+  requestAnimationFrame(orgCenter);
+}
+// Склонение по числу: 1 отдел / 2 отдела / 5 отделов
+function plural(n,one,few,many){
+  const m=Math.abs(n)%100, k=m%10;
+  return (m>=11&&m<=14)?many:(k===1?one:(k>=2&&k<=4?few:many));
+}
+
+// ═══ основной рендер ═══
+async function renderOrgChart(body,compact){
+  const [data,unlinked]=await Promise.all([api("/api/org/tree"),api("/api/org/unlinked-accounts")]);
+  const depts=data.departments||[];
+  const {roots}=orgBuildTree(depts);
+  const redraw=()=>renderOrgBody();
+
+  const totH=depts.reduce((s,d)=>s+(d._ownH||0),0);
+  const totA=depts.reduce((s,d)=>s+(d._ownA||0),0);
+  const noAcc=depts.reduce((s,d)=>s+(d.members||[]).filter(m=>!m.account_id).length,0);
+  const parentIds=depts.filter(d=>(d._kids||[]).length).map(d=>d.id);
+  const allCollapsed=parentIds.length>0&&parentIds.every(id=>ORG_COLLAPSED.has(id));
+
+  body.innerHTML=`
+    <div class="orgbar">
+      <button class="primary" id="org-add-dept">➕ Отдел</button>
+      ${compact?"":`<div class="ozoom">
+        <button id="oz-out" title="отдалить (или Ctrl+колесо)">−</button>
+        <span class="olevel" id="oz-level" title="сбросить масштаб к 100%">${Math.round(ORG_ZOOM*100)}%</span>
+        <button id="oz-in" title="приблизить (или Ctrl+колесо)">+</button>
+        <button id="oz-fit" title="вместить схему целиком">⤢</button>
+      </div>`}
+      <button id="org-toggle-all" title="свернуть/развернуть все ветки">${allCollapsed?"⌄ Развернуть":"⌃ Свернуть"} ветки</button>
+      <div class="osearch"><input id="org-q" placeholder="Найти человека или отдел…" value="${esc(ORG_Q)}"></div>
+      <span class="grow"></span>
+      <span class="orgstat">
+        <span>🏛 <b>${depts.length}</b> ${plural(depts.length,"отдел","отдела","отделов")}</span>
+        <span>👤 <b>${totH}</b> ${plural(totH,"живой","живых","живых")}</span>
+        <span>🤖 <b>${totA}</b> ИИ</span>
+        ${noAcc?`<span title="должности без аккаунта-исполнителя">🔑 <b>${noAcc}</b> без аккаунта</span>`:""}
+      </span>
+    </div>
+    <div id="org-mount"></div>
+    <div id="org-pool-mount"></div>`;
+
+  const mount=$("#org-mount");
+  if(!depts.length){
+    mount.innerHTML=`<div class="empty" style="padding:38px 20px;text-align:center">
+      <div style="font-size:34px;margin-bottom:8px">🏛</div>
+      <div style="font-weight:700;margin-bottom:4px">Структуры пока нет</div>
+      <div class="hint" style="margin-bottom:14px">Создай первый отдел — дальше можно добавлять должности,
+        назначать аккаунты и перетаскивать людей между отделами мышкой.</div>
+      <button class="primary" id="org-first">➕ Создать первый отдел</button></div>`;
+    $("#org-first").onclick=()=>orgDeptModal(null,depts,null,redraw);
+  }else if(compact){
+    mount.innerHTML=`<div class="olist">${orgListHtml(roots,0)}</div>`;
+    wireOrgList(mount,depts,redraw);
   }else{
-    const dot=a=>`<span class="odot ${a.session_alive===1?'green':(a.session_alive===0?'red':'yellow')}"></span>`;
-    const label=a=>esc(a.label||a.username||a.phone||'#'+a.id);
-    poolMount.innerHTML=`<div class="org-pool">
-      <div class="org-pool-title">📦 Пул ресурсов — непривязанные аккаунты</div>
-      <div class="org-pool-grid">${unlinked.map(a=>`<span class="org-pool-chip" data-accid="${a.id}">${dot(a)} ${label(a)}${a.phone?(' · '+esc(a.phone)):''}</span>`).join('')}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">аккаунты из раздела «Ресурсы», не назначенные ни на одну должность. Кликни — чтобы назначить.</div>
-    </div>`;
-    // Клик по непривязанному аккаунту — предложить создать должность
-    poolMount.querySelectorAll('.org-pool-chip').forEach(chip=>chip.onclick=async()=>{
-      const accId=+chip.dataset.accid;
-      const acc=unlinked.find(a=>a.id===accId);if(!acc)return;
-      const wrap=document.createElement('div');wrap.className='org-mform-wrap';
-      const inner=document.createElement('div');inner.className='org-mform-inner';
-      const name=acc.label||acc.username||acc.phone||'#'+acc.id;
-      inner.innerHTML=`<div style="font-weight:700;margin-bottom:10px">📦 Назначить аккаунт на должность</div>
-        <div style="margin-bottom:10px">Аккаунт: <b>${esc(name)}</b>${acc.phone?(' · '+esc(acc.phone)):''}</div>`;
-      // Берём первый отдел для предвыбора
-      inner.innerHTML+=orgMemberFormHtml(depts.length?depts[0].id:null,{account_id:accId,kind:'agent'});
-      wrap.appendChild(inner);document.body.appendChild(wrap);
-      wireOrgMemberForm(inner);
-      wrap.onclick=e2=>{if(e2.target===wrap)wrap.remove();};
-      inner.querySelector('.om-cancel').onclick=()=>wrap.remove();
-      // Подставляем аккаунт
-      const accSel=inner.querySelector('.om-acc');
-      if(accSel)accSel.value=String(accId);
-    });
+    mount.innerHTML=`<div class="orgcanvas" id="org-canvas"><div class="orgstage" id="org-stage" style="--oz:${ORG_ZOOM}">
+      <div class="otree"><div class="obranch">
+        <div class="ocardwrap"><div class="oroot" id="org-root" title="нажми, чтобы переименовать">
+          <div class="rname">🏢 ${esc(ORG_ROOT_NAME)}</div>
+          <div class="rsub">${roots.length} ${plural(roots.length,"направление","направления","направлений")} · ${totH+totA} в команде</div>
+        </div></div>
+        <div class="okids">${roots.map(orgBranchHtml).join("")}</div>
+      </div></div>
+    </div></div>`;
+    wireOrgChartTree(mount,depts,redraw);
   }
+
+  $("#org-add-dept").onclick=()=>orgDeptModal(null,depts,null,redraw);
+  const tog=$("#org-toggle-all");
+  if(tog)tog.onclick=()=>{
+    if(allCollapsed)parentIds.forEach(id=>ORG_COLLAPSED.delete(id));
+    else parentIds.forEach(id=>ORG_COLLAPSED.add(id));
+    orgSaveState();redraw();
+  };
+  const q=$("#org-q");
+  if(q){
+    q.oninput=()=>{ORG_Q=q.value;orgApplySearch(mount);};
+    if(ORG_Q)orgApplySearch(mount);
+  }
+  if(!compact&&depts.length){
+    $("#oz-in").onclick=()=>orgSetZoom(ORG_ZOOM+.1,true);
+    $("#oz-out").onclick=()=>orgSetZoom(ORG_ZOOM-.1,true);
+    $("#oz-level").onclick=()=>{orgSetZoom(1,true);orgCenter();};
+    $("#oz-fit").onclick=()=>orgFit(true);
+    // Первое открытие — вмещаем схему целиком; дальше уважаем выбранный масштаб
+    requestAnimationFrame(()=>{ORG_ZOOM_SET?orgCenter():orgFit(false);});
+  }
+  renderOrgPool($("#org-pool-mount"),unlinked,depts,redraw);
+}
+
+// Поиск: совпавшие подсвечиваем, остальные отделы гасим. Пока идёт поиск —
+// все ветки временно раскрыты, иначе найденное могло бы остаться в свёрнутом.
+function orgApplySearch(mount){
+  const q=ORG_Q.trim().toLowerCase();
+  mount.querySelectorAll(".odept,.omember,.olrow").forEach(el=>el.classList.remove("hitmatch","dim"));
+  mount.querySelectorAll(".obranch").forEach(b=>b.classList.toggle("collapsed",
+    !q&&ORG_COLLAPSED.has(+b.dataset.branch)));
+  if(!q)return;
+  mount.querySelectorAll(".omember,.olrow.mem").forEach(el=>{
+    if((el.dataset.s||"").includes(q))el.classList.add("hitmatch");
+  });
+  mount.querySelectorAll(".odept").forEach(c=>{
+    const self=(c.dataset.s||"").includes(q);
+    if(self)c.classList.add("hitmatch");
+    if(!self&&!c.querySelector(".omember.hitmatch"))c.classList.add("dim");
+  });
+  mount.querySelectorAll(".olrow.dept").forEach(c=>{
+    if((c.dataset.s||"").includes(q))c.classList.add("hitmatch");
+  });
+}
+
+// ── обвязка схемы: клики, меню, сворачивание, зум колесом, pan, drag&drop ──
+let ORG_DRAG=null;   // {type:'dept'|'member'|'acc', id}
+function wireOrgChartTree(mount,depts,redraw){
+  const byId={};depts.forEach(d=>byId[d.id]=d);
+  const canvas=$("#org-canvas");
+
+  $("#org-root").onclick=()=>{
+    const n=prompt("Название компании на схеме:",ORG_ROOT_NAME);
+    if(n===null)return;
+    ORG_ROOT_NAME=n.trim()||"Компания";orgSaveState();redraw();
+  };
+  mount.querySelectorAll(".ocollapse").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const id=+b.dataset.dept;
+    ORG_COLLAPSED.has(id)?ORG_COLLAPSED.delete(id):ORG_COLLAPSED.add(id);
+    orgSaveState();
+    const br=mount.querySelector(`.obranch[data-branch="${id}"]`);
+    if(br)br.classList.toggle("collapsed",ORG_COLLAPSED.has(id));
+  });
+  mount.querySelectorAll(".dmenu").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const r=b.getBoundingClientRect();
+    orgDeptMenu(r.left,r.bottom+4,byId[+b.dataset.dept],depts,redraw);
+  });
+  mount.querySelectorAll(".oadd").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();orgMemberModal(+b.dataset.dept,null,redraw);
+  });
+  mount.querySelectorAll(".omember").forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    const mid=+el.dataset.mid;
+    let mem=null,dept=null;
+    depts.forEach(d=>(d.members||[]).forEach(m=>{if(m.id===mid){mem=m;dept=d;}}));
+    if(mem)orgMemberModal(dept.id,mem,redraw);
+  });
+  // двойной клик по шапке отдела — быстрая настройка
+  mount.querySelectorAll(".odept-hd").forEach(el=>el.ondblclick=e=>{
+    e.stopPropagation();orgDeptModal(byId[+el.dataset.dept],depts,null,redraw);
+  });
+
+  // зум колесом с Ctrl (как в редакторах схем)
+  canvas.addEventListener("wheel",e=>{
+    if(!e.ctrlKey)return;
+    e.preventDefault();orgSetZoom(ORG_ZOOM+(e.deltaY<0?.1:-.1),true);
+  },{passive:false});
+
+  // pan: тянем пустое место канваса
+  let pan=null;
+  canvas.addEventListener("mousedown",e=>{
+    if(e.button!==0)return;
+    if(e.target.closest(".odept,.oroot,.ocollapse"))return;
+    pan={x:e.clientX,y:e.clientY,l:canvas.scrollLeft,t:canvas.scrollTop};
+    canvas.classList.add("panning");
+  });
+  addEventListener("mousemove",e=>{
+    if(!pan)return;
+    canvas.scrollLeft=pan.l-(e.clientX-pan.x);
+    canvas.scrollTop=pan.t-(e.clientY-pan.y);
+  });
+  addEventListener("mouseup",()=>{if(pan){pan=null;canvas.classList.remove("panning");}});
+
+  // ── перетаскивание ──
+  mount.querySelectorAll(".odept-hd[draggable]").forEach(hd=>{
+    hd.ondragstart=e=>{
+      ORG_DRAG={type:"dept",id:+hd.dataset.dept};
+      e.dataTransfer.effectAllowed="move";
+      try{e.dataTransfer.setData("text/plain","dept:"+hd.dataset.dept);}catch(_){}
+      hd.closest(".odept").classList.add("dragging");
+      e.stopPropagation();
+    };
+    hd.ondragend=()=>{
+      ORG_DRAG=null;
+      mount.querySelectorAll(".dragging").forEach(x=>x.classList.remove("dragging"));
+      mount.querySelectorAll(".dropinto").forEach(x=>x.classList.remove("dropinto"));
+      mount.querySelectorAll(".dropzone").forEach(x=>x.classList.remove("dropzone"));
+    };
+  });
+  mount.querySelectorAll(".omember[draggable]").forEach(el=>{
+    el.ondragstart=e=>{
+      ORG_DRAG={type:"member",id:+el.dataset.mid};
+      e.dataTransfer.effectAllowed="move";
+      try{e.dataTransfer.setData("text/plain","member:"+el.dataset.mid);}catch(_){}
+      el.classList.add("dragging");e.stopPropagation();
+    };
+    el.ondragend=()=>{
+      ORG_DRAG=null;
+      mount.querySelectorAll(".dragging").forEach(x=>x.classList.remove("dragging"));
+      mount.querySelectorAll(".dropzone").forEach(x=>x.classList.remove("dropzone"));
+      mount.querySelectorAll(".dropinto").forEach(x=>x.classList.remove("dropinto"));
+    };
+  });
+
+  // Куда можно бросить отдел: в шапку другого отдела (стать подотделом) или в корень.
+  // drag передаём явно — на ondrop мы уже обнулили ORG_DRAG, и проверка по глобальной
+  // переменной всегда возвращала бы false (перенос молча отменялся).
+  const canDropDept=(targetId,drag)=>{
+    drag=drag||ORG_DRAG;
+    if(!drag||drag.type!=="dept")return false;
+    if(targetId===drag.id)return false;
+    const src=byId[drag.id];
+    return !(src&&orgDescendants(src).has(targetId));
+  };
+  mount.querySelectorAll(".odept-hd").forEach(hd=>{
+    const did=+hd.dataset.dept, card=hd.closest(".odept");
+    hd.ondragover=e=>{
+      if(canDropDept(did)||(ORG_DRAG&&ORG_DRAG.type!=="dept")){e.preventDefault();card.classList.add("dropinto");}
+    };
+    hd.ondragleave=()=>card.classList.remove("dropinto");
+    hd.ondrop=async e=>{
+      e.preventDefault();e.stopPropagation();card.classList.remove("dropinto");
+      if(!ORG_DRAG)return;
+      const drag=ORG_DRAG;ORG_DRAG=null;
+      if(drag.type==="dept"){
+        if(!canDropDept(did,drag))return;
+        const r=await api(`/api/org/department/${drag.id}/move`,{method:"POST",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({parent_id:did})});
+        if(r.error)alert(r.error);
+      }else if(drag.type==="member"){
+        const r=await api(`/api/org/member/${drag.id}/move`,{method:"POST",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({department_id:did})});
+        if(r.error)alert(r.error);
+      }else if(drag.type==="acc"){
+        orgMemberModal(did,{account_id:drag.id,kind:"agent"},redraw);return;
+      }
+      redraw();
+    };
+  });
+  const rootCard=$("#org-root");
+  rootCard.ondragover=e=>{if(ORG_DRAG&&ORG_DRAG.type==="dept"&&byId[ORG_DRAG.id].parent_id){e.preventDefault();rootCard.classList.add("dropinto");}};
+  rootCard.ondragleave=()=>rootCard.classList.remove("dropinto");
+  rootCard.ondrop=async e=>{
+    e.preventDefault();rootCard.classList.remove("dropinto");
+    if(!ORG_DRAG||ORG_DRAG.type!=="dept")return;
+    const id=ORG_DRAG.id;ORG_DRAG=null;
+    const r=await api(`/api/org/department/${id}/move`,{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({parent_id:null})});
+    if(r.error)alert(r.error);
+    redraw();
+  };
+
+  // зона сотрудников: приём людей (с позицией) и аккаунтов из пула
+  mount.querySelectorAll(".omembers").forEach(zone=>{
+    const did=+zone.dataset.dept;
+    zone.ondragover=e=>{
+      if(!ORG_DRAG||ORG_DRAG.type==="dept")return;
+      e.preventDefault();zone.classList.add("dropzone");
+    };
+    zone.ondragleave=()=>zone.classList.remove("dropzone");
+    zone.ondrop=async e=>{
+      e.preventDefault();e.stopPropagation();zone.classList.remove("dropzone");
+      if(!ORG_DRAG||ORG_DRAG.type==="dept")return;
+      const drag=ORG_DRAG;ORG_DRAG=null;
+      if(drag.type==="acc"){orgMemberModal(did,{account_id:drag.id,kind:"agent"},redraw);return;}
+      // позиция внутри отдела — по месту курсора
+      const rows=[...zone.querySelectorAll(".omember")].filter(r=>+r.dataset.mid!==drag.id);
+      let idx=rows.length;
+      for(let i=0;i<rows.length;i++){
+        const b=rows[i].getBoundingClientRect();
+        if(e.clientY<b.top+b.height/2){idx=i;break;}
+      }
+      const r=await api(`/api/org/member/${drag.id}/move`,{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({department_id:did,index:idx})});
+      if(r.error)alert(r.error);
+      redraw();
+    };
+  });
+}
+
+// ── обвязка компактного режима ──
+function wireOrgList(mount,depts,redraw){
+  const byId={};depts.forEach(d=>byId[d.id]=d);
+  mount.querySelectorAll(".olrow.dept").forEach(row=>{
+    row.onclick=e=>{
+      if(e.target.closest(".olacts"))return;
+      const id=+row.dataset.dept;
+      ORG_COLLAPSED.has(id)?ORG_COLLAPSED.delete(id):ORG_COLLAPSED.add(id);
+      orgSaveState();redraw();
+    };
+  });
+  mount.querySelectorAll(".ol-add").forEach(b=>b.onclick=e=>{e.stopPropagation();orgMemberModal(+b.dataset.dept,null,redraw);});
+  mount.querySelectorAll(".ol-sub").forEach(b=>b.onclick=e=>{e.stopPropagation();orgDeptModal(null,depts,+b.dataset.dept,redraw);});
+  mount.querySelectorAll(".ol-edit").forEach(b=>b.onclick=e=>{e.stopPropagation();orgDeptModal(byId[+b.dataset.dept],depts,null,redraw);});
+  mount.querySelectorAll(".ol-del").forEach(b=>b.onclick=e=>{e.stopPropagation();orgDeleteDept(byId[+b.dataset.dept],depts,redraw);});
+  mount.querySelectorAll(".ol-medit").forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const mid=+b.dataset.mid;let mem=null,dept=null;
+    depts.forEach(d=>(d.members||[]).forEach(m=>{if(m.id===mid){mem=m;dept=d;}}));
+    if(mem)orgMemberModal(dept.id,mem,redraw);
+  });
+  mount.querySelectorAll(".ol-mdel").forEach(b=>b.onclick=async e=>{
+    e.stopPropagation();
+    if(!confirm("Удалить должность?"))return;
+    await api(`/api/org/member/${b.dataset.mid}/delete`,{method:"POST"});redraw();
+  });
+}
+
+// ── пул непривязанных аккаунтов: чипсы можно тащить прямо в отдел ──
+function renderOrgPool(poolMount,unlinked,depts,redraw){
+  if(!poolMount)return;
+  if(!unlinked||!unlinked.length){poolMount.innerHTML="";return;}
+  const dot=a=>`<span class="odot ${a.session_alive===1?"green":(a.session_alive===0?"red":"yellow")}"></span>`;
+  const label=a=>esc(a.label||a.username||a.phone||("#"+a.id));
+  poolMount.innerHTML=`<div class="org-pool">
+    <div class="org-pool-title">📦 Свободные аккаунты <span class="hint" style="font-weight:400">— ${unlinked.length} шт.</span></div>
+    <div class="hint">Аккаунты из «Ресурсов», не назначенные ни на одну должность.
+      Перетащи чипс в отдел на схеме (или просто кликни) — создастся должность с этим исполнителем.</div>
+    <div class="org-pool-grid">${unlinked.map(a=>`<span class="org-pool-chip" draggable="true" data-accid="${a.id}">${dot(a)} ${label(a)}${a.phone?" · "+esc(a.phone):""}</span>`).join("")}</div>
+  </div>`;
+  poolMount.querySelectorAll(".org-pool-chip").forEach(chip=>{
+    const accId=+chip.dataset.accid;
+    chip.ondragstart=e=>{
+      ORG_DRAG={type:"acc",id:accId};
+      e.dataTransfer.effectAllowed="copy";
+      try{e.dataTransfer.setData("text/plain","acc:"+accId);}catch(_){}
+      chip.classList.add("dragging");
+    };
+    chip.ondragend=()=>{ORG_DRAG=null;chip.classList.remove("dragging");};
+    chip.onclick=()=>{
+      if(!depts.length){alert("Сначала создай отдел — должности живут внутри отделов.");return;}
+      orgMemberModal(depts[0].id,{account_id:accId,kind:"agent"},redraw);
+    };
+  });
 }
 
 function orgDeptField(depts,selId){
@@ -2140,23 +2655,117 @@ async function viewDeals(v){
 }
 function dealTitle(d){return esc(d.title||d.company_name||"сделка");}
 function dealSub(d){return esc([d.person_name||d.contact_name,d.amount?(Number(d.amount).toLocaleString("ru-RU")+" ₽"):""].filter(Boolean).join(" · "));}
+function money(v){return v?Number(v).toLocaleString("ru-RU")+" ₽":"";}
+// Компактная сумма для шапки колонки: 1 250 000 ₽ → 1,25 млн ₽
+function moneyShort(v){
+  const n=Number(v||0);
+  if(!n)return "—";
+  if(n>=1e6)return (n/1e6).toLocaleString("ru-RU",{maximumFractionDigits:2})+" млн ₽";
+  if(n>=1e4)return Math.round(n/1e3).toLocaleString("ru-RU")+" тыс ₽";
+  return n.toLocaleString("ru-RU")+" ₽";
+}
+// Цвет стадии: успех — зелёный, отвал — красный/серый, остальные — по градиенту воронки
+const DEAL_LOST=new Set(["lost","blocked","stop"]);
+function stageColor(key,i,total){
+  if(key==="won")return "var(--green)";
+  if(key==="lost"||key==="blocked")return "var(--red)";
+  if(key==="stop")return "var(--faint)";
+  if(key==="nurture")return "var(--purple)";
+  const palette=["#4AA3FF","#00B4D8","#2DD4BF","#7CC800","#F4B740"];
+  return palette[Math.min(i,palette.length-1)];
+}
+function daysSince(ts){
+  if(!ts)return null;
+  const t=Date.parse(String(ts).replace(" ","T"));
+  if(isNaN(t))return null;
+  return Math.floor((Date.now()-t)/86400000);
+}
+function dealAvaColor(s){
+  let h=0;for(let i=0;i<String(s).length;i++)h=(h*31+String(s).charCodeAt(i))>>>0;
+  return ORG_COLORS[h%ORG_COLORS.length];
+}
+function dealCardHtml(d,stale){
+  const nm=d.title||d.company_name||"сделка";
+  const who=d.person_name||d.contact_name||d.company_name||"";
+  const age=daysSince(d.updated_at||d.created_at);
+  const chips=[];
+  if(d.product)chips.push(`<span class="kchip">${esc(d.product)}</span>`);
+  if(d.meeting_at)chips.push(`<span class="kchip">📅 ${esc(fmt(d.meeting_at)||d.meeting_at)}</span>`);
+  // «Завис» — давно не двигали. Порог зависит от стадии: финальные не считаем.
+  if(age!==null&&stale&&age>=stale)
+    chips.push(`<span class="kchip ${age>=stale*2?"hot":"warn"}">⏳ ${age} дн. без движения</span>`);
+  return `<div class="kcard" draggable="true" data-id="${d.id}">
+    <div class="ktop">
+      <div class="kava" style="background:${dealAvaColor(who||nm)}">${esc(orgInitials(who||nm))}</div>
+      <div class="nm">${esc(nm)}</div>
+    </div>
+    ${d.amount?`<div class="kamt">${money(d.amount)}</div>`:""}
+    ${who&&who!==nm?`<div class="mt">${esc(who)}</div>`:""}
+    ${d.company_name&&d.company_name!==nm?`<div class="mt">🏢 ${esc(d.company_name)}</div>`:""}
+    ${chips.length?`<div class="kfoot">${chips.join("")}</div>`:""}
+  </div>`;
+}
+let DEAL_STAGE_FILTER=null;    // клик по сегменту воронки — подсветить одну стадию
 function renderDealsKanban(mount){
   const stages=dealStagesFor(PIPELINE_SEL);
   const by={};stages.forEach(s=>by[s.key]=[]);
   DEALS.forEach(d=>{const k=by[d.stage]?d.stage:(stages[0]&&stages[0].key);if(by[k])by[k].push(d);});
+  const sum=k=>(by[k]||[]).reduce((s,d)=>s+(Number(d.amount)||0),0);
+  const colColor={};stages.forEach((s,i)=>colColor[s.key]=stageColor(s.key,i,stages.length));
+
+  // ── полоса-воронка: сколько сделок и денег на каждой стадии ──
+  const total=DEALS.length||1;
+  const bar=document.createElement("div");bar.className="funnelbar";
+  bar.innerHTML=stages.map(s=>{
+    const n=(by[s.key]||[]).length;
+    return `<div class="fseg ${DEAL_STAGE_FILTER===s.key?"on":""}" data-s="${s.key}" style="--sc:${colColor[s.key]}"
+        title="${esc(s.label)}: ${n} сдел., ${money(sum(s.key))||"0 ₽"} · ${Math.round(n/total*100)}% воронки">
+      <div class="fl">${esc(s.label)}</div>
+      <div class="fv">${n}</div>
+      <div class="fs">${moneyShort(sum(s.key))}</div>
+    </div>`;
+  }).join("");
+  mount.appendChild(bar);
+
   const kan=document.createElement("div");kan.className="kanban";
-  kan.innerHTML=stages.map(s=>`<div class="kcol"><h3>${esc(s.label)}<span class="n">${(by[s.key]||[]).length}</span></h3>
-    <div class="kbody" data-s="${s.key}">${(by[s.key]||[]).map(d=>`<div class="kcard" draggable="true" data-id="${d.id}">
-      <div class="nm">${dealTitle(d)}</div><div class="mt">${dealSub(d)||esc(d.company_name||"")}</div></div>`).join("")}</div></div>`).join("");
+  kan.innerHTML=stages.map(s=>{
+    const list=by[s.key]||[];
+    // «зависание» считаем только для рабочих стадий — в won/lost сделка и должна лежать
+    const stale=(s.key==="won"||DEAL_LOST.has(s.key))?null:7;
+    return `<div class="kcol ${DEAL_STAGE_FILTER&&DEAL_STAGE_FILTER!==s.key?"dimmed":""}" style="--sc:${colColor[s.key]}">
+      <h3>
+        <div class="hr1"><span class="nm">${esc(s.label)}</span><span class="n">${list.length}</span></div>
+        <div class="sum">${moneyShort(sum(s.key))}</div>
+      </h3>
+      <div class="kbody" data-s="${s.key}">
+        ${list.map(d=>dealCardHtml(d,stale)).join("")}
+        <button class="kadd" data-s="${s.key}">＋ сделка</button>
+      </div>
+    </div>`;
+  }).join("");
   mount.appendChild(kan);
+
+  bar.querySelectorAll(".fseg").forEach(seg=>seg.onclick=()=>{
+    DEAL_STAGE_FILTER=DEAL_STAGE_FILTER===seg.dataset.s?null:seg.dataset.s;
+    mount.innerHTML="";renderDealsKanban(mount);
+  });
   kan.querySelectorAll(".kcard").forEach(card=>card.onclick=()=>openDeal(+card.dataset.id));
+  kan.querySelectorAll(".kadd").forEach(b=>b.onclick=async e=>{
+    e.stopPropagation();
+    const title=prompt("Название сделки:");if(!title)return;
+    const r=await api("/api/deals",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({title,pipeline_id:PIPELINE_SEL,stage:b.dataset.s})});
+    if(r.error){alert(r.error);return;}
+    route();
+  });
   let drag=null;
   kan.querySelectorAll(".kcard").forEach(card=>{
-    card.ondragstart=()=>{drag=+card.dataset.id;card.style.opacity=".4";};
-    card.ondragend=()=>{card.style.opacity="1";};
+    card.ondragstart=e=>{drag=+card.dataset.id;card.classList.add("dragging");
+      try{e.dataTransfer.setData("text/plain","deal:"+card.dataset.id);}catch(_){}};
+    card.ondragend=()=>{card.classList.remove("dragging");};
   });
   kan.querySelectorAll(".kbody").forEach(col=>{
-    col.ondragover=e=>{e.preventDefault();col.classList.add("over");};
+    col.ondragover=e=>{if(drag==null)return;e.preventDefault();col.classList.add("over");};
     col.ondragleave=()=>col.classList.remove("over");
     col.ondrop=async e=>{e.preventDefault();col.classList.remove("over");
       const s=col.dataset.s;if(drag==null)return;
@@ -2393,16 +3002,42 @@ async function openDeal(id){
   $("#dr-title").textContent=d.title||("Сделка #"+id);
   const stages=dealStagesFor(d.pipeline_id);
   const pOpts=PIPELINES.map(p=>`<option value="${p.id}" ${p.id===d.pipeline_id?"selected":""}>${esc(p.name)}</option>`).join("");
+  // Шкала стадий, как в карточке сделки Битрикс24: пройденные закрашены, текущая
+  // подсвечена, клик по любой — сразу двигает сделку (без «Сохранить»).
+  const curIdx=stages.findIndex(s=>s.key===d.stage);
+  const stageBar=`<div class="stagebar" style="--sc2:${stageColor(d.stage,Math.max(curIdx,0),stages.length)}">
+    ${stages.map((s,i)=>`<button data-stage="${s.key}" title="${esc(s.label)}"
+      class="${s.key===d.stage?"cur":(curIdx>=0&&i<curIdx?"done":"")}">${esc(s.label)}</button>`).join("")}</div>`;
+  const age=daysSince(d.updated_at||d.created_at);
+  const head=`<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+    <div style="font-size:24px;font-weight:800;font-variant-numeric:tabular-nums">${d.amount?money(d.amount):'<span class="no">сумма не указана</span>'}</div>
+    ${age!==null?`<span class="hint">последнее движение ${age===0?"сегодня":age+" дн. назад"}</span>`:""}
+  </div>`;
   $("#dr-body").innerHTML=`
+    ${head}
+    ${stageBar}
     <div class="field"><label>Название</label><input data-k="title" value="${esc(d.title||"")}"></div>
-    <div class="row2"><div class="field"><label>Стадия</label><select data-k="stage">${stages.map(s=>`<option value="${s.key}" ${s.key===d.stage?"selected":""}>${esc(s.label)}</option>`).join("")}</select></div>
-      <div class="field"><label>Сумма ₽</label><input data-k="amount" class="mono" value="${esc(d.amount||"")}"></div></div>
-    <div class="row2"><div class="field"><label>Воронка</label><select data-k="pipeline_id">${pOpts}</select></div>
+    <div class="row2"><div class="field"><label>Сумма ₽</label><input data-k="amount" class="mono" value="${esc(d.amount||"")}"></div>
       <div class="field"><label>Продукт</label><input data-k="product" value="${esc(d.product||"")}"></div></div>
+    <div class="row2"><div class="field"><label>Воронка</label><select data-k="pipeline_id">${pOpts}</select></div>
+      <div class="field"><label>Стадия</label><select data-k="stage">${stages.map(s=>`<option value="${s.key}" ${s.key===d.stage?"selected":""}>${esc(s.label)}</option>`).join("")}</select></div></div>
     <div class="field"><label>Компания</label><div class="v">${d.company_name?`<span class="lnk" data-cid="${d.company_id}" style="cursor:pointer">🏢 ${esc(d.company_name)}</span>`:'<span class="no">—</span>'}</div></div>
-    <div class="field"><label>Контакт</label><div class="v">${(d.person_name||d.contact_name)?`<span class="lnk" data-pid="${d.contact_id}" style="cursor:pointer">👤 ${esc(d.person_name||d.contact_name)}</span>`:'<span class="no">—</span>'}</div></div>
-    <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(d.notes||"")}</textarea></div>
-    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="dl-save">Сохранить</button><button id="dl-del">Удалить</button></div>`;
+    <div class="field"><label>Контакт</label><div class="v">${(d.person_name||d.contact_name)?`<span class="lnk" data-pid="${d.contact_id}" style="cursor:pointer">👤 ${esc(d.person_name||d.contact_name)}</span>${d.phone?` <span class="hint mono">${esc(d.phone)}</span>`:""}`:'<span class="no">—</span>'}</div></div>
+    ${d.meeting_at?`<div class="field"><label>Встреча</label><div class="v">📅 ${esc(fmt(d.meeting_at)||d.meeting_at)}${d.zoom_link?` · <a href="${esc(d.zoom_link)}" target="_blank">ссылка</a>`:""}</div></div>`:""}
+    <div class="field"><label>Заметки</label><textarea data-k="notes" rows="3">${esc(d.notes||"")}</textarea></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="dl-save">Сохранить</button><button id="dl-del">Удалить</button><span class="hint" id="dl-msg"></span></div>`;
+  // Если стадий много, шкала прокручивается — подгоняем её к текущей стадии
+  const curBtn=$("#dr-body").querySelector(".stagebar button.cur");
+  if(curBtn)curBtn.scrollIntoView({block:"nearest",inline:"center"});
+  // Клик по сегменту шкалы — мгновенный перевод стадии
+  $("#dr-body").querySelectorAll(".stagebar button").forEach(b=>b.onclick=async()=>{
+    const s=b.dataset.stage;if(s===d.stage)return;
+    const r=await api(`/api/deal/${id}/move`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({stage:s})});
+    if(r&&r.error){alert(r.error);return;}
+    await openDeal(id);                       // перерисовать карточку под новую стадию
+    if(location.hash==="#deals")route();
+  });
   $("#dl-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.dataset.k==="pipeline_id"?(+el.value||null):el.value);
     await api(`/api/deal/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     $("#dl-save").textContent="✓ сохранено";setTimeout(route,500);};

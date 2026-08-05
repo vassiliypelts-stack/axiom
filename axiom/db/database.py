@@ -253,6 +253,13 @@ _EXTRA_ORG_MEMBER_COLS = {
     "prompt": "TEXT",          # характер/инструкция ИИ-роли — было в ai_agents
 }
 
+# Отдел на схеме: у него есть руководитель (выделяется короной и поднимается наверх
+# карточки) и цвет ветки — чтобы визуально разделять направления бизнеса.
+_EXTRA_DEPT_COLS = {
+    "head_member_id": "INTEGER",  # org_members.id руководителя отдела
+    "color": "TEXT",              # hex-цвет ветки на схеме (NULL = цвет по умолчанию)
+}
+
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
     have = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)")}
@@ -300,6 +307,11 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         for col, typ in _EXTRA_ORG_MEMBER_COLS.items():
             if col not in om:
                 conn.execute(f"ALTER TABLE org_members ADD COLUMN {col} {typ}")
+    dep = {r["name"] for r in conn.execute("PRAGMA table_info(departments)")}
+    if dep:
+        for col, typ in _EXTRA_DEPT_COLS.items():
+            if col not in dep:
+                conn.execute(f"ALTER TABLE departments ADD COLUMN {col} {typ}")
     # С какого аккаунта ушло/пришло сообщение. Аккаунт был известен и раньше (слушатель
     # передаёт его в _record_incoming), но терялся при записи — и в карточке события
     # нельзя было ответить на вопрос «кто именно это написал».

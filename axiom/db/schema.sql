@@ -364,12 +364,14 @@ CREATE INDEX IF NOT EXISTS idx_campaign_logs_cid ON campaign_logs(campaign_id);
 -- виртуальные ИИ-агенты (ссылка на ai_agents). Чисто для наглядности «кто за что
 -- отвечает» — не привязана жёстко к projects/campaigns.
 CREATE TABLE IF NOT EXISTS departments (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    description TEXT,                       -- зона ответственности
-    parent_id   INTEGER,                    -- вложенность отделов (NULL = верхний уровень)
-    sort_order  INTEGER DEFAULT 0,
-    created_at  TEXT DEFAULT (datetime('now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    description    TEXT,                    -- зона ответственности
+    parent_id      INTEGER,                 -- вложенность отделов (NULL = верхний уровень)
+    sort_order     INTEGER DEFAULT 0,       -- порядок среди соседей по уровню (drag&drop на схеме)
+    head_member_id INTEGER,                 -- руководитель отдела (org_members.id)
+    color          TEXT,                    -- hex-цвет ветки на схеме (NULL = по умолчанию)
+    created_at     TEXT DEFAULT (datetime('now'))
 );
 
 -- Сотрудник отдела: kind='human' — живой человек (поля ниже свои), kind='agent' —

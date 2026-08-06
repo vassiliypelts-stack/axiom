@@ -4686,15 +4686,29 @@ async def accounts_import_keys(file: UploadFile = File(None),
         except Exception as e:  # noqa: BLE001
             dead.append({"line": i, "why": str(e)[:120]})
             continue
-        alive, info = await verify(session_str)
-        if not alive:
-            dead.append({"line": i, "why": info.get("reason") or "ключ мёртв"})
-            continue
-        phone = (info.get("phone") or "").strip()
-        label = save_to_db(phone, session_str, info, "", "", status)
-        known[authkey] = {"label": label, "phone": phone}
-        added.append({"line": i, "label": label, "phone": phone,
-                      "username": info.get("username")})
+        # Каждый ключ — в своей «песочнице»: осечка на одном (нет номера в профиле,
+        # конфликт UNIQUE(phone), обрыв связи) не должна ронять весь заход. Раньше
+        # такое исключение уходило в 500, браузер получал HTML вместо JSON и писал
+        # «Unexpected token 'I', "Internal S"… is not valid JSON» — без единого
+        # намёка, на какой строке беда.
+        try:
+            alive, info = await verify(session_str)
+            if not alive:
+                dead.append({"line": i, "why": info.get("reason") or "ключ мёртв"})
+                continue
+            phone = (info.get("phone") or "").strip()
+            if not phone:
+                # save_to_db собирает номер как «+» + phone: пустой даёт «+», а
+                # второй такой же валит UNIQUE(phone) и весь запрос вместе с ним.
+                dead.append({"line": i, "why": "аккаунт жив, но номер скрыт в профиле — "
+                                               "заведи его через «Добавить аккаунт» вручную"})
+                continue
+            label = save_to_db(phone, session_str, info, "", "", status)
+            known[authkey] = {"label": label, "phone": phone}
+            added.append({"line": i, "label": label, "phone": phone,
+                          "username": info.get("username")})
+        except Exception as e:  # noqa: BLE001
+            dead.append({"line": i, "why": f"{type(e).__name__}: {str(e)[:140]}"})
     return JSONResponse({"ok": True, "total": len(lines),
                          "added": added, "skipped": skipped, "dead": dead})
 

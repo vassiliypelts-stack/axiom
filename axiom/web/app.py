@@ -4536,6 +4536,96 @@ def campaign_progress(cid: int) -> JSONResponse:
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
 
 
+@app.get("/api/deploy/status")
+def deploy_status() -> JSONResponse:
+    """Что стоит на сервере и на сколько отстали от GitHub."""
+    import subprocess
+    root = str(BASE_DIR.parent)
+
+    def git(*args, timeout=60):
+        try:
+            r = subprocess.run(["git", *args], cwd=root, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            return (r.stdout or "").strip(), (r.stderr or "").strip(), r.returncode
+        except Exception as e:  # noqa: BLE001
+            return "", str(e)[:200], 1
+
+    branch, _, _ = git("rev-parse", "--abbrev-ref", "HEAD")
+    here, _, _ = git("log", "--oneline", "-1")
+    git("fetch", "origin", timeout=120)
+    behind, _, _ = git("rev-list", "--count", "HEAD..origin/main")
+    ahead, _, _ = git("rev-list", "--count", "origin/main..HEAD")
+    dirty, _, _ = git("status", "--porcelain")
+    pending, _, _ = git("log", "--oneline", "HEAD..origin/main")
+    return JSONResponse({
+        "branch": branch, "current": here,
+        "behind": int(behind or 0), "ahead": int(ahead or 0),
+        "dirty": bool(dirty.strip()),
+        "dirty_files": [l[3:] for l in dirty.splitlines()[:10]],
+        "pending": pending.splitlines()[:15],
+    })
+
+
+@app.post("/api/deploy")
+def deploy_run(payload: dict = Body(default={})) -> JSONResponse:
+    """Обновить код с GitHub и перезапуститься — кнопкой из пульта.
+
+    Раньше деплой был ручным походом в консоль сервера, и из-за этого работа
+    неделями лежала в origin/main, не доезжая до боевого пульта: сервер вообще
+    оказался на ветке wip-snapshot, где `git pull` честно отвечал «Already up to
+    date» и никого не смущал.
+
+    Перезапуск делаем без sudo: unit объявлен с Restart=on-failure, поэтому выход
+    с ненулевым кодом systemd поднимет сам через RestartSec. Выходим ОТЛОЖЕННО,
+    отдельным потоком, — иначе ответ не успеет уйти в браузер.
+    """
+    import os
+    import subprocess
+    import threading
+    import time as _t
+    root = str(BASE_DIR.parent)
+    log: list[str] = []
+
+    def git(*args, timeout=180) -> bool:
+        try:
+            r = subprocess.run(["git", *args], cwd=root, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            log.append(f"$ git {' '.join(args)}\n{out}")
+            return r.returncode == 0
+        except Exception as e:  # noqa: BLE001
+            log.append(f"$ git {' '.join(args)}\nОШИБКА: {str(e)[:200]}")
+            return False
+
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace").stdout.strip()
+    if dirty and not payload.get("force"):
+        return JSONResponse({"ok": False, "needs_confirm": True,
+                             "warn": "На сервере есть несохранённые правки — обновление их перезапишет:\n"
+                                     + "\n".join(l[3:] for l in dirty.splitlines()[:10])
+                                     + "\n\nОбновлять всё равно?"}, status_code=200)
+
+    if not git("fetch", "origin"):
+        return JSONResponse({"ok": False, "error": "не достучались до GitHub", "log": log})
+    if payload.get("force") and dirty:
+        git("checkout", "--", ".")            # чужие правки затираем только по явному согласию
+    branch = payload.get("branch") or "main"
+    git("checkout", branch)                    # сервер мог сидеть на ветке-снапшоте
+    if not git("reset", "--hard", f"origin/{branch}"):
+        return JSONResponse({"ok": False, "error": "не удалось обновиться", "log": log})
+    now = subprocess.run(["git", "log", "--oneline", "-1"], cwd=root, capture_output=True,
+                         text=True, encoding="utf-8", errors="replace").stdout.strip()
+
+    if payload.get("restart", True):
+        def _bye():
+            _t.sleep(1.5)                      # дать ответу уйти в браузер
+            os._exit(1)                        # Restart=on-failure → systemd поднимет
+        threading.Thread(target=_bye, daemon=True).start()
+
+    return JSONResponse({"ok": True, "now": now, "log": log,
+                         "restarting": bool(payload.get("restart", True))})
+
+
 @app.get("/api/tgcheck")
 def tgcheck_status() -> JSONResponse:
     """Сколько номеров ещё не пробито в Telegram + настройки фонового пробива."""

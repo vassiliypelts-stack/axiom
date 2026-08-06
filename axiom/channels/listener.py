@@ -116,14 +116,35 @@ def _log(msg: str) -> None:
         pass
 
 
-def _should_reply(acc_id: int) -> bool:
-    """Авто-отвечать ли с этого аккаунта прямо сейчас: глобальный тумблер включён И
-    аккаунт сейчас 'active'. Читаем из БД каждый раз — статус мог поменяться в рантайме."""
+def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
+    """Авто-отвечать ли с этого аккаунта прямо сейчас.
+
+    Правило «отвечают только 'active'» задумывалось против взаимного прогрева:
+    аккаунты греются перепиской между собой, и агент не должен вести диалог сам с
+    собой. Но рассылка отбирает команду по `status <> 'banned'` (campaign_send._team)
+    — то есть ПИШЕТ и с прогреваемых. Человек отвечал на такое письмо и не получал
+    ничего: аккаунт, который сам его и позвал, был не вправе ответить. Тишина
+    выглядела как поломка агента, а на деле это расхождение двух правил.
+
+    Поэтому: если мы этому человеку УЖЕ писали с этого аккаунта — обязаны и
+    отвечать, какой бы ни была ступень прогрева. Незнакомцам и взаимному прогреву
+    прежнее ограничение остаётся.
+    """
     with database.get_conn() as conn:
         if database.get_setting(conn, "tg_auto_reply", "on") != "on":
             return False
         row = conn.execute("SELECT status FROM accounts WHERE id=?", (acc_id,)).fetchone()
-    return bool(row) and row["status"] == "active"
+        if not row:
+            return False
+        if row["status"] == "active":
+            return True
+        if row["status"] == "banned" or not contact_id:
+            return False
+        # мы первыми написали этому человеку с этого аккаунта — значит диалог наш
+        started = conn.execute(
+            "SELECT 1 FROM messages WHERE contact_id=? AND account_id=? AND direction='out' "
+            "LIMIT 1", (contact_id, acc_id)).fetchone()
+    return bool(started)
 
 
 def _listenable() -> list[dict]:
@@ -150,9 +171,22 @@ async def _handle_private(event, acc_id: int) -> None:
         return  # незнакомый (в т.ч. взаимный прогрев) — не наш контакт, молчим
     _record_incoming(contact["id"], text_in, username, account_id=acc_id)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
-    if _should_reply(acc_id):
+    if _should_reply(acc_id, contact["id"]):
         await _agent_reply(event, contact["id"], username, account_id=acc_id)
         _log(f"[#{acc_id}] → авто-ответ контакту {contact['id']}")
+    else:
+        # Молчание агента раньше было неотличимо от поломки. Пишем причину в лог и
+        # в колокольчик: человек ответил, а мы не отвечаем — это всегда потеря лида.
+        with database.get_conn() as conn:
+            why = ("выключен тумблер «авто-ответ ИИ»"
+                   if database.get_setting(conn, "tg_auto_reply", "on") != "on"
+                   else "аккаунт не в статусе «активен» и раньше этому контакту не писал")
+            database.add_event(
+                conn, "agent_error", f"🔇 Ответ клиента без ответа агента",
+                f"Контакт #{contact['id']} написал, но авто-ответ не сработал: {why}. "
+                f"Ответь вручную в «Диалогах».", level="warn",
+                contact_id=contact["id"], account_id=acc_id)
+        _log(f"[#{acc_id}] ⚠ НЕ отвечаем контакту {contact['id']}: {why}")
 
 
 async def _scan_group(event, acc_id: int) -> None:

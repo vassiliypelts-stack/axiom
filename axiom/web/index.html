@@ -1448,16 +1448,31 @@ async function viewAgents(v){
         return `<span class="mono" style="font-size:11px;opacity:.75" title="дата загрузки аккаунта в AXIOM: ${esc(fmt(r.created_at))}">📥 ${d.toLocaleDateString("ru-RU")}</span>`
           +`<br><span style="font-size:11px;opacity:.6">${ago}</span>`;}},
       {key:"daily_limit",label:"Лимит/день",cls:"mono"},
-      {key:"id",label:"",render:r=>`<button class="acc-del" data-id="${r.id}">✕</button>`},
+      // Раньше тут было удаление насовсем. Купленный аккаунт — это деньги, сессия и
+      // история переписок, и стереть его одним промахом мыши нельзя. Теперь кнопка
+      // прячет аккаунт в архив: из списка пропал, в БД остался.
+      {key:"id",label:"",render:r=>`<button class="acc-arch" data-id="${r.id}" title="В архив: пропадёт из списка, но аккаунт, сессия и переписки сохранятся. Вернуть — фильтром «🗄 Архив»">🗄</button>`},
     ],
     emptyText:"Аккаунтов нет — добавь первый формой выше",
   });
   // делегирование (переживает ре-рендер таблицы при поиске/сортировке)
   const tbl=$("#acc-tbl");
   tbl.addEventListener("click",async(e)=>{
-    const del=e.target.closest(".acc-del");
-    if(del){e.stopPropagation();if(!confirm("Удалить аккаунт?"))return;
-      await api(`/api/accounts/${del.dataset.id}/delete`,{method:"POST"});route();return;}
+    const arch=e.target.closest(".acc-arch");
+    if(arch){e.stopPropagation();
+      const id=arch.dataset.id;
+      if(!confirm("Убрать аккаунт в архив?\n\nОн пропадёт из списка, но сам аккаунт, сессия и переписки сохранятся. Вернуть — фильтром «🗄 Архив»."))return;
+      arch.disabled=true;
+      let res=null;
+      try{res=await api("/api/accounts/bulk",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ids:[+id],action:"status",status:"archived"})});}
+      catch(err){res={error:String(err)};}
+      if(!res||res.error){arch.disabled=false;alert((res&&res.error)||"не удалось убрать в архив");return;}
+      // прячем строку на месте: route() перерисовал бы всю таблицу и сбросил прокрутку
+      const row=a.find(x=>String(x.id)===String(id));if(row)row.status="archived";
+      const i=aShown.findIndex(x=>String(x.id)===String(id));if(i>=0)aShown.splice(i,1);
+      arch.closest("tr")?.remove();
+      return;}
     const lg=e.target.closest(".acc-login");
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
     const eye=e.target.closest(".acc-eye");
@@ -5906,6 +5921,14 @@ async function showEvent(eid){
 // Раньше обновление требовало похода в консоль сервера, и работа неделями лежала
 // в origin/main мимо боевого пульта — сервер даже оказался на ветке-снапшоте, где
 // `git pull` отвечал «Already up to date» и никого не настораживал.
+// location.reload(true) современные браузеры игнорируют: страница приходит из кеша,
+// и после успешного деплоя пульт продолжает показывать старый интерфейс с висящей
+// кнопкой «Обновить». Уникальный параметр в адресе заставляет взять свежий файл.
+function hardReload(){
+  const u=new URL(location.href);
+  u.searchParams.set("v",Date.now());
+  location.replace(u.toString());   // replace, а не href — не засоряем историю
+}
 async function checkDeploy(){
   const b=$("#deploy");if(!b)return;
   let d;try{d=await api("/api/deploy/status");}catch(e){return;}
@@ -5934,9 +5957,9 @@ async function checkDeploy(){
     const wait=setInterval(async()=>{
       tries++;
       try{const s=await api("/api/deploy/status");
-        if(s&&!s.error){clearInterval(wait);location.reload(true);}
+        if(s&&!s.error){clearInterval(wait);hardReload();}
       }catch(e){}
-      if(tries>20){clearInterval(wait);location.reload(true);}
+      if(tries>20){clearInterval(wait);hardReload();}
     },1500);
   };
 }

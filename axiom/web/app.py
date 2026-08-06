@@ -159,7 +159,15 @@ async def login_submit(request: Request):
     pw = (form.get("password") or "").strip()
     if _AUTH_PW and _hmac.compare_digest(pw, _AUTH_PW):
         index_html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
-        resp = HTMLResponse(index_html, status_code=200)
+        # Те же no-cache заголовки, что и на «/». Без них браузер кэшировал пульт
+        # под адресом /login — а именно там оператор и остаётся после входа
+        # (…:8000/login#campaigns). После деплоя приходила СТАРАЯ страница: кнопка
+        # обновления висела снова, хотя сервер уже обновился.
+        resp = HTMLResponse(index_html, status_code=200, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        })
         resp.set_cookie(_AUTH_COOKIE, _auth_token(), max_age=60 * 60 * 24 * 30,
                         httponly=True, samesite="lax")
         return resp

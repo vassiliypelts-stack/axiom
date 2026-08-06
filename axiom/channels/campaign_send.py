@@ -150,7 +150,7 @@ def _time_greeting() -> str:
 
 
 def _parts(template: str | None, name: str, agency: str = "", decision: str = "",
-           sender: str = "", strict: bool = True) -> list[str]:
+           sender: str = "", spec: str = "", strict: bool = True) -> list[str]:
     """Шаблон → список сообщений. Каждая непустая строка — отдельное сообщение.
     {name}/{имя} — обращение (ФИО директора, если известно), {agency}/{агентство} —
     название агентства, {decision} — «с Романом Анатольевичем» (если ФИО известно)
@@ -161,6 +161,10 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
     Александр» с аккаунта «Наталья Соколова» палит связку с первой же строки.
     {greeting}/{приветствие} — «добрый день/вечер/утро» по факту времени отправки,
     а не зашитое статично в шаблоне (иначе «добрый день» уходит и в 20:30).
+    {спец}/{деятельность}/{specialization} — ЧЕМ человек занимается (из карточки).
+    Ради строки «вы тоже занимаетесь {спец}?» — это и есть заход «мы коллеги».
+    Если в карточке пусто, вся строка с этим плейсхолдером ВЫПАДАЕТ целиком:
+    «Вы также занимаетесь ?» выдало бы робота на первой же секунде.
     {a|b|c} — синонимизация (случайный вариант на каждый контакт, антибан).
     Плюс лёгкая человечность (см. _humanize).
 
@@ -176,15 +180,63 @@ def _parts(template: str | None, name: str, agency: str = "", decision: str = ""
     import re
     ag = agency or name or ""
     greet = _time_greeting()
+    sp = (spec or "").strip()
     values = {"name": name or "", "имя": name or "", "agency": ag, "агентство": ag,
               "decision": decision or "", "sender": sender or "", "от_кого": sender or "",
-              "greeting": greet, "приветствие": greet}
+              "greeting": greet, "приветствие": greet,
+              "спец": sp, "деятельность": sp, "specialization": sp, "специализация": sp}
+    # Плейсхолдеры, без которых строка теряет смысл: пустая специализация превращает
+    # «вы тоже занимаетесь {спец}?» в «вы тоже занимаетесь?» — вопрос ни о чём.
+    # Такую строку не чиним, а выбрасываем: у половины базы поле не заполнено.
+    optional = ("спец", "деятельность", "specialization", "специализация")
     text = _spin(template or "")
-    # Регистр и пробелы внутри скобок оператору не видны: «{ИМЯ}», «{Name}», «{ name }»
-    # раньше молча уезжали получателю фигурными скобками. Подставляем как есть.
-    text = re.sub(r"\{\s*([^{}|]+?)\s*\}",
-                  lambda m: values.get(m.group(1).lower(), m.group(0)), text)
-    return [_humanize(ln) for ln in text.splitlines() if ln.strip()]
+    out: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        used = [v.lower() for v in re.findall(r"\{\s*([^{}|]+?)\s*\}", line)]
+        if any(u in optional for u in used) and not sp:
+            continue                      # нечем персонализировать — строку не шлём
+        # Регистр и пробелы внутри скобок оператору не видны: «{ИМЯ}», «{Name}»,
+        # «{ name }» раньше молча уезжали получателю фигурными скобками.
+        rendered = re.sub(r"\{\s*([^{}|]+?)\s*\}",
+                          lambda m: values.get(m.group(1).lower(), m.group(0)), line)
+        if rendered.strip():
+            out.append(_humanize(rendered))
+    return out
+
+
+def _spec_of(row) -> str:
+    """Чем человек занимается — для {спец} в первом сообщении.
+
+    Берём первое заполненное из specialization (импорт/парсер), niche и offer
+    (AI-обогащение). Обрезаем до короткой фразы: в карточке бывает абзац, а в
+    строке «вы тоже занимаетесь …?» нужен предмет разговора, а не биография."""
+    for key in ("specialization", "niche", "offer"):
+        try:
+            v = (row[key] or "").strip()
+        except (KeyError, IndexError):
+            continue
+        if not v:
+            continue
+        v = v.split("\n")[0].strip(" .;,")
+        # «Бизнес-тренер: продажи и переговоры для B2B» → «продажи и переговоры для B2B».
+        # Берём часть ПОСЛЕ двоеточия: до него стоит должность («коуч», «эксперт»),
+        # а разговор нужно вести о ПРЕДМЕТЕ — «вы тоже по продажам работаете?»
+        for sep in (":", " — ", " – "):
+            if sep in v:
+                tail = v.split(sep, 1)[1].strip()
+                if len(tail) >= 8:            # не обрезаем до огрызка вроде «B2B»
+                    v = tail
+                break
+        # Абзац в карточке не годится для реплики — оставляем первую мысль.
+        if len(v) > 60:
+            for sep in (",", ";", " и "):
+                if sep in v[:60]:
+                    v = v[:60].rsplit(sep, 1)[0].strip()
+                    break
+        return v[:70].strip(" .;,")
+    return ""
 
 
 def _sender_name(acc: dict | None) -> str:
@@ -405,7 +457,8 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         # sender — имя ИМЕННО того аккаунта, что сейчас шлёт (ротация команды):
         # «меня зовут {sender}» вместо зашитого в текст чужого имени.
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
-                       _decision_phrase(row), sender=_sender_name(s["acc"]))
+                       _decision_phrase(row), sender=_sender_name(s["acc"]),
+                       spec=_spec_of(row))
         try:
             entity = await _resolve_entity(s["client"], row)
             # антибан: добавить контакт в книжку перед первым сообщением

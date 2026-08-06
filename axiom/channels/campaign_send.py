@@ -36,10 +36,18 @@ class OpenerIsPromptError(RuntimeError):
     Раз каждая строка шаблона уходит человеку отдельным сообщением (см. _parts),
     такой «опенер» нельзя слать вообще ни по одному каналу."""
 
-# Пауза перед СЛЕДУЮЩЕЙ строкой опенера (не портянка, ждём — вдруг человек уже ответил).
-# Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток не шлём,
-# см. channels/opener_queue.py.
-OPENER_NEXT_LINE_MIN = (1 * 60, 3 * 60)  # секунды: 1–3 минуты (живой темп переписки)
+# Темп опенера. Живой человек здоровается и представляется ОДНОЙ очередью, за
+# несколько секунд — а потом ждёт ответа. Раньше каждая строка шла с паузой 1-3 минуты,
+# и «Владимир Васильевич, добрый день» / «Правильно обращаюсь?» / «Меня зовут Василий»
+# растягивались на десять минут: собеседник успевал ответить в середине приветствия
+# и получал продолжение монолога поверх своего ответа.
+# Внутри залпа паузу держит _send_parts (PART_PAUSE, 1.2-3.5 с) — как будто человек
+# дописывает следующую фразу.
+OPENER_BURST = 2                       # сколько первых строк уходит сразу, подряд
+# Пауза перед СЛЕДУЮЩЕЙ строкой после залпа: тут уже ждём реакции, а не печатаем.
+# Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток
+# не шлём, см. channels/opener_queue.py.
+OPENER_NEXT_LINE_MIN = (3 * 60, 10 * 60)  # секунды: 3–10 минут
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -416,7 +424,8 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана
             # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
             # опенер целиком сразу — очередь на потом ставить некому.
-            await _send_parts(s["client"], entity, parts if s["id"] is None else parts[:1])
+            await _send_parts(s["client"], entity,
+                              parts if s["id"] is None else parts[:OPENER_BURST])
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
             print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
@@ -479,11 +488,15 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 database.set_status(conn, row["id"], "lost")
             continue
 
-        rest = parts[1:]   # остальные строки опенера — не портянкой, а с паузой (см. opener_queue)
+        # Залпом ушло OPENER_BURST строк (приветствие+представление), остальное —
+        # с паузой и с проверкой, не ответил ли человек (см. opener_queue).
+        burst = parts[:OPENER_BURST] if s["id"] is not None else parts
+        rest = parts[len(burst):]
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
-            database.add_message(conn, row["id"], "out", parts[0], intent=None,
-                                 account_id=s["id"])
+            for p in burst:
+                database.add_message(conn, row["id"], "out", p, intent=None,
+                                     account_id=s["id"])
             database.set_status(conn, row["id"], "messaged")
             conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
             conn.execute(

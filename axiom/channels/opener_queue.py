@@ -57,6 +57,22 @@ async def _send_next_line(row: dict) -> None:
             conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
         print(f"[skip] очередь #{row['id']}: аккаунт #{row['account_id']} недоступен — отменено")
         return
+    # Человек ОТВЕТИЛ — остаток опенера не шлём, что бы ни говорил статус контакта.
+    # Статус на 'in_dialog' переводит слушатель, а он видит только те аккаунты, что
+    # сейчас подключены, и только знакомые контакты. Стоит ему не опознать входящее —
+    # статус остаётся 'messaged', и заготовленные строки идут ПОВЕРХ живого ответа:
+    # человек написал «Да», а ему прилетело «Меня зовут Василий» и «Нашёл ваш профиль».
+    # Факт входящего сообщения надёжнее статуса, поэтому смотрим на него.
+    with database.get_conn() as conn:
+        answered = conn.execute(
+            "SELECT 1 FROM messages WHERE contact_id=? AND direction='in' "
+            "AND ts >= (SELECT MIN(ts) FROM messages WHERE contact_id=? AND direction='out') "
+            "LIMIT 1", (row["contact_id"], row["contact_id"])).fetchone()
+    if answered:
+        with database.get_conn() as conn:
+            conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
+        print(f"[cancel] контакт {row['contact_id']}: уже ответил — остаток опенера не шлём")
+        return
     if row["contact_status"] != "messaged":
         # контакт уже ответил / сменил статус — не дожимаем каноничными строками,
         # дальше разговор ведёт живой агент (см. _handle_incoming в telegram.py)

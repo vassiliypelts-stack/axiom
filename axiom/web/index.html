@@ -709,8 +709,12 @@ function smartTable(mount,cfg){
   const KEY="axiom_tbl_"+(cfg.tableKey||"def");
   const allCols=cfg.columns;
   let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
+  // hiddenByDefault — редкие/служебные колонки, которые есть в списке «⚙ колонки»,
+  // но не занимают место в таблице, пока их не включат. Применяется ТОЛЬКО при
+  // первом открытии: у того, кто уже настроил вид, ничего не переставляем.
+  const firstRun=!saved.hidden&&!saved.order;
   const st={q:"",group:"",sortKey:null,sortDir:1,showPicker:false,
-    hidden:new Set(saved.hidden||[]),
+    hidden:new Set(saved.hidden||(firstRun?(cfg.hiddenByDefault||[]):[])),
     order:(saved.order&&saved.order.length?saved.order.slice():allCols.map(c=>c.key)),
     widths:saved.widths||{},colFilters:saved.colFilters||{},
     page:0,pageSize:(saved.pageSize||50),
@@ -3033,7 +3037,26 @@ async function viewContacts(v){
       {key:"tags",label:"Теги",render:tagsCell},
       {key:"status",label:"Статус",render:r=>statusBadge(r.status)},
       {key:"last_ts",label:"Активность",cls:"sub mono",render:r=>fmt(r.last_ts)||"—"},
+      // Поля ниже API отдавал всегда, но показать их было негде. Специализация —
+      // главное из них: на ней держится заход «вы тоже по этой теме? — тогда мы
+      // коллеги», и оператору нужно видеть, у скольких контактов она вообще есть.
+      // По умолчанию скрыты (см. hiddenByDefault), чтобы не ломать привычный вид.
+      {key:"specialization",label:"Специализация",cls:"sub",render:r=>r.specialization
+        ?`<span title="${esc(r.specialization)}">${esc(String(r.specialization).slice(0,60))}${String(r.specialization).length>60?"…":""}</span>`
+        :'<span class="no" title="пусто — строка «вы тоже по теме…» этому контакту не уйдёт">—</span>'},
+      {key:"person_role",label:"Должность",cls:"sub",render:r=>esc(r.person_role)||'<span class="no">—</span>'},
+      {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||'<span class="no">—</span>'},
+      {key:"email",label:"Email",cls:"sub",render:r=>r.email?`<a class="ext" href="mailto:${esc(r.email)}" onclick="event.stopPropagation()">${esc(r.email)}</a>`:'<span class="no">—</span>'},
+      {key:"msgr",label:"TG / WA",render:r=>{
+        const m=v=>v==='yes'?'<span class="badge b-active">✓</span>'
+          :v==='no'?'<span class="badge b-stop">✕</span>'
+          :'<span class="badge b-nurture" title="не проверяли">?</span>';
+        return `TG ${m(r.has_tg)} WA ${m(r.has_wa)}`;}},
+      {key:"hook",label:"Зацепка",cls:"sub",render:r=>esc(r.hook)||'<span class="no">—</span>'},
+      {key:"msg_count",label:"Сообщений",cls:"mono",render:r=>r.msg_count||0},
+      {key:"created_at",label:"Заведён",cls:"sub mono",render:r=>fmt(r.created_at)||"—"},
     ],
+    hiddenByDefault:["specialization","person_role","city","email","msgr","hook","msg_count","created_at"],
     emptyText:"Контактов нет.",
   });
 }

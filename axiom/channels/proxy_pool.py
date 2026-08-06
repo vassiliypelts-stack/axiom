@@ -433,8 +433,11 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         # прокси, уже живьём подтверждённые за ДРУГИМИ аккаунтами в этом же прогоне —
         # не сажаем второго на тот же IP. Старый rr%len(pool) зацикливался по кругу и
         # копил по 10+ аккаунтов на один прокси при каждом плановом --heal (антибан).
+        # COALESCE, а не «proxy_alive=1»: у ТОЛЬКО ЧТО выданного прокси alive ещё NULL
+        # (см. assign()), и такой прокси не попадал в «занятые» — heal тут же сажал на
+        # него второй аккаунт. Ровно так #9329 и #9331 из свежей пачки оказались на одном IP.
         taken = {r["proxy"] for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND proxy_alive=1"
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
         ).fetchall()}
         free = [(s, p, sec) for (s, p, sec) in pool if _mt_link(s, p, sec) not in taken]
         for (aid, label, px), ok in zip(accs, results):
@@ -473,19 +476,18 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
 
 async def _test_account_proxy(aid: int, label: str, proxy_raw: str,
                                api_id: int, api_hash: str) -> bool:
-    """Проверить прокси аккаунта через Telethon. True — работает."""
-    if not proxy_raw:
-        return False
-    from channels.telegram import parse_mtproxy
-    mt = parse_mtproxy(proxy_raw)
-    if not mt:
-        return False  # faketls/несовместимый
+    """Проверить прокси аккаунта через Telethon. True — работает.
+
+    Понимает ОБА формата: tg://proxy (MTProto из пула) и socks5/http — их раздаёт
+    channels.proxy_find, когда MTProto-пул пуст. Раньше тут парсился только MTProto,
+    и любой SOCKS5 объявлялся мёртвым: на первом же heal() аккаунт получал
+    proxy_alive=0 и выпадал из прогрева (warming_accounts требует живой прокси)."""
+    if not _usable(proxy_raw):
+        return False  # пусто/faketls/битый: клиента не строим — build_client молча
+                      # увёл бы такой аккаунт на TG_PROXY из .env или на прямой IP
+    from channels.telegram import build_client
     try:
-        client = TelegramClient(
-            StringSession(), api_id, api_hash,
-            connection=ConnectionTcpMTProxyRandomizedIntermediate,
-            proxy=mt,
-        )
+        client = build_client(StringSession(), proxy_raw, api_id, api_hash)
     except Exception:  # noqa: BLE001
         return False
     try:

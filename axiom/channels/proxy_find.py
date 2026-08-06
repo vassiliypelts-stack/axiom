@@ -90,6 +90,31 @@ async def find(need: int = 1, max_test: int = 120) -> list[str]:
     return found
 
 
+async def find_fast(need: int = 1, max_test: int = 120, batch: int = 30,
+                    exclude: set[str] | None = None) -> list[str]:
+    """То же, что find(), но пригодное для веб-запроса: кандидаты проверяются
+    ПАЧКАМИ параллельно, а списки качаются в отдельном потоке.
+
+    find() перебирает прокси по одному (до 9с на штуку) и тянет списки блокирующим
+    urlopen — из ручки пульта это и минуты ожидания, и замороженный на время закачки
+    event loop (висел весь пульт, не только эта кнопка). Здесь худший случай —
+    примерно (max_test/batch) × таймаут, обычно живой находится в первой же пачке.
+    exclude — уже занятые прокси: одному аккаунту нельзя отдавать чужой IP."""
+    exclude = exclude or set()
+    cands = [c for c in await asyncio.to_thread(_fetch, max_test) if c not in exclude]
+    if not cands:
+        return []
+    found: list[str] = []
+    for i in range(0, len(cands), batch):
+        chunk = cands[i:i + batch]
+        for px, ok in zip(chunk, await asyncio.gather(*[_alive(px) for px in chunk])):
+            if ok:
+                found.append(px)
+        if len(found) >= need:
+            break
+    return found[:need]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Авто-поиск бесплатного SOCKS5 для Telegram")
     p.add_argument("--need", type=int, default=1, help="сколько живых найти")

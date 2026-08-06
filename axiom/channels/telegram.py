@@ -238,7 +238,30 @@ def _history_for_agent(rows) -> tuple[str | None, list[dict]]:
 
 
 def _contact_dict(row) -> dict:
-    return {k: row[k] for k in ("name", "city", "agency") if row[k]}
+    """Что агент знает о собеседнике.
+
+    Раньше сюда шли только имя, город и агентство — и агент физически не мог
+    опереться на то, ЧЕМ человек занимается, хотя при импорте (ВсеТренинги, 2ГИС)
+    и обогащении это поле заполнено. Без него не работает главный ход холодного
+    захода — «мы с вами коллеги, поэтому и написал»: у агента нет предмета, о
+    котором говорить. Отдаём всё, что описывает деятельность человека.
+    """
+    keys = ("name", "city", "agency",
+            "specialization",   # чем занимается (из импорта/обогащения)
+            "niche",            # род деятельности (по bio + каналу)
+            "offer",            # что он сам продаёт
+            "bio",              # bio из Telegram-профиля
+            "hook",             # персональная зацепка
+            "person_role")      # должность
+    out = {}
+    for k in keys:
+        try:
+            v = row[k]
+        except (KeyError, IndexError):
+            continue
+        if v:
+            out[k] = v
+    return out
 
 
 def _reply_delay_range() -> tuple[float, float]:

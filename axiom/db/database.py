@@ -576,8 +576,12 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
         row = conn.execute("SELECT id, tags FROM contacts WHERE username = ? OR username = ?",
                            (u, "@" + u)).fetchone()
 
+    # specialization — чем человек занимается. Импортёр и парсер это поле передавали,
+    # а сюда оно не попадало: белого списка колонок оно не проходило и молча терялось.
+    # Без него не работает главный ход холодного захода («вы тоже по этой теме?» →
+    # «тогда мы коллеги») — агент читает деятельность именно отсюда.
     cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes",
-            "gender", "is_premium", "email", "person_name", "person_role"]
+            "gender", "is_premium", "email", "person_name", "person_role", "specialization"]
     vals = {c: fields.get(c) for c in cols}
     # username пишем ВСЕГДА без «@»: раз поиск умеет оба вида, значит легаси-строки с
     # «@vasya» в базе есть. Записав «vasya» рядом, мы получили бы две неотличимые для

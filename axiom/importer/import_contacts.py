@@ -24,6 +24,20 @@ ALIASES = {
     "agency": "agency", "агентство": "agency", "компания": "agency", "фирма": "agency",
     "tags": "tags", "теги": "tags", "тег": "tags", "сегмент": "tags",
     "notes": "notes", "заметки": "notes", "комментарий": "notes", "примечание": "notes", "коммент": "notes",
+    # Чем человек занимается. Ради этого поля живёт главный ход холодного захода:
+    # «вы тоже по этой теме? — тогда мы коллеги, поэтому и написал». Агент читает
+    # его из карточки (см. channels/telegram._contact_dict), но раньше колонка с
+    # описанием при импорте просто не распознавалась и текст терялся.
+    "specialization": "specialization", "специализация": "specialization",
+    "описание": "specialization", "description": "specialization",
+    "чем занимается": "specialization", "деятельность": "specialization",
+    "направление": "specialization", "о себе": "specialization",
+    "about": "specialization", "bio": "specialization", "био": "specialization",
+    "сфера": "specialization", "услуги": "specialization", "тема": "specialization",
+    # Должность и почта — тоже уходили в никуда.
+    "person_role": "person_role", "должность": "person_role", "роль": "person_role",
+    "position": "person_role",
+    "email": "email", "почта": "email", "e-mail": "email", "мейл": "email",
 }
 
 
@@ -94,6 +108,9 @@ def import_file(path: str) -> int:
                 agency=r.get("agency") or None,
                 tags=r.get("tags") or None,
                 notes=r.get("notes") or None,
+                specialization=r.get("specialization") or None,
+                person_role=r.get("person_role") or None,
+                email=r.get("email") or None,
             )
             added += 1
     return added

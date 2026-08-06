@@ -1201,6 +1201,19 @@ async function viewAgents(v){
   const aShown=a.filter(accTest);
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
     <div id="acc-identity" style="margin-bottom:12px"></div>
+    <div class="card" style="margin-bottom:12px;padding:10px 12px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>🔑 Завести купленные аккаунты</b>
+        <input type="file" id="ak-file" accept=".txt" style="max-width:260px">
+        <select id="ak-status" style="max-width:150px">
+          <option value="warming">на прогрев</option>
+          <option value="active">сразу в бой</option>
+        </select>
+        <button class="primary" id="ak-go">Завести</button>
+        <span class="hint" id="ak-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:5px">Файл из магазина: строки вида <code>ключ:dc</code>. Уже заведённые пропустятся — сверяем по самому ключу, а не по номеру. Каждый подключается вживую, поэтому 6 аккаунтов ≈ минута.</div>
+    </div>
     <div class="card" style="margin-bottom:16px">
       <div class="ttoolbar" style="margin:0">
         <input id="a-label" placeholder="Ярлык (напр. Вася SDR)">
@@ -1294,6 +1307,28 @@ async function viewAgents(v){
     <div id="acc-tbl"></div>`;
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
   loadIdentityCheck();
+  const akGo=$("#ak-go");
+  if(akGo)akGo.onclick=async()=>{
+    const f=$("#ak-file").files[0],m=$("#ak-msg");
+    if(!f){m.textContent="выбери файл с ключами";return;}
+    if(!confirm("Завести аккаунты из файла?\n\nКаждый ключ проверяется живым подключением к Telegram — это займёт около 10 секунд на аккаунт. Уже заведённые будут пропущены."))return;
+    akGo.disabled=true;akGo.textContent="завожу…";
+    let sec=0;const t=setInterval(()=>{sec++;m.textContent=`подключаюсь к Telegram по каждому ключу… ${sec} с`;},1000);
+    const fd=new FormData();fd.append("file",f);fd.append("status",$("#ak-status").value);
+    let r;try{r=await fetch("/api/accounts/import_keys",{method:"POST",body:fd}).then(x=>x.json());}
+    catch(e){r={error:"запрос оборвался: "+e.message};}
+    clearInterval(t);akGo.disabled=false;akGo.textContent="Завести";
+    if(!r||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    const parts=[`✅ заведено ${r.added.length} из ${r.total}`];
+    if(r.skipped.length)parts.push(`уже были: ${r.skipped.length}`);
+    if(r.dead.length)parts.push(`не ожили: ${r.dead.length}`);
+    m.innerHTML=esc(parts.join(" · "));
+    // Разбор поимённо — иначе «заведено 4 из 6» оставляет вопрос, что с двумя.
+    const det=[...r.added.map(a=>`✅ ${esc(a.label||a.phone||"")}${a.username?" @"+esc(a.username):""}`),
+      ...r.skipped.map(s=>`↩ строка ${s.line}: уже заведён — ${esc(s.already.label||s.already.phone||("#"+s.already.id))}`),
+      ...r.dead.map(d=>`✕ строка ${d.line}: ${esc(d.why)}`)];
+    if(det.length)alert(det.join("\n"));
+    route();};
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
     await api("/api/health",{method:"POST"});
     setTimeout(()=>{b.disabled=false;b.textContent="Проверить аккаунты (@SpamBot)";route();},15000);};

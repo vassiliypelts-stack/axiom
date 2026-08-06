@@ -4632,6 +4632,73 @@ def campaign_progress(cid: int) -> JSONResponse:
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
 
 
+@app.post("/api/accounts/import_keys")
+async def accounts_import_keys(file: UploadFile = File(None),
+                               text: str = Form(""),
+                               status: str = Form("warming")) -> JSONResponse:
+    """Завести аккаунты из дампа магазина: строки вида «authkey_hex:dc_id».
+
+    Раньше это умел только консольный модуль (channels.import_authkeys), то есть
+    требовался SSH и ручная заливка файла на сервер. Здесь то же самое, но файлом
+    из пульта — и главное, с ПРОВЕРКОЙ ДУБЛЕЙ: один и тот же ключ, заведённый
+    дважды, даёт две карточки на один номер, и рассылка пишет с него в два потока.
+
+    Ключ — это полный доступ к аккаунту. Файл нигде не сохраняем: читаем в память,
+    заводим и забываем.
+    """
+    from channels.account_add_fields import build_session, save_to_db, verify
+    raw = ""
+    if file is not None:
+        raw = (await file.read()).decode("utf-8", errors="replace")
+    if not raw.strip():
+        raw = text or ""
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    if not lines:
+        return JSONResponse({"error": "пустой файл: нужны строки «ключ:dc»"}, status_code=400)
+
+    # Чем сверяем дубли: auth_key внутри уже сохранённых сессий. Сравнивать сами
+    # строки сессий нельзя — один ключ даёт разные строки при разных DC-адресах.
+    from telethon.sessions import StringSession
+    known: dict[str, dict] = {}
+    with database.get_conn() as conn:
+        for r in conn.execute("SELECT id, label, phone, tg_session FROM accounts "
+                              "WHERE tg_session IS NOT NULL AND tg_session<>''").fetchall():
+            try:
+                ss = StringSession(r["tg_session"])
+                if ss.auth_key:
+                    known[ss.auth_key.key.hex().lower()] = {
+                        "id": r["id"], "label": r["label"], "phone": r["phone"]}
+            except Exception:  # noqa: BLE001 — битую сессию просто не учитываем
+                continue
+
+    added, skipped, dead = [], [], []
+    for i, line in enumerate(lines, 1):
+        if ":" not in line:
+            dead.append({"line": i, "why": "нет «:dc» в строке"})
+            continue
+        authkey, _, dc_s = line.rpartition(":")
+        authkey = authkey.strip().lower()
+        if authkey in known:
+            skipped.append({"line": i, "already": known[authkey]})
+            continue
+        try:
+            session_str = build_session(authkey, int(dc_s))
+        except Exception as e:  # noqa: BLE001
+            dead.append({"line": i, "why": str(e)[:120]})
+            continue
+        alive, info = await verify(session_str)
+        if not alive:
+            dead.append({"line": i, "why": info.get("reason") or "ключ мёртв"})
+            continue
+        phone = (info.get("phone") or "").strip()
+        label = save_to_db(phone, session_str, info, "", "", status)
+        known[authkey] = {"label": label, "phone": phone}
+        added.append({"line": i, "label": label, "phone": phone,
+                      "username": info.get("username")})
+    return JSONResponse({"ok": True, "total": len(lines),
+                         "added": added, "skipped": skipped, "dead": dead})
+
+
 @app.get("/api/accounts/identity_check")
 def accounts_identity_check() -> JSONResponse:
     """Аккаунты, у которых личность разъехалась: в пульте одно имя, в Telegram другое.

@@ -1166,12 +1166,41 @@ const ACC_PRESETS={
   banned:{label:"🚫 В бане",test:r=>r.status==='banned'},
   archived:{label:"🗄 Архив",test:r=>r.status==='archived'},
 };
+// Личность аккаунта живёт в двух полях: label (что видит оператор) и tg_name (что
+// стоит в самом Telegram и по чьему полу подобрано фото). Переименование в пульте
+// меняло только первое — и получалось «Кристина Орлова» в списке, «Никита» в
+// переписке, мужчина на аватаре. Собеседник видит это сразу, оператор — никогда.
+async function loadIdentityCheck(){
+  const box=$("#acc-identity");if(!box)return;
+  let d;try{d=await api("/api/accounts/identity_check");}catch(e){return;}
+  if(!d||!d.count){box.innerHTML="";return;}
+  box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
+    <b>⚠️ Личность разъехалась у ${d.count} аккаунт(ов)</b>${d.gender_conflicts?` · из них <b style="color:#c0392b">${d.gender_conflicts}</b> с разным полом — это видно собеседнику сразу`:""}
+    <div class="hint" style="margin:6px 0">В пульте одно имя, а в Telegram стоит другое. Пишет и подписывается аккаунт тем, что в Telegram.</div>
+    ${d.items.slice(0,8).map(i=>`<div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border)">
+      <div><b>${esc(i.label)}</b> <span class="hint">в пульте</span> → <b style="color:#c0392b">${esc(i.tg_name)}</b> <span class="hint">в Telegram</span>
+        ${i.gender_conflict?'<span class="badge b-stop" style="margin-left:6px">разный пол</span>':''}</div>
+      <div class="ttoolbar" style="margin:0">
+        <button class="idfix" data-id="${i.id}" data-src="label" title="Считать верным имя из пульта — оно уйдёт в Telegram">оставить «${esc((i.label||"").split(" ").filter(w=>!/^\\d+$/.test(w)).join(" "))}»</button>
+        <button class="idfix" data-id="${i.id}" data-src="tg" title="Считать верным имя из Telegram — оно встанет в пульт">оставить «${esc(i.tg_name)}»</button>
+      </div></div>`).join("")}
+    ${d.count>8?`<div class="hint" style="margin-top:6px">…и ещё ${d.count-8}</div>`:""}
+    <div class="hint" style="margin-top:8px">После выбора нажми у аккаунта «оформить сейчас» — имя, ник и фото уйдут в Telegram. При смене пола фото сбрасывается, чтобы подобралось новое.</div>
+  </div>`;
+  box.querySelectorAll(".idfix").forEach(b=>b.onclick=async()=>{
+    b.disabled=true;b.textContent="…";
+    const r=await api("/api/accounts/identity_fix",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ids:[+b.dataset.id],source:b.dataset.src})});
+    if(r&&r.error){alert(r.error);b.disabled=false;return;}
+    route();});
+}
 async function viewAgents(v){
   const a=await api("/api/accounts");
   const accPreset=localStorage.getItem("acc_preset")||"all";
   const accTest=(ACC_PRESETS[accPreset]||ACC_PRESETS.all).test;
   const aShown=a.filter(accTest);
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
+    <div id="acc-identity" style="margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:16px">
       <div class="ttoolbar" style="margin:0">
         <input id="a-label" placeholder="Ярлык (напр. Вася SDR)">
@@ -1264,6 +1293,7 @@ async function viewAgents(v){
     </div>
     <div id="acc-tbl"></div>`;
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
+  loadIdentityCheck();
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";
     await api("/api/health",{method:"POST"});
     setTimeout(()=>{b.disabled=false;b.textContent="Проверить аккаунты (@SpamBot)";route();},15000);};
@@ -1317,6 +1347,35 @@ async function viewAgents(v){
   const selAcc=new Set();
   let accFiltered=a.slice();   // текущий отфильтрованный набор строк таблицы
   const updBulkCnt=()=>{const c=$("#ab-cnt");if(c)c.textContent=selAcc.size;};
+  // «Слушает чаты» и «Уведомляет о встречах» — настройки-одиночки: включаешь один
+  // аккаунт, остальные обязаны погаснуть. Тексты держим В ОДНОМ месте, потому что
+  // рисуются они дважды: при отрисовке колонки и при перекраске кнопок на месте
+  // после клика (без route() — полный ре-рендер сбрасывал прокрутку, и в таблице
+  // на полсотни строк после каждого «назначить» терялось место).
+  const TOG={
+    listen:{cls:"acc-listen",field:"is_listener",url:"/api/settings/listen_account",
+      on:"👂 слушает",off:"👂 назначить",
+      onTip:"Этот аккаунт опрашивает публичные чаты каталога. Нажми, чтобы снять — вернётся личный (.env)",
+      offTip:"Назначить: активный опрос чатов (кнопка «Прослушать чаты сейчас») пойдёт через этот аккаунт, а не через личный номер"},
+    notify:{cls:"acc-notify",field:"is_notifier",url:"/api/settings/notify_sender",
+      on:"🔔 уведомляет",off:"🔔 назначить",
+      onTip:"Этот аккаунт пишет тебе в личку, когда агент договорился о встрече. Нажми, чтобы снять",
+      offTip:"Назначить: при согласованной встрече этот аккаунт пришлёт тебе личное сообщение с деталями (кто, о чём, ссылка на карточку)"},
+  };
+  const togHtml=(t,on)=>on?`<span class="badge b-active">${t.on}</span>`:t.off;
+  const togBtn=(t,r)=>{const on=!!r[t.field];
+    return `<button class="${t.cls}" data-id="${r.id}" title="${esc(on?t.onTip:t.offTip)}"${on?"":' style="opacity:.55"'}>${togHtml(t,on)}</button>`;};
+  // Перекрасить все кнопки этого типа под нового «избранника» (id или null = снять со всех).
+  // Правим и данные строк — иначе поиск/сортировка перерисуют таблицу по старым значениям.
+  const togApply=(t,onId)=>{
+    a.forEach(x=>{x[t.field]=onId!=null&&String(x.id)===String(onId);});
+    $("#acc-tbl").querySelectorAll("."+t.cls).forEach(b=>{
+      const on=onId!=null&&String(b.dataset.id)===String(onId);
+      b.title=on?t.onTip:t.offTip;
+      b.style.opacity=on?"":".55";
+      b.innerHTML=togHtml(t,on);
+    });
+  };
   smartTable($("#acc-tbl"),{
     tableKey:"agents",
     rows:aShown,searchKeys:["label","phone","username","role"],
@@ -1358,23 +1417,36 @@ async function viewAgents(v){
         const st=r.warm_stage||0,pct=Math.round(st/14*100);
         return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">прогрев ${st}/14 дн</span></span>`;}},
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>{
-        if(!r.proxy)return '<span class="no">нет</span>';
         const pc=r.proxy_checked_at;
-        if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''}"><span class="sdot g"></span>живой</span>`;
-        if(r.proxy_alive===0)return `<span class="badge b-stop" title="проверено ${fmt(pc)||''} — не отвечает"><span class="sdot r"></span>мёртвый</span>`;
+        // Красный значок и «нет» — не приговор, а кнопка: жмёшь → AXIOM сам подбирает
+        // замену (пул MTProto → свежий бесплатный SOCKS5), проверяет её коннектом к
+        // Telegram и значок тут же зеленеет. Тупиков в таблице быть не должно.
+        const fix=(cls,dot,txt,tip)=>`<button class="acc-proxyfix" data-id="${r.id}" title="${esc(tip)}" style="background:none;border:0;padding:0;cursor:pointer"><span class="badge b-${cls}"><span class="sdot ${dot}"></span>${txt}</span></button>`;
+        if(!r.proxy)return fix("nurture","gy","нет · подобрать",
+          "Нажми — подберём бесплатный прокси (пул MTProto, если пуст — свежий SOCKS5) и проверим живым коннектом к Telegram");
+        if(r.proxy_alive===1)return `<span class="badge b-active" title="проверено ${fmt(pc)||''} · ${esc(r.proxy)}"><span class="sdot g"></span>живой</span>`;
+        if(r.proxy_alive===0)return fix("stop","r","мёртвый · заменить",
+          `проверено ${fmt(pc)||''} — не отвечает. Нажми: подберём живой бесплатный и сразу проверим`);
         return `<span class="badge b-nurture" title="ещё не проверялся — нажми «Проверить прокси»"><span class="sdot gy"></span>не проверен</span>`;
       }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
-      {key:"listener",label:"Слушает чаты",render:r=>r.is_listener
-        ?`<button class="acc-listen" data-id="${r.id}" title="Этот аккаунт опрашивает публичные чаты каталога. Нажми, чтобы снять — вернётся личный (.env)"><span class="badge b-active">👂 слушает</span></button>`
-        :`<button class="acc-listen" data-id="${r.id}" title="Назначить: активный опрос чатов (кнопка «Прослушать чаты сейчас») пойдёт через этот аккаунт, а не через личный номер" style="opacity:.55">👂 назначить</button>`},
-      {key:"notifier",label:"Уведомляет о встречах",render:r=>r.is_notifier
-        ?`<button class="acc-notify" data-id="${r.id}" title="Этот аккаунт пишет тебе в личку, когда агент договорился о встрече. Нажми, чтобы снять"><span class="badge b-active">🔔 уведомляет</span></button>`
-        :`<button class="acc-notify" data-id="${r.id}" title="Назначить: при согласованной встрече этот аккаунт пришлёт тебе личное сообщение с деталями (кто, о чём, ссылка на карточку)" style="opacity:.55">🔔 назначить</button>`},
+      {key:"listener",label:"Слушает чаты",render:r=>togBtn(TOG.listen,r)},
+      {key:"notifier",label:"Уведомляет о встречах",render:r=>togBtn(TOG.notify,r)},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
         const badge=(r.days_alive!=null)?`<span class="badge b-${r.status==='banned'?'stop':'active'}" title="дней с даты покупки — живучесть аккаунта">🕒 ${r.days_alive} дн</span>`:'<span class="no">—</span>';
         return (d?`<span class="mono" style="font-size:11px;opacity:.75">🛒 ${d}</span><br>`:'')+badge;}},
+      // Когда аккаунт заведён в AXIOM (accounts.created_at) — это НЕ дата покупки:
+      // купленный на маркете может пролежать неделю до импорта, а разбор «почему пачка
+      // ведёт себя иначе» всегда упирается в вопрос «когда мы её залили».
+      {key:"created_at",label:"Загружен",cls:"sub",render:r=>{
+        if(!r.created_at)return '<span class="no">—</span>';
+        const d=parseTs(r.created_at);
+        if(!d)return `<span class="mono" style="font-size:11px">${esc(String(r.created_at).slice(0,10))}</span>`;
+        const days=Math.floor((Date.now()-d.getTime())/86400000);
+        const ago=days<=0?'сегодня':(days===1?'вчера':`${days} дн назад`);
+        return `<span class="mono" style="font-size:11px;opacity:.75" title="дата загрузки аккаунта в AXIOM: ${esc(fmt(r.created_at))}">📥 ${d.toLocaleDateString("ru-RU")}</span>`
+          +`<br><span style="font-size:11px;opacity:.6">${ago}</span>`;}},
       {key:"daily_limit",label:"Лимит/день",cls:"mono"},
       {key:"id",label:"",render:r=>`<button class="acc-del" data-id="${r.id}">✕</button>`},
     ],
@@ -1390,18 +1462,40 @@ async function viewAgents(v){
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
     const eye=e.target.closest(".acc-eye");
     if(eye){e.stopPropagation();showInspectModal(eye.dataset.id,eye.dataset.label);return;}
-    const lst=e.target.closest(".acc-listen");
-    if(lst){e.stopPropagation();
-      const id=lst.dataset.id, wasOn=lst.querySelector(".badge")?.textContent.includes("слушает");
-      await api("/api/settings/listen_account",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({account_id:wasOn?null:id})});
-      route();return;}
-    const ntf=e.target.closest(".acc-notify");
-    if(ntf){e.stopPropagation();
-      const id=ntf.dataset.id, wasOn=ntf.querySelector(".badge")?.textContent.includes("уведомляет");
-      await api("/api/settings/notify_sender",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({account_id:wasOn?null:id})});
-      route();return;}
+    const pfx=e.target.closest(".acc-proxyfix");
+    if(pfx){e.stopPropagation();
+      const old=pfx.innerHTML;
+      pfx.disabled=true;
+      pfx.innerHTML='<span class="badge b-nurture"><span class="sdot gy"></span>⏳ ищу…</span>';
+      // до минуты: пул может быть пуст, тогда сервер перебирает публичные SOCKS5-списки
+      let res=null;
+      try{res=await api(`/api/account/${pfx.dataset.id}/proxy_renew`,{method:"POST"});}
+      catch(err){res={error:String(err)};}
+      if(res&&res.ok){
+        // тоже без route(): правим строку в данных и подменяем только эту ячейку,
+        // иначе перерисовка утащит прокрутку в начало таблицы
+        const row=a.find(x=>String(x.id)===String(pfx.dataset.id));
+        if(row){row.proxy=res.proxy;row.proxy_alive=1;row.proxy_checked_at=new Date().toISOString();}
+        pfx.outerHTML=`<span class="badge b-active" title="проверено только что · ${esc(res.proxy||'')}"><span class="sdot g"></span>живой</span>`;
+      }else{
+        pfx.disabled=false;pfx.innerHTML=old;
+        alert((res&&res.error)||"не удалось подобрать прокси");
+      }
+      return;}
+    // Обе кнопки-одиночки — по одному сценарию: красим СРАЗУ (чтобы клик отзывался
+    // мгновенно), потом сохраняем; не сохранилось — возвращаем как было и говорим почему.
+    const tog=e.target.closest(".acc-listen")?TOG.listen:(e.target.closest(".acc-notify")?TOG.notify:null);
+    if(tog){e.stopPropagation();
+      const btn=e.target.closest("."+tog.cls), id=btn.dataset.id;
+      const prev=(a.find(x=>String(x.id)===String(id))||{})[tog.field];
+      const wasId=(a.find(x=>x[tog.field])||{}).id ?? null;   // кто был назначен до клика
+      togApply(tog,prev?null:id);
+      let res=null;
+      try{res=await api(tog.url,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:prev?null:id})});}
+      catch(err){res={error:String(err)};}
+      if(res&&res.error){togApply(tog,wasId);alert(res.error);}
+      return;}
   });
   tbl.addEventListener("change",(e)=>{
     const cb=e.target.closest(".acc-sel");

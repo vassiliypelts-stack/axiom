@@ -1152,9 +1152,34 @@ def account_update(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
     if not sets:
         return JSONResponse({"ok": True})
     vals.append(acc_id)
+    renamed = None
     with database.get_conn() as conn:
         conn.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
-    return JSONResponse({"ok": True})
+        # У аккаунта ДВА поля с именем: label (что видит оператор в пульте) и
+        # tg_name (что уходит в сам профиль Telegram и по чьему полу подбирается
+        # фото). Переименование в пульте меняло только label — и личность
+        # разъезжалась: в списке «Кристина Орлова», в Telegram «Никита», на
+        # аватаре мужчина. Переупаковка это не лечила, потому что честно брала
+        # tg_name. Держим их синхронными: назвали человека — значит его так и зовут.
+        if "label" in payload:
+            new = (payload.get("label") or "").strip()
+            row = conn.execute("SELECT tg_name, avatar FROM accounts WHERE id=?", (acc_id,)).fetchone()
+            old_tg = ((row["tg_name"] if row else None) or "").strip()
+            # Номера и служебные метки («+7999…», «#12», «acc 3») именем не считаем.
+            looks_human = bool(new) and not new.startswith(("+", "#")) and not new[0].isdigit()
+            if looks_human and new != old_tg:
+                conn.execute("UPDATE accounts SET tg_name=? WHERE id=?", (new, acc_id))
+                renamed = {"tg_name": new, "was": old_tg or None}
+                # Пол мог смениться вместе с именем — тогда старое фото врёт.
+                # Снимаем отметку об аватаре, чтобы «оформить сейчас» подобрал новое.
+                try:
+                    from channels.ru_names import gender_of
+                    if old_tg and gender_of(new) != gender_of(old_tg):
+                        conn.execute("UPDATE accounts SET avatar=NULL WHERE id=?", (acc_id,))
+                        renamed["avatar_reset"] = True
+                except Exception:  # noqa: BLE001 — определение пола не критично
+                    pass
+    return JSONResponse({"ok": True, "renamed": renamed})
 
 
 @app.post("/api/account/{acc_id}/avatar")
@@ -1233,6 +1258,69 @@ def account_proxy_find(acc_id: int) -> JSONResponse:
         if row:
             proxy = row["proxy"]
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output"), "proxy": proxy})
+
+
+@app.post("/api/account/{acc_id}/proxy_renew")
+async def account_proxy_renew(acc_id: int) -> JSONResponse:
+    """Замена прокси в один клик — под красный значок «мёртвый» в колонке «Прокси».
+
+    Берёт готовые механизмы: сначала бесплатный MTProto из пула (proxy_pool), если
+    там пусто или всё дохлое — свежий бесплатный SOCKS5 (proxy_find). Кандидата
+    проверяем живым коннектом к Telegram и только после этого пишем в карточку с
+    proxy_alive=1 — чтобы значок стал зелёным по факту, а не авансом.
+
+    Прокси, уже стоящие на ДРУГИХ аккаунтах, не берём: антибан держится на
+    «1 прокси = 1 аккаунт»."""
+    import asyncio
+
+    import config
+    from channels import proxy_find, proxy_pool
+
+    with database.get_conn() as conn:
+        acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc:
+            return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
+        taken = {r["proxy"] for r in conn.execute(
+            "SELECT proxy FROM accounts WHERE IFNULL(proxy,'')<>'' AND id<>?", (acc_id,))}
+
+    api_id, api_hash = int(config.TG_API_ID), config.TG_API_HASH
+    tried = 0
+    found = None
+    seen: set[str] = set(taken)
+    # 1) бесплатный MTProto из пула — свободных берём сразу пачкой и проверяем
+    # параллельно: последовательно это до 8с на кандидата прямо в запросе.
+    mts: list[str] = []
+    for _ in range(4):
+        mt = proxy_pool.pick_free_mt(exclude=seen | set(mts))
+        if not mt:
+            break
+        mts.append(mt)
+    if mts:
+        tried += len(mts)
+        checks = await asyncio.gather(*[
+            proxy_pool._test_account_proxy(acc_id, f"#{acc_id}", px, api_id, api_hash)
+            for px in mts])
+        found = next((px for px, ok in zip(mts, checks) if ok), None)
+        seen.update(mts)
+    # 2) пул не выручил — идём за свежим бесплатным SOCKS5 (find_fast уже проверяет
+    # каждого кандидата реальным запросом к Telegram, повторно не гоняем)
+    if not found:
+        fresh = await proxy_find.find_fast(need=1, max_test=120, exclude=seen)
+        tried += 1 if fresh else 0
+        found = fresh[0] if fresh else None
+    if not found:
+        return JSONResponse(
+            {"error": "свободного живого прокси сейчас не нашлось — нажми ещё раз "
+                      "(бесплатные списки обновляются) или купи резидентный через Proxy6",
+             "tried": tried},
+            status_code=503)
+    with database.get_conn() as conn:
+        conn.execute("UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') "
+                     "WHERE id=?", (found, acc_id))
+        database.add_event(conn, "proxy_renew", f"🌐 Прокси заменён: аккаунт #{acc_id}",
+                           f"новый прокси {found} (проверен коннектом к Telegram)",
+                           level="good", account_id=acc_id)
+    return JSONResponse({"ok": True, "proxy": found, "proxy_alive": 1, "tried": tried})
 
 
 @app.post("/api/account/{acc_id}/warm_now")
@@ -4534,6 +4622,77 @@ def campaign_progress(cid: int) -> JSONResponse:
         })
     return JSONResponse({"account": acc, "account_name": acc_name, "sent_count": len(sent_ids),
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
+
+
+@app.get("/api/accounts/identity_check")
+def accounts_identity_check() -> JSONResponse:
+    """Аккаунты, у которых личность разъехалась: в пульте одно имя, в Telegram другое.
+
+    label — что видит оператор, tg_name — что реально стоит в профиле и по чьему
+    полу подобрано фото. Раньше переименование в пульте меняло только label, и
+    получалось «Кристина Орлова» в списке, «Никита» в переписке и мужское фото.
+    Собеседник видит несоответствие сразу же, а оператор — нет.
+    """
+    database.init_db()
+    from channels.ru_names import gender_of
+    out = []
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, tg_name, username, avatar, phone FROM accounts "
+            "WHERE COALESCE(status,'') <> 'archived'").fetchall()
+    for r in rows:
+        label = (r["label"] or "").strip()
+        tg = (r["tg_name"] or "").strip()
+        if not label or not tg or label.startswith(("+", "#")):
+            continue
+        # label собирается как «Имя Фамилия 928» (make_label) — сравниваем по имени
+        base_label = " ".join(w for w in label.split() if not w.isdigit())
+        if base_label.lower() == tg.lower():
+            continue
+        g1, g2 = gender_of(base_label), gender_of(tg)
+        out.append({
+            "id": r["id"], "label": label, "tg_name": tg,
+            "username": r["username"], "has_avatar": bool(r["avatar"]),
+            "gender_conflict": bool(g1 and g2 and g1 != g2),
+            "why": ("пол не совпадает: в пульте и в Telegram разные личности"
+                    if (g1 and g2 and g1 != g2) else "имя в пульте и в Telegram разное"),
+        })
+    out.sort(key=lambda x: (not x["gender_conflict"], x["id"]))
+    return JSONResponse({"items": out, "count": len(out),
+                         "gender_conflicts": sum(1 for x in out if x["gender_conflict"])})
+
+
+@app.post("/api/accounts/identity_fix")
+def accounts_identity_fix(payload: dict = Body(default={})) -> JSONResponse:
+    """Свести имя к одному: source='label' (как в пульте) или 'tg' (как в Telegram).
+
+    Само переименование в Telegram делает «оформить сейчас» (_setup_profile) — тут
+    только приводим базу в порядок и, если сменился пол, снимаем старое фото."""
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    source = payload.get("source") or "label"
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного аккаунта"}, status_code=400)
+    from channels.ru_names import gender_of
+    fixed = 0
+    with database.get_conn() as conn:
+        for aid in ids:
+            r = conn.execute("SELECT label, tg_name FROM accounts WHERE id=?", (aid,)).fetchone()
+            if not r:
+                continue
+            label = (r["label"] or "").strip()
+            tg = (r["tg_name"] or "").strip()
+            base_label = " ".join(w for w in label.split() if not w.isdigit())
+            if source == "tg" and tg:
+                conn.execute("UPDATE accounts SET label=? WHERE id=?", (tg, aid))
+            elif base_label:
+                conn.execute("UPDATE accounts SET tg_name=? WHERE id=?", (base_label, aid))
+                if tg and gender_of(base_label) != gender_of(tg):
+                    conn.execute("UPDATE accounts SET avatar=NULL WHERE id=?", (aid,))
+            else:
+                continue
+            fixed += 1
+    return JSONResponse({"ok": True, "fixed": fixed,
+                         "note": "теперь нажми «оформить сейчас» — имя и фото уйдут в Telegram"})
 
 
 @app.get("/api/deploy/status")

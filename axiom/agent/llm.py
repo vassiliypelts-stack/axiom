@@ -314,25 +314,38 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
     else:
         rf = {"type": "json_schema", "json_schema": {
             "name": output_format.__name__, "strict": True, "schema": schema}}
-    data = _compat_post(prov, {
-        "model": model, "max_tokens": max_tokens,
-        "messages": _to_openai(system, messages),
-        "response_format": rf,
-    }, timeout)
-    raw = _compat_content(data)
-    try:
-        return output_format(**json.loads(raw))
-    except json.JSONDecodeError as e:
-        # некоторые модели заворачивают JSON в ```json … ``` — вынимаем
-        s = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    # DeepSeek (json_object) отвечает по формату, объяснённому ТЕКСТОМ, а не проверенному
+    # сервером — и на живом трафике каждый N-й ответ приходит пустым или мимо схемы. Это
+    # HTTP 200: _compat_post его не ретраит (у него нет причин — запрос дошёл, ответ
+    # получен), и раньше единственный такой промах сразу валил structured() — то есть
+    # агент молчал в ответ живому человеку из-за одного неудачного семплирования. Здесь
+    # тот же запрос просто пробуется ещё раз: новый семпл почти всегда приходит валидным.
+    last_err: Exception | None = None
+    for attempt in range(_RETRIES):
+        data = _compat_post(prov, {
+            "model": model, "max_tokens": max_tokens,
+            "messages": _to_openai(system, messages),
+            "response_format": rf,
+        }, timeout)
+        raw = _compat_content(data)
         try:
-            return output_format(**json.loads(s))
-        except json.JSONDecodeError:
-            raise RuntimeError(f"{prov} вернул не JSON: {raw[:200]}") from e
-    except Exception as e:  # noqa: BLE001 — pydantic: не хватило поля / не тот тип
-        # без сырого ответа в тексте ошибки причину не найти: «1 validation error for X»
-        # ничего не говорит о том, ЧТО именно прислала модель
-        raise RuntimeError(f"{prov} вернул JSON не по схеме ({e}); ответ: {raw[:200]}") from e
+            return output_format(**json.loads(raw))
+        except json.JSONDecodeError as e:
+            # некоторые модели заворачивают JSON в ```json … ``` — вынимаем
+            s = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            try:
+                return output_format(**json.loads(s))
+            except json.JSONDecodeError:
+                last_err = RuntimeError(f"{prov} вернул не JSON: {raw[:200]}")
+                last_err.__cause__ = e
+        except Exception as e:  # noqa: BLE001 — pydantic: не хватило поля / не тот тип
+            # без сырого ответа в тексте ошибки причину не найти: «1 validation error for X»
+            # ничего не говорит о том, ЧТО именно прислала модель
+            last_err = RuntimeError(f"{prov} вернул JSON не по схеме ({e}); ответ: {raw[:200]}")
+            last_err.__cause__ = e
+        if attempt < _RETRIES - 1:
+            print(f"[llm] {prov}: попытка {attempt + 1}/{_RETRIES} дала кривой ответ — повторяю")
+    raise last_err or RuntimeError(f"{prov}: не вернул валидный ответ")
 
 
 def json_schema(model: type[BaseModel]) -> dict:

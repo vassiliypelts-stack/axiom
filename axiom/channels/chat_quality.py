@@ -319,11 +319,20 @@ async def run(chat_id: int | None, limit: int, only_new: bool) -> None:
         aid = acc["id"]
         if aid in clients:
             return clients[aid]
-        cl = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
-                          acc.get("api_id"), acc.get("api_hash"))
-        await cl.connect()
-        if not await cl.is_user_authorized():
-            await cl.disconnect()
+        # Дохлый прокси у ЛЮБОГО читателя не должен ронять весь прогон — раньше
+        # `.connect()` кидал ConnectionError мимо всех try/except, и один плохой
+        # адрес обрывал разбор целиком (реальный случай: «STOP: работа не сохранена…
+        # in connect»). Читателя с проблемой просто теряем, идёт следующий.
+        try:
+            cl = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                              acc.get("api_id"), acc.get("api_hash"))
+            await cl.connect()
+            if not await cl.is_user_authorized():
+                await cl.disconnect()
+                clients[aid] = None
+                return None
+        except Exception as e:  # noqa: BLE001
+            print(f"[skip-reader] #{aid}: не подключился — {type(e).__name__}: {str(e)[:70]}")
             clients[aid] = None
             return None
         clients[aid] = cl

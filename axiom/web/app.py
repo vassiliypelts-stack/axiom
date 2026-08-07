@@ -5257,6 +5257,19 @@ async def accounts_import_keys(file: UploadFile = File(None),
                          "added": added, "skipped": skipped, "dead": dead})
 
 
+def _label_first_name(label: str) -> str:
+    """Имя из ярлыка «Александр504» → «Александр».
+
+    make_label (channels/ru_names.py) клеит имя и хвост номера БЕЗ пробела —
+    «{first}{digits}». Прежняя проверка искала цифры отдельным словом через
+    split() и на такой ярлык ничего не находила: он один токен. Из-за этого почти
+    весь парк (обычный, штатный формат ярлыка) считался «расхождением» — 37 из 38
+    записей были ложным срабатыванием, и единственная настоящая проблема тонула
+    в шуме."""
+    import re
+    return re.sub(r"\d+$", "", (label or "").strip()).strip()
+
+
 @app.get("/api/accounts/identity_check")
 def accounts_identity_check() -> JSONResponse:
     """Аккаунты, у которых личность разъехалась: в пульте одно имя, в Telegram другое.
@@ -5265,6 +5278,9 @@ def accounts_identity_check() -> JSONResponse:
     полу подобрано фото. Раньше переименование в пульте меняло только label, и
     получалось «Кристина Орлова» в списке, «Никита» в переписке и мужское фото.
     Собеседник видит несоответствие сразу же, а оператор — нет.
+
+    Сравниваем ТОЛЬКО первое имя: label обычно «Имя+цифры», tg_name — «Имя Фамилия»,
+    и требовать полного совпадения строк бессмысленно даже в штатном случае.
     """
     database.init_db()
     from channels.ru_names import gender_of
@@ -5278,9 +5294,9 @@ def accounts_identity_check() -> JSONResponse:
         tg = (r["tg_name"] or "").strip()
         if not label or not tg or label.startswith(("+", "#")):
             continue
-        # label собирается как «Имя Фамилия 928» (make_label) — сравниваем по имени
-        base_label = " ".join(w for w in label.split() if not w.isdigit())
-        if base_label.lower() == tg.lower():
+        base_label = _label_first_name(label)
+        tg_first = tg.split()[0] if tg.split() else tg
+        if not base_label or base_label.lower() == tg_first.lower():
             continue
         g1, g2 = gender_of(base_label), gender_of(tg)
         out.append({
@@ -5314,7 +5330,7 @@ def accounts_identity_fix(payload: dict = Body(default={})) -> JSONResponse:
                 continue
             label = (r["label"] or "").strip()
             tg = (r["tg_name"] or "").strip()
-            base_label = " ".join(w for w in label.split() if not w.isdigit())
+            base_label = _label_first_name(label)
             if source == "tg" and tg:
                 conn.execute("UPDATE accounts SET label=? WHERE id=?", (tg, aid))
             elif base_label:

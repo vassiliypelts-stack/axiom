@@ -66,6 +66,15 @@ PART_PAUSE = (1.2, 3.5)   # пауза между соседними сообщ�
 REPLY_DELAY_DEFAULT = (30.0, 60.0)
 
 
+# Что сказать, если модель трижды не смогла собрать ответ (см. _agent_reply).
+# Не признание в поломке — так люди сами иногда пишут, когда отвлеклись.
+_STALL_REPLIES = [
+    "сорри, отвлекся) допиши ещё раз, что спросил?",
+    "упс, что-то связь моргнула у меня) повтори последнее?",
+    "секунду, отвечу — тут звонок словил) что писал?",
+]
+
+
 def _default_slots() -> list[str]:
     """Слоты для встречи. Заглушка под пилот — позже возьмём из Google Calendar.
     Возвращает пару ближайших удобных вариантов в человеческом виде."""
@@ -492,6 +501,21 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")
         _notify_agent_down(contact_id, e)
+        # Живой человек написал и НЕ должен остаться без единого слова — молчание
+        # читается как игнор, а не как техническая заминка. У DeepSeek такое бывает:
+        # после всех повторов приходит пустой ответ вместо JSON (см. agent/llm.py
+        # structured, _RETRIES) — до сих пор это значило полную тишину навсегда,
+        # хотя причину и так видно оператору в колокольчике (see _notify_agent_down).
+        try:
+            peer = await event.get_input_chat()
+            await _humanize_before_reply(event.client, peer)
+            stall = random.choice(_STALL_REPLIES)
+            await _send_parts(event.client, peer, [stall])
+            with database.get_conn() as conn:
+                database.add_message(conn, contact_id, "out", stall, intent=None,
+                                     account_id=account_id)
+        except Exception as e2:  # noqa: BLE001 — фолбэк best-effort, не роняем обработку
+            print(f"[agent fallback error] contact {contact_id}: {e2}")
         return
 
     text_in = messages[-1]["content"]

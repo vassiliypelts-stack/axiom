@@ -332,12 +332,12 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
         }, timeout)
         raw = _compat_content(data)
         try:
-            return output_format(**json.loads(raw))
+            return output_format(**_coerce_to_schema(json.loads(raw), schema))
         except json.JSONDecodeError as e:
             # некоторые модели заворачивают JSON в ```json … ``` — вынимаем
             s = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             try:
-                return output_format(**json.loads(s))
+                return output_format(**_coerce_to_schema(json.loads(s), schema))
             except json.JSONDecodeError:
                 last_err = RuntimeError(f"{prov} вернул не JSON: {raw[:200]}")
                 last_err.__cause__ = e
@@ -349,6 +349,44 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
         if attempt < _RETRIES - 1:
             print(f"[llm] {prov}: попытка {attempt + 1}/{_RETRIES} дала кривой ответ — повторяю")
     raise last_err or RuntimeError(f"{prov}: не вернул валидный ответ")
+
+
+def _coerce_to_schema(raw_obj: dict, schema: dict) -> dict:
+    """Причесать ответ дешёвой модели под схему ДО валидации.
+
+    Строгую схему проверяет только Anthropic/OpenAI. DeepSeek её объясняют текстом, и
+    он систематически (не случайно!) промахивается ровно двумя способами — оба поймали
+    на живом диалоге:
+      • поле-СПИСОК приходит одной строкой: reply_parts="привет\\n\\nкак дела?" вместо
+        ["привет","как дела?"] — а от этого зависит, уйдёт реплика человеку или нет;
+      • поле с ENUM приходит вольным пересказом: intent="Собеседник подтвердил, что это
+        он" вместо "positive".
+    Повторный запрос тут не помогает: модель ведёт себя так стабильно, поэтому агент
+    молчал ВСЕГДА, а не иногда. Чиним не надеждой на модель, а приведением типов.
+    """
+    props = schema.get("properties", {})
+    out = dict(raw_obj)
+    for key, spec in props.items():
+        if key not in out or out[key] is None:
+            continue
+        val = out[key]
+        # список из строки: разбиваем по пустой строке (так модель разделяет реплики),
+        # иначе кладём целиком одним элементом — лучше одно сообщение, чем ошибка
+        if spec.get("type") == "array" and isinstance(val, str):
+            parts = [p.strip() for p in val.split("\n\n") if p.strip()] or [val.strip()]
+            out[key] = parts
+        # enum: точное совпадение → как есть; иначе ищем допустимое значение внутри
+        # текста; не нашли — берём первое из списка, чтобы не терять весь ответ из-за
+        # одной классификации (реплики человеку важнее, чем метка для аналитики)
+        enum_vals = spec.get("enum")
+        if enum_vals and isinstance(out[key], str) and out[key] not in enum_vals:
+            low = out[key].lower()
+            match = next((e for e in enum_vals if str(e).lower() in low), None)
+            out[key] = match if match is not None else enum_vals[0]
+        # булево словом («да»/«true») вместо настоящего bool
+        if spec.get("type") == "boolean" and isinstance(out[key], str):
+            out[key] = out[key].strip().lower() in ("true", "да", "yes", "1")
+    return out
 
 
 def json_schema(model: type[BaseModel]) -> dict:

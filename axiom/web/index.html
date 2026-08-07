@@ -5284,6 +5284,12 @@ function renderCampList(mount,camps){
     const id=b.dataset.id,box=document.getElementById("prog-"+id);
     if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
     box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    // Пауза/убор из очереди сохраняет флеш-сообщение здесь (на box, не на innerHTML —
+    // innerHTML тут же перезаписывается, а атрибуты box переживают перерисовку) —
+    // раньше после «Убрать из рассылки» список просто молча перерисовывался тем же
+    // составом строк (с пометкой ⏸, но без единого слова «готово»), и оператор решал,
+    // что кнопка не сработала.
+    const flash=box.dataset.flashMsg;delete box.dataset.flashMsg;
     const p=await api(`/api/campaign/${id}/progress`);
     if(p.error){box.innerHTML=`<div class="empty">${esc(p.error)}</div>`;return;}
     if(!p.rows.length){box.innerHTML='<div class="sub">Аудитория пуста — некому слать (проверь тег/канал/статусы).</div>';return;}
@@ -5301,7 +5307,10 @@ function renderCampList(mount,camps){
       <td class="sub">${esc(r.source)||"—"}</td>
       <td>${esc(r.account)}</td>
       <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`;}).join("");
-    const pendingSources=[...new Set(p.rows.filter(r=>!r.sent).map(r=>r.source).filter(Boolean))].sort();
+    // Уже поставленные на паузу в список источников не попадают — иначе после «Убрать
+    // весь этот источник» тот же пункт как ни в чём не бывало торчал в выпадайке, и
+    // оператор жал кнопку ещё раз, думая, что первый клик не сработал.
+    const pendingSources=[...new Set(p.rows.filter(r=>!r.sent&&!r.is_paused).map(r=>r.source).filter(Boolean))].sort();
     const srcOpts=`<option value="">— выбери источник —</option>`+pendingSources.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
     box.innerHTML=`<div class="sub" style="margin-bottom:6px">Отправлено <b>${p.sent_count}</b> · показано в очереди <b>${p.total-p.sent_count}</b> из <b>${p.audience_total}</b> · аккаунт: <b>${esc(p.account_name)}</b></div>
       <div class="ttoolbar" style="margin:0 0 8px;gap:8px;flex-wrap:wrap">
@@ -5320,12 +5329,19 @@ function renderCampList(mount,camps){
     const allCb=document.getElementById(`pg-all-${id}`);
     if(allCb)allCb.onchange=()=>box.querySelectorAll(".pg-cb").forEach(cb=>cb.checked=allCb.checked);
     const msgEl=document.getElementById(`pg-msg-${id}`);
-    const reopen=()=>{const btnProg=mount.querySelector(`.cl-prog[data-id="${id}"]`);if(btnProg){box.dataset.open="";btnProg.click();}};
+    // flash-сообщение переживает перерисовку: box НЕ пересоздаётся, только его innerHTML —
+    // атрибут на самом box цел, читаем его сразу после перезагрузки таблицы (выше).
+    if(flash){msgEl.innerHTML='<span style="color:var(--green)">'+esc(flash)+'</span>';}
+    const reopen=(flashMsg)=>{
+      const btnProg=mount.querySelector(`.cl-prog[data-id="${id}"]`);
+      if(flashMsg)box.dataset.flashMsg=flashMsg;
+      if(btnProg){box.dataset.open="";btnProg.click();}
+    };
     const doPause=async(ids)=>{
       if(!ids.length){msgEl.textContent="выбери хотя бы один контакт";return;}
       const r=await api(`/api/campaign/${id}/pause_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contact_ids:ids})});
       if(r.error){msgEl.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
-      reopen();
+      reopen(`⏸ снято с рассылки: ${r.paused}`);
     };
     const pauseBtn=document.getElementById(`pg-pause-${id}`);
     if(pauseBtn)pauseBtn.onclick=()=>doPause(selIds());
@@ -5344,7 +5360,7 @@ function renderCampList(mount,camps){
       const ids=selIds();if(!ids.length){msgEl.textContent="выбери хотя бы один контакт";return;}
       const r=await api(`/api/campaign/${id}/unpause_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contact_ids:ids})});
       if(r.error){msgEl.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
-      reopen();
+      reopen(`▶ снята пауза: ${r.unpaused}`);
     };
   });
   mount.querySelectorAll(".cl-econ").forEach(b=>b.onclick=async()=>{

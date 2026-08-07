@@ -1715,6 +1715,73 @@ def _log_run(name: str, result) -> None:
         print(f"[log {name}] не удалось записать лог: {e}")
 
 
+_SECRET_RE = None
+
+
+def _mask_secrets(text: str) -> str:
+    """Вырезать секреты из лога ПЕРЕД отдачей наружу.
+
+    Логи пишут всё подряд, включая строки подключения и куски окружения: там живьём
+    встречаются ключи API, пароли прокси и StringSession аккаунта. Лог смотрят, чтобы
+    понять поломку, а не чтобы раздать доступы — поэтому маскируем на выходе, а не
+    надеемся, что «туда ничего такого не попадёт»."""
+    global _SECRET_RE
+    import re
+    if _SECRET_RE is None:
+        _SECRET_RE = re.compile(
+            r"(sk-[A-Za-z0-9_\-]{8,}"          # ключи Anthropic/DeepSeek/OpenAI
+            r"|AIza[A-Za-z0-9_\-]{10,}"         # Google
+            r"|[A-Za-z0-9+/]{40,}={0,2}"        # длинные base64 (сессии Telethon)
+            r"|(?<=://)[^:@/\s]+:[^@/\s]+(?=@))"  # логин:пароль в прокси-URL
+        )
+    masked = _SECRET_RE.sub("***", text or "")
+    # плюс явные значения из окружения — на случай формата, что не поймал шаблон
+    for var in ("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
+                "TG_API_HASH", "AXIOM_PASSWORD", "TG_STRING_SESSION"):
+        val = (getattr(config, var, "") or "").strip()
+        if val and len(val) > 6:
+            masked = masked.replace(val, "***")
+    return masked
+
+
+@app.get("/api/logs")
+def logs_tail(name: str = "service", lines: int = 200) -> JSONResponse:
+    """Хвост логов прямо из пульта — чтобы разбирать поломку, не заходя на сервер.
+
+    name=service — журнал systemd (туда идёт весь stdout пульта: ошибки агента,
+    слушателя, рассылки). Иначе — файл из data/logs/<name>.log.
+    Секреты маскируются (см. _mask_secrets). Доступ — под общим паролем пульта."""
+    n = max(10, min(int(lines or 200), 2000))
+    if name == "service":
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["journalctl", "-u", "axiom-web", "-n", str(n), "--no-pager"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            out = (r.stdout or "") + (r.stderr or "")
+            if not out.strip():
+                return JSONResponse({"name": name, "text": "",
+                                     "note": "journalctl пуст или недоступен под этим пользователем"})
+        except FileNotFoundError:
+            return JSONResponse({"name": name, "text": "",
+                                 "note": "journalctl не найден (не systemd-хост)"})
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"name": name, "text": "", "note": f"не смог прочитать: {e}"})
+        return JSONResponse({"name": name, "text": _mask_secrets(out)[-200000:]})
+    # файловые логи фоновых запусков
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in "_-")
+    p = LOG_DIR / f"{safe}.log"
+    if not p.exists():
+        avail = sorted(x.stem for x in LOG_DIR.glob("*.log")) if LOG_DIR.exists() else []
+        return JSONResponse({"error": f"нет лога «{safe}»", "available": avail}, status_code=404)
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=500)
+    tail = "\n".join(text.splitlines()[-n:])
+    return JSONResponse({"name": safe, "text": _mask_secrets(tail)})
+
+
 def _proxy_scheduler() -> None:
     """Фоновый планировщик: периодически обновляет пул прокси, если включено."""
     import os

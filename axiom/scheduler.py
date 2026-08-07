@@ -62,8 +62,11 @@ class Action:
 
 
 def _parse_dt(s: str | None) -> datetime | None:
-    """meeting_at → datetime. Понимает ISO (как заполнит integrations/) и пару
-    человеческих форматов. Не распарсил → None (напоминание просто не сработает)."""
+    """meeting_at → naive-UTC datetime. Не распарсил → None (напоминание не сработает).
+
+    Разбор живой речи («завтра в 11») — общий с integrations/slot_parse, тем же кодом
+    читает время и оркестратор встречи. Локальные формулировки считаем в MEETING_TZ и
+    приводим к naive-UTC: в этом виде здесь живут все сравнения со временем."""
     if not s:
         return None
     s = s.strip()
@@ -74,15 +77,23 @@ def _parse_dt(s: str | None) -> datetime | None:
         return dt
     except ValueError:
         pass
-    for fmt in ("%d.%m в %H:%M", "%d.%m %H:%M", "%Y-%m-%d %H:%M"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            if dt.year == 1900:
-                dt = dt.replace(year=_utcnow().year)
-            return dt
-        except ValueError:
-            continue
-    return None
+    from zoneinfo import ZoneInfo
+
+    import config
+    from integrations import slot_parse
+    tz = ZoneInfo(config.MEETING_TZ)
+    dt = slot_parse.parse_human(s, datetime.now(tz))
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt else None
+
+
+def _local_hhmm(dt: datetime) -> str:
+    """Время встречи ЧЕЛОВЕКУ — в MEETING_TZ. Внутри планировщика всё живёт в naive-UTC,
+    и напоминание уходило клиенту с этим самым UTC: созвон в 11:00 по Москве
+    превращался в «напоминаю про созвон сегодня в 08:00»."""
+    from zoneinfo import ZoneInfo
+
+    import config
+    return f"{dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(config.MEETING_TZ)):%H:%M}"
 
 
 def _name(row) -> str:
@@ -120,7 +131,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if REMINDER_MIN_HOURS <= hours_left <= REMINDER_BEFORE_HOURS:
             actions.append(Action(
                 "reminder", d["contact_id"], d["tg_user_id"], d["name"] or "",
-                REMINDER_TEMPLATE.format(name=_name(d), time=f"{dt:%H:%M}"), deal_id=d["deal_id"],
+                REMINDER_TEMPLATE.format(name=_name(d), time=_local_hhmm(dt)), deal_id=d["deal_id"],
             ))
 
     # --- НЕДОШЁЛ: встреча прошла, стадия не сдвинулась ---

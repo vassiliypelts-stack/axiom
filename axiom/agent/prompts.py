@@ -131,8 +131,24 @@ FIRST_TOUCH_HINTS = """
 """
 
 
+def _today_line() -> str:
+    """Сегодняшняя дата в промпт. Без неё агент не мог перевести «давайте завтра в 11»
+    в конкретное время: он не знает, какое сегодня число, и в proposed_datetime уходила
+    строка «завтра в 11:00» — а по ней не создать ни Zoom, ни напоминание."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import config
+    days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    now = datetime.now(ZoneInfo(config.MEETING_TZ))
+    return (f"\nСЕГОДНЯ: {now:%d.%m.%Y} ({days[now.weekday()]}), сейчас {now:%H:%M} "
+            f"по {config.MEETING_TZ}. Согласованное время ВСЕГДА переводи в дату: "
+            f"proposed_datetime заполняй в формате ISO (например {now:%Y-%m-%d}T15:00:00), "
+            f"даже если человек сказал «завтра» или «в пятницу».\n")
+
+
 def build_system(slots: list[str], custom_prompt: str | None = None) -> str:
     slots_str = ", ".join(slots) if slots else "уточни у человека удобное время"
     if custom_prompt and custom_prompt.strip():
-        return custom_prompt.strip() + "\n" + OUTPUT_RULES.format(slots=slots_str)
-    return SYSTEM_PROMPT.format(offer=OFFER.strip(), slots=slots_str)
+        return custom_prompt.strip() + "\n" + OUTPUT_RULES.format(slots=slots_str) + _today_line()
+    return SYSTEM_PROMPT.format(offer=OFFER.strip(), slots=slots_str) + _today_line()

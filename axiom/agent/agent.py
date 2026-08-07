@@ -26,7 +26,10 @@ class Reply(BaseModel):
         json_schema_extra={"enum": ["positive", "objection", "later", "not_interested", "question", "agreed"]},
     )
     meeting_agreed: bool = Field(description="True, если человек явно согласился на конкретное время")
-    proposed_datetime: str | None = Field(description="Согласованный слот (ISO или как в диалоге), иначе null")
+    proposed_datetime: str | None = Field(
+        description="Согласованное время созвона в ISO 8601 (YYYY-MM-DDTHH:MM:SS), иначе null. "
+        "Сегодняшнюю дату см. в системном промпте: «завтра в 11» и «в пятницу к 16» переводи "
+        "в конкретную дату САМ. По этому полю создаётся Zoom-ссылка и напоминание.")
     send_kp: bool = Field(
         default=False,
         description="True ТОЛЬКО если уместно отправить коммерческое предложение (КП) файлом — "

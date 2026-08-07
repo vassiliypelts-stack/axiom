@@ -552,8 +552,27 @@ async def _agent_reply(event, contact_id: int, username: str | None,
                 conn, contact_id, meeting.meeting_at_iso, reply.notes,
                 zoom_link=meeting.zoom_link, calendar_event_id=meeting.calendar_event_id,
             )
-            database.add_event(conn, "meeting", f"📅 Встреча назначена: {who}",
-                               f"{meeting.meeting_at_iso}", level="good", contact_id=contact_id)
+            if meeting.parsed and meeting.zoom_link:
+                database.add_event(conn, "meeting", f"📅 Встреча назначена: {who}",
+                                   f"{meeting.meeting_at_iso}", level="good", contact_id=contact_id)
+            elif meeting.parsed:
+                # Время есть, а подключаться некуда: не заданы ни PERMANENT_MEETING_URL,
+                # ни доступы к Zoom. Договорённость в силе, но ссылку человеку надо дать
+                # руками — иначе он придёт к назначенному часу в пустоту.
+                database.add_event(
+                    conn, "meeting", f"📅 Встреча назначена (без ссылки): {who}",
+                    f"{meeting.meeting_at_iso} — ссылки на созвон нет: заполни "
+                    f"PERMANENT_MEETING_URL в .env или доступы Zoom, а пока отправь ссылку сам.",
+                    level="warn", contact_id=contact_id)
+            else:
+                # Время не превратилось в дату → нет ни Zoom-ссылки, ни события в
+                # календаре, ни напоминания. Молчать тут нельзя: человек согласился на
+                # созвон и без вмешательства оператора останется без адреса подключения.
+                database.add_event(
+                    conn, "meeting", f"⚠️ Созвон без времени: {who}",
+                    f"человек согласился, но время «{meeting.meeting_at_iso}» не разобрано — "
+                    f"ни Zoom-ссылки, ни напоминания. Проставь дату в карточке руками.",
+                    level="warn", contact_id=contact_id)
         elif reply.intent == "not_interested":
             database.set_status(conn, contact_id, "nurture")
         else:

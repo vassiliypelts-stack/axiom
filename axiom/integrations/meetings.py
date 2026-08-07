@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from integrations import calendar as gcal
+from integrations import slot_parse
 from integrations import zoom
 
 
@@ -24,43 +25,15 @@ class MeetingResult:
     parsed: bool                 # удалось ли превратить слот в реальную дату
 
 
-def _roll_future(dt: datetime, now: datetime) -> datetime:
-    """Инвариант: встречу не назначаем в прошлое. Если дата прошедшая (частая причина —
-    агент галлюцинирует год), прокатываем на ближайший будущий год."""
-    if dt >= now:
-        return dt
-    try:
-        dt = dt.replace(year=now.year)
-    except ValueError:  # 29 февраля и т.п.
-        return dt
-    if dt < now:
-        dt = dt.replace(year=now.year + 1)
-    return dt
-
-
 def parse_slot(slot: str | None) -> datetime | None:
-    """Слот из диалога → aware datetime в MEETING_TZ. Понимает ISO и пару
-    человеческих форматов ('20.06 в 11:00'). Прошедшие даты катит вперёд. Не распарсил → None."""
-    if not slot:
-        return None
+    """Слот из диалога → aware datetime в MEETING_TZ. Не распарсил → None.
+
+    Сам разбор — в integrations/slot_parse: живую речь («завтра в 11», «в пятницу к
+    16», «12 августа») тем же кодом читает и планировщик напоминаний. Раньше здесь
+    лежал свой список из четырёх strptime-форматов, и всё, что человек говорил
+    словами, давало None — созвон фиксировался без Zoom-ссылки и без напоминания."""
     tz = ZoneInfo(config.MEETING_TZ)
-    now = datetime.now(tz)
-    s = slot.strip()
-    try:
-        dt = datetime.fromisoformat(s)
-        dt = dt if dt.tzinfo else dt.replace(tzinfo=tz)
-        return _roll_future(dt, now)
-    except ValueError:
-        pass
-    for fmt in ("%d.%m в %H:%M", "%d.%m %H:%M", "%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            if dt.year == 1900:
-                dt = dt.replace(year=now.year)
-            return _roll_future(dt.replace(tzinfo=tz), now)
-        except ValueError:
-            continue
-    return None
+    return slot_parse.parse_human(slot, datetime.now(tz))
 
 
 def arrange(contact: dict, slot: str | None) -> MeetingResult:

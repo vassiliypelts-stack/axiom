@@ -601,6 +601,49 @@ def settings_reply_delay_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "min_sec": lo, "max_sec": hi})
 
 
+# Модели для живого диалога. Порядок = порядок в списке пульта.
+# Claude идёт первым не из вкуса: диалог требует строгой JSON-схемы (реплики, намерение,
+# согласовано ли время), а дешёвые провайдеры умеют лишь «верни какой-нибудь JSON» —
+# и регулярно отдают пустоту, что означает молчание в ответ живому человеку.
+AGENT_MODEL_CHOICES = [
+    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5 — рабочая лошадка для диалогов"},
+    {"id": "claude-opus-5", "name": "Claude Opus 5 — самый умный, дороже"},
+    {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5 — дешёвый, для простых диалогов"},
+    {"id": "deepseek:deepseek-chat", "name": "DeepSeek — дёшево, но в диалоге срывается"},
+]
+
+
+@app.get("/api/settings/agent_model")
+def settings_agent_model_get() -> JSONResponse:
+    """Какая модель ведёт диалоги + есть ли под неё ключ."""
+    from agent import llm
+    with database.get_conn() as conn:
+        picked = (database.get_setting(conn, "agent_model", "") or "").strip()
+    current = config.agent_model()
+    return JSONResponse({
+        "current": current, "picked": picked, "from_env": config.AGENT_MODEL,
+        "has_key": llm.available(current),
+        "choices": [{**c, "has_key": llm.available(c["id"])} for c in AGENT_MODEL_CHOICES],
+    })
+
+
+@app.post("/api/settings/agent_model")
+def settings_agent_model_set(payload: dict = Body(...)) -> JSONResponse:
+    """Сменить модель диалогов. Пусто — вернуться к тому, что задано в .env."""
+    from agent import llm
+    model = (payload.get("model") or "").strip()
+    if model and not llm.available(model):
+        return JSONResponse(
+            {"error": f"под «{model}» нет ключа — агент не сможет ответить. "
+                      f"Добавь ключ в .env на сервере или выбери другую модель."},
+            status_code=400)
+    with database.get_conn() as conn:
+        database.set_setting(conn, "agent_model", model)
+        database.add_event(conn, "info", f"🤖 Модель агента: {model or config.AGENT_MODEL}",
+                           "Сменил модель для живых диалогов из пульта.", level="good")
+    return JSONResponse({"ok": True, "current": config.agent_model()})
+
+
 @app.get("/api/settings/meeting_url")
 def settings_meeting_url_get() -> JSONResponse:
     """Постоянная ссылка на созвон (Телемост/Zoom/Meet) — её агент даёт человеку сразу
@@ -1926,8 +1969,8 @@ def agent_why_silent() -> JSONResponse:
             problems.append({"что": f"«{who}» писал клиентам, но сейчас не слушается",
                              "делать": f"Переподключи «{who}» (🔌 Подключить): сессия или прокси отвалились."})
     from agent import llm
-    if not llm.available(config.AGENT_MODEL):
-        problems.append({"что": f"Нет ключа под модель «{config.AGENT_MODEL}»",
+    if not llm.available(config.agent_model()):
+        problems.append({"что": f"Нет ключа под модель «{config.agent_model()}»",
                          "делать": "Заполни ключ в .env на сервере — без него агент не может ответить."})
     return JSONResponse({"ok": not problems, "problems": problems, "fine": ok,
                          "recent_errors": mute})

@@ -634,8 +634,8 @@ def _make_sender(client: TelegramClient):
 # --------------------------------------------------------------------------- #
 async def _main(outreach: int | None, listen: bool, scheduler: bool = False) -> None:
     from agent import llm
-    if not llm.available(config.AGENT_MODEL):
-        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — агент не сможет отвечать.")
+    if not llm.available(config.agent_model()):
+        print(f"Нет ключа под модель «{config.agent_model()}» в .env — агент не сможет отвечать.")
         return
     database.init_db()
     client = _build_client()

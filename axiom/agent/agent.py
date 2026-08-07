@@ -107,11 +107,11 @@ def generate_reply(
     # реплики SDR в нём не нуждаются.
     from agent import llm
     kwargs: dict = {}
-    if llm.is_anthropic(config.AGENT_MODEL) and "haiku" not in config.AGENT_MODEL:
+    if llm.is_anthropic(config.agent_model()) and "haiku" not in config.agent_model():
         kwargs["thinking"] = {"type": "adaptive"}
 
     return llm.structured(
-        config.AGENT_MODEL, system=llm.cached(system, personal), messages=history,
+        config.agent_model(), system=llm.cached(system, personal), messages=history,
         output_format=Reply, max_tokens=1000, **kwargs,
     )
 
@@ -137,7 +137,7 @@ def _demo() -> None:
 
 if __name__ == "__main__":
     from agent import llm as _llm
-    if not _llm.available(config.AGENT_MODEL):
-        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — заполни и запусти снова.")
+    if not _llm.available(config.agent_model()):
+        print(f"Нет ключа под модель «{config.agent_model()}» в .env — заполни и запусти снова.")
     else:
         _demo()

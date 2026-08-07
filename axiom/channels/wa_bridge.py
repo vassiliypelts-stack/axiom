@@ -240,8 +240,8 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8100)
     args = p.parse_args()
     from agent import llm
-    if not llm.available(config.AGENT_MODEL):
-        print(f"Нет ключа под модель «{config.AGENT_MODEL}» в .env — агент не сможет отвечать.")
+    if not llm.available(config.agent_model()):
+        print(f"Нет ключа под модель «{config.agent_model()}» в .env — агент не сможет отвечать.")
         return
     database.init_db()
     import uvicorn

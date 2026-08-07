@@ -34,7 +34,7 @@ def generate_bio(role: str | None = None, label: str | None = None,
     """Короткое человеческое bio (≤70 симв.) под аккаунт. Никогда не бросает —
     при любой проблеме возвращает осмысленный шаблон."""
     role = (role or "").strip().lower()
-    if not llm.available(config.AGENT_MODEL):
+    if not llm.available(config.agent_model()):
         return _fallback(role)
     try:
         hint = ", ".join(x for x in [
@@ -47,7 +47,7 @@ def generate_bio(role: str | None = None, label: str | None = None,
         # молча вешало ВЕСЬ массовый прогон (bio генерится синхронно в цикле по
         # аккаунтам, без него следующие 19 аккаунтов просто не доходили до очереди).
         text = llm.text(
-            config.AGENT_MODEL,
+            config.agent_model(),
             system=(
                 "Ты пишешь КОРОТКОЕ человеческое bio для Telegram-профиля, строго до 70 символов. "
                 "Живая обычная фраза от первого лица, по-русски, разговорно. БЕЗ хэштегов, БЕЗ "
@@ -76,14 +76,14 @@ def generate_bio_variants(brief: str | None, count: int = 6, link: str | None = 
     body_limit = 70 - (len(link) + 1) if link else 70
     body_limit = max(20, body_limit)
 
-    if not llm.available(config.AGENT_MODEL):
+    if not llm.available(config.agent_model()):
         base = _FALLBACK[""]
         out = [(v[:body_limit] + (" " + link if link else "")) for v in base]
         return (out * ((count // len(out)) + 1))[:count]
     try:
         g = "" if not gender else (", мужчина" if gender == "male" else ", женщина")
         text = llm.text(
-            config.AGENT_MODEL,
+            config.agent_model(),
             system=(
                 f"Ты пишешь КОРОТКИЕ человеческие bio для Telegram-профиля, строго до {body_limit} "
                 "символов КАЖДОЕ. Живая обычная фраза от первого лица, по-русски, разговорно. "

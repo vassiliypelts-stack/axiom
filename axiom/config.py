@@ -37,6 +37,26 @@ MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
 # Диалоги агента (где делаются деньги) — можно умнее/дороже: claude-opus-4-8 или
 # claude-sonnet-4-6. По умолчанию = MODEL (Haiku). Переключить через .env: AXIOM_AGENT_MODEL.
 AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
+
+
+def agent_model() -> str:
+    """Модель для ЖИВЫХ ДИАЛОГОВ. Сначала выбор в пульте, потом .env.
+
+    Зачем настройка поверх переменной окружения: .env лежит на сервере, а SSH к нему
+    у оператора нет — значит сменить модель он не может вообще. А менять приходится:
+    дешёвый провайдер, приемлемый для массовой разметки, в диалоге отдаёт то пустой
+    ответ, то JSON не по схеме, и каждый такой сбой — это молчание в ответ живому
+    человеку, то есть потерянный лид. Читаем на каждый вызов: переключение должно
+    работать без перезапуска сервиса."""
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            picked = (database.get_setting(conn, "agent_model", "") or "").strip()
+        if picked:
+            return picked
+    except Exception:  # noqa: BLE001 — БД недоступна: работаем как раньше, по .env
+        pass
+    return AGENT_MODEL
 # Ключ DeepSeek (platform.deepseek.com) — дешёвая модель на массовое обогащение.
 # Gemini берёт ключ из GEMINI_API_KEY (см. ниже, он же для авто-фото).
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")

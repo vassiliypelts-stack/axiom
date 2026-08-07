@@ -1376,6 +1376,15 @@ async function viewAgents(v){
       <div class="hint" style="margin-top:8px">Каждый ответ агента в диалоге ждёт случайную паузу из этого диапазона перед отправкой — имитация «увидел, подумал, напечатал», а не мгновенный бот-ответ. По умолчанию 30-60с.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">🤖 Модель агента</b>
+        <span class="hint">кто ведёт живые диалоги с клиентами</span>
+        <select id="am-model" style="flex:1;min-width:280px"></select>
+        <button id="am-save">сохранить</button>
+        <span class="hint" id="am-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Диалог требует от модели строгого ответа по схеме: реплики + намерение собеседника + согласовано ли время созвона. Дешёвые провайдеры такую схему не поддерживают, им формат объясняют текстом — и они периодически отдают пустой ответ. Каждый такой сбой это молчание в ответ живому человеку, то есть потерянный лид. На разметке чатов экономить можно, на диалоге нельзя.</div></div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🔗 Ссылка на созвон</b>
         <span class="hint">постоянная комната: Телемост, Zoom, Meet</span>
         <input id="mu-url" type="text" placeholder="https://telemost.yandex.ru/j/..." style="flex:1;min-width:260px">
@@ -1504,6 +1513,23 @@ async function viewAgents(v){
   $("#rd-save").onclick=async()=>{
     const r=await api("/api/settings/reply_delay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({min_sec:+$("#rd-min").value||30,max_sec:+$("#rd-max").value||60})});
     $("#rd-msg").textContent=`✓ сохранено — ${r.min_sec}-${r.max_sec}с`;};
+  // ── модель, которая ведёт диалоги ──
+  api("/api/settings/agent_model").then(s=>{
+    const sel=$("#am-model");if(!sel)return;
+    sel.innerHTML=`<option value="">— как в .env на сервере (${esc(s.from_env)}) —</option>`
+      +s.choices.map(c=>`<option value="${esc(c.id)}"${c.picked?"":""}>${esc(c.name)}${c.has_key?"":" — НЕТ КЛЮЧА"}</option>`).join("");
+    sel.value=s.picked||"";
+    // Красным подсвечиваем не «дешёвую» модель, а именно ту, что сейчас РЕАЛЬНО отвечает
+    // клиентам мимо Claude: это и есть причина молчания агента, её надо видеть сразу.
+    $("#am-msg").innerHTML=s.has_key
+      ? (/^claude/.test(s.current)?`сейчас: <b>${esc(s.current)}</b>`
+        :`<span style="color:#c0392b">сейчас: <b>${esc(s.current)}</b> — в диалогах срывается</span>`)
+      : `<span style="color:#c0392b">под «${esc(s.current)}» нет ключа — агент молчит</span>`;
+  });
+  $("#am-save").onclick=async()=>{
+    const r=await api("/api/settings/agent_model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:$("#am-model").value})});
+    if(r.error){$("#am-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    $("#am-msg").innerHTML=`✓ сохранено — диалоги ведёт <b>${esc(r.current)}</b>`;};
   // ── постоянная ссылка на созвон (её агент даёт при согласии) ──
   api("/api/settings/meeting_url").then(s=>{const u=$("#mu-url");if(u){u.value=s.url||"";
     if(!s.url)$("#mu-msg").innerHTML='<span style="color:#c0392b">не задана — агент договорится о времени, но ссылку не пришлёт</span>';}});

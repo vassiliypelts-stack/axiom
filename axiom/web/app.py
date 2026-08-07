@@ -2246,6 +2246,161 @@ def pipelines_create(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
 
+@app.post("/api/pipeline/{pid}/update")
+def pipelines_update(pid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Переименовать воронку и/или переписать её этапы.
+
+    Этапы задавались только при создании: переименовать, добавить или убрать шаг
+    было нельзя — приходилось заводить воронку заново и терять привязанные сделки.
+
+    Этап, в котором ещё стоят сделки, молча не удаляем: сначала показываем, сколько
+    их и где они, — иначе сделки провалились бы в несуществующую стадию и пропали
+    из доски. С `force` переносим такие сделки в первый оставшийся этап.
+    """
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT stages FROM pipelines WHERE id=?", (pid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "воронка не найдена"}, status_code=404)
+        try:
+            old = json.loads(row["stages"] or "[]")
+        except Exception:  # noqa: BLE001
+            old = []
+        sets, vals = [], []
+        if payload.get("name"):
+            sets.append("name=?"); vals.append(payload["name"].strip())
+        if payload.get("product") is not None:
+            sets.append("product=?"); vals.append(payload.get("product") or None)
+
+        stages = payload.get("stages")
+        if stages is not None:
+            clean = []
+            seen = set()
+            for s in stages:
+                key = (s.get("key") or "").strip()
+                label = (s.get("label") or "").strip()
+                if not key or not label or key in seen:
+                    continue
+                seen.add(key)
+                clean.append({"key": key, "label": label})
+            if not clean:
+                return JSONResponse({"error": "нужен хотя бы один этап"}, status_code=400)
+            gone = [s for s in old if s.get("key") not in seen]
+            if gone:
+                qs = ",".join("?" for _ in gone)
+                busy = conn.execute(
+                    f"SELECT stage, COUNT(*) c FROM deals WHERE COALESCE(pipeline_id,"
+                    f"(SELECT id FROM pipelines WHERE is_default=1))=? AND stage IN ({qs}) "
+                    f"GROUP BY stage", (pid, *[s["key"] for s in gone])).fetchall()
+                busy = [dict(b) for b in busy if b["c"]]
+                if busy and not payload.get("force"):
+                    names = {s["key"]: s.get("label", s["key"]) for s in old}
+                    return JSONResponse({
+                        "needs_confirm": True,
+                        "warn": "В удаляемых этапах ещё есть сделки:\n"
+                                + "\n".join(f"• {names.get(b['stage'], b['stage'])}: {b['c']}"
+                                            for b in busy)
+                                + f"\n\nОни переедут в «{clean[0]['label']}». Продолжить?"}, status_code=200)
+                if busy:
+                    conn.execute(
+                        f"UPDATE deals SET stage=? WHERE COALESCE(pipeline_id,"
+                        f"(SELECT id FROM pipelines WHERE is_default=1))=? AND stage IN ({qs})",
+                        (clean[0]["key"], pid, *[s["key"] for s in gone]))
+            sets.append("stages=?"); vals.append(json.dumps(clean, ensure_ascii=False))
+
+        if not sets:
+            return JSONResponse({"ok": True})
+        vals.append(pid)
+        conn.execute(f"UPDATE pipelines SET {', '.join(sets)} WHERE id=?", vals)
+    return JSONResponse({"ok": True})
+
+
+def _bulk_ids(payload: dict) -> list[int]:
+    return [int(i) for i in (payload.get("ids") or [])]
+
+
+@app.post("/api/deals/bulk-delete")
+def deals_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
+    """Удалить выбранные сделки. Контакты и переписка не трогаются — уходит только
+    карточка сделки, чтобы вычистить воронку от мусора."""
+    ids = _bulk_ids(payload)
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одной сделки"}, status_code=400)
+    qs = ",".join("?" for _ in ids)
+    with database.get_conn() as conn:
+        n = conn.execute(f"SELECT COUNT(*) c FROM deals WHERE id IN ({qs})", ids).fetchone()["c"]
+        conn.execute(f"DELETE FROM deals WHERE id IN ({qs})", ids)
+    return JSONResponse({"ok": True, "deleted": n})
+
+
+@app.post("/api/contacts/bulk-delete")
+def contacts_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
+    """Удалить выбранные контакты вместе с их перепиской и сделками.
+
+    Переписку удаляем осознанно: висящие сообщения без карточки нигде не видны и
+    только мешают счётчикам. Если по контакту есть сделка — предупреждаем: это уже
+    не мусор из импорта, а работа, и снести её случайно обиднее всего.
+    """
+    ids = _bulk_ids(payload)
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
+    qs = ",".join("?" for _ in ids)
+    with database.get_conn() as conn:
+        with_deals = conn.execute(
+            f"SELECT COUNT(*) c FROM deals WHERE contact_id IN ({qs})", ids).fetchone()["c"]
+        if with_deals and not payload.get("force"):
+            return JSONResponse({"needs_confirm": True,
+                                 "warn": f"По выбранным контактам есть сделок: {with_deals}. "
+                                         f"Они удалятся вместе с контактами. Продолжить?"})
+        n = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE id IN ({qs})", ids).fetchone()["c"]
+        conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qs})", ids)
+        conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qs})", ids)
+        conn.execute(f"DELETE FROM campaign_contacts WHERE contact_id IN ({qs})", ids)
+        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qs})", ids)
+        conn.execute(f"UPDATE chat_hits SET contact_id=NULL, status='new' "
+                     f"WHERE contact_id IN ({qs})", ids)
+        conn.execute(f"DELETE FROM contacts WHERE id IN ({qs})", ids)
+    return JSONResponse({"ok": True, "deleted": n})
+
+
+@app.post("/api/companies/bulk-delete")
+def companies_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
+    """Удалить компании. Контакты не удаляем — только отвязываем: человек остаётся
+    в базе, даже если юрлицо оказалось мусором из импорта."""
+    ids = _bulk_ids(payload)
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одной компании"}, status_code=400)
+    qs = ",".join("?" for _ in ids)
+    with database.get_conn() as conn:
+        n = conn.execute(f"SELECT COUNT(*) c FROM companies WHERE id IN ({qs})", ids).fetchone()["c"]
+        freed = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE company_id IN ({qs})",
+                             ids).fetchone()["c"]
+        conn.execute(f"UPDATE contacts SET company_id=NULL WHERE company_id IN ({qs})", ids)
+        conn.execute(f"UPDATE deals SET company_id=NULL WHERE company_id IN ({qs})", ids)
+        conn.execute(f"DELETE FROM companies WHERE id IN ({qs})", ids)
+    return JSONResponse({"ok": True, "deleted": n, "contacts_kept": freed})
+
+
+@app.get("/api/chatscan/status")
+def chatscan_status() -> JSONResponse:
+    """Отдельный тумблер сканирования ЧАТОВ по ключам.
+
+    Слушатель делает два разных дела: ловит ответы клиентов в личке (переписка
+    кампании) и ищет ключи в чатах (лидген). Раньше их глушил один выключатель, и
+    остановка мониторинга чатов заодно обрывала ответы живых людей."""
+    database.init_db()
+    with database.get_conn() as conn:
+        return JSONResponse({
+            "enabled": database.get_setting(conn, "chatscan_enabled", "on") != "off"})
+
+
+@app.post("/api/chatscan/toggle")
+def chatscan_toggle(payload: dict = Body(...)) -> JSONResponse:
+    with database.get_conn() as conn:
+        database.set_setting(conn, "chatscan_enabled",
+                             "on" if payload.get("enabled") else "off")
+    return JSONResponse({"ok": True, "enabled": bool(payload.get("enabled"))})
+
+
 @app.post("/api/pipeline/{pid}/delete")
 def pipelines_delete(pid: int) -> JSONResponse:
     with database.get_conn() as conn:

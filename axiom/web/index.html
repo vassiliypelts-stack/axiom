@@ -650,6 +650,21 @@ const STATUS_RU={new:"Новый",messaged:"Написано",in_dialog:"В ди
 const STAGES=["new","messaged","in_dialog","meeting_set","met","won","nurture","lost","blocked","stop"];
 const $=s=>document.querySelector(s);
 const api=(u,o)=>fetch(u,o).then(r=>r.json());
+// Готовый onDelete для smartTable({selectable:true}): шлёт выбранные id на пачечную ручку.
+// Массовое удаление. Сервер может ответить needs_confirm — например, когда среди
+// выбранных контактов есть те, по которым уже заведены сделки: это не мусор из
+// импорта, а работа, и снести её молча нельзя.
+const bulkDelete=url=>async ids=>{
+  const send=force=>api(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ids,force})});
+  let r=await send(false);
+  if(r&&r.needs_confirm){
+    if(!confirm("⚠️ "+r.warn))return {cancelled:true};
+    r=await send(true);
+  }
+  if(r&&r.error)alert(r.error);
+  return r;
+};
 // ── Тема оформления (3 гаммы, выбирается в профиле, запоминается) ──
 function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage.setItem("axiom_theme",t);}catch(e){}
   document.querySelectorAll("#theme-pick button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));}
@@ -708,7 +723,15 @@ let PROJECT_SEL=null; // выбранный проект (фильтрует к�
 // cfg: {columns:[{key,label,render?,cls?}], rows, searchKeys, groupOptions:[{key,label}], onRowClick, tagsCfg}
 function smartTable(mount,cfg){
   const KEY="axiom_tbl_"+(cfg.tableKey||"def");
-  const allCols=cfg.columns;
+  // Выделение галочками + групповое удаление — общий механизм таблицы, а не копипаста
+  // в каждом разделе. Включается одним `selectable:true`, само удаление вешается на
+  // `onDelete(ids)` — таблица не знает, какой ручке слать, а раздел не знает, как
+  // рисовать галочки и панель. selWord — родительный падеж для вопроса «Удалить N …?».
+  const sel=new Set();
+  const allCols=cfg.selectable?[{key:"__sel",
+    label:'<input type="checkbox" class="st-all" title="выделить всё, что сейчас отфильтровано в таблице">',
+    render:r=>`<input type="checkbox" class="st-sel" data-id="${r.id}"${sel.has(r.id)?" checked":""}>`},
+    ...cfg.columns]:cfg.columns;
   let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
   // hiddenByDefault — редкие/служебные колонки, которые есть в списке «⚙ колонки»,
   // но не занимают место в таблице, пока их не включат. Применяется ТОЛЬКО при
@@ -755,9 +778,36 @@ function smartTable(mount,cfg){
       <button id="st-csv" title="CSV текущей таблицы" style="font-size:11px">CSV</button>
     </div>
     <div id="st-pick" class="card" style="display:none;margin-bottom:10px"></div>
+    <div id="st-selbar" class="ttoolbar" style="display:none;align-items:center;gap:10px"></div>
     <div id="st-tbl"></div>
     <div id="st-pager" style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap"></div>`;
   mount.appendChild(wrap);
+  // Панель появляется только когда что-то выделено — пустая строка над таблицей
+  // в остальное время никому не нужна.
+  const drawSelBar=()=>{
+    const bar=wrap.querySelector("#st-selbar");
+    if(!bar)return;
+    if(!sel.size){bar.style.display="none";bar.innerHTML="";return;}
+    bar.style.display="flex";
+    bar.innerHTML=`<span>выделено <b>${sel.size}</b></span>
+      <button id="st-del" style="color:#c0392b;border-color:#c0392b">✕ Удалить выбранные</button>
+      <button id="st-unsel">снять выделение</button>`;
+    bar.querySelector("#st-unsel").onclick=()=>{sel.clear();draw();};
+    const db=bar.querySelector("#st-del");
+    db.onclick=async()=>{
+      const ids=[...sel];
+      if(!confirm(`Удалить ${ids.length} ${cfg.selWord||"записей"}?\n\nЭто необратимо.`))return;
+      db.disabled=true;db.textContent="удаляю…";
+      let res=null;
+      try{res=await cfg.onDelete(ids);}catch(err){res={error:String(err)};}
+      if(!res||res.error){
+        db.disabled=false;db.textContent="✕ Удалить выбранные";
+        alert((res&&res.error)||"не удалось удалить");return;}
+      // выкидываем из данных на месте: route() перерисовал бы весь раздел и увёл прокрутку
+      for(let i=cfg.rows.length-1;i>=0;i--)if(sel.has(cfg.rows[i].id))cfg.rows.splice(i,1);
+      sel.clear();draw();
+    };
+  };
   const drawPicker=()=>{
     const p=wrap.querySelector("#st-pick");p.style.display=st.showPicker?"block":"none";
     if(!st.showPicker)return;
@@ -789,6 +839,9 @@ function smartTable(mount,cfg){
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
     if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
+    // «Выделить всё» = весь отфильтрованный набор, а не только текущая страница:
+    // человек отфильтровал 216 из 1494 и хочет снести именно эти 216, а не первые 50.
+    const filteredIds=rows.map(r=>r.id);
     // пагинация: режем на страницы только без группировки (в группировке показываем всё)
     const ps=st.pageSize||50, total=rows.length, pages=Math.max(1,Math.ceil(total/ps));
     if(st.page>=pages)st.page=pages-1; if(st.page<0)st.page=0;
@@ -820,7 +873,21 @@ function smartTable(mount,cfg){
     } else body=rows.map(rowHtml).join("");
     if(!rows.length)body=`<tr><td colspan="${cols.length}" class="empty">${cfg.emptyText||"Ничего не найдено"}</td></tr>`;
     wrap.querySelector("#st-tbl").innerHTML=`<table role="grid"><thead>${head}${filtRow}</thead><tbody>${body}</tbody></table>`;
-    wrap.querySelectorAll("thead tr:first-child th").forEach(th=>th.onclick=e=>{if(e.target.classList.contains("rsz"))return;const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
+    wrap.querySelectorAll("thead tr:first-child th").forEach(th=>th.onclick=e=>{if(e.target.classList.contains("rsz")||e.target.closest("input"))return;const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
+    if(cfg.selectable){
+      const all=wrap.querySelector(".st-all");
+      if(all){
+        all.checked=filteredIds.length>0&&filteredIds.every(id=>sel.has(id));
+        all.onchange=()=>{filteredIds.forEach(id=>all.checked?sel.add(id):sel.delete(id));draw();};
+      }
+      wrap.querySelectorAll(".st-sel").forEach(cb=>cb.onchange=()=>{
+        const id=+cb.dataset.id;
+        cb.checked?sel.add(id):sel.delete(id);
+        if(all)all.checked=filteredIds.length>0&&filteredIds.every(x=>sel.has(x));
+        drawSelBar();
+      });
+      drawSelBar();
+    }
     wrap.querySelectorAll(".cf").forEach(inp=>{inp.onclick=e=>e.stopPropagation();
       inp.oninput=()=>{const k=inp.dataset.k,pos=inp.selectionStart;st.colFilters[k]=inp.value;persist();draw();
         const ni=wrap.querySelector(`.cf[data-k="${k}"]`);if(ni){ni.focus();try{ni.setSelectionRange(pos,pos);}catch(e){}}};});
@@ -3020,6 +3087,7 @@ function renderDealsKanban(mount){
 function dealsTable(mount){
   smartTable(mount,{
     tableKey:"deals",
+    selectable:true,selWord:"сделок",onDelete:bulkDelete("/api/deals/bulk-delete"),
     rows:DEALS,searchKeys:["title","company_name","person_name","contact_name","product","stage"],
     groupOptions:[{key:"stage",label:"стадия"},{key:"product",label:"продукт"}],
     groupFmt:(k,val)=>k==="stage"?(STATUS_RU[val]||val):val,
@@ -3078,6 +3146,7 @@ async function viewCompanies(v){
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   smartTable($("#co-body"),{
     tableKey:"companies",
+    selectable:true,selWord:"компаний",onDelete:bulkDelete("/api/companies/bulk-delete"),
     rows:COMPANIES,searchKeys:["name","city","phone","inn","company_type"],
     groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"},{key:"source",label:"источник"}],
     onRowClick:openCompany,
@@ -3177,6 +3246,7 @@ async function viewContacts(v){
   };
   smartTable($("#ct-body"),{
     tableKey:"contacts",
+    selectable:true,selWord:"контактов",onDelete:bulkDelete("/api/contacts/bulk-delete"),
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
     groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,

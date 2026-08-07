@@ -66,6 +66,25 @@ async def _enabled() -> bool:
     return await asyncio.to_thread(_read)
 
 
+def _chatscan_on() -> bool:
+    """Сканировать ли ЧАТЫ по ключам ниш.
+
+    Слушатель делает два разных дела одним подключением: ловит ответы клиентов в
+    личке (это переписка кампании) и ищет ключевые слова в群 чатах (это лидген).
+    Раньше их глушил один тумблер: выключаешь мониторинг чатов — вместе с ним
+    перестают приходить и ответы живых людей, которым мы сами написали. Именно
+    так агент и «замолчал»: слушатель стоял остановленным.
+
+    Личка теперь не зависит от этой настройки вообще — ответы клиентов приходят
+    всегда, пока слушатель поднят.
+    """
+    try:
+        with database.get_conn() as conn:
+            return database.get_setting(conn, "chatscan_enabled", "on") != "off"
+    except Exception:  # noqa: BLE001 — настройка не критична, по умолчанию слушаем
+        return True
+
+
 def _load_niches() -> list[tuple[int | None, list[str], str]]:
     """Активные ниши (ключи + режим охоты) из БД. Пусто → слушаем только личку."""
     with database.get_conn() as conn:
@@ -265,7 +284,7 @@ def _make_handler(acc_id: int):
         try:
             if event.is_private:
                 await _handle_private(event, acc_id)
-            elif event.is_group or event.is_channel:
+            elif (event.is_group or event.is_channel) and _chatscan_on():
                 await _scan_group(event, acc_id)
         except Exception as e:  # noqa: BLE001
             _log(f"[#{acc_id}] ошибка обработки сообщения: {e}")

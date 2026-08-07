@@ -83,7 +83,12 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
         where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"
         params.append(cid)
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
-    if "telegram" in _channels(channel):
+    # В ТЕСТ-режиме отсев по достижимости не применяем вовсе: это свои номера, спамом
+    # они быть не могут, а гейт «только пробитые» (tg_verified_only, по умолчанию ВКЛ)
+    # выкидывал их все — свежедобавленный номер не пробит по определению. Наружу это
+    # выглядело так: кнопка «🧪 Тест» бодро отвечала «пошло на 3 номера», отправщик
+    # молча находил ноль, и в Telegram не приходило ничего.
+    if "telegram" in _channels(channel) and not test:
         where += " AND has_tg IN ('yes','unknown')"
         if verified_only is None:
             with database.get_conn() as conn:
@@ -331,8 +336,19 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     cap = min(limit, camp["daily_limit"] or limit)
     rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test)
     if not rows:
-        print("тест: нет тест-контактов (is_test=1) в аудитории" if test
-              else "аудитория пуста — некому слать")
+        msg = ("тест: нет тест-контактов (is_test=1) в аудитории" if test
+               else "аудитория пуста — некому слать")
+        print(msg)
+        if test:
+            # Тест запускается кнопкой и работает отдельным процессом: без записи в
+            # колокольчик его провал виден только в логе сервера, а в пульте остаётся
+            # бодрое «✅ Тест пошёл». Оператор ждёт сообщение в Telegram, а его нет.
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "campaign_test", f"⚠️ Тест «{camp['name']}»: слать некому",
+                    "тестовые номера есть, но ни один не прошёл в аудиторию кампании. "
+                    "Частая причина: тег аудитории кампании не совпадает с тегом контактов.",
+                    level="warn", campaign_id=cid)
         return
     if test:
         print(f"[ТЕСТ] шлём только на свои номера (is_test=1): {len(rows)} шт.")

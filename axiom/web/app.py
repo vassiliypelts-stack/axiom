@@ -4933,13 +4933,16 @@ def accounts_twofa_status() -> JSONResponse:
     след (см. channels/twofa)."""
     database.init_db()
     with database.get_conn() as conn:
+        # колонка называется tg_2fa (см. channels/twofa._targets) — в ней лежит НАШ
+        # пароль; пусто = аккаунт может увести владелец номера
         rows = conn.execute(
-            "SELECT id, label, phone, twofa, status, session_alive, tg_session "
-            "FROM accounts WHERE COALESCE(status,'') NOT IN ('archived','banned')").fetchall()
+            "SELECT id, label, phone, tg_2fa, status, session_alive, tg_session, protected "
+            "FROM accounts WHERE COALESCE(status,'') NOT IN ('archived','banned') "
+            "AND COALESCE(protected,0)=0").fetchall()
     protected, unprotected = [], []
     for r in rows:
         d = {"id": r["id"], "label": r["label"], "phone": r["phone"], "status": r["status"]}
-        if (r["twofa"] or "").strip():
+        if (r["tg_2fa"] or "").strip():
             protected.append(d)
         elif (r["tg_session"] or "").strip():
             unprotected.append(d)

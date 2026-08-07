@@ -359,8 +359,18 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
             try:
                 return output_format(**_coerce_to_schema(json.loads(s), schema))
             except json.JSONDecodeError:
-                last_err = RuntimeError(f"{prov} вернул не JSON: {raw[:200]}")
-                last_err.__cause__ = e
+                pass
+            # …а без response_format (см. обход пустого ответа выше) модель охотно
+            # добавляет преамбулу: «Вот ответ: {…}». Вырезаем самый большой кусок от
+            # первой «{» до последней «}» — это и есть объект.
+            i, j = s.find("{"), s.rfind("}")
+            if i != -1 and j > i:
+                try:
+                    return output_format(**_coerce_to_schema(json.loads(s[i:j + 1]), schema))
+                except Exception:  # noqa: BLE001 — не JSON и не по схеме: идём на повтор
+                    pass
+            last_err = RuntimeError(f"{prov} вернул не JSON: {raw[:200]}")
+            last_err.__cause__ = e
         except Exception as e:  # noqa: BLE001 — pydantic: не хватило поля / не тот тип
             # без сырого ответа в тексте ошибки причину не найти: «1 validation error for X»
             # ничего не говорит о том, ЧТО именно прислала модель

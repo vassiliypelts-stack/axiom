@@ -5295,10 +5295,16 @@ def accounts_identity_check() -> JSONResponse:
         if not label or not tg or label.startswith(("+", "#")):
             continue
         base_label = _label_first_name(label)
+        # Сравниваем ПЕРВЫЕ имена с обеих сторон: label — «Имя+цифры» или, если
+        # заведён вручную, «Имя Фамилия»; tg_name — всегда «Имя Фамилия». Сверка
+        # полных строк ловила ложный мисматч на любом двухсловном ярлыке, где имя
+        # с фамилией совпадали дословно (напр. «Василий Аксиоменко» vs «Василий
+        # Аксиоменко» — то же самое имя, но не первым словом против целой строки).
+        label_first = base_label.split()[0] if base_label.split() else base_label
         tg_first = tg.split()[0] if tg.split() else tg
-        if not base_label or base_label.lower() == tg_first.lower():
+        if not label_first or label_first.lower() == tg_first.lower():
             continue
-        g1, g2 = gender_of(base_label), gender_of(tg)
+        g1, g2 = gender_of(label_first), gender_of(tg)
         out.append({
             "id": r["id"], "label": label, "tg_name": tg,
             "username": r["username"], "has_avatar": bool(r["avatar"]),

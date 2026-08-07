@@ -5227,14 +5227,40 @@ def accounts_twofa_status() -> JSONResponse:
 def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
     """Поставить облачный пароль. Пароль генерится и пишется в БД ДО установки —
     иначе при сбое между «поставили в Telegram» и «записали себе» аккаунт запирается
-    навсегда. ids пустой = все живые боевые без 2FA."""
+    навсегда. ids пустой = все живые боевые без 2FA.
+
+    На живом прогоне поймали AuthKeyDuplicatedError сразу на трёх аккаунтах — все
+    получили 2FA в ЭТУ ЖЕ секунду. Причина: этот эндпоинт открывает НОВОЕ подключение
+    к Telegram, а слушатель (фоновый поток пульта) в это время уже держит СВОЁ
+    подключение к тем же сессиям. Два одновременных подключения по одному ключу —
+    ровно то, за что Telegram жжёт сессию как угнанную. Поэтому на время установки
+    слушатель отпускает аккаунты и подключается заново, когда всё готово."""
     ids = [int(i) for i in (payload.get("ids") or [])]
+    dry = bool(payload.get("dry"))
     args = ["channels.twofa"]
     if ids:
         args += ["--ids", ",".join(str(i) for i in ids)]
-    if payload.get("dry"):
+    if dry:
         args.append("--dry")
-    res = _run_capture(args, timeout=900)
+
+    paused = False
+    if not dry:
+        with database.get_conn() as conn:
+            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        if was_on:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "off")
+            paused = True
+            import time as _time
+            _time.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+
+    try:
+        res = _run_capture(args, timeout=900)
+    finally:
+        if paused:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "on")
+
     data = _last_json(res.get("output"))
     if data is None:
         tail = (res.get("output") or "").strip()[-400:]

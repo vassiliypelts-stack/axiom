@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import json
 import random
+import sqlite3
 import time
 
 from telethon.errors import FloodWaitError
@@ -99,17 +100,41 @@ def _workers() -> list[int]:
 
 
 def _save_found(c: dict, u, bio: str | None, has_photo: bool, acc_id: int) -> None:
+    """Записать результат пробива. Чужой @username не присваиваем.
+
+    contacts.username — UNIQUE, и на живой базе это регулярно стреляет: два разных
+    номера ведут на ОДИН телеграм (сменил номер, общий контакт у нескольких фирм,
+    дубли в выгрузке). Раньше такая запись роняла sqlite3.IntegrityError, а он через
+    asyncio.gather убивал ВЕСЬ заход пробива — в логах 06.08 и 07.08 прогон умирал
+    после одного номера, и 296 контактов месяцами оставались непробитыми.
+    """
     with database.get_conn() as conn:
-        conn.execute(
-            # name/username через COALESCE-логику: то, что ввёл человек, важнее того,
-            # что отдал Telegram — не затираем ручной ввод машинным.
-            "UPDATE contacts SET tg_user_id=?, username=COALESCE(username,?), "
-            "name=COALESCE(NULLIF(name,''),?), is_premium=?, has_photo=?, "
-            "bio=COALESCE(NULLIF(bio,''),?), has_tg='yes', "
-            "tg_checked_at=datetime('now'), tg_checked_by=? WHERE id=?",
-            (u.id, u.username, _display_name(u), 1 if getattr(u, "premium", False) else 0,
-             1 if has_photo else 0, bio, acc_id, c["id"]),
-        )
+        uname = (getattr(u, "username", None) or "").lstrip("@") or None
+        if uname and conn.execute(
+                "SELECT 1 FROM contacts WHERE (username=? OR username=?) AND id<>?",
+                (uname, "@" + uname, c["id"])).fetchone():
+            uname = None            # ник занят другой карточкой — оставляем как было
+        try:
+            conn.execute(
+                # name/username через COALESCE-логику: то, что ввёл человек, важнее того,
+                # что отдал Telegram — не затираем ручной ввод машинным.
+                "UPDATE contacts SET tg_user_id=?, username=COALESCE(username,?), "
+                "name=COALESCE(NULLIF(name,''),?), is_premium=?, has_photo=?, "
+                "bio=COALESCE(NULLIF(bio,''),?), has_tg='yes', "
+                "tg_checked_at=datetime('now'), tg_checked_by=? WHERE id=?",
+                (u.id, uname, _display_name(u), 1 if getattr(u, "premium", False) else 0,
+                 1 if has_photo else 0, bio, acc_id, c["id"]),
+            )
+        except sqlite3.IntegrityError as e:
+            # Подстраховка на любой другой UNIQUE: пробив ОДНОГО контакта не имеет
+            # права уносить с собой весь заход. Помечаем как проверенный без ника,
+            # чтобы он не крутился в очереди вечно.
+            print(f"[skip] contact {c['id']}: {e}")
+            conn.execute(
+                "UPDATE contacts SET tg_user_id=COALESCE(tg_user_id,?), has_tg='yes', "
+                "tg_checked_at=datetime('now'), tg_checked_by=? WHERE id=?",
+                (u.id, acc_id, c["id"]),
+            )
 
 
 def _save_absent(cid: int, acc_id: int) -> None:

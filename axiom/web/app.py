@@ -2340,7 +2340,16 @@ def contact_detail(contact_id: int) -> JSONResponse:
         row = conn.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,)).fetchone()
         if row is None:
             return JSONResponse({"error": "not found"}, status_code=404)
-        history = [dict(m) for m in database.get_history(conn, contact_id)]
+        # database.get_history() отдаёт только direction/text/intent/ts — этого хватает
+        # агенту (ему НЕ нужно знать, какой именно аккаунт писал), но не оператору в
+        # «Диалогах»: он смотрит на переписку и не может понять, с какого номера ушло
+        # каждое сообщение, если по контакту работало несколько аккаунтов команды.
+        # Отдельный запрос здесь, а не правка get_history — её читает и agent/agent.py.
+        history = [dict(m) for m in conn.execute(
+            "SELECT m.direction, m.text, m.intent, m.ts, m.account_id, "
+            "COALESCE(a.label, a.username, a.phone) AS account_label "
+            "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
+            "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
         deal = conn.execute("SELECT * FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
         comp = None
         if row["company_id"]:

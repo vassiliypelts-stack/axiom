@@ -5557,10 +5557,15 @@ async function viewChats(v){
 }
 async function openThread(id){
   const c=await api(`/api/contact/${id}`);const th=$("#thread");
+  // Без username/телефона в шапке нельзя открыть человека в самом Telegram и
+  // свериться, кому реально пишем; без подписи аккаунта на исходящих — не понять,
+  // с какого номера команды ушло сообщение, если контакт вёлся не одним аккаунтом.
+  const who=[c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">@${esc(c.username)} ↗</a>`:"",
+             c.phone?esc(c.phone):""].filter(Boolean).join(" · ");
   th.innerHTML=`<div class="th-hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <span>${esc(c.name)||"@"+esc(c.username||id)} · ${statusBadge(c.status)}</span>
+      <span>${esc(c.name)||"@"+esc(c.username||id)} · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}</span>
       <span class="ttoolbar" style="margin:0"><button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
-    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>`;
+    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>`;
   const b=th.querySelector(".th-body");b.scrollTop=b.scrollHeight;
   const od=$("#th-dossier");if(od)od.onclick=()=>openDossier(id);
   const dl=$("#th-deal");if(dl)dl.onclick=async()=>{dl.disabled=true;dl.textContent="…";

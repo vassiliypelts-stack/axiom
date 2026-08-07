@@ -52,9 +52,18 @@ _RETRY_PAUSE = 3.0    # база линейного бэкоффа между п
 
 # Каким режимом провайдер отдаёт структурированный ответ (см. structured()).
 #   json_schema — строгая схема проверяется на стороне API (OpenAI, Gemini);
-#   json_object — API умеет лишь «верни любой JSON», схему объясняем в промпте.
-# DeepSeek на json_schema отвечает 400 «This response_format type is unavailable now».
-STRUCTURED_MODE: dict[str, str] = {"deepseek": "json_object"}
+#   prompt_only — response_format НЕ шлём вообще, формат объясняем в промпте.
+#
+# У DeepSeek режим json_object оказался хуже, чем его отсутствие. Замер на живом
+# ключе, один и тот же запрос по 6 раз:
+#     с response_format=json_object → 5 пустых ответов из 6
+#     без response_format           → 0 пустых из 6
+# «Пустой» — это строка из пробелов при finish_reason=stop и потраченных токенах:
+# модель залипает именно в режиме принудительного JSON. Отсюда и 23% потерянных
+# диалогов в стресс-тесте, которые не спасали пять повторов подряд. JSON мы и так
+# умеем вынимать из свободного текста (см. разбор в structured), так что теряем
+# только серверную валидацию, которой у DeepSeek всё равно не было.
+STRUCTURED_MODE: dict[str, str] = {"deepseek": "prompt_only"}
 
 
 def split(spec: str) -> tuple[str, str]:
@@ -302,11 +311,12 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
             output_format=output_format, **kw))
         return resp.parsed_output
     schema = json_schema(output_format)
-    if STRUCTURED_MODE.get(prov, "json_schema") == "json_object":
+    mode = STRUCTURED_MODE.get(prov, "json_schema")
+    if mode in ("json_object", "prompt_only"):
         # DeepSeek строгую схему не принимает («This response_format type is unavailable
         # now») — умеет только «верни JSON». Формат диктуем ШАБЛОНОМ ОТВЕТА, а не самой
         # JSON-схемой: на схему модель охотно отвечает... этой же схемой (ловили на живом
-        # прогоне). Слово «json» в промпте для этого режима обязательно — иначе пустота.
+        # прогоне). Слово «json» в промпте обязательно — иначе модель отвечает прозой.
         props = schema.get("properties", {})
         # enum лежит в json_schema_extra поля, а не в description — если не подмешать
         # его сюда явно, модель в json_object-режиме (DeepSeek и т.п.) не видит СПИСОК
@@ -324,7 +334,9 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
             "Верни РОВНО один json-объект и ничего больше — без пояснений и без ```.\n"
             "Ниже ключи и что класть в каждый; подставь ЗНАЧЕНИЯ вместо <…>, "
             "саму подсказку не повторяй:\n" + json.dumps(tmpl, ensure_ascii=False, indent=1))
-        rf = {"type": "json_object"}
+        # prompt_only — response_format НЕ шлём: именно он заставляет DeepSeek залипать
+        # и печатать пробелы (замер: 5 пустых из 6 против 0 из 6 без него).
+        rf = None if mode == "prompt_only" else {"type": "json_object"}
     else:
         rf = {"type": "json_schema", "json_schema": {
             "name": output_format.__name__, "strict": True, "schema": schema}}
@@ -336,11 +348,18 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
     # тот же запрос просто пробуется ещё раз: новый семпл почти всегда приходит валидным.
     last_err: Exception | None = None
     for attempt in range(_RETRIES):
-        body = {
-            "model": model, "max_tokens": max_tokens,
-            "messages": _to_openai(system, messages),
-            "response_format": rf,
-        }
+        msgs = _to_openai(system, messages)
+        if mode == "prompt_only":
+            # Без response_format модель охотно забывает про формат и отвечает прозой:
+            # инструкция утонула в длинном system, а последним она видит живую реплику
+            # собеседника. Напоминание отдельной строкой В КОНЦЕ — единственное место,
+            # которое модель точно прочитает перед тем, как начать писать.
+            msgs = msgs + [{"role": "user", "content":
+                            "Ответь ТОЛЬКО одним json-объектом по описанной схеме, "
+                            "без пояснений и без ``` — сразу с символа «{»."}]
+        body = {"model": model, "max_tokens": max_tokens, "messages": msgs}
+        if rf is not None:
+            body["response_format"] = rf
         # ПУСТОЙ ответ (HTTP 200, content="") — отдельная болезнь json_object-режима у
         # DeepSeek: на длинном системном промпте он изредка отдаёт пустоту вместо JSON.
         # Ретрай тем же телом лечит не всегда, поэтому со второй попытки снимаем

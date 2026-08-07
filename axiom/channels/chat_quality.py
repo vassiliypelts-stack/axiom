@@ -138,6 +138,19 @@ def analyze(messages: list[dict]) -> dict:
 _VERDICT_RU = {"good": "годен", "trash": "не годен", "unclear": "на проверку"}
 
 
+def _touch(chat_id: int, err: str | None = None) -> None:
+    """Отметить ПОПЫТКУ разбора, даже неудачную.
+
+    Очередь сортируется по verdict_at, а он писался только при успехе. Поэтому чат,
+    который прочитать не удалось (нет аккаунта-участника, канал закрылся), навсегда
+    оставался первым в очереди: каждый следующий заход брал те же одиннадцать штук,
+    спотыкался о них и до остальных двух тысяч не доходил. Прогон крутился вхолостую.
+    """
+    with database.get_conn() as conn:
+        conn.execute("UPDATE chats SET verdict_at=datetime('now'), scan_error=? WHERE id=?",
+                     ((err or "")[:200] or None, chat_id))
+
+
 def _save(chat_id: int, res: dict) -> bool:
     """Записать предварительный вердикт. Решение ЧЕЛОВЕКА не трогаем никогда:
     оператор уже посмотрел глазами, и машинная переоценка его отменять не вправе."""
@@ -213,6 +226,7 @@ async def run(chat_id: int | None, limit: int, only_new: bool) -> None:
             if client is None:
                 skipped += 1
                 _mark_scanned(ch["id"])
+                _touch(ch["id"], "нечем читать: аккаунт-участник без живой сессии")
                 continue
         try:
             msgs = await _read_chat(client, ch)
@@ -226,6 +240,7 @@ async def run(chat_id: int | None, limit: int, only_new: bool) -> None:
             break
         except Exception as e:  # noqa: BLE001 — один недоступный чат не рушит проход
             skipped += 1
+            _touch(ch["id"], f"{type(e).__name__}: {e}")
             print(f"[skip] «{(ch['title'] or '')[:34]}»: {str(e)[:70]}")
         await asyncio.sleep(random.uniform(*PAUSE))
 

@@ -1261,6 +1261,38 @@ async function loadIdentityCheck(){
     if(r&&r.error){alert(r.error);b.disabled=false;return;}
     route();});
 }
+// Облачный пароль (2FA). У купленного аккаунта номер остаётся у продавца: он входит
+// по SMS и завершает наши сеансы — так уже потеряли два лота целиком. Пароль это не
+// броня, а замедлитель: вместо мгновенного увода продавцу нужен сброс через Telegram
+// с неделей ожидания. Модуль был написан, но в пульт не выведен — то есть защиты
+// фактически не существовало.
+async function loadTwofa(){
+  const box=$("#acc-twofa");if(!box)return;
+  let d;try{d=await api("/api/accounts/twofa");}catch(e){return;}
+  if(!d||d.error){box.innerHTML="";return;}
+  if(!d.at_risk){
+    box.innerHTML=`<div class="card" style="padding:9px 12px"><span class="badge b-active">🔐 защищены все ${d.protected}</span>
+      <span class="hint" style="margin-left:8px">облачный пароль стоит везде — продавец не уведёт аккаунт по SMS</span></div>`;
+    return;}
+  box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
+    <b>🔓 Без защиты: ${d.at_risk} аккаунт(ов)</b>${d.protected?` · с паролем: ${d.protected}`:""}
+    <div class="hint" style="margin:6px 0">У купленного аккаунта номер остаётся у продавца. Пока нет облачного пароля, он входит по SMS и завершает наши сеансы — аккаунт уходит вместе со всей перепиской. С паролем ему придётся ждать сброса неделю.</div>
+    <div class="hint" style="margin-bottom:8px">${d.unprotected.slice(0,10).map(x=>esc(x.label||x.phone||("#"+x.id))).join(" · ")}${d.at_risk>10?` …и ещё ${d.at_risk-10}`:""}</div>
+    <div class="ttoolbar" style="margin:0">
+      <button class="primary" id="tf-go">🔐 Поставить пароль всем</button>
+      <span class="hint" id="tf-msg"></span></div></div>`;
+  $("#tf-go").onclick=async()=>{
+    if(!confirm(`Поставить облачный пароль на ${d.at_risk} аккаунт(ов)?\n\nПароли генерируются и сохраняются в базе AXIOM — без них ты сам не войдёшь в аккаунт. Операция идёт по одному, это несколько минут.`))return;
+    const b=$("#tf-go"),m=$("#tf-msg");b.disabled=true;b.textContent="ставлю…";
+    let sec=0;const t=setInterval(()=>{sec++;m.textContent=`подключаюсь к каждому аккаунту… ${sec} с`;},1000);
+    let r;try{r=await api("/api/accounts/twofa",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});}
+    catch(e){r={error:e.message};}
+    clearInterval(t);b.disabled=false;b.textContent="🔐 Поставить пароль всем";
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.textContent=`готово: защищено ${r.set||0}`+(r.failed?`, не удалось ${r.failed}`:"");
+    if(r.log)console.log(r.log.join("\n"));
+    setTimeout(route,1500);};
+}
 async function viewAgents(v){
   const a=await api("/api/accounts");
   const accPreset=localStorage.getItem("acc_preset")||"all";
@@ -1268,6 +1300,7 @@ async function viewAgents(v){
   const aShown=a.filter(accTest);
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
     <div id="acc-identity" style="margin-bottom:12px"></div>
+    <div id="acc-twofa" style="margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:12px;padding:10px 12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>🔑 Завести купленные аккаунты</b>
@@ -1314,6 +1347,15 @@ async function viewAgents(v){
         <span class="hint" id="rd-msg"></span>
       </div>
       <div class="hint" style="margin-top:8px">Каждый ответ агента в диалоге ждёт случайную паузу из этого диапазона перед отправкой — имитация «увидел, подумал, напечатал», а не мгновенный бот-ответ. По умолчанию 30-60с.</div></div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">🔗 Ссылка на созвон</b>
+        <span class="hint">постоянная комната: Телемост, Zoom, Meet</span>
+        <input id="mu-url" type="text" placeholder="https://telemost.yandex.ru/j/..." style="flex:1;min-width:260px">
+        <button id="mu-save">сохранить</button>
+        <span class="hint" id="mu-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Как только человек согласился на конкретное время, агент сразу присылает ему эту ссылку. Пока поле пустое, встреча фиксируется <b>без адреса подключения</b> — в колокольчик падает «📅 Встреча назначена (без ссылки)», и ссылку придётся отправлять руками. Заведи в Телемосте постоянную комнату и вставь её сюда.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🔔 Уведомления о встречах</b>
@@ -1374,6 +1416,7 @@ async function viewAgents(v){
     <div id="acc-tbl"></div>`;
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
   loadIdentityCheck();
+  loadTwofa();
   const akGo=$("#ak-go");
   if(akGo)akGo.onclick=async()=>{
     const f=$("#ak-file").files[0],m=$("#ak-msg");
@@ -1433,6 +1476,13 @@ async function viewAgents(v){
   $("#rd-save").onclick=async()=>{
     const r=await api("/api/settings/reply_delay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({min_sec:+$("#rd-min").value||30,max_sec:+$("#rd-max").value||60})});
     $("#rd-msg").textContent=`✓ сохранено — ${r.min_sec}-${r.max_sec}с`;};
+  // ── постоянная ссылка на созвон (её агент даёт при согласии) ──
+  api("/api/settings/meeting_url").then(s=>{const u=$("#mu-url");if(u){u.value=s.url||"";
+    if(!s.url)$("#mu-msg").innerHTML='<span style="color:#c0392b">не задана — агент договорится о времени, но ссылку не пришлёт</span>';}});
+  $("#mu-save").onclick=async()=>{
+    const r=await api("/api/settings/meeting_url",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:$("#mu-url").value.trim()})});
+    if(r.error){$("#mu-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    $("#mu-msg").textContent=r.url?"✓ сохранено — агент будет присылать её сразу после согласия":"✓ очищено — ссылка не уйдёт";};
   // ── уведомления о встречах: кому слать ──
   api("/api/settings/notify").then(s=>{const t=$("#ntf-target");if(t)t.value=s.target||"";});
   $("#ntf-save").onclick=async()=>{

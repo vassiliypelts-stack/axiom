@@ -601,6 +601,26 @@ def settings_reply_delay_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "min_sec": lo, "max_sec": hi})
 
 
+@app.get("/api/settings/meeting_url")
+def settings_meeting_url_get() -> JSONResponse:
+    """Постоянная ссылка на созвон (Телемост/Zoom/Meet) — её агент даёт человеку сразу
+    при согласии на время (см. integrations/meetings._meeting_url)."""
+    with database.get_conn() as conn:
+        url = (database.get_setting(conn, "meeting_url", "") or "").strip()
+    return JSONResponse({"url": url, "from_env": bool(config.PERMANENT_MEETING_URL and not url)})
+
+
+@app.post("/api/settings/meeting_url")
+def settings_meeting_url_set(payload: dict = Body(...)) -> JSONResponse:
+    url = (payload.get("url") or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        return JSONResponse({"error": "ссылка должна начинаться с https:// — так её и увидит клиент"},
+                            status_code=400)
+    with database.get_conn() as conn:
+        database.set_setting(conn, "meeting_url", url)
+    return JSONResponse({"ok": True, "url": url})
+
+
 @app.post("/api/accounts")
 def accounts_add(payload: dict = Body(...)) -> JSONResponse:
     import phone_geo
@@ -4901,6 +4921,50 @@ def campaign_progress(cid: int) -> JSONResponse:
         })
     return JSONResponse({"account": acc, "account_name": acc_name, "sent_count": len(sent_ids),
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
+
+
+@app.get("/api/accounts/twofa")
+def accounts_twofa_status() -> JSONResponse:
+    """У кого стоит облачный пароль, а кого ещё могут увести.
+
+    У купленного аккаунта НОМЕР остаётся у продавца: он в любой момент входит по
+    SMS и завершает наши сеансы. Так уже потеряли два лота целиком. 2FA не броня,
+    но без неё увод занимает минуту, а с ней — неделю ожидания сброса и заметный
+    след (см. channels/twofa)."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, phone, twofa, status, session_alive, tg_session "
+            "FROM accounts WHERE COALESCE(status,'') NOT IN ('archived','banned')").fetchall()
+    protected, unprotected = [], []
+    for r in rows:
+        d = {"id": r["id"], "label": r["label"], "phone": r["phone"], "status": r["status"]}
+        if (r["twofa"] or "").strip():
+            protected.append(d)
+        elif (r["tg_session"] or "").strip():
+            unprotected.append(d)
+    return JSONResponse({"protected": len(protected), "unprotected": unprotected,
+                         "at_risk": len(unprotected)})
+
+
+@app.post("/api/accounts/twofa")
+def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
+    """Поставить облачный пароль. Пароль генерится и пишется в БД ДО установки —
+    иначе при сбое между «поставили в Telegram» и «записали себе» аккаунт запирается
+    навсегда. ids пустой = все живые боевые без 2FA."""
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    args = ["channels.twofa"]
+    if ids:
+        args += ["--ids", ",".join(str(i) for i in ids)]
+    if payload.get("dry"):
+        args.append("--dry")
+    res = _run_capture(args, timeout=900)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-400:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    data["log"] = (res.get("output") or "").splitlines()[-20:]
+    return JSONResponse(data)
 
 
 @app.post("/api/accounts/import_keys")

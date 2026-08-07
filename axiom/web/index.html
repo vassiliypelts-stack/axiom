@@ -3047,6 +3047,7 @@ async function viewDeals(v){
       <button id="tab-tbl">Таблица</button>
       <select id="deal-pipe" title="воронка / продукт" style="max-width:260px">${pOpts}</select>
       <button id="pipe-new" title="создать воронку">воронка</button>
+      <button id="pipe-edit" title="переименовать воронку, добавить/убрать/переставить этапы">⚙ этапы</button>
       <button id="pipe-del" title="удалить выбранную воронку">🗑</button>
       <span class="grow"></span>
       <button class="primary" id="deal-new">Сделка</button>
@@ -3063,10 +3064,79 @@ async function viewDeals(v){
     if(p.is_default){alert("Основную воронку удалить нельзя");return;}
     if(!confirm(`Удалить воронку «${p.name}»?`))return;
     await api(`/api/pipeline/${p.id}/delete`,{method:"POST"});PIPELINE_SEL=null;route();};
+  $("#pipe-edit").onclick=()=>{const p=PIPELINES.find(x=>x.id===PIPELINE_SEL)||PIPELINES[0];if(p)openPipelineEditor(p);};
   $("#deal-new").onclick=async()=>{const title=prompt("Название сделки:");if(!title)return;
     const r=await api("/api/deals",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,pipeline_id:PIPELINE_SEL,stage:"new"})});
     if(r.error){alert(r.error);return;}route();};
   showKan();
+}
+// Редактор этапов воронки, как в Битрикс24: список стадий, перетаскивание за ⠿,
+// добавление и удаление. Раньше этапы задавались только при создании воронки —
+// переименовать или добавить шаг было нельзя, приходилось заводить заново.
+function openPipelineEditor(p){
+  const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+  wrap.innerHTML='<div class="org-mform-inner" style="max-width:520px">…</div>';
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.onclick=e=>{if(e.target===wrap)close();};
+  document.addEventListener("keydown",function esc5(e){
+    if(e.key==="Escape"){close();document.removeEventListener("keydown",esc5);}});
+  let stages=(p.stages||[]).map(s=>({...s}));   // копия — правим локально, шлём разом
+  const inner=wrap.querySelector(".org-mform-inner");
+  const draw=()=>{
+    inner.innerHTML=`
+      <div style="font-weight:700;font-size:15px;margin-bottom:10px">⚙ Этапы воронки</div>
+      <input id="pe-name" value="${esc(p.name||"")}" style="width:100%;margin-bottom:12px;font-weight:600" placeholder="Название воронки">
+      <div class="hint" style="margin-bottom:8px">Перетаскивай ⠿ для порядка. Ключ — служебное имя стадии, латиницей, менять не обязательно.</div>
+      <div id="pe-list"></div>
+      <button type="button" id="pe-add" style="margin-top:8px">+ добавить этап</button>
+      <div class="ttoolbar" style="margin-top:16px">
+        <button class="primary" id="pe-save">Сохранить</button>
+        <button type="button" id="pe-cancel">Отмена</button>
+        ${p.is_default?"":'<span class="hint" style="margin-left:auto">основная воронка не удаляется</span>'}
+      </div>`;
+    const list=inner.querySelector("#pe-list");
+    list.innerHTML=stages.map((s,i)=>`<div class="pe-row" draggable="true" data-i="${i}"
+        style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;background:var(--panel);cursor:grab">
+      <span style="color:var(--muted)">⠿</span>
+      <input class="pe-label" data-i="${i}" value="${esc(s.label||"")}" style="flex:1" placeholder="Название этапа">
+      <input class="pe-key" data-i="${i}" value="${esc(s.key||"")}" style="width:110px;font-family:monospace;font-size:12px" placeholder="ключ" title="служебное имя, латиницей">
+      <button type="button" class="pe-del" data-i="${i}" title="убрать этап">✕</button>
+    </div>`).join("");
+    list.querySelectorAll(".pe-label").forEach(el=>el.oninput=()=>{stages[+el.dataset.i].label=el.value;});
+    list.querySelectorAll(".pe-key").forEach(el=>el.oninput=()=>{stages[+el.dataset.i].key=el.value.trim();});
+    list.querySelectorAll(".pe-del").forEach(b=>b.onclick=()=>{
+      if(stages.length<=1){alert("нужен хотя бы один этап");return;}
+      stages.splice(+b.dataset.i,1);draw();});
+    let dragI=null;
+    list.querySelectorAll(".pe-row").forEach(row=>{
+      row.ondragstart=()=>{dragI=+row.dataset.i;row.style.opacity=".4";};
+      row.ondragend=()=>row.style.opacity="1";
+      row.ondragover=e=>e.preventDefault();
+      row.ondrop=e=>{e.preventDefault();const to=+row.dataset.i;if(dragI===null||dragI===to)return;
+        const [moved]=stages.splice(dragI,1);stages.splice(to,0,moved);draw();};
+    });
+    inner.querySelector("#pe-add").onclick=()=>{
+      const n=stages.length+1;
+      stages.push({key:`stage_${Date.now()%100000}`,label:`Этап ${n}`});draw();
+      inner.querySelector(".pe-row:last-child .pe-label").focus();};
+    inner.querySelector("#pe-cancel").onclick=close;
+    inner.querySelector("#pe-save").onclick=async()=>{
+      const name=inner.querySelector("#pe-name").value.trim();
+      if(!name){alert("нужно название воронки");return;}
+      const clean=stages.map(s=>({key:(s.key||"").trim(),label:(s.label||"").trim()}));
+      if(clean.some(s=>!s.key||!s.label)){alert("у каждого этапа должны быть и ключ, и название");return;}
+      const send=force=>api(`/api/pipeline/${p.id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({name,stages:clean,force})});
+      let r=await send(false);
+      if(r&&r.needs_confirm){
+        if(!confirm("⚠️ "+r.warn))return;
+        r=await send(true);
+      }
+      if(r&&r.error){alert(r.error);return;}
+      close();route();};
+  };
+  draw();
 }
 function dealTitle(d){return esc(d.title||d.company_name||"сделка");}
 function dealSub(d){return esc([d.person_name||d.contact_name,d.amount?(Number(d.amount).toLocaleString("ru-RU")+" ₽"):""].filter(Boolean).join(" · "));}
@@ -5573,7 +5643,20 @@ async function viewParser(v){
     <div class="sub" style="margin:6px 0">Работает сам, фоном, с момента старта пульта. Ключи берутся из активных ниш, находки падают в «🔎 Запросы». Кнопкой ниже можно остановить его, не трогая сервер — например, пока переставляешь прокси или перелогиниваешь аккаунты.</div>
     <div class="ttoolbar" style="margin:0 0 8px"><button type="button" id="lst-toggle" disabled>…</button></div>
     <div id="lst-status" class="sub">загружаю статус…</div>
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="Ответы клиентам в личке идут ВСЕГДА, пока слушатель включён — этот тумблер их не касается. Он только про поиск ключей в чатах.">
+        <input type="checkbox" id="chatscan-toggle"> сканировать чаты по ключам (лидген)</label>
+      <div class="hint" style="margin-top:3px">Раньше один выключатель глушил и это, и ответы клиентам — выключаешь чаты, агент вместе с ними замолкал в личке. Теперь это разные тумблеры.</div>
+    </div>
   </div>`;
+  (async()=>{
+    const cb=$("#chatscan-toggle");if(!cb)return;
+    try{const s=await api("/api/chatscan/status");cb.checked=!!s.enabled;}catch(e){}
+    cb.onchange=async()=>{cb.disabled=true;
+      try{await api("/api/chatscan/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:cb.checked})});}
+      catch(e){alert("не сохранилось: "+e.message);}
+      cb.disabled=false;};
+  })();
   (async()=>{
     const box=$("#lst-status"),btn=$("#lst-toggle");if(!box)return;
     const draw=(s)=>{

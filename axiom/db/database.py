@@ -420,13 +420,20 @@ def _extract(pattern: str, text: str | None) -> str | None:
 
 
 def _migrate_companies(conn: sqlite3.Connection) -> None:
-    """Одноразово: из каждого контакта (агентства) создаём Компанию (юрлицо) и
-    связываем contacts.company_id. Запускается, только если companies пуста."""
+    """Одноразово: из каждого контакта-АГЕНТСТВА создаём Компанию (юрлицо) и связываем
+    contacts.company_id. Запускается, только если companies пуста.
+
+    Берём лишь тех, у кого заполнено agency — это и есть форма старой базы (импорт 2ГИС
+    писал туда название организации). Контакт без agency — живой человек из списка
+    клиентов или из чата, и юрлицо «ООО Иванов Пётр Сергеевич» для него не заводим:
+    на свежей установке (companies ещё пуста) миграция иначе размножала карточки-мусор
+    после первого же импорта списка людей."""
     have = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
     if have:
         return
     rows = conn.execute(
-        "SELECT id, name, agency, city, phone, inn, ogrn, founders, tags, notes FROM contacts"
+        "SELECT id, name, agency, city, phone, inn, ogrn, founders, tags, notes FROM contacts "
+        "WHERE agency IS NOT NULL AND TRIM(agency) <> ''"
     ).fetchall()
     for r in rows:
         cname = (r["agency"] or r["name"] or "").strip() or "Без названия"

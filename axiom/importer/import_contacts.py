@@ -41,10 +41,29 @@ ALIASES = {
 }
 
 
+def sniff_delimiter(sample: str) -> str:
+    """Разделитель CSV по первой строке. Русский Excel сохраняет «CSV (разделители —
+    запятые)» ТОЧКОЙ С ЗАПЯТОЙ, и жёстко зашитая запятая давала «импортировано 0»
+    без единой ошибки: вся строка читалась как одна колонка «Имя;Телефон;Telegram»."""
+    head = (sample.splitlines() or [""])[0]
+    return max((";", ",", "\t"), key=head.count) if head else ","
+
+
 def normalize_phone(raw: str) -> str | None:
+    """Телефон к единому виду +7XXXXXXXXXX — тому же, что у импорта 2ГИС и парсеров.
+
+    Единый формат обязателен: дедуп контактов идёт СРАВНЕНИЕМ СТРОК (upsert_contact
+    ищет по phone), поэтому «8 913…» из одного файла и «+7 913…» из другого заводили
+    на одного человека две карточки — и оба получали первое сообщение."""
     if not raw:
         return None
-    digits = "".join(ch for ch in str(raw) if ch.isdigit() or ch == "+")
+    from importer.import_2gis import norm_phone
+    s = str(raw).strip()
+    p = norm_phone(s)
+    if p:
+        return p
+    # не российский номер (или явно кривой) — оставляем как есть, только чистим мусор
+    digits = "".join(ch for ch in s if ch.isdigit() or ch == "+")
     return digits or None
 
 
@@ -66,7 +85,9 @@ def _map_headers(headers: list[str]) -> dict[int, str]:
 
 def _rows_from_csv(path: str):
     with open(path, encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
+        sample = f.readline()
+        f.seek(0)
+        reader = csv.reader(f, delimiter=sniff_delimiter(sample))
         headers = next(reader, [])
         colmap = _map_headers(headers)
         for row in reader:

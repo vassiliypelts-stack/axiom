@@ -3862,6 +3862,75 @@ def import_sources() -> JSONResponse:
     return JSONResponse(all_src)
 
 
+def _sniff_delimiter(text: str) -> str:
+    """Разделитель CSV по строке заголовка. Русский Excel пишет «;», выгрузки из CRM и
+    Google Sheets — «,», часть панелей — таб. Жёстко зашитая «;» роняла импорт любого
+    файла с запятыми в «не нашёл колонку» ещё до разбора данных."""
+    head = (text.splitlines() or [""])[0]
+    return max((";", ",", "\t"), key=head.count) if head else ";"
+
+
+def _parse_people(text: str, tag: str, source: str = "import") -> tuple[int, int]:
+    """Обычный список ЛЮДЕЙ: Имя / Телефон / Telegram / Город / Чем занимается.
+
+    Зачем отдельно от _parse_universal: тот заточен под выгрузки ЮРЛИЦ (требует колонку
+    «Наименование», знает ИНН и ОГРН) и колонку с @username не понимает вовсе. Из-за
+    этого простейший файл клиентов на «Имя;Телефон;Telegram» пульт отбивал ошибкой, а
+    единственный импортёр, который его понимал, жил в консоли (importer/import_contacts)
+    и до веба подключён не был.
+
+    Заголовки берём из того же словаря ALIASES, что и консольный импорт, — один список
+    синонимов на оба входа. Колонка со специализацией важна отдельно: на ней держится
+    заход «вы тоже по этой теме? — тогда мы коллеги» ({спец} в шаблоне рассылки).
+    """
+    import csv
+    import io
+    from importer.import_contacts import ALIASES, normalize_phone, normalize_username
+
+    reader = csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text))
+    rows = list(reader)
+    if not rows:
+        return 0, 0
+    colmap = {i: ALIASES[h] for i, h in
+              ((i, (h or "").strip().lower()) for i, h in enumerate(rows[0])) if h in ALIASES}
+    if not colmap or not ({"phone", "username"} & set(colmap.values())):
+        raise ValueError("не нашёл ни колонки с телефоном, ни с Telegram — "
+                         "нужен заголовок вида «Телефон» / «Username» / «Телеграм»")
+
+    added = skipped = 0
+    database.init_db()
+    with database.get_conn() as conn:
+        for row in rows[1:]:
+            r = {f: (row[i].strip() if i < len(row) and row[i] else "") for i, f in colmap.items()}
+            phone = normalize_phone(r.get("phone", ""))
+            username = normalize_username(r.get("username", ""))
+            if not phone and not username:
+                skipped += 1                  # строка без единого способа связи
+                continue
+            # Колонка «Имя» в списке людей часто держит полное ФИО. Кладём его ещё и в
+            # person_name — тогда рассылка обращается «Пётр Сергеевич, добрый день»
+            # (campaign_send._greeting), а не «Иванов Пётр Сергеевич», что читается
+            # автоматикой из госуслуг с первой секунды.
+            nm = (r.get("name") or "").strip()
+            cid = database.upsert_contact(
+                conn, source=source, phone=phone, username=username,
+                name=nm or None, person_name=nm if len(nm.split()) == 3 else None,
+                city=r.get("city") or None, agency=r.get("agency") or None,
+                tags=", ".join(t for t in (tag, r.get("tags")) if t) or None,
+                notes=r.get("notes") or None,
+                specialization=r.get("specialization") or None,
+                person_role=r.get("person_role") or None,
+                email=r.get("email") or None,
+            )
+            # @username — это «достанем без ImportContacts» (см. TG_REACHABLE_SQL):
+            # такой контакт идёт в рассылку сразу, без дозированного пробива номера.
+            if username:
+                conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=? AND "
+                             "COALESCE(has_tg,'unknown')='unknown'", (cid,))
+            added += 1
+    return added, skipped
+
+
 # ---- Универсальный CSV-импорт (компании + контакты) ----------------------- #
 # Маппинг русских заголовков → поля БД (компании)
 _COL_MAP = {
@@ -3912,7 +3981,7 @@ def _parse_universal(text: str, tag: str, source: str = "import") -> tuple[int, 
     """Парсит CSV с произвольными столбцами — создаёт компании и привязывает контакты."""
     import csv
     import io
-    reader = csv.reader(io.StringIO(text), delimiter=";")
+    reader = csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text))
     rows = list(reader)
     if not rows:
         return 0, 0
@@ -3933,7 +4002,12 @@ def _parse_universal(text: str, tag: str, source: str = "import") -> tuple[int, 
 
     def norm(r, field):
         v = cell(r, field)
-        if field in ("phone", "director_phone", "director_email", "email"):
+        if field in ("phone", "director_phone"):
+            # Телефон приводим к +7XXXXXXXXXX. Без этого в книжку ложилось «8 (913) 000-11-22»
+            # как есть: дедуп у нас идёт сравнением строк, и тот же человек из соседнего
+            # файла («+7913…») заводил вторую карточку и получал второе первое сообщение.
+            return norm_phone(v) or (v or None)
+        if field in ("director_email", "email"):
             return v or None
         if field in ("employee_count",):
             try:
@@ -4035,7 +4109,7 @@ def _find_cols(header: list[str]) -> dict:
 
 
 def _parse_2gis(text: str, tag: str, source: str = "2gis") -> tuple[int, int]:
-    reader = csv.reader(io.StringIO(text), delimiter=";")
+    reader = csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text))
     rows = list(reader)
     if not rows:
         return 0, 0
@@ -4124,17 +4198,23 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
 
     src = (source or "import").strip() or "import"
     tag_clean = tag.strip() or "Импорт"
-    try:
-        # Пробуем универсальный парсер (с Наименование, ИНН и т.д.)
-        added, skipped = _parse_universal(text, tag_clean, src)
-    except ValueError as e:
-        # Если не подошёл — пробуем старый 2ГИС-формат
+    # Три формата подряд, от узкого к общему: выгрузка юрлиц (Наименование/ИНН) →
+    # выгрузка 2ГИС → обычный список людей (Имя/Телефон/Telegram). Последний нужен чаще
+    # всего и раньше не поддерживался вовсе: пульт отвечал «не нашёл колонку
+    # «Наименование»» на файл, где её и не должно быть.
+    errors = []
+    added = skipped = None
+    for parser in (_parse_universal, _parse_2gis, _parse_people):
         try:
-            added, skipped = _parse_2gis(text, tag_clean, src)
-        except ValueError:
+            added, skipped = parser(text, tag_clean, src)
+            break
+        except ValueError as e:
+            errors.append(str(e))
+        except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+    if added is None:
+        return JSONResponse({"error": "не понял формат файла. " + " / ".join(errors)},
+                            status_code=400)
     with database.get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) c FROM contacts").fetchone()["c"]
         co_total = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]

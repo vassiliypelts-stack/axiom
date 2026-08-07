@@ -3178,7 +3178,7 @@ async function viewContacts(v){
     </div>
     <div id="ct-imp-panel" class="card" style="display:none;margin-bottom:12px">
       <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
-        <input type="file" id="ct-imp-file" accept=".csv" style="max-width:260px">
+        <input type="file" id="ct-imp-file" accept=".csv,.xlsx" style="max-width:260px">
         <input id="ct-imp-tag" value="Контакты" placeholder="тег для всех" style="max-width:160px">
         <input id="ct-imp-source" list="src-list" placeholder="источник" style="max-width:170px">
         <datalist id="src-list"></datalist>
@@ -3189,7 +3189,10 @@ async function viewContacts(v){
         <textarea id="ct-imp-text" rows="3" placeholder="Или вставь номера телефонов сюда (каждый с новой строки)" style="flex:1;min-width:240px"></textarea>
         <button id="ct-imp-text-go">📱 Вставить номера</button>
       </div>
-      <div class="hint" style="margin-top:6px">CSV или Excel (.xlsx). Столбцы: «Наименование», «ИНН», «ФИО руководителя», «Телефон директора» и др. — всё маппится само. Дубли обновляются.</div>
+      <div class="hint" style="margin-top:6px">CSV или Excel (.xlsx), разделитель любой (;&nbsp;,&nbsp;таб). Понимает два вида файлов:<br>
+        • <b>список людей</b> — «Имя», «Телефон», «Telegram», «Город», «Чем занимается», «Должность», «Email»;<br>
+        • <b>выгрузка юрлиц</b> — «Наименование», «ИНН», «ФИО руководителя», «Телефон директора» и др.<br>
+        Колонка «Чем занимается» важна: на ней держится заход «вы тоже по этой теме?». Контакт с @ником уходит в рассылку сразу, без пробива номера. Дубли обновляются, а не задваиваются.</div>
     </div>
     <div id="ct-body"></div>`;
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
@@ -3205,7 +3208,9 @@ async function viewContacts(v){
     const srcEl=$("#ct-imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
     try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
       if(r.error){msg.textContent="ошибка: "+r.error;return;}
-      msg.textContent=`✅ импортировано ${r.imported}, всего ${r.total}`;route();
+      // пропущенные показываем ОТДЕЛЬНО: строка без телефона и без @ника в рассылку
+      // не попадёт никогда, и знать об этом надо сразу, а не при нулевой отправке
+      msg.textContent=`✅ импортировано ${r.imported}`+(r.skipped?`, пропущено ${r.skipped} (нет ни телефона, ни @ника)`:"")+`, всего ${r.total}`;route();
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   $("#ct-imp-text-go").onclick=async()=>{
     const text=$("#ct-imp-text").value.trim(),msg=$("#ct-imp-msg");

@@ -1872,6 +1872,67 @@ def _opener_queue_scheduler() -> None:
             print(f"[opener_queue scheduler] {e}")
 
 
+@app.get("/api/agent/why_silent")
+def agent_why_silent() -> JSONResponse:
+    """«Клиент ответил, а агент молчит» — назвать причину одним запросом.
+
+    Причин ровно пять, и живут они в пяти разных местах: тумблер авто-ответа, сам
+    слушатель, статус аккаунта, «родной» флаг и деньги на API. Оператор искать их по
+    закоулкам не станет — он видит только тишину в переписке и считает, что сломался
+    агент. Здесь собираем всё вместе и сразу говорим, что нажать."""
+    database.init_db()
+    problems: list[dict] = []
+    ok: list[str] = []
+    with database.get_conn() as conn:
+        auto = database.get_setting(conn, "tg_auto_reply", "on")
+        listen_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        # аккаунты, которые РЕАЛЬНО писали людям за последние сутки
+        senders = [dict(r) for r in conn.execute(
+            "SELECT DISTINCT a.id, a.label, a.phone, a.status, COALESCE(a.protected,0) protected, "
+            "  (a.tg_session IS NOT NULL AND a.tg_session <> '') AS has_session "
+            "FROM messages m JOIN accounts a ON a.id = m.account_id "
+            "WHERE m.direction='out' AND m.ts >= datetime('now','-1 day')"
+        ).fetchall()]
+        mute = [dict(r) for r in conn.execute(
+            "SELECT title, text, ts FROM events WHERE type IN ('agent_error','ban') "
+            "AND ts >= datetime('now','-1 day') ORDER BY id DESC LIMIT 5"
+        ).fetchall()]
+    if auto != "on":
+        problems.append({"что": "Выключен тумблер «авто-ответ ИИ»",
+                         "делать": "Аккаунты → включить авто-ответ. Пока выключен, агент не отвечает никому."})
+    else:
+        ok.append("авто-ответ включён")
+    if not listen_on:
+        problems.append({"что": "Слушатель входящих выключен",
+                         "делать": "Аккаунты → включить слушатель, иначе ответы клиентов никто не читает."})
+    try:
+        from channels import listener
+        listening = set(listener.STATUS.get("accounts", {}).keys())
+        if not listening:
+            problems.append({"что": "Слушатель не подключил ни одного аккаунта",
+                             "делать": "Проверь сессии и прокси в «Аккаунтах» (🔌 Подключить)."})
+        else:
+            ok.append(f"слушает аккаунтов: {len(listening)}")
+    except Exception:  # noqa: BLE001
+        listening = set()
+        problems.append({"что": "Слушатель не запущен",
+                         "делать": "Перезапусти пульт кнопкой «⬇ Обновить» — слушатель поднимается вместе с ним."})
+    for s in senders:
+        who = s["label"] or s["phone"] or f"#{s['id']}"
+        if s["protected"]:
+            problems.append({"что": f"«{who}» пишет людям, но помечен «родной» — слушатель такие не подключает",
+                             "делать": f"Сними отметку «родной» с «{who}» в «Аккаунтах» — иначе ответы на его письма пропадают."})
+        elif listening and s["id"] not in listening:
+            problems.append({"что": f"«{who}» писал клиентам, но сейчас не слушается",
+                             "делать": f"Переподключи «{who}» (🔌 Подключить): сессия или прокси отвалились."})
+    from agent import llm
+    if not llm.available(config.AGENT_MODEL):
+        problems.append({"что": f"Нет ключа под модель «{config.AGENT_MODEL}»",
+                         "делать": "Заполни ключ в .env на сервере — без него агент не может ответить."})
+    return JSONResponse({"ok": not problems, "problems": problems, "fine": ok,
+                         "recent_errors": mute})
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading

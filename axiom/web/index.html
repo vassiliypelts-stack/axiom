@@ -4739,6 +4739,7 @@ async function viewCampaigns(v){
   v.innerHTML=`
     <div class="ttoolbar"><button class="primary" id="c-wizard-btn">🚀 Мастер запуска (визард)</button>
       <button id="c-new-btn">Новая кампания</button>
+      <button id="c-why-silent" title="Клиент ответил, а агент молчит — проверить все причины разом">🤐 Почему агент молчит</button>
       ${PROJECT_SEL?`<span class="badge b-active">проект: ${esc(PROJECT_SEL.name)}</span> <button id="c-allproj">показать все</button>`:""}
       <span class="hint">Антибан: 2-3 аккаунта на мессенджер · 10-15 контактов/день на аккаунт · постепенный прогрев до КЭВ.</span></div>
     <div class="ttoolbar" style="margin:0 0 12px">
@@ -4994,6 +4995,15 @@ async function viewCampaigns(v){
     $("#c-form-anchor").insertAdjacentElement("afterend",form);
     fill({});$("#c-save").textContent="Создать кампанию";form.style.display="block";form.scrollIntoView({behavior:"smooth"});};
   $("#c-new-btn").onclick=()=>{ if(form.style.display==="block"&&!form.dataset.edit){form.style.display="none";} else {openNew();} };
+  // «Клиент ответил, а агент молчит» — причина одним нажатием, без похода по разделам
+  $("#c-why-silent").onclick=async()=>{
+    const b=$("#c-why-silent");b.disabled=true;b.textContent="проверяю…";
+    let r;try{r=await api("/api/agent/why_silent");}catch(e){alert("не смог проверить: "+e.message);b.disabled=false;b.textContent="🤐 Почему агент молчит";return;}
+    b.disabled=false;b.textContent="🤐 Почему агент молчит";
+    const err=(r.recent_errors||[]).map(e=>`• ${e.title}`).join("\n");
+    if(r.ok){alert("Всё на месте: "+(r.fine||[]).join(", ")+".\n\nЕсли агент всё равно молчит — пришли последние записи колокольчика."+(err?"\n\nПоследние тревоги:\n"+err:""));return;}
+    alert("Агент молчит, потому что:\n\n"+r.problems.map((p,i)=>`${i+1}. ${p["что"]}\n   → ${p["делать"]}`).join("\n\n")+(err?"\n\nПоследние тревоги:\n"+err:""));
+  };
   const wb=$("#c-wizard-btn");if(wb)wb.onclick=()=>startWizard();
   $("#c-cancel").onclick=()=>{form.style.display="none";};
   $("#c-prompt-ex").onclick=()=>{$("#c-prompt").value=PROMPT_PH;};

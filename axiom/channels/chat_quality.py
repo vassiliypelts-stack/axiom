@@ -189,7 +189,17 @@ async def run(chat_id: int | None, limit: int, only_new: bool) -> None:
         return
 
     main = await _main_client()
-    await main.start()
+    # НЕ .start(): у неавторизованной сессии Telethon спрашивает телефон через input(),
+    # а в фоновом процессе stdin пуст — прогон падал с EOFError вместо внятной причины.
+    await main.connect()
+    if not await main.is_user_authorized():
+        await main.disconnect()
+        print(json.dumps({
+            "ok": False,
+            "error": "аккаунт для чтения чатов не авторизован. Назначь рабочий аккаунт "
+                     "в «Аккаунты → слушает чаты» или перелогинь текущий (кнопка 🔌)",
+        }, ensure_ascii=False))
+        return
     owned: dict[int, object] = {}
     tally = Counter()
     done = skipped = 0

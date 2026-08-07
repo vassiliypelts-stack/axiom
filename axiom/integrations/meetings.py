@@ -25,17 +25,24 @@ class MeetingResult:
     parsed: bool                 # удалось ли превратить слот в реальную дату
 
 
-def _meeting_url() -> str:
-    """Постоянная ссылка на созвон (Телемост/Zoom/Meet): сначала настройка из пульта,
-    потом .env.
+def _meeting_url(campaign_id: int | None = None) -> str:
+    """Постоянная ссылка на созвон (Телемост/Zoom/Meet). Порядок: комната КАМПАНИИ →
+    общая настройка пульта → .env.
 
-    Почему настройка важнее переменной окружения: .env лежит на сервере, а SSH к нему
-    у оператора под рукой нет. Без ссылки агент договаривается о времени и не даёт
-    адреса подключения — то есть встреча де-факто срывается. Теперь ссылку можно
-    вписать в «Мои агенты» и она подхватится без перезапуска сервиса."""
+    Комната у каждой кампании своя: разные продукты ведут в разные переговорки, и одна
+    ссылка на всё быстро становится неверной. Общая настройка остаётся запасной, а .env
+    — последним рубежом: он лежит на сервере, куда у оператора нет SSH, поэтому
+    полагаться на него нельзя (без ссылки агент договорится о времени и не даст адреса
+    подключения, то есть встреча сорвётся)."""
     try:
         from db import database
         with database.get_conn() as conn:
+            if campaign_id:
+                row = conn.execute("SELECT meeting_url FROM campaigns WHERE id=?",
+                                   (campaign_id,)).fetchone()
+                own = (row["meeting_url"] or "").strip() if row else ""
+                if own:
+                    return own
             url = (database.get_setting(conn, "meeting_url", "") or "").strip()
         if url:
             return url
@@ -55,9 +62,11 @@ def parse_slot(slot: str | None) -> datetime | None:
     return slot_parse.parse_human(slot, datetime.now(tz))
 
 
-def arrange(contact: dict, slot: str | None) -> MeetingResult:
+def arrange(contact: dict, slot: str | None, campaign_id: int | None = None) -> MeetingResult:
     """Создаёт Zoom + событие под согласованный слот. Внешние вызовы синхронные —
-    из async-кода зови через asyncio.to_thread."""
+    из async-кода зови через asyncio.to_thread.
+
+    campaign_id — чтобы взять переговорку именно этой кампании (см. _meeting_url)."""
     name = contact.get("name") or "риелтор"
     dt = parse_slot(slot)
     if dt is None:
@@ -69,7 +78,7 @@ def arrange(contact: dict, slot: str | None) -> MeetingResult:
     # и в Zoom API не идём вовсе. Так встреча получает ссылку даже когда внешние
     # сервисы недоступны (Google Calendar и часть Zoom API закрыты из РФ) — раньше в
     # этом случае человек соглашался на созвон и оставался без адреса подключения.
-    permanent = (_meeting_url() or "").strip()
+    permanent = (_meeting_url(campaign_id) or "").strip()
     if permanent:
         zoom_link = permanent
     else:

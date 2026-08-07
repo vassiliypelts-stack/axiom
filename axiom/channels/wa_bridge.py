@@ -195,7 +195,8 @@ def incoming(msg: Incoming) -> JSONResponse:
     meeting = None
     if reply.meeting_agreed:
         try:
-            meeting = meetings.arrange(contact_info, reply.proposed_datetime)
+            meeting = meetings.arrange(contact_info, reply.proposed_datetime,
+                                       camp["id"] if camp else None)
         except Exception as e:  # noqa: BLE001
             print(f"[wa meeting error] contact {contact_id}: {e}")
 
@@ -220,7 +221,8 @@ def incoming(msg: Incoming) -> JSONResponse:
         from channels import notify
         # эндпоинт синхронный (FastAPI гонит его в threadpool) — своего event loop
         # тут нет, поэтому просто asyncio.run(), а не await
-        asyncio.run(notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes, meeting.zoom_link))
+        asyncio.run(notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes,
+                                          meeting.zoom_link, camp["id"] if camp else None))
 
     print(f"[wa reply -> {contact_info.get('name', contact_id)}] "
           f"intent={reply.intent} agreed={reply.meeting_agreed}")

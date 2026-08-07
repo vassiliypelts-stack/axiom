@@ -4741,6 +4741,21 @@ async function viewCampaigns(v){
             дозированно пробьёт фоновый пробив (25 номеров на аккаунт в сутки), и они добавятся сами.</div>
           <div class="hint" id="c-verified-stat" style="margin-top:4px"></div></span>
       </label>
+      <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+        <b style="font-size:13px">🎯 Чем заканчивается диалог этой кампании</b>
+        <div class="hint" style="margin:4px 0 8px">Своя переговорка и свой ответственный. Пусто — берутся общие настройки из «Аккаунты».</div>
+        <div class="row2">
+          <div class="field"><label>🔗 Ссылка на созвон</label>
+            <input id="c-meeting-url" placeholder="https://telemost.yandex.ru/j/...">
+            <div class="hint">Агент пришлёт её человеку сразу, как договорились о времени.</div></div>
+          <div class="field"><label>🔔 Кому сообщить о встрече</label>
+            <input id="c-notify-target" placeholder="+7900... или @username">
+            <div class="hint">Кто ведёт эту кампанию — тому и падает «договорились о встрече».</div></div>
+        </div>
+        <div class="field"><label>С какого аккаунта отправить это уведомление</label>
+          <select id="c-notify-acc"></select>
+          <div class="hint">Обычно «родной» номер — тогда уведомление выглядит как обычная личка. Без отправителя И получателя уведомление не уходит, на саму встречу это не влияет.</div></div>
+      </div>
       <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании). Формат строки: номер/@username, потом через пробел — как обращаться (необязательно)</label>
         <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся). Кнопка «💾 Запомнить» сохранит текущий список в браузере — он сам подставится в каждой новой кампании, дописывай к нему что нужно вручную.</div>
         <textarea id="c-test-nums" rows="3" placeholder="+79991234567 Василий Валерьевич&#10;@my_second_account Иван Иванович"></textarea>
@@ -4876,6 +4891,12 @@ async function viewCampaigns(v){
     $("#c-project").value=c.project_id||(PROJECT_SEL?PROJECT_SEL.id:"");
     $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
+    // чем заканчивается диалог: своя переговорка и свой ответственный у кампании
+    $("#c-meeting-url").value=c.meeting_url||"";
+    $("#c-notify-target").value=c.notify_target||"";
+    $("#c-notify-acc").innerHTML='<option value="">— как в общих настройках —</option>'
+      +accounts.map(a=>`<option value="${a.id}">${esc(a.label||a.phone||a.username||("#"+a.id))}</option>`).join("");
+    $("#c-notify-acc").value=c.notify_account_id?String(c.notify_account_id):"";
     teamSet.clear();(c.accounts||[]).forEach(id=>teamSet.add(+id));
     // Новая кампания (нет ни сохранённой команды, ни id) — по умолчанию берём
     // реально живых, а не всех подряд: раньше форма открывалась пустой и оператор
@@ -4998,6 +5019,9 @@ async function viewCampaigns(v){
       channel:chans.join(","),account_id:mainAcc||"",project_id:$("#c-project").value||null,
       account_ids:team,account_limits:limits,daily_limit:$("#c-limit").value,
       tg_verified_only:$("#c-verified").checked,
+      meeting_url:$("#c-meeting-url").value.trim(),
+      notify_target:$("#c-notify-target").value.trim(),
+      notify_account_id:$("#c-notify-acc").value||null,
       message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",

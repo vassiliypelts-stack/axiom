@@ -536,7 +536,8 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # Согласие на встречу → создаём Zoom + событие (сетевые вызовы вне БД-блока)
     meeting = None
     if reply.meeting_agreed:
-        meeting = await asyncio.to_thread(meetings.arrange, contact_info, reply.proposed_datetime)
+        meeting = await asyncio.to_thread(meetings.arrange, contact_info,
+                                          reply.proposed_datetime, camp["id"] if camp else None)
 
     with database.get_conn() as conn:
         # входящее уже записано в _record_incoming — тут только проставляем ему intent
@@ -587,7 +588,8 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         if meeting.zoom_link:
             await _send_parts(event.client, peer, [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"])
         from channels import notify
-        await notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes, meeting.zoom_link)
+        await notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes,
+                                    meeting.zoom_link, camp["id"] if camp else None)
     print(f"[reply -> {contact_info.get('name', contact_id)}] intent={reply.intent} agreed={reply.meeting_agreed}")
 
 

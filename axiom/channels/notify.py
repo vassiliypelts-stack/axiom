@@ -46,13 +46,26 @@ def _build_text(row, meeting_at: str | None, notes: str | None, zoom_link: str |
 
 
 async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | None,
-                          zoom_link: str | None = None) -> None:
+                          zoom_link: str | None = None, campaign_id: int | None = None) -> None:
     """Лучшая попытка — сбой не должен ронять основной поток ответа агента, поэтому
-    ничего не бросаем наружу, только логируем."""
+    ничего не бросаем наружу, только логируем.
+
+    Кому и с какого аккаунта — сначала смотрим настройки САМОЙ кампании: разные
+    кампании ведут разные люди, и «договорились о встрече» должно падать тому, кто эту
+    встречу проводит. Пусто в кампании → общие настройки пульта (прежнее поведение)."""
     try:
         with database.get_conn() as conn:
-            sender_id = database.get_setting(conn, NOTIFY_SENDER_SETTING)
-            target = database.get_setting(conn, NOTIFY_TARGET_SETTING)
+            sender_id = target = None
+            if campaign_id:
+                c = conn.execute("SELECT notify_account_id, notify_target FROM campaigns "
+                                 "WHERE id=?", (campaign_id,)).fetchone()
+                if c:
+                    sender_id = c["notify_account_id"]
+                    target = (c["notify_target"] or "").strip() or None
+            # Отправителя и получателя добираем по отдельности: в кампании может быть
+            # задан только один из них, и терять из-за этого второй нельзя.
+            sender_id = sender_id or database.get_setting(conn, NOTIFY_SENDER_SETTING)
+            target = target or database.get_setting(conn, NOTIFY_TARGET_SETTING)
             if not sender_id or not target:
                 return  # не настроено — тихо пропускаем
             row = conn.execute(

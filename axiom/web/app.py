@@ -1179,6 +1179,28 @@ def account_update(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
             sets.append(f"{k}=?"); vals.append(v)
     if not sets:
         return JSONResponse({"ok": True})
+    # Прокси, уже занятый другим аккаунтом, не отдаём молча: два аккаунта на одном
+    # выходе — прямая дорога к AuthKeyDuplicatedError (сессия, увиденная с двух IP,
+    # жжётся навсегда; три аккаунта так уже потеряны). Раздача из пула это учитывает,
+    # а ручное назначение — не учитывало вовсе.
+    if payload.get("proxy") and not payload.get("force"):
+        key = _proxy_key(payload.get("proxy"))
+        if key:
+            with database.get_conn() as conn:
+                others = conn.execute(
+                    "SELECT id, label, proxy FROM accounts WHERE id<>? AND proxy IS NOT NULL "
+                    "AND proxy<>'' AND COALESCE(status,'') NOT IN ('archived','banned')",
+                    (acc_id,)).fetchall()
+            busy = [dict(o) for o in others if _proxy_key(o["proxy"]) == key]
+            if busy:
+                who = ", ".join(f"{b['label'] or '#'+str(b['id'])}" for b in busy[:5])
+                return JSONResponse({
+                    "needs_confirm": True,
+                    "warn": f"Этот прокси уже занят: {who}.\n\nДва аккаунта на одном адресе "
+                            f"Telegram видит как одного человека, а при смене прокси в пуле "
+                            f"один из них меняет IP на живой сессии — так сессии и сгорают.\n\n"
+                            f"Назначить всё равно?"}, status_code=200)
+
     vals.append(acc_id)
     renamed = None
     with database.get_conn() as conn:
@@ -4451,6 +4473,15 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
             (f["name"], f["product"], f["audience_tag"], f["channel"], account_id, daily_limit,
              f["message_template"], f["agent_prompt"], f["kp_text"], project_id, vonly),
         )
+        # Переговорка и ответственный кампании: заполнены прямо в форме создания —
+        # значит их нельзя терять до первого «сохранить» уже существующей кампании.
+        conn.execute(
+            "UPDATE campaigns SET meeting_url=?, notify_target=?, notify_account_id=? WHERE id=?",
+            ((payload.get("meeting_url") or "").strip() or None,
+             (payload.get("notify_target") or "").strip() or None,
+             int(payload["notify_account_id"]) if payload.get("notify_account_id") else None,
+             cur.lastrowid),
+        )
         _sync_campaign_accounts(conn, cur.lastrowid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
@@ -4481,6 +4512,16 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
         if "tg_verified_only" in payload:
             conn.execute("UPDATE campaigns SET tg_verified_only=? WHERE id=?",
                          (1 if payload.get("tg_verified_only") else 0, cid))
+        # Своя переговорка и свой ответственный у кампании. Пишем только пришедшие поля:
+        # форма может сохраняться частично, и молча стирать чужую настройку нельзя.
+        for key in ("meeting_url", "notify_target"):
+            if key in payload:
+                conn.execute(f"UPDATE campaigns SET {key}=? WHERE id=?",
+                             ((payload.get(key) or "").strip() or None, cid))
+        if "notify_account_id" in payload:
+            acc = payload.get("notify_account_id")
+            conn.execute("UPDATE campaigns SET notify_account_id=? WHERE id=?",
+                         (int(acc) if acc else None, cid))
         if account_ids is not None:
             _sync_campaign_accounts(conn, cid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cid})
@@ -4921,6 +4962,65 @@ def campaign_progress(cid: int) -> JSONResponse:
         })
     return JSONResponse({"account": acc, "account_name": acc_name, "sent_count": len(sent_ids),
                          "total": len(rows), "audience_total": audience_total, "rows": rows})
+
+
+def _proxy_key(px: str | None) -> str:
+    """Ключ адреса для сравнения: host:port без логина/пароля и схемы.
+
+    Один и тот же выход в интернет записывают по-разному — «socks5://user:pass@1.2.3.4:1080»
+    и «1.2.3.4:1080» это ОДИН адрес, и Telegram видит его одинаково. Сравнивать сырые
+    строки бесполезно: пересечение так не находится."""
+    raw = (px or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("tg://"):
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(raw).query)
+        return f"{(q.get('server') or [''])[0]}:{(q.get('port') or [''])[0]}".lower()
+    if "://" in raw:
+        from urllib.parse import urlparse
+        p = urlparse(raw)
+        return f"{p.hostname or ''}:{p.port or ''}".lower()
+    body = raw.rsplit("@", 1)[-1]           # user:pass@host:port → host:port
+    parts = body.split(":")
+    return f"{parts[0]}:{parts[1]}".lower() if len(parts) >= 2 else body.lower()
+
+
+@app.get("/api/proxy/conflicts")
+def proxy_conflicts() -> JSONResponse:
+    """Кто с кем делит выход в интернет и кто сидит без прокси.
+
+    Это главная причина потери аккаунтов: одна сессия, увиденная с двух IP, жжётся
+    Telegram навсегда (AuthKeyDuplicatedError — так уже потеряны три аккаунта). Два
+    аккаунта на одном адресе опасны вдвойне: при переключении прокси в пуле один из
+    них внезапно меняет IP на живой сессии, и это выглядит как угон.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, phone, proxy, status, proxy_alive FROM accounts "
+            "WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND COALESCE(status,'') NOT IN ('archived','banned') "
+            "AND COALESCE(protected,0)=0").fetchall()
+    groups: dict = {}
+    no_proxy = []
+    for r in rows:
+        key = _proxy_key(r["proxy"])
+        who = {"id": r["id"], "label": r["label"], "phone": r["phone"],
+               "status": r["status"], "proxy_alive": r["proxy_alive"]}
+        if not key:
+            no_proxy.append(who)
+            continue
+        groups.setdefault(key, []).append(who)
+    shared = [{"address": k, "accounts": v} for k, v in groups.items() if len(v) > 1]
+    shared.sort(key=lambda g: -len(g["accounts"]))
+    return JSONResponse({
+        "shared": shared,
+        "shared_accounts": sum(len(g["accounts"]) for g in shared),
+        "no_proxy": no_proxy,
+        "total": len(rows),
+        "clean": len(rows) - len(no_proxy) - sum(len(g["accounts"]) for g in shared),
+    })
 
 
 @app.get("/api/accounts/twofa")

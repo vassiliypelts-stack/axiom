@@ -303,8 +303,12 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
         # уже занятые прокси (кем-то ДРУГИМ, живым в проверке) — не раздаём их же ещё раз:
         # антибан держится на «1 прокси = 1 аккаунт», зацикленный round-robin по кругу
         # (i % len(live)) при нехватке пула молча сажал по 10+ аккаунтов на один IP.
+        # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
+        # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
+        # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
+        # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
         taken = {r["proxy"] for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
         free = [p for p in live if _mt_link(p["server"], p["port"], p["secret"]) not in taken]
         n = 0
@@ -436,8 +440,12 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         # COALESCE, а не «proxy_alive=1»: у ТОЛЬКО ЧТО выданного прокси alive ещё NULL
         # (см. assign()), и такой прокси не попадал в «занятые» — heal тут же сажал на
         # него второй аккаунт. Ровно так #9329 и #9331 из свежей пачки оказались на одном IP.
+        # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
+        # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
+        # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
+        # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
         taken = {r["proxy"] for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
         free = [(s, p, sec) for (s, p, sec) in pool if _mt_link(s, p, sec) not in taken]
         for (aid, label, px), ok in zip(accs, results):

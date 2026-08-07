@@ -1293,6 +1293,32 @@ async function loadTwofa(){
     if(r.log)console.log(r.log.join("\n"));
     setTimeout(route,1500);};
 }
+// Пересечение прокси — главная причина потери аккаунтов. Сессия, увиденная с двух
+// IP, жжётся Telegram навсегда (AuthKeyDuplicatedError). Два аккаунта на одном
+// адресе опасны и сами по себе, и потому что при смене прокси в пуле один из них
+// внезапно меняет IP на живой сессии.
+async function loadProxyCheck(){
+  const box=$("#acc-proxy");if(!box)return;
+  let d;try{d=await api("/api/proxy/conflicts");}catch(e){return;}
+  if(!d||d.error){box.innerHTML="";return;}
+  const bad=(d.shared||[]).length+(d.no_proxy||[]).length;
+  if(!bad){
+    box.innerHTML=`<div class="card" style="padding:9px 12px"><span class="badge b-active">🛡 прокси в порядке</span>
+      <span class="hint" style="margin-left:8px">у каждого из ${d.total} аккаунтов свой выход в интернет</span></div>`;
+    return;}
+  const nm=x=>esc(x.label||x.phone||("#"+x.id));
+  box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
+    <b>🕸 Прокси пересекаются</b>
+    <div class="hint" style="margin:6px 0">Сессия, которую Telegram увидел с двух адресов, сгорает навсегда — так уже потеряны три аккаунта. Один прокси = один аккаунт, иначе рано или поздно повторится.</div>
+    ${(d.shared||[]).map(g=>`<div style="padding:6px 0;border-top:1px solid var(--border)">
+      <span class="badge b-stop">${esc(g.address)}</span>
+      <span class="hint"> — на нём ${g.accounts.length}: ${g.accounts.map(nm).join(" · ")}</span></div>`).join("")}
+    ${(d.no_proxy||[]).length?`<div style="padding:6px 0;border-top:1px solid var(--border)">
+      <span class="badge b-nurture">без прокси</span>
+      <span class="hint"> — ходят с IP сервера: ${d.no_proxy.map(nm).join(" · ")}</span></div>`:""}
+    <div class="hint" style="margin-top:8px">Свободных адресов не хватает — раздача из пула специально не сажает двоих на один. Нужно докупить ${(d.shared||[]).reduce((s,g)=>s+g.accounts.length-1,0)+(d.no_proxy||[]).length} шт., до этого лучше не запускать такие аккаунты в рассылке одновременно.</div>
+  </div>`;
+}
 async function viewAgents(v){
   const a=await api("/api/accounts");
   const accPreset=localStorage.getItem("acc_preset")||"all";
@@ -1301,6 +1327,7 @@ async function viewAgents(v){
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
     <div id="acc-identity" style="margin-bottom:12px"></div>
     <div id="acc-twofa" style="margin-bottom:12px"></div>
+    <div id="acc-proxy" style="margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:12px;padding:10px 12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>🔑 Завести купленные аккаунты</b>
@@ -1417,6 +1444,7 @@ async function viewAgents(v){
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
   loadIdentityCheck();
   loadTwofa();
+  loadProxyCheck();
   const akGo=$("#ak-go");
   if(akGo)akGo.onclick=async()=>{
     const f=$("#ak-file").files[0],m=$("#ak-msg");

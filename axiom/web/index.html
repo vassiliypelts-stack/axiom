@@ -3604,11 +3604,49 @@ async function loadCoverage(){
     loadCoverage();
   };
   loadBackfill();
+  loadQuality();
 }
 // Дозаполнение tg_chat_id. Без него в досье лида пропадает «в каком чате найден»:
 // связка идёт через tg_user_posts.chat_id → chats.tg_chat_id. Резолвить всё разом
 // нельзя — на ~280 запросах подряд прилетает FloodWait на сутки, поэтому капаем
 // порциями по расписанию.
+// Предварительный разбор каталога: робот читает выборку сообщений и раскладывает
+// чаты на «годен / не годен / на проверку». Смысл — чтобы оператор смотрел глазами
+// десятки спорных, а не две с половиной тысячи подряд.
+const VERD_STYLE={"годен":"b-active","не годен":"b-stop","на проверку":"b-nurture",
+  "мёртвый":"b-stop","—":"b-nurture"};
+async function loadQuality(){
+  const box=$("#cc-quality");if(!box)return;
+  let d;try{d=await api("/api/chatcat/quality");}catch(e){box.style.display="none";return;}
+  if(!d||d.error){box.style.display="none";return;}
+  const by=d.by_verdict||{};
+  const chip=(v)=>{const o=by[v]||{ai:0,"человек":0};const total=o.ai+o["человек"];
+    if(!total)return"";
+    return `<span class="badge ${VERD_STYLE[v]||""}" title="${o["человек"]} подтвердил ты, ${o.ai} поставил робот">${esc(v)}: <b>${total}</b>${o["человек"]?` <span style="opacity:.7">(твоих ${o["человек"]})</span>`:""}</span>`;};
+  box.innerHTML=`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <b>🧪 Разбор чатов</b>
+      ${["годен","на проверку","не годен","мёртвый","—"].map(chip).join(" ")}
+      <span style="flex:1"></span>
+      <label class="hint" style="display:inline-flex;align-items:center;gap:4px">по <input id="q-limit" type="number" value="50" min="10" max="300" style="width:64px"> чатов</label>
+      <button class="primary" id="q-run">Разобрать не разобранные</button>
+      <span class="hint" id="q-msg">${d.left?`не разобрано: ${d.left}`:"всё разобрано"}</span>
+    </div>
+    <div class="hint" style="margin-top:5px">Робот читает по 150 сообщений и смотрит: много ли рекламы, повторяет ли кто-то один и тот же текст, есть ли живое общение и прямые запросы «ищу/посоветуйте». Твой вердикт он не перезаписывает — только предлагает свой.</div>
+    <div id="q-log" class="hint" style="margin-top:6px;display:none;max-height:170px;overflow:auto;white-space:pre-wrap;font-family:'JetBrains Mono',monospace;font-size:11px"></div>`;
+  $("#q-run").onclick=async()=>{
+    const b=$("#q-run"),m=$("#q-msg"),lg=$("#q-log");
+    const lim=+$("#q-limit").value||50;
+    if(!confirm(`Разобрать ${lim} чатов?\n\nАккаунт прочитает по 150 сообщений в каждом — это несколько минут и заметная нагрузка. Твои вердикты не изменятся.`))return;
+    b.disabled=true;b.textContent="разбираю…";
+    let sec=0;const t=setInterval(()=>{sec++;m.textContent=`читаю чаты… ${sec} с (примерно ${Math.round(lim*2.5)} с всего)`;},1000);
+    let r;try{r=await api("/api/chatcat/quality",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({limit:lim,only_new:true})});}catch(e){r={error:e.message};}
+    clearInterval(t);b.disabled=false;b.textContent="Разобрать не разобранные";
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.textContent=`разобрано ${r.scanned||0}`+(r.skipped?`, пропущено ${r.skipped}`:"");
+    if(r.log&&r.log.length){lg.style.display="block";lg.textContent=r.log.join("\n");}
+    loadQuality();};
+}
 async function loadBackfill(){
   const box=$("#cc-backfill");if(!box)return;
   let d;try{d=await api("/api/chatcat/backfill");}catch(e){return;}
@@ -3850,6 +3888,7 @@ async function viewChatCatalog(v){
 
     <div class="cc-tab" data-tab="cat">
       <div class="card" id="cc-coverage" style="margin-bottom:12px">📡 загружаю покрытие армии…</div>
+      <div class="card" id="cc-quality" style="margin-bottom:12px;padding:10px 12px"></div>
       <div class="card" id="cc-backfill" style="margin-bottom:12px;padding:10px 12px;display:none"></div>
       <div class="ttoolbar" style="margin-bottom:10px">
         <input id="cc-target" class="grow" placeholder="@username или ссылка чата — добавить вручную">

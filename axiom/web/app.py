@@ -2929,6 +2929,42 @@ def chatcat_scan_progress() -> JSONResponse:
         return JSONResponse({"running": False})
 
 
+@app.get("/api/chatcat/quality")
+def chatcat_quality_status() -> JSONResponse:
+    """Сколько чатов разобрано и какой расклад по вердиктам."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(verdict,'—') v, COALESCE(verdict_src,'') src, COUNT(*) c "
+            "FROM chats GROUP BY v, src").fetchall()
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM chats WHERE COALESCE(verdict,'')='' "
+            "AND ((username IS NOT NULL AND username<>'') "
+            "OR (in_account='yes' AND tg_chat_id IS NOT NULL))").fetchone()["c"]
+    by: dict = {}
+    for r in rows:
+        by.setdefault(r["v"], {"ai": 0, "человек": 0})
+        by[r["v"]][r["src"] if r["src"] in ("ai", "человек") else "ai"] += r["c"]
+    return JSONResponse({"left": left, "by_verdict": by})
+
+
+@app.post("/api/chatcat/quality")
+def chatcat_quality_run(payload: dict = Body(default={})) -> JSONResponse:
+    """Разобрать порцию чатов: прочитать выборку сообщений и поставить
+    предварительный вердикт (channels/chat_quality). Решения человека не трогает."""
+    limit = max(1, min(int(payload.get("limit") or 50), 300))
+    args = ["channels.chat_quality", "--all", "--limit", str(limit)]
+    if payload.get("only_new", True):
+        args.append("--only-new")
+    res = _run_capture(args, timeout=1800)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-400:]
+        return JSONResponse({"ok": False, "error": "разбор не отчитался. Лог: " + (tail or "(пусто)")})
+    data["log"] = (res.get("output") or "").splitlines()[-25:]
+    return JSONResponse(data)
+
+
 @app.get("/api/chatcat/backfill")
 def chatcat_backfill_status() -> JSONResponse:
     """Сколько чатов ещё без tg_chat_id + настройки авто-дозаполнения.

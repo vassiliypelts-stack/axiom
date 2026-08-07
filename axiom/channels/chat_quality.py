@@ -175,8 +175,11 @@ async def run(chat_id: int | None, limit: int, only_new: bool) -> None:
             sql += " AND id=?"
             params.append(chat_id)
         elif only_new:
-            sql += " AND COALESCE(quality_verdict,'')=''"
-        sql += " ORDER BY COALESCE(quality_at,'') ASC, id LIMIT ?"
+            # «Не разобранные» — это и те, у кого вердикта нет вовсе, и те, кому его
+            # ставил человек... нет: человека не трогаем совсем (см. _save). Берём
+            # только пустой вердикт.
+            sql += " AND COALESCE(verdict,'')=''"
+        sql += " ORDER BY COALESCE(verdict_at,'') ASC, id LIMIT ?"
         params.append(limit)
         chats = conn.execute(sql, params).fetchall()
 

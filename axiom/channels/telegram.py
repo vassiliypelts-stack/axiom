@@ -487,7 +487,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     try:
         reply = await asyncio.to_thread(
             generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,
-            extra_context, bool(kp_path), kps,
+            extra_context, bool(kp_path), kps, camp["id"] if camp else None,
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")

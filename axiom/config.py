@@ -39,8 +39,12 @@ MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
 AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
 
 
-def agent_model() -> str:
-    """Модель для ЖИВЫХ ДИАЛОГОВ. Сначала выбор в пульте, потом .env.
+def agent_model(campaign_id: int | None = None) -> str:
+    """Модель для ЖИВЫХ ДИАЛОГОВ. Порядок: модель КАМПАНИИ → выбор в пульте → .env.
+
+    У кампании своя: разные кампании ведут разные продукты, и дорогой диалог заслуживает
+    модели поумнее, а простой обзвон обойдётся дешёвой. Общий уровень при этом обязателен
+    — диалоги бывают и вне кампании (человек написал сам, контакт ни к чему не привязан).
 
     Зачем настройка поверх переменной окружения: .env лежит на сервере, а SSH к нему
     у оператора нет — значит сменить модель он не может вообще. А менять приходится:
@@ -51,6 +55,12 @@ def agent_model() -> str:
     try:
         from db import database
         with database.get_conn() as conn:
+            if campaign_id:
+                row = conn.execute("SELECT agent_model FROM campaigns WHERE id=?",
+                                   (campaign_id,)).fetchone()
+                own = (row["agent_model"] or "").strip() if row else ""
+                if own:
+                    return own
             picked = (database.get_setting(conn, "agent_model", "") or "").strip()
         if picked:
             return picked

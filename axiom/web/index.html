@@ -4842,6 +4842,9 @@ async function viewCampaigns(v){
       <div class="field"><label>Лимит контактов в день (на аккаунт)</label><input id="c-limit" type="number" value="15" style="max-width:160px"></div>
       <div class="field"><label>📨 Первое сообщение — уйдёт получателю ДОСЛОВНО, каждая строка = отдельное сообщение. {name} = имя контакта, {sender} = имя аккаунта-отправителя (команда ротируется — не вписывай имя руками)</label>
         <textarea id="c-msg" rows="5" placeholder="Здравствуйте, {name}!&#10;Меня зовут Василий, я из Фонда доступного жилья.&#10;Бывает, что клиент выбрал объект, но срывается — банк отказал или не хватает взноса?"></textarea></div>
+      <div class="field"><label>🧠 Модель, которая ведёт диалоги ЭТОЙ кампании</label>
+        <select id="c-agent-model"></select>
+        <div class="hint">Дорогой продукт — модель поумнее, простой обзвон обойдётся дешёвой. Пусто — берётся общая из «Аккаунтов».</div></div>
       <div class="field"><label>🤖 Промпт общения ИИ-агента — как агент ведёт диалог, отрабатывает возражения, ведёт на созвон</label>
         <textarea id="c-prompt" rows="9" placeholder="${esc(PROMPT_PH)}"></textarea>
         <div class="hint" style="margin-top:5px">Это «характер» агента в переписке. Формат ответа (дробление, без впаривания, слоты встреч) добавляется автоматически.</div></div>
@@ -4946,6 +4949,13 @@ async function viewCampaigns(v){
     $("#c-project").value=c.project_id||(PROJECT_SEL?PROJECT_SEL.id:"");
     $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
+    // модель диалогов этой кампании (пусто = общая из «Аккаунтов»)
+    api("/api/settings/agent_model").then(s=>{
+      const sel=$("#c-agent-model");if(!sel)return;
+      sel.innerHTML=`<option value="">— общая из «Аккаунтов» (${esc(s.current)}) —</option>`
+        +s.choices.map(x=>`<option value="${esc(x.id)}">${esc(x.name)}${x.has_key?"":" — НЕТ КЛЮЧА"}</option>`).join("");
+      sel.value=c.agent_model||"";
+    });
     // чем заканчивается диалог: своя переговорка и свой ответственный у кампании
     $("#c-meeting-url").value=c.meeting_url||"";
     $("#c-notify-target").value=c.notify_target||"";
@@ -5086,6 +5096,7 @@ async function viewCampaigns(v){
       meeting_url:$("#c-meeting-url").value.trim(),
       notify_target:$("#c-notify-target").value.trim(),
       notify_account_id:$("#c-notify-acc").value||null,
+      agent_model:$("#c-agent-model").value,
       message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",

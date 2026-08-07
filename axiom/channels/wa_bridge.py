@@ -186,7 +186,8 @@ def incoming(msg: Incoming) -> JSONResponse:
     history.append({"role": "user", "content": msg.text})
 
     try:
-        reply = generate_reply(history, _default_slots(), contact_info, opener, campaign_prompt, extra_context)
+        reply = generate_reply(history, _default_slots(), contact_info, opener, campaign_prompt,
+                               extra_context, campaign_id=camp["id"] if camp else None)
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": str(e)}, status_code=500)
 

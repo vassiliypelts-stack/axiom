@@ -4580,9 +4580,11 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
         # Переговорка и ответственный кампании: заполнены прямо в форме создания —
         # значит их нельзя терять до первого «сохранить» уже существующей кампании.
         conn.execute(
-            "UPDATE campaigns SET meeting_url=?, notify_target=?, notify_account_id=? WHERE id=?",
+            "UPDATE campaigns SET meeting_url=?, notify_target=?, agent_model=?, "
+            "notify_account_id=? WHERE id=?",
             ((payload.get("meeting_url") or "").strip() or None,
              (payload.get("notify_target") or "").strip() or None,
+             (payload.get("agent_model") or "").strip() or None,
              int(payload["notify_account_id"]) if payload.get("notify_account_id") else None,
              cur.lastrowid),
         )
@@ -4618,7 +4620,7 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
                          (1 if payload.get("tg_verified_only") else 0, cid))
         # Своя переговорка и свой ответственный у кампании. Пишем только пришедшие поля:
         # форма может сохраняться частично, и молча стирать чужую настройку нельзя.
-        for key in ("meeting_url", "notify_target"):
+        for key in ("meeting_url", "notify_target", "agent_model"):
             if key in payload:
                 conn.execute(f"UPDATE campaigns SET {key}=? WHERE id=?",
                              ((payload.get(key) or "").strip() or None, cid))

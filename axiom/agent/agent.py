@@ -54,6 +54,7 @@ def generate_reply(
     extra_context: str | None = None,
     kp_available: bool = False,
     kps: list[dict] | None = None,
+    campaign_id: int | None = None,
 ) -> Reply:
     """history: [{'role': 'user'|'assistant', 'content': str}, ...]
     'user' = входящее от риелтора, 'assistant' = наши прошлые сообщения.
@@ -107,11 +108,12 @@ def generate_reply(
     # реплики SDR в нём не нуждаются.
     from agent import llm
     kwargs: dict = {}
-    if llm.is_anthropic(config.agent_model()) and "haiku" not in config.agent_model():
+    model = config.agent_model(campaign_id)
+    if llm.is_anthropic(model) and "haiku" not in model:
         kwargs["thinking"] = {"type": "adaptive"}
 
     return llm.structured(
-        config.agent_model(), system=llm.cached(system, personal), messages=history,
+        model, system=llm.cached(system, personal), messages=history,
         output_format=Reply, max_tokens=1000, **kwargs,
     )
 

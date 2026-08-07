@@ -5317,7 +5317,7 @@ function renderCampList(mount,camps){
     if(!p.rows.length){box.innerHTML='<div class="sub">Аудитория пуста — некому слать (проверь тег/канал/статусы).</div>';return;}
     const rowsHtml=p.rows.map(r=>{
       const bg=r.is_paused?'background:color-mix(in srgb,var(--red) 10%,transparent)':(r.is_test?'background:var(--accent-soft)':'');
-      const cb=r.sent?'':`<input type="checkbox" class="pg-cb" data-id="${r.id}" data-src="${esc(r.source||"")}">`;
+      const cb=r.sent?'':`<input type="checkbox" class="pg-cb" data-id="${r.id}" data-src="${esc(r.source||"")}" data-paused="${r.is_paused?1:0}">`;
       const testBadge=r.is_test?' <span class="badge b-active" title="Тестовый номер — уходит первым, до боевой аудитории">🧪 тест</span>':'';
       const pauseBadge=r.is_paused?' <span class="badge b-stop" title="На паузе в этой кампании — рассылка её пропускает">⏸ пауза</span>':'';
       const eye=`<a href="/#contacts/${r.id}" target="_blank" rel="noopener" title="Открыть карточку контакта в новой вкладке" style="margin-left:6px;text-decoration:none">👁</a>`;
@@ -5329,28 +5329,49 @@ function renderCampList(mount,camps){
       <td class="sub">${esc(r.source)||"—"}</td>
       <td>${esc(r.account)}</td>
       <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`;}).join("");
-    // Уже поставленные на паузу в список источников не попадают — иначе после «Убрать
-    // весь этот источник» тот же пункт как ни в чём не бывало торчал в выпадайке, и
-    // оператор жал кнопку ещё раз, думая, что первый клик не сработал.
-    const pendingSources=[...new Set(p.rows.filter(r=>!r.sent&&!r.is_paused).map(r=>r.source).filter(Boolean))].sort();
-    const srcOpts=`<option value="">— выбери источник —</option>`+pendingSources.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
+    // В списке ВСЕ источники неотправленных — и активные, и уже снятые. Прятать снятые
+    // нельзя: когда убрали источник целиком, он исчезал из выпадайки вместе с
+    // возможностью вернуть его обратно (поймано вживую: все 2gis на паузе → выбрать
+    // нечего). Вместо этого пишем прямо в пункте, сколько в очереди и сколько снято.
+    const srcStat={};
+    p.rows.filter(r=>!r.sent&&r.source).forEach(r=>{
+      const s=srcStat[r.source]||(srcStat[r.source]={live:0,paused:0});
+      r.is_paused?s.paused++:s.live++;});
+    const srcOpts=`<option value="">— выбери источник —</option>`
+      +Object.keys(srcStat).sort().map(s=>{const v=srcStat[s];
+        const note=v.paused?(v.live?`${v.live} в очереди, ${v.paused} снято`:`все ${v.paused} сняты`):`${v.live} в очереди`;
+        return `<option value="${esc(s)}">${esc(s)} — ${note}</option>`;}).join("");
     box.innerHTML=`<div class="sub" style="margin-bottom:6px">Отправлено <b>${p.sent_count}</b> · показано в очереди <b>${p.total-p.sent_count}</b> из <b>${p.audience_total}</b> · аккаунт: <b>${esc(p.account_name)}</b></div>
       <div class="ttoolbar" style="margin:0 0 8px;gap:8px;flex-wrap:wrap">
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="pg-all-${id}"> выбрать все не отправленные</label>
+        <span class="hint" id="pg-sel-${id}"></span>
         <button id="pg-pause-${id}" style="font-size:11px">⏸ Пауза / убрать из рассылки выбранных</button>
         <button id="pg-unpause-${id}" style="font-size:11px">▶ Снять паузу с выбранных</button></div>
       <div class="ttoolbar" style="margin:0 0 8px;gap:8px;flex-wrap:wrap">
         <select id="pg-src-${id}" style="min-width:180px">${srcOpts}</select>
         <button id="pg-src-pause-${id}" style="font-size:11px">🗑 Убрать из рассылки весь этот источник</button>
+        <button id="pg-src-unpause-${id}" style="font-size:11px">↩ Вернуть весь этот источник</button>
         <span class="hint" id="pg-msg-${id}"></span></div>
       <div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px">
         <table style="width:100%;border-collapse:collapse">
           <tr><th style="width:26px"></th><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>Источник</th><th>С аккаунта</th><th>Когда</th></tr>
           ${rowsHtml}</table></div>`;
     const selIds=()=>[...box.querySelectorAll(".pg-cb:checked")].map(cb=>+cb.dataset.id);
-    const allCb=document.getElementById(`pg-all-${id}`);
-    if(allCb)allCb.onchange=()=>box.querySelectorAll(".pg-cb").forEach(cb=>cb.checked=allCb.checked);
     const msgEl=document.getElementById(`pg-msg-${id}`);
+    // Счётчик выделенных: без него галочка «выбрать все» выглядела как ничего не
+    // делающая — строк много, экран прокручен, результат клика просто не видно.
+    const selCount=()=>{const n=box.querySelectorAll(".pg-cb:checked").length;
+      const el=document.getElementById(`pg-sel-${id}`);
+      if(el)el.textContent=n?`выделено: ${n}`:"";};
+    const allCb=document.getElementById(`pg-all-${id}`);
+    if(allCb)allCb.onchange=()=>{
+      // «не отправленные» = те, кто РЕАЛЬНО ждёт отправки. Уже снятых не трогаем:
+      // выделять их под кнопкой «убрать из рассылки» бессмысленно, они и так сняты.
+      box.querySelectorAll(".pg-cb").forEach(cb=>{
+        if(cb.dataset.paused==="1")return;
+        cb.checked=allCb.checked;});
+      selCount();};
+    box.querySelectorAll(".pg-cb").forEach(cb=>cb.addEventListener("change",selCount));
     // flash-сообщение переживает перерисовку: box НЕ пересоздаётся, только его innerHTML —
     // атрибут на самом box цел, читаем его сразу после перезагрузки таблицы (выше).
     if(flash){msgEl.innerHTML='<span style="color:var(--green)">'+esc(flash)+'</span>';}
@@ -5373,9 +5394,21 @@ function renderCampList(mount,camps){
       if(!src){msgEl.textContent="выбери источник";return;}
       // сравниваем значения из уже загруженных данных (p.rows), а не через CSS-селектор
       // по строке источника — тот бился на источниках со спецсимволами/регистром.
-      const ids=p.rows.filter(r=>!r.sent&&r.source===src).map(r=>r.id);
-      if(!ids.length){msgEl.textContent=`не нашёл контактов с источником «${src}» — обнови «Прогресс» и попробуй снова`;return;}
+      const ids=p.rows.filter(r=>!r.sent&&!r.is_paused&&r.source===src).map(r=>r.id);
+      if(!ids.length){msgEl.textContent=`в источнике «${src}» и так никто не ждёт отправки — все уже сняты`;return;}
       doPause(ids);
+    };
+    // Обратная операция: вернуть в рассылку весь снятый источник. Без неё «убрать»
+    // было действием без отмены — вернуть 180 снятых можно было только по одному.
+    const srcUnpauseBtn=document.getElementById(`pg-src-unpause-${id}`);
+    if(srcUnpauseBtn)srcUnpauseBtn.onclick=async()=>{
+      const src=document.getElementById(`pg-src-${id}`).value;
+      if(!src){msgEl.textContent="выбери источник";return;}
+      const ids=p.rows.filter(r=>!r.sent&&r.is_paused&&r.source===src).map(r=>r.id);
+      if(!ids.length){msgEl.textContent=`в источнике «${src}» нет снятых — возвращать нечего`;return;}
+      const r=await api(`/api/campaign/${id}/unpause_contacts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contact_ids:ids})});
+      if(r.error){msgEl.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+      reopen(`↩ вернули в рассылку: ${r.unpaused}`);
     };
     const unpauseBtn=document.getElementById(`pg-unpause-${id}`);
     if(unpauseBtn)unpauseBtn.onclick=async()=>{

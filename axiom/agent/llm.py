@@ -325,12 +325,32 @@ def structured(spec: str, system: "str | list[dict] | None", messages: list[dict
     # тот же запрос просто пробуется ещё раз: новый семпл почти всегда приходит валидным.
     last_err: Exception | None = None
     for attempt in range(_RETRIES):
-        data = _compat_post(prov, {
+        body = {
             "model": model, "max_tokens": max_tokens,
             "messages": _to_openai(system, messages),
             "response_format": rf,
-        }, timeout)
+        }
+        # ПУСТОЙ ответ (HTTP 200, content="") — отдельная болезнь json_object-режима у
+        # DeepSeek: на длинном системном промпте он изредка отдаёт пустоту вместо JSON.
+        # Ретрай тем же телом лечит не всегда, поэтому со второй попытки снимаем
+        # response_format: без него модель отвечает обычным текстом, а JSON мы и так
+        # умеем вынимать (см. разбор ```json ниже). Лучше ответ в свободной форме,
+        # чем молчание живому человеку.
+        if attempt and isinstance(last_err, RuntimeError) and "пустой ответ" in str(last_err):
+            body.pop("response_format", None)
+        data = _compat_post(prov, body, timeout)
         raw = _compat_content(data)
+        if not raw.strip():
+            # в текст ошибки кладём ДИАГНОСТИКУ, иначе в колокольчике опять будет
+            # «вернул не JSON:» и пустота — по такому сообщению причину не найти
+            ch = (data.get("choices") or [{}])[0]
+            last_err = RuntimeError(
+                f"{prov} вернул пустой ответ (finish_reason={ch.get('finish_reason')}, "
+                f"usage={data.get('usage')}, промпт={len(_system_text(system) or '')} симв.)")
+            if attempt < _RETRIES - 1:
+                print(f"[llm] {prov}: пустой ответ, попытка {attempt + 1}/{_RETRIES}")
+                continue
+            raise last_err
         try:
             return output_format(**_coerce_to_schema(json.loads(raw), schema))
         except json.JSONDecodeError as e:

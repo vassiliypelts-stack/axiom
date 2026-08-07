@@ -506,7 +506,19 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         # после всех повторов приходит пустой ответ вместо JSON (см. agent/llm.py
         # structured, _RETRIES) — до сих пор это значило полную тишину навсегда,
         # хотя причину и так видно оператору в колокольчике (see _notify_agent_down).
+        # …но ровно ОДИН раз. Человек, не получив ответа по существу, обычно дописывает
+        # ещё и ещё — и каждое его сообщение роняло агента заново, отправляя новую
+        # отговорку. Вживую вышло четыре «сорри, отвлёкся» подряд: так не пишет ни
+        # занятой человек, ни исправный бот, это читается как поломка. Если последнее
+        # наше сообщение уже было отговоркой — молчим и ждём, пока агент починится.
         try:
+            with database.get_conn() as conn:
+                last_out = conn.execute(
+                    "SELECT text FROM messages WHERE contact_id=? AND direction='out' "
+                    "ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+            if last_out and (last_out["text"] or "").strip() in _STALL_REPLIES:
+                print(f"[agent fallback] contact {contact_id}: отговорка уже отправлена — молчим")
+                return
             peer = await event.get_input_chat()
             await _humanize_before_reply(event.client, peer)
             stall = random.choice(_STALL_REPLIES)

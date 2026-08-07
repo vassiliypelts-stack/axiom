@@ -1021,22 +1021,39 @@ async function openAudience(cid){
         <button id="aud-selnone" title="снять со всех строк текущего фильтра — контакт пропускается ИМЕННО в этой кампании">☐ снять все</button>
         <span class="hint">${rows.length} строк</span>
       </div>
-      <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="position:sticky;top:0;background:var(--panel)">
-          <th style="padding:6px 8px;text-align:left">шлём</th><th style="text-align:left">кто</th>
-          <th>TG</th><th>WA</th><th style="text-align:left">статус</th><th style="text-align:left">почему не пойдёт</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--border);${r.in_queue?"":"opacity:.6"}">
-          <td style="padding:5px 8px"><input type="checkbox" class="aud-chk" data-id="${r.id}" ${r.paused?"":"checked"} ${(!r.in_queue&&!r.paused)?"disabled title='не пойдёт по другой причине'":""}></td>
-          <td><b>${esc(r.who||("#"+r.id))}</b>${r.username?` <span class="tg">@${esc(r.username)}</span>`:""}${r.phone?` <span class="hint">${esc(r.phone)}</span>`:""}</td>
-          <td style="text-align:center">${MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown}</td>
-          <td style="text-align:center">${MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown}</td>
-          <td class="hint">${esc(r.status||"")}</td>
-          <td class="hint">${r.blocked_by?esc(r.blocked_by):""}</td></tr>`).join("")}</tbody>
-      </table></div>
+      <div id="aud-tbl"></div>
       <div class="ttoolbar" style="margin:10px 0 0"><span class="hint" id="aud-msg">Снятая галочка = контакт пропускается ИМЕННО в этой кампании. В других он остаётся.</span>
         <span class="grow"></span><button class="modal-close">закрыть</button></div>`;
     inner.querySelector(".modal-close").onclick=close;
+    // smartTable даёт то же самое, что и в остальных таблицах пульта, бесплатно:
+    // перетаскивание колонок за ⠿, сужение за край заголовка, показ/скрытие,
+    // сортировку кликом по шапке. Раньше это окно было отдельной вручную собранной
+    // <table> без единой из этих возможностей.
+    const audTbl=inner.querySelector("#aud-tbl");
+    smartTable(audTbl,{
+      tableKey:"campaign_audience",
+      rows,searchKeys:["who","username","phone","status","blocked_by"],
+      columns:[
+        {key:"in_queue",label:"Шлём",render:r=>`<input type="checkbox" class="aud-chk" data-id="${r.id}" ${r.paused?"":"checked"} ${(!r.in_queue&&!r.paused)?"disabled title='не пойдёт по другой причине'":""}>`},
+        {key:"who",label:"Кто",cls:"name",render:r=>`<b>${esc(r.who||("#"+r.id))}</b>${r.username?` <span class="tg">@${esc(r.username)}</span>`:""}${r.phone?` <span class="hint">${esc(r.phone)}</span>`:""}`},
+        {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
+        {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
+        {key:"status",label:"Статус",cls:"sub",render:r=>esc(r.status||"")},
+        {key:"blocked_by",label:"Почему не пойдёт",cls:"sub",render:r=>r.blocked_by?esc(r.blocked_by):""},
+      ],
+      emptyText:"Пусто по текущему фильтру.",
+    });
+    // Делегированный обработчик на КОНТЕЙНЕРЕ, не на строках: smartTable перерисовывает
+    // тело таблицы при сортировке/поиске/странице, и обработчики на самих чекбоксах
+    // потерялись бы при первом же клике по заголовку.
+    audTbl.addEventListener("change",async(e)=>{
+      const ch=e.target.closest(".aud-chk");if(!ch)return;
+      const id=+ch.dataset.id,m=inner.querySelector("#aud-msg");
+      const url=ch.checked?"unpause_contacts":"pause_contacts";
+      const r=await api(`/api/campaign/${cid}/${url}`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({contact_ids:[id]})});
+      m.textContent=r.error?("ошибка: "+r.error):(ch.checked?"вернули в рассылку":"снят из этой кампании");
+      if(!r.error)route();});
     inner.querySelectorAll(".aud-f").forEach(b=>b.onclick=()=>{AUD_ONLY=b.dataset.f;draw();});
     // Пробив TG — прямо здесь, где проблема и видна: иначе оператор читает
     // предупреждение и не знает, куда идти его лечить.
@@ -1057,13 +1074,6 @@ async function openAudience(cid){
         m.textContent=r&&r.error?("ошибка: "+r.error):`готово: ${JSON.stringify(r).slice(0,160)}`;
         draw();};
     }
-    inner.querySelectorAll(".aud-chk").forEach(ch=>ch.onchange=async()=>{
-      const id=+ch.dataset.id,m=inner.querySelector("#aud-msg");
-      const url=ch.checked?"unpause_contacts":"pause_contacts";
-      const r=await api(`/api/campaign/${cid}/${url}`,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({contact_ids:[id]})});
-      m.textContent=r.error?("ошибка: "+r.error):(ch.checked?"вернули в рассылку":"снят из этой кампании");
-      if(!r.error)route();});
     // «выделить/снять все» — в пределах ТЕКУЩЕГО фильтра (все/только пойдут/только
     // выпавшие) и только там, где галочка вообще что-то решает: у выпавших по другой
     // причине (нет username/телефона и т.п.) чекбокс задизейблен не просто так, их

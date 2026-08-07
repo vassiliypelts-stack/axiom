@@ -176,6 +176,36 @@ def _listenable() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _unknown_sender_notice(acc_id: int, sender, username: str | None, text: str) -> None:
+    """Написал тот, кого нет в книжке. Наши же аккаунты (взаимный прогрев) пропускаем
+    молча, живого человека — в колокольчик, не чаще раза в 15 минут на отправителя."""
+    import time
+    uname = (username or "").lstrip("@").lower()
+    phone = (getattr(sender, "phone", "") or "").lstrip("+")
+    try:
+        with database.get_conn() as conn:
+            if uname or phone:
+                mine = conn.execute(
+                    "SELECT 1 FROM accounts WHERE (LOWER(REPLACE(COALESCE(username,''),'@','')) = ? "
+                    "AND ? <> '') OR (REPLACE(COALESCE(phone,''),'+','') = ? AND ? <> '')",
+                    (uname, uname, phone, phone)).fetchone()
+                if mine:
+                    return                       # свои греются друг о друга — это норма
+            key = f"unknown_sender_ts_{sender.id}"
+            if (time.time() - float(database.get_setting(conn, key, "0") or 0)) < 900:
+                return
+            database.set_setting(conn, key, str(time.time()))
+            who = f"@{username}" if username else f"id{sender.id}"
+            database.add_event(
+                conn, "agent_error", f"🔇 Написал незнакомец: {who}",
+                f"«{text[:160]}»\n\nЭтого человека нет в книжке, поэтому диалог не заведён и агент "
+                f"не отвечает. Если это твой тест — добавь номер в контакты кампании; если живой "
+                f"лид — заведи карточку и ответь вручную.",
+                level="warn", account_id=acc_id)
+    except Exception:  # noqa: BLE001 — уведомление не должно ронять слушатель
+        pass
+
+
 async def _handle_private(event, acc_id: int) -> None:
     """Личка: ответ известного контакта → в «Диалоги» (+ авто-ответ с активных)."""
     sender = await event.get_sender()
@@ -187,7 +217,13 @@ async def _handle_private(event, acc_id: int) -> None:
         contact = database.find_contact_by_tg(
             conn, tg_user_id=int(sender.id), username=username)
     if contact is None:
-        return  # незнакомый (в т.ч. взаимный прогрев) — не наш контакт, молчим
+        # Незнакомец. Обычно это взаимный прогрев (наши же аккаунты пишут друг другу) —
+        # такое молчим. А вот живой человек, которого нет в книжке, — это потерянный
+        # ответ: он писал НАМ, а мы не показали его нигде. Раньше обе ситуации молча
+        # выходили через один return, и «мне ответили, а в пульте пусто» было
+        # невозможно отличить от поломки.
+        _unknown_sender_notice(acc_id, sender, username, text_in)
+        return
     _record_incoming(contact["id"], text_in, username, account_id=acc_id)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
     if _should_reply(acc_id, contact["id"]):

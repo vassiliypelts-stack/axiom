@@ -302,6 +302,7 @@ def _team(cid: int) -> list[dict]:
         rows = conn.execute(
             "SELECT a.id, a.label, a.username, a.phone, a.tg_session, a.proxy, "
             "a.api_id, a.api_hash, a.description, a.avatar, a.status, a.tg_name, "
+            "COALESCE(a.protected,0) AS protected, "
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
@@ -440,6 +441,23 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         else:
             print("нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
         return
+
+    # Кто пишет, тот обязан и слышать ответ. Слушатель входящих (channels/listener.
+    # _listenable) не подключает «родные» (protected) аккаунты — это защита личного
+    # номера от автоматики. Но рассылать с такого аккаунта никто не мешает, и тогда
+    # получается глухая связка: письмо ушло, человек ответил, а входящее не поймал
+    # никто — ни диалога, ни ответа агента, ни строчки в ленте. Предупреждаем сразу.
+    deaf = [s["label"] for s in live if (s["acc"] or {}).get("protected")]
+    if deaf:
+        print(f"⚠️ {', '.join(deaf)}: аккаунт «родной» (protected) — слушатель входящих его "
+              f"не подключает, ответы клиентов не попадут ни в диалоги, ни к агенту")
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "agent_error", f"🔇 Кампания «{camp['name']}»: ответы будет некому услышать",
+                f"Пишем с «родных» аккаунтов ({', '.join(deaf)}), а слушатель входящих их не "
+                f"подключает — защита личного номера. Человек ответит, и ответ пропадёт. "
+                f"Сними отметку «родной» с этого аккаунта или веди кампанию с рабочего.",
+                level="bad", campaign_id=cid)
 
     tag = f"кампания #{cid}"
     print(f"кампания #{cid} «{camp['name']}»: отправителей {len(live)}, всего до {cap} контактов")

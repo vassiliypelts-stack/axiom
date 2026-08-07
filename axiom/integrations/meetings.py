@@ -25,6 +25,25 @@ class MeetingResult:
     parsed: bool                 # удалось ли превратить слот в реальную дату
 
 
+def _meeting_url() -> str:
+    """Постоянная ссылка на созвон (Телемост/Zoom/Meet): сначала настройка из пульта,
+    потом .env.
+
+    Почему настройка важнее переменной окружения: .env лежит на сервере, а SSH к нему
+    у оператора под рукой нет. Без ссылки агент договаривается о времени и не даёт
+    адреса подключения — то есть встреча де-факто срывается. Теперь ссылку можно
+    вписать в «Мои агенты» и она подхватится без перезапуска сервиса."""
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            url = (database.get_setting(conn, "meeting_url", "") or "").strip()
+        if url:
+            return url
+    except Exception:  # noqa: BLE001 — БД недоступна: не мешаем встрече состояться
+        pass
+    return config.PERMANENT_MEETING_URL or ""
+
+
 def parse_slot(slot: str | None) -> datetime | None:
     """Слот из диалога → aware datetime в MEETING_TZ. Не распарсил → None.
 
@@ -50,7 +69,7 @@ def arrange(contact: dict, slot: str | None) -> MeetingResult:
     # и в Zoom API не идём вовсе. Так встреча получает ссылку даже когда внешние
     # сервисы недоступны (Google Calendar и часть Zoom API закрыты из РФ) — раньше в
     # этом случае человек соглашался на созвон и оставался без адреса подключения.
-    permanent = (config.PERMANENT_MEETING_URL or "").strip()
+    permanent = (_meeting_url() or "").strip()
     if permanent:
         zoom_link = permanent
     else:

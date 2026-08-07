@@ -511,13 +511,27 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         # отговорку. Вживую вышло четыре «сорри, отвлёкся» подряд: так не пишет ни
         # занятой человек, ни исправный бот, это читается как поломка. Если последнее
         # наше сообщение уже было отговоркой — молчим и ждём, пока агент починится.
+        # Ограничение по ВРЕМЕНИ, а не «один раз навсегда». Первая версия проверяла
+        # только, была ли отговоркой последняя наша реплика — и диалог, где она
+        # оказалась последней, замолкал НАВСЕГДА: человек пишет через час, агент опять
+        # падает, а мы молчим, потому что «уже извинялись». Поймано вживую. Пятнадцати
+        # минут хватает, чтобы не сыпать извинениями в одну очередь сообщений, и при
+        # этом ответить тому, кто вернулся позже.
         try:
             with database.get_conn() as conn:
                 last_out = conn.execute(
-                    "SELECT text FROM messages WHERE contact_id=? AND direction='out' "
+                    "SELECT text, ts FROM messages WHERE contact_id=? AND direction='out' "
                     "ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+            recent_stall = False
             if last_out and (last_out["text"] or "").strip() in _STALL_REPLIES:
-                print(f"[agent fallback] contact {contact_id}: отговорка уже отправлена — молчим")
+                from datetime import datetime as _dt
+                try:
+                    age = (_dt.utcnow() - _dt.fromisoformat(str(last_out["ts"]))).total_seconds()
+                except (TypeError, ValueError):
+                    age = 0          # неразобранная метка времени — считаем свежей
+                recent_stall = age < 900
+            if recent_stall:
+                print(f"[agent fallback] contact {contact_id}: отговорка уже была <15 мин назад — молчим")
                 return
             peer = await event.get_input_chat()
             await _humanize_before_reply(event.client, peer)

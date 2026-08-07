@@ -248,9 +248,20 @@ def _compat_post(prov: str, body: dict, timeout: float | None = None) -> dict:
 
 def _compat_content(data: dict) -> str:
     try:
-        return data["choices"][0]["message"]["content"] or ""
+        msg = data["choices"][0]["message"]
     except (KeyError, IndexError) as e:
         raise RuntimeError(f"неожиданный ответ провайдера: {str(data)[:200]}") from e
+    content = msg.get("content") or ""
+    if content.strip():
+        return content
+    # Живой случай: DeepSeek отдал completion_tokens=12 (реально что-то сгенерил),
+    # а content пуст — content.reasoning_content у DeepSeek-моделей несёт цепочку
+    # рассуждений отдельно от финального ответа; если по какой-то причине текст
+    # осел там, а не в content, мы раньше теряли его целиком и падали с «пустой
+    # ответ», хотя модель фактически ответила. Дешёвый фолбэк, ничего не портит,
+    # если поля нет — как и раньше, вернётся пустая строка.
+    reasoning = (msg.get("reasoning_content") or "").strip()
+    return reasoning if reasoning else content
 
 
 # ---- Единый фасад: text() и structured() -------------------------------- #

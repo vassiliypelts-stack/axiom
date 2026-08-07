@@ -1016,7 +1016,10 @@ async function openAudience(cid){
       <div class="ttoolbar" style="margin:0 0 8px">
         ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"]].map(([k,l])=>
           `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}</button>`).join("")}
-        <span class="grow"></span><span class="hint">${rows.length} строк</span>
+        <span class="grow"></span>
+        <button id="aud-selall" title="поставить галочки на все строки текущего фильтра, кому это ещё разрешено (не выпавшие по другой причине)">☑ выделить все</button>
+        <button id="aud-selnone" title="снять со всех строк текущего фильтра — контакт пропускается ИМЕННО в этой кампании">☐ снять все</button>
+        <span class="hint">${rows.length} строк</span>
       </div>
       <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -1061,6 +1064,25 @@ async function openAudience(cid){
         body:JSON.stringify({contact_ids:[id]})});
       m.textContent=r.error?("ошибка: "+r.error):(ch.checked?"вернули в рассылку":"снят из этой кампании");
       if(!r.error)route();});
+    // «выделить/снять все» — в пределах ТЕКУЩЕГО фильтра (все/только пойдут/только
+    // выпавшие) и только там, где галочка вообще что-то решает: у выпавших по другой
+    // причине (нет username/телефона и т.п.) чекбокс задизейблен не просто так, их
+    // не трогаем. Один запрос на всю пачку, а не по запросу на галочку — на 290
+    // строках щёлкать поштучно было единственным способом снять источник целиком.
+    const bulkSet=async(want)=>{
+      const m=inner.querySelector("#aud-msg");
+      const targets=rows.filter(r=>(r.in_queue||r.paused)&&(want?r.paused:!r.paused));
+      if(!targets.length){m.textContent=want?"уже все выбраны":"уже все сняты";return;}
+      const url=want?"unpause_contacts":"pause_contacts";
+      const r=await api(`/api/campaign/${cid}/${url}`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({contact_ids:targets.map(x=>x.id)})});
+      m.textContent=r.error?("ошибка: "+r.error)
+        :(want?`вернули в рассылку: ${targets.length}`:`сняли из этой кампании: ${targets.length}`);
+      if(!r.error)draw();
+    };
+    const selAllBtn=inner.querySelector("#aud-selall"),selNoneBtn=inner.querySelector("#aud-selnone");
+    if(selAllBtn)selAllBtn.onclick=()=>bulkSet(true);
+    if(selNoneBtn)selNoneBtn.onclick=()=>bulkSet(false);
   };
   await draw();
 }

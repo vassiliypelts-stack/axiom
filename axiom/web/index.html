@@ -202,6 +202,15 @@
   .dash-chh .ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);color:var(--accent);font-size:15px;}
   .dash-chh h3{font-family:'Oswald';font-weight:600;font-size:13.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--text);margin:0;}
   .dash-chh .tag{margin-left:auto;font-family:'JetBrains Mono';font-size:10px;color:var(--muted);letter-spacing:.08em;}
+  /* Сворачивание карточек дашборда: кликаем по шапке, прячется всё, кроме неё.
+     Счётчик в .tag остаётся видимым — по нему и понятно, стоит ли разворачивать. */
+  .dash-chh{cursor:pointer;user-select:none;}
+  .dash-chh .caret{margin-left:8px;color:var(--muted);font-size:11px;transition:transform .15s;}
+  .dash-chh .tag+.caret{margin-left:8px;}
+  .dash-chh .caret:only-of-type{margin-left:auto;}
+  .clp>*:not(.dash-chh){display:none!important;}
+  .clp .dash-chh{margin-bottom:0;}
+  .clp .caret{transform:rotate(-90deg);}
   .dash-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(106px,1fr));gap:10px;}
   .dtile{background:color-mix(in srgb,var(--panel2) 72%,transparent);border:1px solid var(--border);border-radius:13px;padding:13px 14px;position:relative;overflow:hidden;cursor:pointer;transition:transform .18s,border-color .25s;}
   .dtile:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 40%,transparent);}
@@ -943,6 +952,29 @@ function bindTags(scope){
     c.tags=tags;route();});
 }
 
+// Карточки дашборда сворачиваются кликом по шапке, состояние запоминается по
+// заголовку. «Задачи на сегодня» разрастаются до десятка строк и уводят вниз всё
+// остальное — а нужны они не каждый заход. Вешаем на все .dash-chh разом, чтобы
+// новая карточка получала сворачивание бесплатно.
+function wireCollapse(scope){
+  (scope||document).querySelectorAll(".dash-chh").forEach(h=>{
+    if(h.dataset.clp)return;            // повторный вызов после ре-рендера — не дублируем
+    h.dataset.clp="1";
+    const card=h.parentElement;if(!card)return;
+    const key="axiom_clp_"+((h.querySelector("h3")||{}).textContent||"").trim();
+    if(!h.querySelector(".caret")){
+      const c=document.createElement("span");c.className="caret";c.textContent="▾";
+      h.appendChild(c);
+    }
+    try{if(localStorage.getItem(key)==="1")card.classList.add("clp");}catch(e){}
+    h.addEventListener("click",e=>{
+      if(e.target.closest("a,button,input,select"))return;
+      card.classList.toggle("clp");
+      try{localStorage.setItem(key,card.classList.contains("clp")?"1":"0");}catch(e){}
+    });
+  });
+}
+
 // ----------------------------------------------------------------- views
 // Задачи на сегодня: то, что планировщик собирается сделать за тебя — напомнить о
 // встрече, дожать молчуна, вернуть не дошедшего. Расчёт (scheduler.collect_due) был
@@ -976,6 +1008,7 @@ async function loadTodayTasks(){
     ${items.length>12?`<div class="hint">…и ещё ${items.length-12}</div>`:""}
     ${d.unsendable?`<div class="hint" style="margin-top:6px;color:#c0392b">⚠️ ${d.unsendable} задач(и) не уйдут: у контакта нет telegram-id. Пробей номер или открой диалог вручную.</div>`:""}`;
   box.querySelectorAll(".tt-row").forEach(el=>el.onclick=()=>openDossier(+el.dataset.cid));
+  wireCollapse(box);
 }
 // Кто в рассылке: поимённый список аудитории кампании. Отвечает на вопрос, который
 // раньше требовал похода в базу — «выбрал 288, а в очереди 180, куда делись?».
@@ -1180,6 +1213,7 @@ async function viewDashboard(v){
   </div>`;
 
   loadTodayTasks();
+  wireCollapse(v);   // все карточки дашборда — сворачиваемые кликом по шапке
 
   // живые часы «обновлено» в шапке
   const clockEl=$("#dash-clock");if(clockEl){clockEl.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}
@@ -4750,6 +4784,7 @@ async function viewDossier(v){
   $("#dl-q").addEventListener("keydown",e=>{if(e.key==="Enter")dlRun();});
   smartTable($("#dz"),{
     tableKey:"dossier",
+    selectable:true,selWord:"человек",onDelete:bulkDelete("/api/contacts/bulk-delete"),
     rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
     groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"source",label:"источник"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,

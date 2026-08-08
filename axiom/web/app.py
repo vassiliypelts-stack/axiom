@@ -2537,7 +2537,15 @@ def pipelines_update(pid: int, payload: dict = Body(...)) -> JSONResponse:
 
 
 def _bulk_ids(payload: dict) -> list[int]:
-    return [int(i) for i in (payload.get("ids") or [])]
+    # мусор в списке пропускаем молча: один кривой id из фронта не должен ронять
+    # удаление всей пачки пятисоткой, из которой в браузере видно только «SyntaxError»
+    out: list[int] = []
+    for x in (payload.get("ids") or []):
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 @app.post("/api/deals/bulk-delete")
@@ -2578,6 +2586,14 @@ def contacts_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
         conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qs})", ids)
         conn.execute(f"DELETE FROM campaign_contacts WHERE contact_id IN ({qs})", ids)
         conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qs})", ids)
+        # Хвосты, которые тоже держат contact_id. Забытая campaign_paused_contacts —
+        # не косметика: строка «этот контакт в кампании на паузе» переживала удаление,
+        # и следующий контакт, получивший тот же id из AUTOINCREMENT, молча выпадал
+        # из рассылки. Остальное — журналы и распарсенные посты, без карточки мусор.
+        for t in ("campaign_paused_contacts", "campaign_logs", "inbox_items", "tg_user_posts"):
+            conn.execute(f"DELETE FROM {t} WHERE contact_id IN ({qs})", ids)
+        # события — журнал, его не переписываем: просто отвязываем от удалённого
+        conn.execute(f"UPDATE events SET contact_id=NULL WHERE contact_id IN ({qs})", ids)
         conn.execute(f"UPDATE chat_hits SET contact_id=NULL, status='new' "
                      f"WHERE contact_id IN ({qs})", ids)
         conn.execute(f"DELETE FROM contacts WHERE id IN ({qs})", ids)

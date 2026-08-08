@@ -38,7 +38,7 @@ def _build_text(row, meeting_at: str | None, notes: str | None, zoom_link: str |
     if meeting_at:
         lines.append(f"Время: {meeting_at}")
     if zoom_link:
-        lines.append(f"Zoom: {zoom_link}")
+        lines.append(f"Ссылка: {zoom_link}")
     if notes and notes.strip():
         lines.append(f"О чём говорили: {notes.strip()[:300]}")
     lines.append(_dossier_link(row["id"]))

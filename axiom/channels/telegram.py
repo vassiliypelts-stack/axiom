@@ -636,7 +636,9 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         print(f"[MEETING] contact {contact_id}: {meeting.meeting_at_iso} | "
               f"zoom={'yes' if meeting.zoom_link else 'no'} | cal={'yes' if meeting.calendar_event_id else 'no'}")
         if meeting.zoom_link:
-            await _send_parts(event.client, peer, [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"])
+            # без названия сервиса: ссылка может быть Телемост/Meet/Zoom — что задано
+            # в кампании, то и уходит, а «зум» в тексте противоречил бы самой ссылке
+            await _send_parts(event.client, peer, [f"вот ссылка на созвон: {meeting.zoom_link}", "до связи)"])
         from channels import notify
         await notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes,
                                     meeting.zoom_link, camp["id"] if camp else None)

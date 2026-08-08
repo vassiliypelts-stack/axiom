@@ -217,7 +217,7 @@ def incoming(msg: Incoming) -> JSONResponse:
     extra_parts: list[str] = []
     if meeting is not None:
         if meeting.zoom_link:
-            extra_parts = [f"закинул ссылку на zoom: {meeting.zoom_link}", "до созвона напомню)"]
+            extra_parts = [f"вот ссылка на созвон: {meeting.zoom_link}", "до связи)"]
         import asyncio
         from channels import notify
         # эндпоинт синхронный (FastAPI гонит его в threadpool) — своего event loop

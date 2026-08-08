@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequest
-from telethon.tl.types import InputPhoneContact, InputUser
+from telethon.tl.types import InputPhoneContact, InputUser, PeerUser
 
 import config
 from agent.agent import generate_reply
@@ -313,10 +313,20 @@ async def _send_parts(client, peer, parts: list[str]) -> None:
             await asyncio.sleep(random.uniform(*PART_PAUSE))
 
 
+def _col(row, name: str):
+    """Значение колонки, которой в этой выборке может и не быть. Сюда приходят и
+    sqlite3.Row из «SELECT *», и урезанные dict'ы из прогрева/моста — у первого
+    отсутствующая колонка бросает IndexError, у второго это просто None."""
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 async def _resolve_entity(client: TelegramClient, row):
-    """Находит TG-сущность контакта: по @username, иначе импортирует номер телефона.
-    Если username протух (переименован/удалён) — не падаем, а откатываемся на телефон,
-    если он есть у контакта (жёсткий отказ только когда вообще нечем резолвить)."""
+    """Находит TG-сущность контакта: @username → известный tg_user_id → телефон.
+    Если username протух (переименован/удалён) — не падаем, а откатываемся дальше
+    по цепочке (жёсткий отказ только когда вообще нечем резолвить)."""
     if row["username"]:
         try:
             entity = await client.get_entity(row["username"].lstrip("@"))
@@ -334,8 +344,18 @@ async def _resolve_entity(client: TelegramClient, row):
                     pass  # не критично если не добавилось
             return entity
         except Exception:  # noqa: BLE001
-            if not row["phone"]:
+            if not row["phone"] and not _col(row, "tg_user_id"):
                 raise
+    # Контакт уже пробит: id в Telegram известен (пробив/парсер/прошлая переписка).
+    # Пробуем его ДО телефона — ImportContacts по номеру человека, которого мы и так
+    # умеем достать, это лишний запрос ровно того вида, по которому Telegram считает
+    # спамеров. Сюда же попадают контакты с протухшим @ником: id живёт дольше ника.
+    uid = _col(row, "tg_user_id")
+    if uid:
+        try:
+            return await client.get_entity(PeerUser(int(uid)))
+        except Exception:  # noqa: BLE001
+            pass          # нет в кэше сессии этого аккаунта — идём дальше по телефону
     if row["phone"]:
         # Номер нормализуем ТЕМ ЖЕ способом, что и массовый пробив: Telegram капризен к
         # формату, и «8 (988) 111-22-33» из 2ГИС он просто не найдёт. Без этого мы бы
@@ -361,7 +381,7 @@ async def _resolve_entity(client: TelegramClient, row):
         except Exception:  # noqa: BLE001
             pass          # пометка — не повод ронять отправку
         raise ValueError(f"номер {phone} не найден в Telegram")
-    raise ValueError("у контакта нет ни username, ни phone")
+    raise ValueError("контакт не резолвится: ни рабочего @ника, ни номера телефона")
 
 
 # --------------------------------------------------------------------------- #

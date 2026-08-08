@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import random
+import time
 from datetime import datetime, timedelta
 
 from telethon.errors import FloodWaitError
@@ -23,7 +24,7 @@ from telethon.tl.types import InputPhoneContact
 
 import config
 from db import database
-from channels import opener_lint
+from channels import fio, opener_lint
 from channels.telegram import (
     _build_client, build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE,
 )
@@ -48,6 +49,67 @@ OPENER_BURST = 2                       # сколько первых строк 
 # Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток
 # не шлём, см. channels/opener_queue.py.
 OPENER_NEXT_LINE_MIN = (3 * 60, 10 * 60)  # секунды: 3–10 минут
+
+
+# Сколько ждать, прежде чем считать лок брошенным (процесс убит, сервис перезапущен).
+LOCK_STALE_SEC = 30 * 60
+
+
+class _RunLock:
+    """Один отправляющий процесс на кампанию.
+
+    «🧪 Тест» и «▶ Запустить» — разные кнопки, каждая поднимает свой процесс, и
+    ничто не мешало нажать их подряд: 08.08.2026 по кампании #9406 одновременно
+    работали ТРИ. От дубля человек защищён атомарным захватом контакта, так что
+    двум процессам из трёх доставались одни «[skip] уже занят» — и последний
+    писал в колокольчик «отправлено 0: флуд-лимит/спам-блок». Отправка при этом
+    шла нормально. Ложная тревога, из-за которой ищут несуществующий бан.
+
+    Лок — файл, создаваемый атомарно (O_EXCL), поэтому гонки между процессами
+    нет. Протухший подбираем через LOCK_STALE_SEC: иначе убитый по пути процесс
+    заклинил бы кампанию навсегда.
+    """
+
+    def __init__(self, cid: int) -> None:
+        import os
+        self.path = config.BASE_DIR / "data" / "locks" / f"campaign_{cid}.lock"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd: int | None = None
+        self._os = os
+
+    def acquire(self) -> bool:
+        os = self._os
+        for _ in range(2):
+            try:
+                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(self._fd, str(os.getpid()).encode())
+                return True
+            except FileExistsError:
+                try:
+                    age = time.time() - self.path.stat().st_mtime
+                except OSError:
+                    continue                       # файл увели прямо сейчас — пробуем снова
+                if age < LOCK_STALE_SEC:
+                    return False
+                print(f"[lock] прошлый заход брошен {int(age // 60)} мин назад — забираю лок")
+                try:
+                    self.path.unlink()
+                except OSError:
+                    return False
+        return False
+
+    def release(self) -> None:
+        os = self._os
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -98,26 +160,60 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
             verified_only = bool(row["v"]) if row else True
         if verified_only:
             where += " AND " + database.TG_REACHABLE_SQL
+    # Тестовые номера — ТОЛЬКО для кнопки «🧪 Тест», в боевой заход они не попадают.
+    # Раньше боевой заход брал их наравне с лидами, да ещё первыми (сортировка была
+    # is_test DESC), и при дневном лимите 3 вся квота уходила на три собственных номера
+    # оператора. Кнопка «Тест» перед этим сбрасывала их обратно в 'new' — так что круг
+    # замыкался: сколько ни запускай, реальная база не получала НИ ОДНОГО сообщения,
+    # а в ленте бодро писалось «отправлено» (на свои же номера).
+    where += " AND COALESCE(is_test,0)=" + ("1" if test else "0")
     if test:
-        where += " AND COALESCE(is_test,0)=1"
-    # Тестовый номер принадлежит ТОЙ кампании, куда его добавили. Иначе так: свой номер,
-    # уже бывший реальным лидом кампании A, добавляют в тест кампании B — ему дописывают
-    # тег B и сбрасывают status в 'new'. Тег A при этом никуда не делся, и контакт снова
-    # проходит в аудиторию A, да ещё первым (is_test DESC) — живой лид получает повторное
-    # первое сообщение. NULL — старые записи, для них поведение как раньше.
-    where += " AND (COALESCE(is_test,0)=0 OR test_campaign_id IS NULL OR test_campaign_id=?)"
-    params.append(cid)
+        # Тестовый номер принадлежит ТОЙ кампании, куда его добавили: свой номер, уже
+        # бывший реальным лидом кампании A, добавляют в тест кампании B — ему дописывают
+        # тег B и сбрасывают статус. NULL — старые записи, для них поведение как раньше.
+        where += " AND (test_campaign_id IS NULL OR test_campaign_id=?)"
+        params.append(cid)
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
     with database.get_conn() as conn:
-        # свои тестовые номера (is_test=1) — всегда первыми в очереди: с малым лимитом
-        # (напр. 2) заход бьёт именно по ним, а следующий (боевой) заход сам продолжит
-        # реальной аудиторией — тестовые уже 'messaged' и не задвоятся.
         return conn.execute(
-            f"SELECT * FROM contacts WHERE {where} ORDER BY COALESCE(is_test,0) DESC, id LIMIT ?",
+            f"SELECT * FROM contacts WHERE {where} ORDER BY id LIMIT ?",
             (*params, cap),
         ).fetchall()
+
+
+def _audience_report(cid: int, camp: dict) -> str:
+    """Куда делась аудитория — цифрами, одной строкой.
+
+    «Отправлено 0 — проверь флуд-лимит» посылало искать бан там, где его нет: чаще
+    всего слать просто некому, потому что база не пробита по Telegram. Показываем
+    разбор, чтобы решение («жди пробива» / «сними галочку» / «залей ники») было
+    видно сразу, без похода в SQL."""
+    tag = (camp.get("audience_tag") or "").strip()
+    where = "COALESCE(is_test,0)=0"
+    params: list = []
+    if tag:
+        where += " AND tags LIKE ?"
+        params.append(f"%{tag}%")
+    with database.get_conn() as conn:
+        def n(extra: str = "") -> int:
+            return conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where}{extra}",
+                                params).fetchone()["c"]
+        total = n()
+        fresh = n(" AND status='new'")
+        no_tg = n(" AND status='new' AND has_tg='no'")
+        unresolved = n(" AND status='new' AND COALESCE(has_tg,'unknown')<>'no'"
+                       f" AND NOT {database.TG_REACHABLE_SQL}"
+                       " AND phone IS NOT NULL AND phone<>''")
+    ready = len(_audience(cid, camp.get("audience_tag"), camp.get("channel"), 100000))
+    out = (f"Аудитория по тегу «{tag or '—'}»: всего {total}, ещё не писали {fresh}. "
+           f"Из них готовы к отправке {ready}, ждут пробива номера {unresolved}, "
+           f"проверены и в Telegram отсутствуют {no_tg}.")
+    if not ready and unresolved:
+        out += (" Пробив идёт дозированно (25 номеров на аккаунт в сутки) — он их догонит. "
+                "Быстрее: залей @ники или сними «слать только пробитым» в настройках кампании.")
+    return out
 
 
 def _spin(text: str) -> str:
@@ -266,24 +362,31 @@ def _sender_name(acc: dict | None) -> str:
 
 
 def _greeting(row) -> str:
-    """Обращение для {name}: из ФИО директора → «Имя Отчество», иначе имя/название."""
+    """Обращение для {name}: «Имя Отчество» (или «Имя», если отчества нет).
+
+    Разбор — в channels/fio: порядок слов в ФИО у нас РАЗНЫЙ (импорт даёт «Имя
+    Отчество Фамилия», обогащение из ЕГРЮЛ — «Фамилия Имя Отчество»), поэтому
+    позицию не угадываем, а ищем отчество по суффиксу. Прежнее правило «второе и
+    третье слово» на половине базы давало «Викторович Комиссаренко» — обращение,
+    которого не бывает у живых людей.
+
+    В поле name может лежать организация («Эталон недвижимость»), поэтому там
+    работает мягкий разбор: переписываем строку, только если нашлось отчество."""
     pn = (row["person_name"] or "").strip()
     if pn:
-        parts = pn.split()
-        if len(parts) == 3:  # Фамилия Имя Отчество → Имя Отчество (вежливо, по-деловому)
-            return f"{parts[1]} {parts[2]}"
-        return pn
-    return (row["name"] or "").strip()
+        return fio.address(pn)
+    return fio.address_soft(row["name"])
 
 
 def _decision_phrase(row) -> str:
     """{decision}: если ФИО директора известно — «с Романом Анатольевичем», иначе
-    нейтральный обход секретаря — «с тем, кто у вас отвечает за развитие бизнеса»."""
+    нейтральный обход секретаря — «с тем, кто у вас отвечает за развитие бизнеса».
+
+    Именно творительный падеж: «поговорить с Роман Анатольевич» выдаёт скрипт
+    ровно так же, как обращение по отчеству с фамилией."""
     pn = (row["person_name"] or "").strip()
     if pn:
-        parts = pn.split()
-        who = f"{parts[1]} {parts[2]}" if len(parts) == 3 else pn
-        return f"с {who}"
+        return f"с {fio.instrumental(pn)}"
     return "с тем, кто у вас отвечает за развитие бизнеса"
 
 
@@ -338,8 +441,15 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test)
     if not rows:
         msg = ("тест: нет тест-контактов (is_test=1) в аудитории" if test
-               else "аудитория пуста — некому слать")
+               else "аудитория пуста — некому слать. " + _audience_report(cid, camp))
         print(msg)
+        if not test:
+            # Молчаливый выход отсюда и выглядел как «рассылка не работает»: кнопка
+            # отвечала «запущено», а в ленте не появлялось ничего. Пишем разбор.
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "info", f"⚠️ Кампания «{camp['name']}»: слать некому",
+                    _audience_report(cid, camp), level="warn", campaign_id=cid)
         if test:
             # Тест запускается кнопкой и работает отдельным процессом: без записи в
             # колокольчик его провал виден только в логе сервера, а в пульте остаётся
@@ -464,12 +574,15 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
 
     sent = 0
     rr = 0
+    taken_by_others = 0        # разобрал параллельный заход — это не сбой отправки
+    out_of_quota = False       # уперлись в дневные лимиты аккаунтов, а не в бан
     for row in rows:
         if sent >= cap:
             break
         s = _pick(live, rr)
         if s is None:
             print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
+            out_of_quota = True
             break
         rr += 1
         # ЗАЩИТА ОТ ДУБЛЯ (атомарный захват). Тот же номер мог попасть в этот заход
@@ -485,6 +598,7 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             ).rowcount
         if not claimed:
             print(f"[skip] contact {row['id']}: уже занят другим заходом/аккаунтом — дубль не шлём")
+            taken_by_others += 1
             continue
         # обращение: из ФИО директора берём «Имя Отчество», иначе имя/название агентства
         name = _greeting(row)
@@ -627,10 +741,17 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             database.add_event(conn, "campaign_done", f"✅ Кампания «{camp['name']}» отработана",
                                f"аудитория исчерпана, в этот заход отправлено {sent}",
                                level="good", campaign_id=cid)
-        elif sent == 0:
+        elif sent == 0 and not taken_by_others:
+            # Про «уже занят другим заходом» в колокольчик не пишем вовсе: это не
+            # сбой, а нормальная работа защиты от дубля, и раньше именно она давала
+            # пугающее «отправлено 0 — проверь бан», хотя сообщения уходили.
+            why = ("дневные лимиты всех аккаунтов на сегодня исчерпаны — заход продолжится завтра"
+                   if out_of_quota else
+                   "ни одного не ушло. Причина обычно одна из двух: некому слать (см. разбор ниже) "
+                   "или отправка падает на резолве контакта — открой лог сервера. "
+                   "Флуд-лимит и бан пишутся в колокольчик отдельными строками.")
             database.add_event(conn, "info", f"⚠️ Кампания «{camp['name']}»: отправлено 0",
-                               "ни одного не ушло — частая причина: флуд-лимит/спам-блок или "
-                               "нет живого аккаунта с прокси. Проверь 🚦 Готовность и колокольчик.",
+                               f"{why}\n{_audience_report(cid, camp)}",
                                level="warn", campaign_id=cid)
     accs = ", ".join(s["label"] for s in live)
     print(f"кампания #{cid}: отправлено {sent} (аккаунты: {accs})")
@@ -648,7 +769,15 @@ def main() -> None:
     p.add_argument("--test", action="store_true",
                    help="тест-режим: слать ТОЛЬКО на свои номера (is_test=1), в обход гейта прогрева")
     args = p.parse_args()
-    asyncio.run(run(args.cid, args.limit, test=args.test))
+    lock = _RunLock(args.cid)
+    if not lock.acquire():
+        print(f"кампания #{args.cid}: заход уже идёт (лок {lock.path}) — второй процесс "
+              f"не запускаю, иначе оба будут драться за одни и те же контакты")
+        return
+    try:
+        asyncio.run(run(args.cid, args.limit, test=args.test))
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

@@ -4731,9 +4731,10 @@ def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
     Формат строки: "<номер или @username> [Имя Отчество]" — всё после первого пробела
     идёт в обращение {name} (см. channels.campaign_send._greeting). Без имени — обращение
     подставится по номеру/юзернейму, как раньше.
-    Помечает is_test=1 (см. channels/campaign_send._audience: тестовые всегда идут первыми
-    в очереди), сбрасывает статус в 'new' (даже если контакт уже был раньше) и добавляет
-    тег аудитории кампании — иначе не попадут в фильтр _audience по audience_tag."""
+    Помечает is_test=1 — такие контакты видит ТОЛЬКО кнопка «🧪 Тест» (см. channels/
+    campaign_send._audience), в боевой заход они не попадают и его квоту не съедают.
+    Сбрасывает статус в 'new' (даже если контакт уже был раньше) и добавляет тег
+    аудитории кампании — иначе не попадут в фильтр _audience по audience_tag."""
     raw = (payload.get("text") or "").strip()
     if not raw:
         return JSONResponse({"error": "пусто — введи хотя бы один номер или @username"}, status_code=400)

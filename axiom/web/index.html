@@ -5545,7 +5545,11 @@ function renderCampList(mount,camps){
     const t=b.textContent;b.textContent="…";
     try{const r=await api(`/api/campaign/${id}/test`,{method:"POST"});
       if(r.error){alert(r.error);}
-      else{alert(`✅ Тест пошёл на ${r.test_targets} свой(их) номер(а). Проверь Telegram — сообщение придёт с паузой. Ответь себе, чтобы проверить, как агент ведёт диалог.`);}
+      else{
+        // Про пропущенных говорим прямо: иначе «пошло на 1 номер» вместо трёх выглядит
+        // как потеря номеров, а на деле мы намеренно не шлём опенер в живой диалог.
+        const skip=r.skipped_in_dialog?`\n\n⏸ Пропущено номеров: ${r.skipped_in_dialog} — по ним уже идёт переписка. Опенер повторно не отправляем, чтобы не затирать диалог.`:"";
+        alert(`✅ Тест пошёл на ${r.test_targets} свой(их) номер(а). Проверь Telegram — сообщение придёт с паузой. Ответь себе, чтобы проверить, как агент ведёт диалог.${skip}`);}
     }catch(e){alert("ошибка запуска теста");}
     b.textContent=t;
   });

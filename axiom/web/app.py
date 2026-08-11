@@ -4768,9 +4768,15 @@ def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
                 row_id = database.upsert_contact(conn, source="test", phone=p,
                                                   name=display_name or p, tags=tag)
             # test_campaign_id — чтобы тестовый номер не всплыл первым в ЧУЖОЙ кампании,
-            # чьи теги остались на контакте (см. campaign_send._audience)
-            conn.execute("UPDATE contacts SET is_test=1, status='new', test_campaign_id=? WHERE id=?",
-                         (cid, row_id))
+            # чьи теги остались на контакте (см. campaign_send._audience).
+            # Статус откатываем в 'new' только у тех, с кем разговор ещё не начался:
+            # иначе добавление номера в тест роняло живой диалог обратно в «сырьё» и
+            # человеку прилетал опенер поверх переписки (см. _TEST_KEEP_STATUS).
+            keep = ",".join("?" * len(_TEST_KEEP_STATUS))
+            conn.execute(
+                f"UPDATE contacts SET is_test=1, test_campaign_id=?, "
+                f"status=CASE WHEN status IN ({keep}) THEN status ELSE 'new' END WHERE id=?",
+                (cid, *_TEST_KEEP_STATUS, row_id))
             added += 1
     if not added:
         return JSONResponse({"error": "не нашёл ни валидного номера, ни @username"}, status_code=400)
@@ -5689,6 +5695,14 @@ _ECON_FIELDS = ("goal_start", "result_note", "cost_proxy", "cost_accounts", "cos
                 "cost_other", "revenue_per_deal", "manager_salary", "manager_leads")
 _ENGAGED = ("in_dialog", "meeting_set", "met", "won")
 
+# Статусы, при которых тест-номер НЕЛЬЗЯ откатывать в 'new' и слать ему опенер заново.
+# Кнопка «🧪 Тест» намеренно сбрасывает свои номера, чтобы гонять проверку многократно,
+# но делала это безусловно — и в живой диалог прилетало «добрый день, правильно
+# обращаюсь?» поверх переписки (вживую: три раза подряд), а статус диалога затирался.
+# refused добавлен к _ENGAGED отдельно: человек уже отказался, повторный опенер ему —
+# чистый спам, хотя «вовлечённым» он не считается.
+_TEST_KEEP_STATUS = _ENGAGED + ("refused",)
+
 
 @app.get("/api/campaign/{cid}/econ")
 def campaign_econ(cid: int) -> JSONResponse:
@@ -6012,46 +6026,61 @@ def campaign_test(cid: int) -> JSONResponse:
         block = opener_lint.blocking_message(opener_lint.lint(row["message_template"]))
         if block:
             return JSONResponse({"error": block}, status_code=400)
-        # Сбрасываем статус тестовых контактов — чтобы тест срабатывал повторно
+        # Сбрасываем статус тестовых контактов — чтобы тест срабатывал повторно.
+        # НО только у тех, с кем разговор ещё не начался: сброс шёл безусловно, и
+        # человеку, уже ведущему переписку, прилетал опенер «добрый день, правильно
+        # обращаюсь?» поверх диалога (вживую поймали три штуки подряд), а статус
+        # in_dialog/meeting_set затирался на 'new' — состояние диалога терялось.
         tag = (row["audience_tag"] or "").strip()
-        test_ids: list[int] = []
+        where_test = "COALESCE(is_test,0)=1"
+        params_test: list = []
         if tag:
-            test_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM contacts WHERE COALESCE(is_test,0)=1 AND tags LIKE ?",
-                (f"%{tag}%",),
-            ).fetchall()]
+            where_test += " AND tags LIKE ?"
+            params_test.append(f"%{tag}%")
+        rows_test = conn.execute(
+            f"SELECT id, status FROM contacts WHERE {where_test}", params_test).fetchall()
+        test_ids = [r["id"] for r in rows_test]
+        # кого пропускаем и почему — покажем оператору словами, а не молча
+        skipped = [r["id"] for r in rows_test if (r["status"] or "") in _TEST_KEEP_STATUS]
+        resettable = [r["id"] for r in rows_test if r["id"] not in set(skipped)]
+        if resettable:
             conn.execute(
                 "UPDATE contacts SET status='new' WHERE id IN ({})".format(
-                    ",".join("?" * len(test_ids))
-                ),
-                test_ids,
+                    ",".join("?" * len(resettable))),
+                resettable,
             )
-        else:
-            test_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM contacts WHERE COALESCE(is_test,0)=1"
-            ).fetchall()]
-            conn.execute("UPDATE contacts SET status='new' WHERE COALESCE(is_test,0)=1")
-        # Очищаем старые записи очереди тестовых контактов (чтобы не было дублей)
-        if test_ids:
+        # Очищаем старые записи очереди тестовых контактов (чтобы не было дублей).
+        # Только у тех, кого реально перезапускаем: у пропущенных остаток опенера
+        # трогать нельзя — там идёт живая переписка.
+        if resettable:
             conn.execute(
                 "DELETE FROM opener_queue WHERE contact_id IN ({}) AND campaign_id=?".format(
-                    ",".join("?" * len(test_ids))
+                    ",".join("?" * len(resettable))
                 ),
-                (*test_ids, cid),
+                (*resettable, cid),
             )
-        n_test = conn.execute("SELECT COUNT(*) FROM contacts WHERE COALESCE(is_test,0)=1 "
-                              "AND status='new'").fetchone()[0]
+        # Считаем ИМЕННО тех, кто уйдёт в этот заход. Раньше здесь был глобальный
+        # COUNT по всем is_test в базе — цифра не сходилась с тем, что реально уходит
+        # по кампании с тегом.
+        n_test = len(resettable)
         if not n_test:
+            if skipped:
+                return JSONResponse({"error": (
+                    f"все тест-номера ({len(skipped)}) уже в диалоге — опенер им повторно "
+                    f"не шлём, чтобы не затирать переписку. Добавь новый номер или напиши "
+                    f"в существующий диалог руками.")}, status_code=400)
             return JSONResponse({"error": "нет тест-номеров (is_test=1). Добавь свои "
                                           "номера в тест-контакты кампании."}, status_code=400)
+        note = f"сброс {n_test} тестовых контактов → статус new, отправка"
+        if skipped:
+            note += f"; пропущено {len(skipped)} — уже в диалоге, опенер не дублируем"
         database.add_event(conn, "campaign_test", f"🧪 Тест кампании «{row['name']}»",
-                           f"сброс {n_test} тестовых контактов → статус new, отправка",
-                           level="good", campaign_id=cid)
+                           note, level="good", campaign_id=cid)
     subprocess.Popen(
         [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", "10", "--test"],
         cwd=str(BASE_DIR.parent),
     )
-    return JSONResponse({"ok": True, "test_targets": n_test})
+    return JSONResponse({"ok": True, "test_targets": n_test, "skipped_in_dialog": len(skipped)})
 
 
 @app.post("/api/campaign/{cid}/archive")

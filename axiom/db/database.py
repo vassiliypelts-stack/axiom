@@ -95,6 +95,18 @@ _EXTRA_COMPANY_COLS = {
 }
 
 
+# Поля проектов: с кем именно идёт работа (компания ИЛИ человек — не оба сразу) и
+# что считается успехом. Без этого карточка проекта — просто название с описанием,
+# а проект заводят ровно затем, чтобы он стал кейсом.
+_EXTRA_PROJECT_COLS = {
+    "client_company_id": "INTEGER",  # клиент — юрлицо (companies.id)
+    "client_contact_id": "INTEGER",  # клиент — физлицо (contacts.id)
+    "goal": "TEXT",                  # цель проекта
+    "ideal_result": "TEXT",          # как выглядит идеальный результат / будущий кейс
+    "deadline": "TEXT",              # к какому сроку (YYYY-MM-DD)
+}
+
+
 # Поля сделок (deals как воронка Битрикс, а не только встречи).
 _EXTRA_DEAL_COLS = {
     "title": "TEXT",            # название сделки
@@ -103,6 +115,8 @@ _EXTRA_DEAL_COLS = {
     "product": "TEXT",          # продукт/услуга
     "amount": "REAL",           # сумма сделки
     "updated_at": "TEXT",
+    "archived": "INTEGER DEFAULT 0",  # флаг, а не стадия — воронка настраивается
+                                       # пользователем, архив от её стадий не зависит
 }
 
 
@@ -315,6 +329,10 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     for col, typ in _EXTRA_COMPANY_COLS.items():
         if col not in co:
             conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {typ}")
+    proj = {r["name"] for r in conn.execute("PRAGMA table_info(projects)")}
+    for col, typ in _EXTRA_PROJECT_COLS.items():
+        if col not in proj:
+            conn.execute(f"ALTER TABLE projects ADD COLUMN {col} {typ}")
     deal = {r["name"] for r in conn.execute("PRAGMA table_info(deals)")}
     for col, typ in _EXTRA_DEAL_COLS.items():
         if col not in deal:

@@ -148,34 +148,47 @@ async def _remember_peer(client, target, ch) -> None:
         print(f"[kw] не сохранил ключ доступа к чату {ch['id']}: {str(e)[:80]}")
 
 
-LISTEN_ACCOUNT_SETTING = "listen_account_id"  # какой аккаунт опрашивает публичные чаты
+LISTEN_ACCOUNT_SETTING = "listen_account_id"       # legacy: один аккаунт (фолбэк, если новый ключ пуст)
+LISTEN_ACCOUNT_IDS_SETTING = "listen_account_ids"  # CSV нескольких аккаунтов — читают публичные чаты
 
 
-async def _main_client():
-    """Клиент, которым опрашиваются публичные чаты каталога.
+async def _listen_clients() -> list[tuple[object, int | None]]:
+    """Клиенты, которыми опрашиваются ПУБЛИЧНЫЕ чаты каталога.
 
     ПОЧЕМУ НЕ ВСЕГДА .env-аккаунт. Раньше здесь всегда стоял _build_client() — главный
     аккаунт из .env, а это ЛИЧНЫЙ номер владельца. Активный опрос — это запросы истории
     по 2.4 тыс. чатов, и именно на нём поймали FloodWait почти на 14 часов (см. _target).
-    Расходовать на это можно рабочий аккаунт из пула — если он забанится, теряется прогретый
-    номер, а не личный Telegram. Настройка выбирается в пульте (⚙️ Аккаунты → «слушает чаты»)
-    и хранится в app_settings под ключом listen_account_id.
+
+    ПОЧЕМУ НЕСКОЛЬКО. Один рабочий аккаунт размазывал риск с личного на прогретый номер,
+    но объём запросов не менялся. Теперь можно назначить пачку — В ТОМ ЧИСЛЕ «родные»
+    (protected): им по-прежнему запрещены авто-ответ/прогрев/рассылка (см. listener.py и
+    warmup.py — там же фильтр по protected), но чтение чужого сообщения в публичном
+    чате никакого риска не несёт, а лучшие чаты как раз и оказались на личных номерах.
+    Настройка — в пульте (Аккаунты → «слушает чаты», галочки), хранится CSV в
+    app_settings под ключом listen_account_ids.
 
     Без настройки — тот же .env, что и раньше (ничего не ломаем по умолчанию), но с
     явным предупреждением в лог: молчаливый риск хуже явного."""
     with database.get_conn() as conn:
-        acc_id = database.get_setting(conn, LISTEN_ACCOUNT_SETTING)
-    if not acc_id:
+        ids_csv = database.get_setting(conn, LISTEN_ACCOUNT_IDS_SETTING)
+        legacy_id = database.get_setting(conn, LISTEN_ACCOUNT_SETTING)
+    ids: list[int] = []
+    if ids_csv:
+        ids = [int(x) for x in ids_csv.split(",") if x.strip().isdigit()]
+    elif legacy_id:
+        ids = [int(legacy_id)]
+    if not ids:
         print("[kw] ⚠ рабочий аккаунт для прослушки не назначен — опрашиваю с личного "
               "(.env). Назначь в пульте: Аккаунты → «слушает чаты», чтобы не рисковать личным номером.")
-        return _build_client()
-    try:
-        client, _ = client_for_account(int(acc_id))
-        return client
-    except Exception as e:  # noqa: BLE001 — назначенный аккаунт недоступен, не рискуем личным молча
-        print(f"[kw] ⚠ назначенный аккаунт #{acc_id} недоступен ({str(e)[:80]}) — "
-              f"опрашиваю с личного (.env)")
-        return _build_client()
+        return [(_build_client(), None)]
+    out: list[tuple[object, int | None]] = []
+    for aid in ids:
+        try:
+            client, _ = client_for_account(aid)
+            out.append((client, aid))
+        except Exception as e:  # noqa: BLE001 — один недоступный назначенный аккаунт не должен
+            print(f"[kw] ⚠ назначенный аккаунт #{aid} недоступен ({str(e)[:80]}) — пропускаю")
+    return out or [(_build_client(), None)]
 
 
 async def _client_for(acc_id: int | None):
@@ -224,16 +237,20 @@ async def run(limit: int, only_fav: bool = False) -> None:
                if only_fav else "нет чатов в каталоге для прослушки")
         print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False)); return
 
-    main_client = await _main_client()
-    await main_client.start()
+    listen_clients = await _listen_clients()
+    for cl, _aid in listen_clients:
+        await cl.start()
+    lc_i = 0  # круговая ротация по listen_clients для публичных чатов
     owned: dict[int, object] = {}      # aid → клиент аккаунта-участника (по одному на аккаунт)
     scanned = hits = 0
     resolves = deferred = 0
     flood_wait = 0
     skipped: list[str] = []
     for ch in chats:
-        # Публичный читаем главным аккаунтом; закрытый — только тем, кто в нём состоит.
-        client = main_client
+        # Публичный читаем по кругу одним из назначенных аккаунтов (размазываем запросы,
+        # см. _listen_clients); закрытый — только тем, кто в нём состоит.
+        client = listen_clients[lc_i % len(listen_clients)][0]
+        lc_i += 1
         if not ch["username"]:
             aid = ch["joined_by"]
             if aid not in owned:
@@ -323,7 +340,11 @@ async def run(limit: int, only_fav: bool = False) -> None:
             _mark_scanned(ch["id"])
         await asyncio.sleep(1.5)  # антибан-пауза между чатами
 
-    await main_client.disconnect()
+    for cl, _aid in listen_clients:
+        try:
+            await cl.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
     for cl in owned.values():
         if cl is not None:
             try:

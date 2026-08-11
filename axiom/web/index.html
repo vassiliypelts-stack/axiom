@@ -645,7 +645,6 @@
       <div class="right"><span class="upd" id="upd">—</span>
         <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 2a6 6 0 00-6 6v3l-1 3h14l-1-3V8a6 6 0 00-6-6z"/><path d="M7.5 16a2.5 2.5 0 005 0"/></svg><span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
           <div class="notif" id="notif" style="display:none" role="menu"></div></div>
-        <button id="deploy" title="Обновить код с GitHub и перезапустить пульт" style="display:none"></button>
         <button id="refresh" aria-label="Обновить">⟳ Обновить</button><button id="logout-btn" title="Выйти" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--text-muted);cursor:pointer;font-size:13px">🚪</button></div>
     </div>
     <main id="view" role="main" aria-live="polite"></main>
@@ -1165,16 +1164,12 @@ async function viewDashboard(v){
       <div class="sp"></div>
       <div class="dclock">обновлено<b id="dash-clock">—</b></div>
     </header>
-    <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span>
-      <span style="flex:1"></span>
-      <span id="dash-listener" class="dslogan" style="font-family:'JetBrains Mono';font-size:11px" title="Слушатель входящих: сколько аккаунтов сейчас на связи и ловят ответы клиентов">📡 слушатель: …</span>
-      <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer" title="Отвечать клиентам автоматически ИИ-агентом (только с активных аккаунтов). Выключишь — ответы всё равно ловятся и видны в «Диалогах», но отвечаешь сам."><input type="checkbox" id="dash-autoreply"> авто-ответ ИИ</label></div>
+    <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span></div>
     <section class="dash-glass dash-hero">
       <div class="dash-hh"><div class="t">⚙ Конвейер лидов · <span>сырьё → сделка</span></div>
         <button class="dash-run" id="conv-run"><span class="d"></span>Запустить конвейер</button></div>
       <div class="conv" id="conv"><div class="belt"></div><div class="pkg a"></div><div class="pkg b"></div><div class="pkg c"></div>${conv}</div>
     </section>
-    <section class="dash-glass dash-card" id="dash-today" style="display:none;margin-bottom:14px"></section>
     <div class="dash-grid">
       <section class="dash-glass dash-card d-sales">
         <div class="dash-chh"><span class="ic"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="9" r="7"/><circle cx="9" cy="9" r="3"/><circle cx="9" cy="9" r="1" fill="currentColor"/></svg></span><h3>Продажи · CRM</h3><span class="tag">${s.total||0} контакт</span></div>
@@ -1216,29 +1211,12 @@ async function viewDashboard(v){
     </footer>
   </div>`;
 
-  loadTodayTasks();
   wireCollapse(v);   // все карточки дашборда — сворачиваемые кликом по шапке
 
   // живые часы «обновлено» в шапке
   const clockEl=$("#dash-clock");if(clockEl){clockEl.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});}
   if(!window._axDashClock){window._axDashClock=setInterval(()=>{const c=document.getElementById("dash-clock");
     if(c)c.textContent=new Date().toLocaleTimeString("ru-RU",{hour12:false});},1000);}
-
-  // статус слушателя входящих + тумблер авто-ответа
-  (async()=>{try{const ls=await api("/api/listener/status");
-    const el=$("#dash-listener");
-    if(el){
-      if(ls.error||ls.started==null){el.innerHTML='📡 слушатель: <b style="color:var(--muted)">запускается…</b>';}
-      // остановленный показывал бы «0 из N на связи» — это читается как поломка, хотя
-      // его выключили руками. Говорим прямо, что он на паузе.
-      else if(ls.enabled===false){el.innerHTML='📡 слушатель: <b style="color:var(--muted)">остановлен</b> (включается в разделе «Парсер»)';}
-      else{const tot=(ls.accounts||[]).length;
-        el.innerHTML=`📡 слушатель: <b style="color:var(--accent2)">${ls.listening}</b> из ${tot} на связи`;}
-    }
-    const ar=$("#dash-autoreply");
-    if(ar){ar.checked=!!ls.auto_reply;
-      ar.onchange=async()=>{await api("/api/listener/auto_reply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_reply:ar.checked})});};}
-  }catch(e){}})();
 
   // count-up табло
   v.querySelectorAll("[data-cv]").forEach((el,i)=>{const to=+el.getAttribute("data-cv");
@@ -1631,16 +1609,12 @@ async function viewAgents(v){
   const selAcc=new Set();
   let accFiltered=a.slice();   // текущий отфильтрованный набор строк таблицы
   const updBulkCnt=()=>{const c=$("#ab-cnt");if(c)c.textContent=selAcc.size;};
-  // «Слушает чаты» и «Уведомляет о встречах» — настройки-одиночки: включаешь один
-  // аккаунт, остальные обязаны погаснуть. Тексты держим В ОДНОМ месте, потому что
-  // рисуются они дважды: при отрисовке колонки и при перекраске кнопок на месте
-  // после клика (без route() — полный ре-рендер сбрасывал прокрутку, и в таблице
+  // «Уведомляет о встречах» — настройка-одиночка: включаешь один аккаунт, остальные
+  // обязаны погаснуть (получатель уведомлений всегда один). Тексты держим В ОДНОМ месте,
+  // потому что рисуются они дважды: при отрисовке колонки и при перекраске кнопок на
+  // месте после клика (без route() — полный ре-рендер сбрасывал прокрутку, и в таблице
   // на полсотни строк после каждого «назначить» терялось место).
   const TOG={
-    listen:{cls:"acc-listen",field:"is_listener",url:"/api/settings/listen_account",
-      on:"👂 слушает",off:"👂 назначить",
-      onTip:"Этот аккаунт опрашивает публичные чаты каталога. Нажми, чтобы снять — вернётся личный (.env)",
-      offTip:"Назначить: активный опрос чатов (кнопка «Прослушать чаты сейчас») пойдёт через этот аккаунт, а не через личный номер"},
     notify:{cls:"acc-notify",field:"is_notifier",url:"/api/settings/notify_sender",
       on:"🔔 уведомляет",off:"🔔 назначить",
       onTip:"Этот аккаунт пишет тебе в личку, когда агент договорился о встрече. Нажми, чтобы снять",
@@ -1659,6 +1633,18 @@ async function viewAgents(v){
       b.style.opacity=on?"":".55";
       b.innerHTML=togHtml(t,on);
     });
+  };
+  // «Слушает чаты» — НЕ одиночка: обход каталога это тысячи запросов истории, и
+  // размазать их по нескольким номерам безопаснее, чем гнать одним. Родные номера
+  // сюда тоже можно: читать чужие сообщения в публичном чате им разрешено (в отличие
+  // от авто-ответа, прогрева и рассылки — там фильтр по protected остаётся).
+  const listenIds=()=>a.filter(x=>x.is_listener).map(x=>x.id);
+  const saveListeners=async()=>{
+    const ids=listenIds();
+    const res=await api("/api/settings/listen_account",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({account_ids:ids})});
+    if(res&&res.error){alert(res.error);return false;}
+    return true;
   };
   smartTable($("#acc-tbl"),{
     tableKey:"agents",
@@ -1714,7 +1700,9 @@ async function viewAgents(v){
         return `<span class="badge b-nurture" title="ещё не проверялся — нажми «Проверить прокси»"><span class="sdot gy"></span>не проверен</span>`;
       }},
       {key:"chats_count",label:"Чатов",cls:"mono",render:r=>r.chats_count?`<span class="badge b-active" title="чатов за аккаунтом по инвентаризации">${r.chats_count}</span>`:'<span class="no">—</span>'},
-      {key:"listener",label:"Слушает чаты",render:r=>togBtn(TOG.listen,r)},
+      {key:"listener",label:"Слушает чаты",render:r=>`<label class="acc-listen-wrap" title="${esc(r.is_listener?"Этот аккаунт опрашивает публичные чаты каталога. Сними галочку, чтобы исключить его из обхода":"Отметь — и обход каталога («Прослушать чаты сейчас») пойдёт в том числе через этот аккаунт. Отмечать можно несколько, включая родные: чтение чужих сообщений в публичном чате им разрешено")}" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" class="acc-listen" data-id="${r.id}"${r.is_listener?" checked":""}>
+        ${r.is_listener?'<span class="badge b-active">👂 слушает</span>':'<span class="sub">слушать</span>'}</label>`},
       {key:"notifier",label:"Уведомляет о встречах",render:r=>togBtn(TOG.notify,r)},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
@@ -1781,9 +1769,9 @@ async function viewAgents(v){
         alert((res&&res.error)||"не удалось подобрать прокси");
       }
       return;}
-    // Обе кнопки-одиночки — по одному сценарию: красим СРАЗУ (чтобы клик отзывался
-    // мгновенно), потом сохраняем; не сохранилось — возвращаем как было и говорим почему.
-    const tog=e.target.closest(".acc-listen")?TOG.listen:(e.target.closest(".acc-notify")?TOG.notify:null);
+    // Кнопка-одиночка: красим СРАЗУ (чтобы клик отзывался мгновенно), потом сохраняем;
+    // не сохранилось — возвращаем как было и говорим почему.
+    const tog=e.target.closest(".acc-notify")?TOG.notify:null;
     if(tog){e.stopPropagation();
       const btn=e.target.closest("."+tog.cls), id=btn.dataset.id;
       const prev=(a.find(x=>String(x.id)===String(id))||{})[tog.field];
@@ -1796,9 +1784,20 @@ async function viewAgents(v){
       if(res&&res.error){togApply(tog,wasId);alert(res.error);}
       return;}
   });
-  tbl.addEventListener("change",(e)=>{
+  tbl.addEventListener("change",async(e)=>{
     const cb=e.target.closest(".acc-sel");
-    if(cb){const id=+cb.dataset.id;if(cb.checked)selAcc.add(id);else selAcc.delete(id);updBulkCnt();}
+    if(cb){const id=+cb.dataset.id;if(cb.checked)selAcc.add(id);else selAcc.delete(id);updBulkCnt();return;}
+    // «Слушает чаты»: набор, а не один избранник — правим строку и сохраняем весь список
+    const lc=e.target.closest(".acc-listen");
+    if(lc){
+      const row=a.find(x=>String(x.id)===String(lc.dataset.id));
+      if(!row)return;
+      const was=!!row.is_listener;
+      row.is_listener=lc.checked;
+      const badge=lc.parentElement&&lc.parentElement.querySelector(".badge,.sub");
+      if(badge)badge.outerHTML=lc.checked?'<span class="badge b-active">👂 слушает</span>':'<span class="sub">слушать</span>';
+      if(!await saveListeners()){row.is_listener=was;lc.checked=was;}
+    }
   });
   const bulk=async(body,okMsg)=>{
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
@@ -3297,7 +3296,16 @@ function renderDealsKanban(mount){
         <button class="kadd" data-s="${s.key}">＋ сделка</button>
       </div>
     </div>`;
-  }).join("");
+  }).join("")
+  // Колонка-приёмник в конце доски: перетащил карточку сюда — сделка ушла в архив,
+  // а не потерялась безвозвратно, как было бы с удалением. Своя колонка, а не
+  // стадия воронки — архив не должен зависеть от того, как оператор настроил стадии.
+  +`<div class="kcol karchive" style="--sc:var(--muted)">
+      <h3><div class="hr1"><span class="nm">🗄 Архив</span></div></h3>
+      <div class="kbody" data-archive="1">
+        <div class="sub" style="padding:8px 4px">перетащи сюда, чтобы убрать сделку из воронки</div>
+      </div>
+    </div>`;
   mount.appendChild(kan);
 
   bar.querySelectorAll(".fseg").forEach(seg=>seg.onclick=()=>{
@@ -3323,7 +3331,13 @@ function renderDealsKanban(mount){
     col.ondragover=e=>{if(drag==null)return;e.preventDefault();col.classList.add("over");};
     col.ondragleave=()=>col.classList.remove("over");
     col.ondrop=async e=>{e.preventDefault();col.classList.remove("over");
-      const s=col.dataset.s;if(drag==null)return;
+      if(drag==null)return;
+      if(col.dataset.archive){
+        await api(`/api/deal/${drag}/archive`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({archived:true})});
+        const i=DEALS.findIndex(x=>x.id===drag);if(i>=0)DEALS.splice(i,1);
+        drag=null;mount.innerHTML="";renderDealsKanban(mount);return;
+      }
+      const s=col.dataset.s;
       await api(`/api/deal/${drag}/move`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({stage:s})});
       const d=DEALS.find(x=>x.id===drag);if(d)d.stage=s;drag=null;route();};
   });
@@ -5649,11 +5663,13 @@ async function openThread(id){
   const who=[c.username?`<a class="ext" href="https://t.me/${esc(c.username)}" target="_blank">@${esc(c.username)} ↗</a>`:"",
              c.phone?esc(c.phone):""].filter(Boolean).join(" · ");
   th.innerHTML=`<div class="th-hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <span>${esc(c.name)||"@"+esc(c.username||id)} · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}</span>
+      <span><a id="th-name" href="javascript:void(0)" style="color:inherit;text-decoration:underline dotted;cursor:pointer" title="Открыть карточку контакта">${esc(c.name)||"@"+esc(c.username||id)}</a> · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}${c.company_id?` · <a id="th-company" href="javascript:void(0)" class="hint" style="text-decoration:underline dotted;cursor:pointer" title="Открыть карточку компании">🏢 ${esc(c.company_name||"компания")}</a>`:""}</span>
       <span class="ttoolbar" style="margin:0"><button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
     <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>`;
   const b=th.querySelector(".th-body");b.scrollTop=b.scrollHeight;
   const od=$("#th-dossier");if(od)od.onclick=()=>openDossier(id);
+  const nm=$("#th-name");if(nm)nm.onclick=()=>openDossier(id);
+  const cp=$("#th-company");if(cp)cp.onclick=()=>openCompany(c.company_id);
   const dl=$("#th-deal");if(dl)dl.onclick=async()=>{dl.disabled=true;dl.textContent="…";
     await convertToDeal(id);dl.disabled=false;dl.textContent="✅ В сделку";};
 }
@@ -5833,52 +5849,134 @@ async function viewParser(v){
 }
 
 // ----------------------------------------------------------------- projects
+// Списки для выбора клиента (компания ИЛИ человек) — грузятся один раз, лениво,
+// только когда форму проекта реально открыли, чтобы не тянуть 951 компанию и
+// 1494 контакта каждый заход в «Проекты».
+let PROJ_COMPANIES=null,PROJ_CONTACTS=null;
+async function _ensureClientLists(){
+  if(!PROJ_COMPANIES)PROJ_COMPANIES=await api("/api/companies").catch(()=>[]);
+  if(!PROJ_CONTACTS)PROJ_CONTACTS=await api("/api/contacts").catch(()=>[]);
+}
+const PROJ_STATUS_LBL={active:"активен",paused:"пауза",done:"завершён",archived:"в архиве"};
 async function viewProjects(v){
-  const projects=await api("/api/projects");
+  let filter="active";   // active(≠archived) | archived — переключается чипами без перезапроса архива лишний раз
+  const load=async()=>api(`/api/projects?archived=${filter==="archived"?1:0}`);
+  let projects=await load();
   v.innerHTML=`
     <div class="ttoolbar"><button class="primary" id="p-new-btn">Новый проект</button>
+      <span id="p-filter"></span>
       <span class="hint">Проект = направление бизнеса. Внутри проекта — несколько маркетинговых кампаний.</span></div>
     <div id="p-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="p-form-title">Новый проект</div>
       <div class="row2"><div class="field"><label>Название</label><input id="p-name" placeholder="напр. Фонд доступного жилья"></div>
         <div class="field"><label>Сущность / бренд</label><input id="p-entity" placeholder="юр. лицо или бренд"></div></div>
-      <div class="field"><label>Описание</label><textarea id="p-desc" rows="3" placeholder="что за проект, цель"></textarea></div>
+      <div class="field"><label>Описание</label><textarea id="p-desc" rows="2" placeholder="что за проект"></textarea></div>
+      <div class="field"><label>Клиент — с кем идёт работа</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="p-client-type" style="max-width:160px">
+            <option value="">— не указан —</option>
+            <option value="company">Компания</option>
+            <option value="contact">Человек</option>
+          </select>
+          <input id="p-client-q" list="p-client-dl" placeholder="начни вводить название/имя" style="flex:1;min-width:200px;display:none">
+          <datalist id="p-client-dl"></datalist>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Цель проекта</label><input id="p-goal" placeholder="что нужно получить"></div>
+        <div class="field"><label>Срок</label><input id="p-deadline" type="date"></div>
+      </div>
+      <div class="field"><label>Идеальный результат <span class="hint">(проект заводят, чтобы он стал кейсом)</span></label>
+        <textarea id="p-ideal" rows="2" placeholder="как будет выглядеть успех — что покажем в кейсе"></textarea></div>
       <div class="ttoolbar" style="margin:0"><button class="primary" id="p-save">Создать</button><button id="p-cancel">Отмена</button></div>
     </div>
     <div id="p-list"></div>`;
+  // чипы-фильтры по образцу ACC_PRESETS (кнопка «primary» = активный фильтр) —
+  // по умолчанию архив скрыт, список не копится на глазах
+  const chips=[["active","Активные"],["archived","🗄 Архив"]];
+  const drawChips=()=>{$("#p-filter").innerHTML=chips.map(([k,l])=>
+    `<button class="p-preset${filter===k?" primary":""}" data-k="${k}">${l}</button>`).join("");
+    $("#p-filter").querySelectorAll(".p-preset").forEach(b=>b.onclick=async()=>{
+      filter=b.dataset.k;projects=await load();drawChips();drawList();});};
+  drawChips();
   const form=$("#p-form");
+  const clientTypeEl=$("#p-client-type"),clientQEl=$("#p-client-q"),clientDl=$("#p-client-dl");
+  const fillClientDatalist=(type)=>{
+    const rows=type==="company"?(PROJ_COMPANIES||[]):type==="contact"?(PROJ_CONTACTS||[]):[];
+    const label=r=>type==="company"?(r.name||"?"):(r.person_name||r.name||"@"+(r.username||r.id));
+    clientDl.innerHTML=rows.map(r=>`<option value="#${r.id} — ${esc(label(r))}">`).join("");
+  };
+  clientTypeEl.onchange=async()=>{
+    const t=clientTypeEl.value;clientQEl.value="";
+    if(!t){clientQEl.style.display="none";return;}
+    clientQEl.style.display="";clientQEl.placeholder=t==="company"?"начни вводить название компании":"начни вводить имя";
+    await _ensureClientLists();fillClientDatalist(t);
+  };
+  const parseClientId=v=>{const m=/^#(\d+)/.exec((v||"").trim());return m?+m[1]:null;};
   const openNew=()=>{form.dataset.edit="";$("#p-form-title").textContent="Новый проект";
-    $("#p-name").value="";$("#p-entity").value="";$("#p-desc").value="";$("#p-save").textContent="Создать";
+    $("#p-name").value="";$("#p-entity").value="";$("#p-desc").value="";
+    $("#p-goal").value="";$("#p-deadline").value="";$("#p-ideal").value="";
+    clientTypeEl.value="";clientQEl.value="";clientQEl.style.display="none";
+    $("#p-save").textContent="Создать";
     form.style.display="block";};
   $("#p-new-btn").onclick=()=>{form.style.display=form.style.display==="block"?"none":"block";if(form.style.display==="block"&&!form.dataset.edit)openNew();};
   $("#p-cancel").onclick=()=>{form.style.display="none";};
   $("#p-save").onclick=async()=>{
-    const body={name:$("#p-name").value,entity:$("#p-entity").value,description:$("#p-desc").value};
+    const body={name:$("#p-name").value,entity:$("#p-entity").value,description:$("#p-desc").value,
+      goal:$("#p-goal").value,ideal_result:$("#p-ideal").value,deadline:$("#p-deadline").value,
+      client_company_id:null,client_contact_id:null};
+    const t=clientTypeEl.value;
+    if(t==="company")body.client_company_id=parseClientId(clientQEl.value);
+    else if(t==="contact")body.client_contact_id=parseClientId(clientQEl.value);
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/project/${eid}/update`:"/api/projects",
       {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(r.error){alert(r.error);return;}route();
+    if(r.error){alert(r.error);return;}
+    form.style.display="none";projects=await load();drawList();
   };
   const list=$("#p-list");
-  if(!projects.length){list.innerHTML='<div class="empty">Проектов нет — создай первый кнопкой выше</div>';}
-  else{
-    list.innerHTML=projects.map(p=>`<div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+  const drawList=()=>{
+    if(!projects.length){list.innerHTML=`<div class="empty">${filter==="archived"?"Архив пуст":"Проектов нет — создай первый кнопкой выше"}</div>`;return;}
+    list.innerHTML=projects.map(p=>{
+      const overdue=p.deadline&&p.deadline<new Date().toISOString().slice(0,10)&&p.status!=="done"&&p.status!=="archived";
+      return `<div class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
       <div style="flex:1;min-width:240px">
         <b>${esc(p.name)}</b> ${p.entity?`<span class="sub">· ${esc(p.entity)}</span>`:""}
+        ${p.status&&p.status!=="active"?`<span class="badge b-${p.status==="archived"?"stop":"nurture"}">${PROJ_STATUS_LBL[p.status]||esc(p.status)}</span>`:""}
         <div class="sub" style="margin:4px 0">${esc(p.description||"")}</div>
+        ${p.client_name?`<div class="sub">${p.client_company_id?"🏢":"👤"} клиент: <b class="lnk" data-open="${p.client_company_id?'co:'+p.client_company_id:'ct:'+p.client_contact_id}" style="cursor:pointer">${esc(p.client_name)}</b></div>`:""}
+        ${p.goal?`<div class="sub">🎯 цель: ${esc(p.goal)}</div>`:""}
+        ${p.ideal_result?`<div class="sub">🏆 идеальный результат: ${esc(p.ideal_result)}</div>`:""}
+        ${p.deadline?`<div class="sub" style="${overdue?"color:#c0392b":""}">⏰ срок: ${esc(p.deadline)}${overdue?" — просрочен":""}</div>`:""}
         <div class="sub mono">кампаний: ${p.campaigns}</div>
       </div>
       <div class="ttoolbar" style="margin:0">
         <button class="primary pr-camp" data-id="${p.id}" data-name="${esc(p.name)}">🎯 Кампании</button>
-        <button class="pr-edit" data-id="${p.id}" data-name="${esc(p.name)}" data-entity="${esc(p.entity||'')}" data-desc="${esc(p.description||'')}">⚙</button>
-        <button class="pr-del" data-id="${p.id}">✕</button>
-      </div></div>`).join("");
+        <button class="pr-edit" data-id="${p.id}">⚙</button>
+        <button class="pr-arch" data-id="${p.id}" data-archived="${p.status==="archived"?1:0}" title="${p.status==="archived"?"Вернуть из архива":"В архив — кампании останутся, список не потеряется"}">${p.status==="archived"?"↩":"🗄"}</button>
+      </div></div>`;}).join("");
     list.querySelectorAll(".pr-camp").forEach(b=>b.onclick=()=>{PROJECT_SEL={id:+b.dataset.id,name:b.dataset.name};location.hash="campaigns";});
-    list.querySelectorAll(".pr-edit").forEach(b=>b.onclick=()=>{form.dataset.edit=b.dataset.id;$("#p-form-title").textContent="Проект: "+b.dataset.name;
-      $("#p-name").value=b.dataset.name;$("#p-entity").value=b.dataset.entity;$("#p-desc").value=b.dataset.desc;$("#p-save").textContent="Сохранить";form.style.display="block";});
-    list.querySelectorAll(".pr-del").forEach(b=>b.onclick=async()=>{if(!confirm("Удалить проект? Кампании останутся, но без проекта."))return;
-      await api(`/api/project/${b.dataset.id}/delete`,{method:"POST"});route();});
-  }
+    list.querySelectorAll("[data-open]").forEach(el=>el.onclick=()=>{
+      const[kind,id]=el.dataset.open.split(":");kind==="co"?openCompany(+id):openDossier(+id);});
+    list.querySelectorAll(".pr-edit").forEach(b=>b.onclick=async()=>{
+      const p=projects.find(x=>x.id===+b.dataset.id);if(!p)return;
+      form.dataset.edit=p.id;$("#p-form-title").textContent="Проект: "+p.name;
+      $("#p-name").value=p.name||"";$("#p-entity").value=p.entity||"";$("#p-desc").value=p.description||"";
+      $("#p-goal").value=p.goal||"";$("#p-deadline").value=p.deadline||"";$("#p-ideal").value=p.ideal_result||"";
+      if(p.client_company_id){clientTypeEl.value="company";clientQEl.style.display="";
+        await _ensureClientLists();fillClientDatalist("company");clientQEl.value=`#${p.client_company_id} — ${p.client_name||""}`;}
+      else if(p.client_contact_id){clientTypeEl.value="contact";clientQEl.style.display="";
+        await _ensureClientLists();fillClientDatalist("contact");clientQEl.value=`#${p.client_contact_id} — ${p.client_name||""}`;}
+      else{clientTypeEl.value="";clientQEl.value="";clientQEl.style.display="none";}
+      $("#p-save").textContent="Сохранить";form.style.display="block";});
+    list.querySelectorAll(".pr-arch").forEach(b=>b.onclick=async()=>{
+      const goingToArchive=b.dataset.archived==="0";
+      if(goingToArchive&&!confirm("Убрать проект в архив? Кампании останутся, вернуть можно из «🗄 Архив».")) return;
+      await api(`/api/project/${b.dataset.id}/archive`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({archived:goingToArchive})});
+      projects=projects.filter(x=>x.id!==+b.dataset.id);drawList();});
+  };
+  drawList();
 }
 
 // ----------------------------------------------------------------- proxy
@@ -6008,6 +6106,7 @@ async function viewCalendar(v){
   };
 
   v.innerHTML=`<p class="sub" style="margin-top:0">Встречи AXIOM (КЭВ) + твой личный Google-календарь в одном месте.</p>
+    <section class="dash-glass dash-card" id="dash-today" style="display:none;margin-bottom:14px"></section>
     <div class="ttoolbar" style="margin-bottom:10px">
       <button id="wk-prev" title="прошлая неделя">← неделя</button>
       <button id="wk-today">Сегодня</button>
@@ -6028,6 +6127,8 @@ async function viewCalendar(v){
   $("#wk-next").onclick=()=>{weekBase.setDate(weekBase.getDate()+7);renderWeek();};
   $("#wk-today").onclick=()=>{weekBase=startOfWeek(new Date());renderWeek();};
   renderWeek();
+  loadTodayTasks();
+  wireCollapse(v);
 }
 
 // ----------------------------------------------------------------- router
@@ -6435,52 +6536,6 @@ async function showEvent(eid){
   const ob=inner.querySelector("#ev-open");
   if(ob)ob.onclick=()=>{close();$("#notif").style.display="none";openDossier(c.id);};
 }
-// Кнопка деплоя: показывается ТОЛЬКО когда на GitHub есть непривезённые коммиты.
-// Раньше обновление требовало похода в консоль сервера, и работа неделями лежала
-// в origin/main мимо боевого пульта — сервер даже оказался на ветке-снапшоте, где
-// `git pull` отвечал «Already up to date» и никого не настораживал.
-// location.reload(true) современные браузеры игнорируют: страница приходит из кеша,
-// и после успешного деплоя пульт продолжает показывать старый интерфейс с висящей
-// кнопкой «Обновить». Уникальный параметр в адресе заставляет взять свежий файл.
-function hardReload(){
-  const u=new URL(location.href);
-  u.searchParams.set("v",Date.now());
-  location.replace(u.toString());   // replace, а не href — не засоряем историю
-}
-async function checkDeploy(){
-  const b=$("#deploy");if(!b)return;
-  let d;try{d=await api("/api/deploy/status");}catch(e){return;}
-  if(!d||d.error)return;
-  const wrongBranch=d.branch&&d.branch!=="main";
-  if(!d.behind&&!wrongBranch){b.style.display="none";return;}
-  b.style.display="";
-  b.textContent=wrongBranch?`⬇ Обновить (ветка ${d.branch})`:`⬇ Обновить (${d.behind})`;
-  b.style.background="var(--accent)";b.style.color="#fff";b.style.border="none";
-  b.title=(wrongBranch?`Сервер на ветке «${d.branch}», а код едет в main — поэтому обновления и не приходят.\n\n`:"")
-    +`Не привезено: ${d.behind}\n\n`+(d.pending||[]).join("\n");
-  b.onclick=async()=>{
-    if(!confirm(`Обновить пульт до последней версии?\n\n${(d.pending||[]).slice(0,8).join("\n")}\n\nПульт перезапустится, страница обновится сама через ~15 секунд.`))return;
-    b.disabled=true;b.textContent="обновляю…";
-    const send=force=>api("/api/deploy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force,restart:true})});
-    let r=await send(false);
-    if(r&&r.needs_confirm){
-      if(!confirm("⚠️ "+r.warn)){b.disabled=false;checkDeploy();return;}
-      r=await send(true);
-    }
-    if(!r||r.ok===false){alert("не обновилось: "+((r&&r.error)||"нет ответа")+"\n\n"+(((r&&r.log)||[]).join("\n").slice(-600)));
-      b.disabled=false;checkDeploy();return;}
-    b.textContent="перезапуск…";
-    // ждём, пока systemd поднимет процесс, и перезагружаем страницу без кеша
-    let tries=0;
-    const wait=setInterval(async()=>{
-      tries++;
-      try{const s=await api("/api/deploy/status");
-        if(s&&!s.error){clearInterval(wait);hardReload();}
-      }catch(e){}
-      if(tries>20){clearInterval(wait);hardReload();}
-    },1500);
-  };
-}
 $("#bell").onclick=()=>{const box=$("#notif");const open=box.style.display==="none";
   if(open){renderNotif();box.style.display="block";
     if(NOTIF.length)localStorage.setItem("axiom_notif_seen",NOTIF.reduce((a,n)=>n.ts>a?n.ts:a,""));
@@ -6532,8 +6587,6 @@ $("#refresh").onclick=route;
 $("#logout-btn").onclick=()=>{document.cookie="axiom_auth=;path=/;max-age=0";location.href="/login";};
 route();
 setInterval(refreshNotif,60000);
-checkDeploy();
-setInterval(checkDeploy,300000);   // раз в 5 минут: не приехало ли обновление
 </script>
 </body>
 </html>

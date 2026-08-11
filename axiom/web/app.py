@@ -509,7 +509,11 @@ def accounts_list() -> JSONResponse:
         chats_by = {r["aid"]: r["c"] for r in conn.execute(
             "SELECT joined_by aid, COUNT(*) c FROM chats WHERE joined_by IS NOT NULL "
             "AND in_account='yes' GROUP BY joined_by")}
-        listen_id = database.get_setting(conn, "listen_account_id")
+        # набор слушающих чаты; старый одиночный ключ — фолбэк для настроек до перехода
+        listen_csv = database.get_setting(conn, "listen_account_ids")
+        if not listen_csv:
+            listen_csv = database.get_setting(conn, "listen_account_id") or ""
+        listen_ids = {x.strip() for x in listen_csv.split(",") if x.strip()}
         notify_id = database.get_setting(conn, "notify_sender_account_id")
     out = []
     for r in rows:
@@ -519,8 +523,9 @@ def accounts_list() -> JSONResponse:
         # кто шлёт владельцу личное уведомление при назначенной встрече (channels/notify.py)
         d["is_notifier"] = bool(notify_id) and str(d["id"]) == str(notify_id)
         # кто сейчас опрашивает публичные чаты каталога (channels.chat_keywords) — по
-        # умолчанию личный номер из .env, назначить рабочий аккаунт можно тут же в таблице
-        d["is_listener"] = bool(listen_id) and str(d["id"]) == str(listen_id)
+        # умолчанию личный номер из .env, назначить аккаунты можно тут же в таблице
+        # галочками; их может быть несколько, включая «родные» (чтение чатов им можно)
+        d["is_listener"] = str(d["id"]) in listen_ids
         # страна: сохранённый ISO2 или определяем по номеру на лету (+ готовая надпись с флагом)
         code = d.get("country") or phone_geo.detect(d.get("phone"))
         d["country_label"] = phone_geo.label(code) if code else ""
@@ -531,19 +536,38 @@ def accounts_list() -> JSONResponse:
 
 @app.post("/api/settings/listen_account")
 def settings_listen_account(payload: dict = Body(...)) -> JSONResponse:
-    """Какой аккаунт опрашивает публичные чаты (channels.chat_keywords). По умолчанию —
-    личный номер из .env; здесь его можно подменить на рабочий, чтобы не рисковать личным
-    Telegram (см. FloodWait-инцидент на 13.8ч — chat_keywords._main_client)."""
-    acc_id = payload.get("account_id")
+    """Какие аккаунты опрашивают публичные чаты (channels.chat_keywords).
+
+    Аккаунтов может быть несколько: обход каталога — это тысячи запросов истории, и
+    размазать их по нескольким номерам безопаснее, чем гнать одним (FloodWait на 13.8ч
+    поймали именно так). Сюда можно назначать и «родных» — чтение чужих сообщений в
+    публичном чате им разрешено, в отличие от авто-ответа, прогрева и рассылки, где
+    фильтр по protected остаётся (listener.py, warmup.py).
+
+    Принимаем и `account_ids` (список — новый режим), и `account_id` (одиночный —
+    старые вызовы), чтобы не ломать то, что уже настроено."""
+    ids = payload.get("account_ids")
+    if ids is None:
+        one = payload.get("account_id")
+        ids = [one] if one else []
+    clean: list[int] = []
+    for x in ids:
+        try:
+            clean.append(int(x))
+        except (TypeError, ValueError):
+            continue
     with database.get_conn() as conn:
-        if acc_id:
-            row = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
-            if not row:
-                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
-            database.set_setting(conn, "listen_account_id", str(acc_id))
-        else:
-            database.set_setting(conn, "listen_account_id", "")
-    return JSONResponse({"ok": True})
+        if clean:
+            qm = ",".join("?" * len(clean))
+            found = {r["id"] for r in conn.execute(
+                f"SELECT id FROM accounts WHERE id IN ({qm})", clean)}
+            missing = [i for i in clean if i not in found]
+            if missing:
+                return JSONResponse({"error": f"аккаунты не найдены: {missing}"}, status_code=404)
+        database.set_setting(conn, "listen_account_ids", ",".join(str(i) for i in clean))
+        # старый одиночный ключ держим синхронным: его читает фолбэк в _listen_clients
+        database.set_setting(conn, "listen_account_id", str(clean[0]) if clean else "")
+    return JSONResponse({"ok": True, "account_ids": clean})
 
 
 @app.get("/api/settings/notify")
@@ -2795,7 +2819,7 @@ def contact_update(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
 
 # ---- Сделки (воронка Битрикс) --------------------------------------------- #
 @app.get("/api/deals")
-def deals_list(pipeline_id: int | None = None) -> JSONResponse:
+def deals_list(pipeline_id: int | None = None, archived: int = 0) -> JSONResponse:
     database.init_db()
     with database.get_conn() as conn:
         pid = pipeline_id or database.get_default_pipeline_id(conn)
@@ -2806,8 +2830,9 @@ def deals_list(pipeline_id: int | None = None) -> JSONResponse:
                LEFT JOIN companies co ON co.id=d.company_id
                LEFT JOIN contacts c ON c.id=d.contact_id
                WHERE (d.pipeline_id=? OR (d.pipeline_id IS NULL AND ?=?))
+                 AND COALESCE(d.archived,0)=?
                ORDER BY d.updated_at DESC, d.id DESC""",
-            (pid, pid, database.get_default_pipeline_id(conn)),
+            (pid, pid, database.get_default_pipeline_id(conn), 1 if archived else 0),
         ).fetchall()
     return JSONResponse([dict(r) for r in rows])
 
@@ -2986,6 +3011,16 @@ def deal_delete(did: int) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM deals WHERE id=?", (did,))
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/deal/{did}/archive")
+def deal_archive(did: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Убрать сделку из воронки не удаляя — мусорная карточка не должна виснуть
+    в колонке навсегда, но и восстановимость (в отличие от delete) не теряем."""
+    archived = 1 if payload.get("archived", True) else 0
+    with database.get_conn() as conn:
+        conn.execute("UPDATE deals SET archived=?, updated_at=datetime('now') WHERE id=?", (archived, did))
+    return JSONResponse({"ok": True, "archived": bool(archived)})
 
 
 def _spawn(*args: str) -> None:
@@ -4489,14 +4524,25 @@ def chats() -> JSONResponse:
 
 # ---- Проекты (верхний уровень: проект → кампании) ------------------------- #
 @app.get("/api/projects")
-def projects_list() -> JSONResponse:
+def projects_list(archived: int = 0) -> JSONResponse:
     database.init_db()
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT * FROM projects ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            """SELECT p.*, co.name AS client_company_name, c.person_name AS client_contact_name,
+                      c.name AS client_contact_display
+               FROM projects p
+               LEFT JOIN companies co ON co.id=p.client_company_id
+               LEFT JOIN contacts c ON c.id=p.client_contact_id
+               WHERE (?=1 AND p.status='archived') OR (?=0 AND IFNULL(p.status,'')<>'archived')
+               ORDER BY p.id DESC""",
+            (1 if archived else 0, 1 if archived else 0),
+        ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
             d["campaigns"] = conn.execute("SELECT COUNT(*) c FROM campaigns WHERE project_id=?", (r["id"],)).fetchone()["c"]
+            # клиент — компания ИЛИ человек, никогда оба: фронту проще один готовый ярлык
+            d["client_name"] = d.get("client_company_name") or d.get("client_contact_name") or d.get("client_contact_display")
             out.append(d)
     return JSONResponse(out)
 
@@ -4508,8 +4554,12 @@ def projects_create(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"error": "нужно название проекта"}, status_code=400)
     with database.get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO projects (name, entity, description) VALUES (?,?,?)",
-            (name, payload.get("entity") or None, payload.get("description") or None),
+            "INSERT INTO projects (name, entity, description, client_company_id, client_contact_id, "
+            "goal, ideal_result, deadline) VALUES (?,?,?,?,?,?,?,?)",
+            (name, payload.get("entity") or None, payload.get("description") or None,
+             payload.get("client_company_id") or None, payload.get("client_contact_id") or None,
+             payload.get("goal") or None, payload.get("ideal_result") or None,
+             payload.get("deadline") or None),
         )
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
@@ -4518,11 +4568,25 @@ def projects_create(payload: dict = Body(...)) -> JSONResponse:
 def projects_update(pid: int, payload: dict = Body(...)) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute(
-            "UPDATE projects SET name=?, entity=?, description=?, status=? WHERE id=?",
+            "UPDATE projects SET name=?, entity=?, description=?, status=?, client_company_id=?, "
+            "client_contact_id=?, goal=?, ideal_result=?, deadline=? WHERE id=?",
             (payload.get("name"), payload.get("entity") or None, payload.get("description") or None,
-             payload.get("status") or "active", pid),
+             payload.get("status") or "active", payload.get("client_company_id") or None,
+             payload.get("client_contact_id") or None, payload.get("goal") or None,
+             payload.get("ideal_result") or None, payload.get("deadline") or None, pid),
         )
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/project/{pid}/archive")
+def projects_archive(pid: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Убрать проект с глаз, не теряя кампании: список проектов копится, а старые
+    направления бизнеса не удаляют — их закрывают, историю кампаний не рвём."""
+    archived = payload.get("archived", True)
+    with database.get_conn() as conn:
+        conn.execute("UPDATE projects SET status=? WHERE id=?",
+                     ("archived" if archived else "active", pid))
+    return JSONResponse({"ok": True, "archived": bool(archived)})
 
 
 @app.post("/api/project/{pid}/delete")
@@ -5949,6 +6013,12 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
         conn.execute("UPDATE campaigns SET status='running' WHERE id=?", (cid,))
         database.add_event(conn, "campaign_start", f"▶ Старт кампании «{(nm['name'] if nm else cid)}»",
                            f"запуск рассылки до {limit} контактов", level="good", campaign_id=cid)
+        # Запущенная кампания без авто-ответа — это рассылка в одну сторону: агент
+        # отправил первое сообщение, человек ответил, а бот молчит, потому что
+        # где-то раньше выключили глобальный тумблер. Обнаружили живьём — 5 дней
+        # переписки скопилось без единого ответа с боевых аккаунтов. Тумблер в
+        # интерфейсе убран: авто-ответ теперь просто часть «кампания запущена».
+        database.set_setting(conn, "tg_auto_reply", "on")
     # Шлём в отдельном процессе, чтобы не блокировать веб и не конфликтовать с event loop FastAPI.
     subprocess.Popen(
         [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", str(limit)],

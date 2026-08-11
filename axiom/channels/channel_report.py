@@ -180,10 +180,11 @@ async def collect(chat_id: int, days: int = DEFAULT_DAYS,
                   limit: int = DEFAULT_LIMIT) -> dict:
     """Забрать посты канала за последние `days` дней в channel_posts.
 
-    Аккаунт берём тот же, что назначен для прослушки чатов (chat_keywords._main_client):
+    Аккаунт берём тот же, что назначен для прослушки чатов (chat_keywords._listen_clients):
     активное чтение истории — как раз тот расход, ради которого его и отделили от
-    личного номера."""
-    from channels.chat_keywords import _main_client, _target
+    личного номера. Здесь читаем ОДИН канал, поэтому берём первый назначенный —
+    ротация по нескольким нужна обходу каталога, а не одиночному отчёту."""
+    from channels.chat_keywords import _listen_clients, _target
 
     database.init_db()
     with database.get_conn() as conn:
@@ -193,7 +194,7 @@ async def collect(chat_id: int, days: int = DEFAULT_DAYS,
     ch = dict(ch)
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    client = await _main_client()
+    client = (await _listen_clients())[0][0]
     saved = updated = 0
     try:
         await client.start()

@@ -4625,6 +4625,12 @@ def _camp_row(conn, r) -> dict:
     d["sent"] = conn.execute(
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
     ).fetchone()["c"]
+    # Сколько контактов сняли вручную в окне «Кто в рассылке» (кнопка «☐ снять все»
+    # кладёт в паузу СРАЗУ ВСЮ текущую очередь). Карточка молчала про это — «в очереди
+    # 0» выглядело как «база кончилась», хотя на деле все были живы, просто отключены.
+    d["paused"] = conn.execute(
+        "SELECT COUNT(*) c FROM campaign_paused_contacts WHERE campaign_id=?", (d["id"],)
+    ).fetchone()["c"]
     team_rows = conn.execute(
         "SELECT account_id, daily_limit FROM campaign_accounts WHERE campaign_id=?", (d["id"],)).fetchall()
     d["accounts"] = [r["account_id"] for r in team_rows]
@@ -5911,6 +5917,25 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
                                  "warn": "Шаблон первого сообщения выглядит подозрительно:\n"
                                          + opener_lint.report(problems)
                                          + "\n\nВсё равно отправить живым людям?"})
+        # Очередь пуста не всегда значит «база кончилась» — «☐ снять все» в окне «Кто
+        # в рассылке» кладёт в паузу ВСЮ текущую очередь разом. Запускать процесс,
+        # который найдёт 0 контактов и молча выйдет, — только путать оператора: он
+        # видел «запущено», а в ленте ничего не появилось. Проверяем ДО подпроцесса.
+        camp_row = conn.execute("SELECT audience_tag, channel, tg_verified_only FROM campaigns "
+                                "WHERE id=?", (cid,)).fetchone()
+        queue_now = _audience_count(conn, cid, camp_row["audience_tag"], camp_row["channel"],
+                                    verified_only=bool(camp_row["tg_verified_only"] if
+                                                       camp_row["tg_verified_only"] is not None else 1))
+        paused_now = conn.execute(
+            "SELECT COUNT(*) c FROM campaign_paused_contacts WHERE campaign_id=?", (cid,)
+        ).fetchone()["c"]
+        if queue_now == 0 and paused_now > 0 and not force:
+            return JSONResponse({"needs_confirm": True,
+                                 "warn": f"В очереди 0 контактов, потому что {paused_now} снято "
+                                         f"вручную в окне «Кто в рассылке» (кнопка «снять все» "
+                                         f"выключает сразу всю текущую очередь). Верни их галочкой "
+                                         f"там, иначе запуск сейчас ничего не отправит.\n\n"
+                                         f"Всё равно запустить?"})
         # Защита от повторного запуска: если запускали < 10 мин назад — просим подтверждение.
         recent = conn.execute(
             "SELECT ts FROM events WHERE campaign_id=? AND type='campaign_start' "

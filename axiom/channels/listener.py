@@ -148,18 +148,26 @@ def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
     Поэтому: если мы этому человеку УЖЕ писали с этого аккаунта — обязаны и
     отвечать, какой бы ни была ступень прогрева. Незнакомцам и взаимному прогреву
     прежнее ограничение остаётся.
-    """
+
+    «Родной» (protected) аккаунт — ОСОБЫЙ случай, а не частность «status='active'».
+    Личный номер хозяина слушаем (см. _listenable), но ярлык «active → отвечаем
+    всем» тут запрещён категорически: это переписка с мамой, друзьями, партнёрами,
+    и агент не имеет права встрять в неё только потому, что случайный собеседник
+    когда-то попал в таблицу контактов. Разрешаем ответ ТОЛЬКО если кампания САМА
+    написала этому человеку с этого аккаунта первой — остальное чужое."""
     with database.get_conn() as conn:
         if database.get_setting(conn, "tg_auto_reply", "on") != "on":
             return False
-        row = conn.execute("SELECT status FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        row = conn.execute("SELECT status, COALESCE(protected,0) protected FROM accounts "
+                           "WHERE id=?", (acc_id,)).fetchone()
         if not row:
             return False
-        if row["status"] == "active":
-            return True
         if row["status"] == "banned" or not contact_id:
             return False
-        # мы первыми написали этому человеку с этого аккаунта — значит диалог наш
+        if row["status"] == "active" and not row["protected"]:
+            return True
+        # мы первыми написали этому человеку с этого аккаунта — значит диалог наш,
+        # родной аккаунт это условие проходит теми же средствами, без исключения
         started = conn.execute(
             "SELECT 1 FROM messages WHERE contact_id=? AND account_id=? AND direction='out' "
             "LIMIT 1", (contact_id, acc_id)).fetchone()
@@ -167,11 +175,17 @@ def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
 
 
 def _listenable() -> list[dict]:
-    """Кого слушаем: есть авторизованная сессия, не забанен, не «родной» (protected)."""
+    """Кого слушаем: есть авторизованная сессия, не забанен.
+
+    «Родные» (protected) аккаунты — тоже здесь: 07-08.08.2026 кампания писала с
+    protected-аккаунта Василия, человек отвечал, а слушатель его не подключал вовсе
+    — ответ не попадал НИКУДА (ни в «Диалоги», ни агенту), до созвона дойти было
+    физически нечем. Личная переписка от этого не страдает: авто-ответ агента для
+    protected режется отдельно, в _should_reply, а не здесь на уровне подключения."""
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
-            "AND status IN ('active','warming','paused') AND COALESCE(protected,0)=0"
+            "AND status IN ('active','warming','paused')"
         ).fetchall()
     return [dict(r) for r in rows]
 

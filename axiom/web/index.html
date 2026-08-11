@@ -1116,6 +1116,10 @@ async function openAudience(cid){
       const m=inner.querySelector("#aud-msg");
       const targets=rows.filter(r=>(r.in_queue||r.paused)&&(want?r.paused:!r.paused));
       if(!targets.length){m.textContent=want?"уже все выбраны":"уже все сняты";return;}
+      // «Снять все» гасит СРАЗУ ВСЮ текущую очередь этой кампании — 07-08.08.2026 так
+      // отключили всю боевую аудиторию (44 из 44), и рассылка молчала несколько дней,
+      // пока не нашли причину в базе. Подтверждение с числом — последний шанс заметить.
+      if(!want&&!confirm(`Снять из рассылки ${targets.length} контакт(ов)?\n\nИменно в этой кампании — в других они останутся. Рассылка перестанет их видеть, пока не вернёшь галочкой обратно.`))return;
       const url=want?"unpause_contacts":"pause_contacts";
       const r=await api(`/api/campaign/${cid}/${url}`,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({contact_ids:targets.map(x=>x.id)})});
@@ -5300,7 +5304,7 @@ function renderCampList(mount,camps){
         <div style="flex:1;min-width:240px">
           <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
           <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${(c.channel||"").split(",").map(x=>CH_RU[x.trim()]||x.trim()).filter(Boolean).join(" + ")||"—"} · создана ${c.created_at?fmt(c.created_at):"—"}</div>
-          <div class="sub mono">отправлено ${done} · в очереди ${left}</div>
+          <div class="sub mono">отправлено ${done} · в очереди ${left}${c.paused?` · <span style="color:#c0392b" title="кнопка «снять все» в окне «Кто в рассылке» отключила эти контакты именно у этой кампании — вернуть галочкой там">снято вручную: ${c.paused}</span>`:""}</div>
           <div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;margin-top:6px;overflow:hidden;max-width:340px">
             <div style="height:100%;width:${pct}%;background:var(--green)"></div></div>
         </div>

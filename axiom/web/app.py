@@ -4577,6 +4577,15 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
 # ---- Чаты ----------------------------------------------------------------- #
 @app.get("/api/chats")
 def chats() -> JSONResponse:
+    """Список диалогов + аккаунт, с которого ведётся каждый.
+
+    Аккаунт берём из ПОСЛЕДНЕГО сообщения (messages.account_id) — того же источника,
+    что и подписи под пузырями в самой переписке (contact_detail). Раньше брали из
+    campaign_contacts, и это было ненадёжно ДВОЯКО: такой записи вовсе нет, если
+    контакт написал первым сам (не через рассылку), а «🔄 Обнулить тест» её ещё и
+    удаляет намеренно. В обоих случаях аккаунт пропадал из фильтра «любой аккаунт» и
+    из подписи в списке слева — оператор не мог понять, с какого номера идёт диалог,
+    хотя сама переписка (и подписи в ней) были на месте."""
     database.init_db()
     with database.get_conn() as conn:
         rows = conn.execute(
@@ -4587,10 +4596,13 @@ def chats() -> JSONResponse:
                    (SELECT text FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_text,
                    (SELECT direction FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_dir,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts,
-                   (SELECT a.label FROM campaign_contacts cc JOIN accounts a ON a.id=cc.account_id
-                      WHERE cc.contact_id=c.id AND cc.account_id IS NOT NULL ORDER BY cc.rowid DESC LIMIT 1) AS account_label,
-                   (SELECT cc.account_id FROM campaign_contacts cc
-                      WHERE cc.contact_id=c.id AND cc.account_id IS NOT NULL ORDER BY cc.rowid DESC LIMIT 1) AS account_id
+                   (SELECT COALESCE(a.label, a.username, a.phone) FROM messages m
+                      LEFT JOIN accounts a ON a.id=m.account_id
+                      WHERE m.contact_id=c.id AND m.account_id IS NOT NULL
+                      ORDER BY m.id DESC LIMIT 1) AS account_label,
+                   (SELECT m.account_id FROM messages m
+                      WHERE m.contact_id=c.id AND m.account_id IS NOT NULL
+                      ORDER BY m.id DESC LIMIT 1) AS account_id
             FROM contacts c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = c.id)
             ORDER BY last_ts DESC

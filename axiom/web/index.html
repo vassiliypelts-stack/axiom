@@ -5335,6 +5335,7 @@ function renderCampList(mount,camps){
           <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
+          <button class="cl-test-reset" data-id="${c.id}" title="удалить переписку, встречи и очередь у СВОИХ тестовых номеров этой кампании — начать тест с нуля, не путая со вчерашним диалогом. Живых лидов не трогает">🔄 Обнулить тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" ${isRunning?"disabled":""} title="${isRunning?'Кампания уже работает — жми «Стоп», чтобы снова разрешить запуск':'Запустить рассылку'}">▶ Запустить</button>
           ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца. После стопа «Запустить» снова станет активной">⏸ Стоп</button>`:""}
@@ -5572,6 +5573,16 @@ function renderCampList(mount,camps){
         const skip=r.skipped_in_dialog?`\n\n⏸ Пропущено номеров: ${r.skipped_in_dialog} — по ним уже идёт переписка. Опенер повторно не отправляем, чтобы не затирать диалог.`:"";
         alert(`✅ Тест пошёл на ${r.test_targets} свой(их) номер(а). Проверь Telegram — сообщение придёт с паузой. Ответь себе, чтобы проверить, как агент ведёт диалог.${skip}`);}
     }catch(e){alert("ошибка запуска теста");}
+    b.textContent=t;
+  });
+  mount.querySelectorAll(".cl-test-reset").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id;
+    if(!confirm("🔄 Обнулить тест.\nУдалит переписку, встречи и очередь опенера у ТВОИХ тестовых номеров (is_test) этой кампании — со следующего касания агент начнёт с нуля, не путая со старым диалогом.\nЖивых лидов не трогает НИКОГДА.\n\nОтменить нельзя. Продолжить?"))return;
+    const t=b.textContent;b.textContent="…";
+    try{const r=await api(`/api/campaign/${id}/test/reset_dialogs`,{method:"POST"});
+      if(r.error){alert(r.error);}
+      else{alert(`✅ Переписка обнулена у ${r.reset} тестовых номер(ов). Можно запускать тест заново.`);}
+    }catch(e){alert("ошибка обнуления теста");}
     b.textContent=t;
   });
   mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));

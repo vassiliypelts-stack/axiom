@@ -6258,6 +6258,48 @@ def campaign_test(cid: int) -> JSONResponse:
     return JSONResponse({"ok": True, "test_targets": n_test, "skipped_in_dialog": len(skipped)})
 
 
+@app.post("/api/campaign/{cid}/test/reset_dialogs")
+def campaign_test_reset_dialogs(cid: int) -> JSONResponse:
+    """Обнулить переписку с ТЕСТОВЫМИ номерами этой кампании — чтобы гонять тест «с
+    нуля», а не как продолжение вчерашнего разговора.
+
+    Простой сброс статуса (кнопка «🧪 Тест») специально НЕ трогает историю сообщений
+    (см. campaign_test выше) — на живом лиде их терять нельзя. Но для СВОИХ тестовых
+    номеров это оборачивается обратной стороной: агент при следующем ответе читает
+    всю историю целиком и путает старый диалог с новым («второе представление»,
+    ссылка со вчерашней договорённости и т.п.) — оператор жаловался ровно на это.
+
+    Поэтому здесь — полное удаление: сообщения, сделки (встречи), очередь опенера,
+    запись «уже отправлено» в этой кампании. Статус — в 'new'. is_test=1 — ЖЁСТКОЕ
+    условие запроса (не полагаемся на то, что в audience_tag случайно не окажется
+    боевого контакта): без него один вызов мог бы стереть переписку живому лиду.
+    """
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT name, audience_tag FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        where = "COALESCE(is_test,0)=1"
+        params: list = []
+        tag = (row["audience_tag"] or "").strip()
+        if tag:
+            where += " AND tags LIKE ?"
+            params.append(f"%{tag}%")
+        ids = [r["id"] for r in conn.execute(f"SELECT id FROM contacts WHERE {where}", params).fetchall()]
+        if not ids:
+            return JSONResponse({"error": "нет тестовых номеров у этой кампании"}, status_code=400)
+        qmarks = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qmarks})", ids)
+        conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qmarks})", ids)
+        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", ids)
+        conn.execute(f"DELETE FROM campaign_contacts WHERE campaign_id=? AND contact_id IN ({qmarks})",
+                    (cid, *ids))
+        conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})", ids)
+        database.add_event(conn, "campaign_test", f"🔄 Обнулена переписка «{row['name']}»",
+                           f"тестовых контактов: {len(ids)} — сообщения, встречи и очередь удалены, "
+                           f"статус new", level="good", campaign_id=cid)
+    return JSONResponse({"ok": True, "reset": len(ids)})
+
+
 @app.post("/api/campaign/{cid}/archive")
 def campaign_archive(cid: int, payload: dict = Body(default={})) -> JSONResponse:
     """В архив / из архива. Не удаляет ничего — просто прячет из основного списка

@@ -494,7 +494,14 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     """Генерит ответ ИИ-агентом и шлёт его ЧЕРЕЗ аккаунт, получивший сообщение
     (event.client). Входящее уже сохранено вызывающим — здесь только исходящее и
     события (встреча/тёплый лид). Историю берём из книжки — она уже содержит
-    только что записанное входящее последней репликой."""
+    только что записанное входящее последней репликой.
+
+    Пауза «прочитал и печатает» стоит ДО чтения истории неспроста: люди дробят мысль
+    на несколько сообщений подряд («здрась, это я» → «что хотели?»). Пока держим
+    паузу, дописанное успевает лечь в базу и попадает в ТОТ ЖЕ ответ — иначе агент
+    отвечает на первую фразу, не видя второй, и человек получает две реплики невпопад.
+    """
+    await _humanize_before_reply(event.client, await event.get_input_chat())
     with database.get_conn() as conn:
         contact = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
         opener, messages = _history_for_agent(database.get_history(conn, contact_id))
@@ -567,8 +574,9 @@ async def _agent_reply(event, contact_id: int, username: str | None,
 
     text_in = messages[-1]["content"]
     peer = await event.get_input_chat()
-    # Человекоподобно: заметил → прочитал (галочки) → иногда отвлёкся → печатает
-    await _humanize_before_reply(event.client, peer)
+    # Паузу «заметил → прочитал → печатает» уже выдержали В НАЧАЛЕ, до чтения истории
+    # (см. docstring): так дописанные сообщения попадают в этот же ответ. Второй раз
+    # ждать нельзя — человек и без того ждёт ответа полминуты.
     await _send_parts(event.client, peer, reply.reply_parts)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 

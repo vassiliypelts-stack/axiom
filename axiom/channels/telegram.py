@@ -664,10 +664,12 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     if meeting is not None:
         print(f"[MEETING] contact {contact_id}: {meeting.meeting_at_iso} | "
               f"zoom={'yes' if meeting.zoom_link else 'no'} | cal={'yes' if meeting.calendar_event_id else 'no'}")
+        # Ссылку клиенту СРАЗУ не шлём: до созвона может быть день-два, и в переписке
+        # она тонет — человек к началу её уже не находит. Отправит планировщик за час
+        # до старта, вместе с напоминанием (scheduler.REMINDER_TEMPLATE). Владельцу
+        # уведомление уходит сразу и со ссылкой — ему нужно знать заранее (см. notify).
         if meeting.zoom_link:
-            # без названия сервиса: ссылка может быть Телемост/Meet/Zoom — что задано
-            # в кампании, то и уходит, а «зум» в тексте противоречил бы самой ссылке
-            await _send_parts(event.client, peer, [f"вот ссылка на созвон: {meeting.zoom_link}", "до связи)"])
+            print(f"[MEETING] ссылка уйдёт клиенту за час до начала (напоминание)")
         from channels import notify
         await notify.notify_meeting(contact_id, meeting.meeting_at_iso, reply.notes,
                                     meeting.zoom_link, camp["id"] if camp else None)

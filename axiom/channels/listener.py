@@ -396,6 +396,19 @@ async def _connect(acc: dict):
             raise RuntimeError("сессия не авторизована — нужен повторный вход")
         client.add_event_handler(_make_handler(acc["id"]),
                                  events.NewMessage(incoming=True, forwards=False))
+        # Что пришло, пока клиент был отключён (рестарт сервиса деплоем, обрыв сети,
+        # supervise переподключал аккаунт) — Telethon САМ не доливает, событие теряется
+        # НАВСЕГДА и без единой ошибки в логе. Со стороны это неотличимо от «агент
+        # проигнорировал ответ»: живой тестовый лид написал ровно в секунды рестарта,
+        # реплика осела в Telegram, а в книжку так и не попала. catch_up() просит у
+        # Telegram разницу (get_difference) и прогоняет пропущенное через уже
+        # зарегистрированный handler — поэтому регистрируем его СТРОКОЙ ВЫШЕ, а не после.
+        # Не даём зависшему catch_up сорвать подключение целиком (аккаунт и так
+        # авторизован и рабочий) — на этот случай отдельный try, не общий выше.
+        try:
+            await asyncio.wait_for(client.catch_up(), timeout=CONNECT_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            _log(f"[#{acc['id']}] catch_up не удался (не критично): {e}")
     except BaseException:
         try:
             await client.disconnect()

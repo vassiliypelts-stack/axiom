@@ -37,6 +37,37 @@ FastAPI + одностраничный дашборд. Многоканальн�
 
 Пример: нужно поправить логику кампаний → `Grep pattern="/api/campaign" path="axiom/web/app.py" output_mode="content" -n` → взять номер строки → `Read` с `offset` вокруг неё, а не файл целиком.
 
+### Карта index.html (Grep по имени функции, номер строки — ориентир)
+
+Структура файла: `<style>` — строки 11–625, весь JS — один `<script>` 655–6590.
+Экраны рисуются функциями `viewXxx`, диспетчер — `const VIEWS={...}` (~6135), точка входа — `route()` (~6571).
+
+| Раздел | Ключевые функции (грепать по имени) | ~Строки |
+|---|---|---|
+| Хелперы (`$`, `api`, `esc`), тема, форматтеры | `applyTheme`, `fmt`, `rel`, `statusBadge` | 656–730 |
+| Универсальная таблица (сортировка/ресайз/теги) | `smartTable`, `bindTags`, `wireCollapse` | 730–976 |
+| Дашборд | `viewDashboard`, `loadTodayTasks`, `openAudience` | 977–1240 |
+| **Аккаунты** (осторожно: функция зовётся `viewAgents`, не `viewAccounts`) | `viewAgents`, `showLoginDialog`, `showSmsRegisterDialog`, `loadTwofa`, `loadIdentityCheck`, `showProtectDialog` | 1241–2229 |
+| AI-агенты (это другое, чем «Аккаунты») | `viewAiAgents` | 2230–2265 |
+| Оргструктура (самый крупный блок, префикс `org*`) | `viewOrgChart`, `renderOrgChart`, `orgBuildTree`, `wireOrgChartTree` | 2266–3058 |
+| CRM: лиды и сделки (канбан) | `viewLeads`, `viewDeals`, `renderDealsKanban`, `openPipelineEditor` | 3059–3367 |
+| CRM: компании и контакты | `viewCompanies`, `viewContacts`, `openCompany`, `openDeal` | 3368–3647 |
+| Карточка аккаунта/диалога | `openAgent` | 3648–3833 |
+| ChatCat (каталог чатов, префикс `cc*`) | `viewChatCatalog`, `openChat`, `openChatReport`, `loadQuality`, `showImportChatsDialog` | 3834–4568 |
+| Хиты и целевые лиды | `viewLeadHits`, `renderHits`, `renderTargetLeads` | 4569–4771 |
+| Досье | `viewDossier`, `dossierCard`, `kpCard` | 4772–4909 |
+| Кампании/рассылки | `viewCampaigns`, `renderCampList` | 4910–5607 |
+| Переписка | `viewChats`, `openThread`, `openDossier` (drawer) | 5608–5750 |
+| Парсер TG | `viewParser` | 5751–5855 |
+| Проекты | `viewProjects` | 5856–5981 |
+| Прокси | `viewProxy` | 5982–6048 |
+| Календарь/встречи | `viewCalendar` | 6049–6133 |
+| Роутер и навигация | `VIEWS`, `route`, `renderNav`, `navApplyOrder`; сам список пунктов меню — `NAV_GROUPS` (~701) | 6134–6202 |
+| Визард запуска кампании (префикс `wz*`) | `startWizard`, `renderWizard`, `wzLaunch`, `showAudiencePicker` | 6203–6449 |
+| Уведомления и события | `refreshNotif`, `renderNotif`, `showEvent`, `openEntityDeep` | 6450–6590 |
+
+Номера строк плывут после каждой правки — опорой служит **имя функции**, номер нужен лишь чтобы понять, в какой конец файла идти.
+
 ## Деплой
 
 Сервер на GCP (34.16.12.181, IP эфемерный — сверяй перед SSH). **Кнопка деплоя стирает любые ручные правки на сервере.** Изменения вносятся только локально → коммит → штатный деплой. Не редактировать код через SSH напрямую.

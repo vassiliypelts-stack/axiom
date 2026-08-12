@@ -6,7 +6,11 @@
 
 Что делает:
   • НАПОМИНАНИЕ — за REMINDER_* часов до встречи (deals.meeting_at), один раз.
-  • ДОЖИМ — кому отправили, но молчит 24/48 ч: мягкий пинг, максимум 2 раза, потом nurture.
+  • ДОЖИМ — кому отправили, но молчит 24/48 ч: мягкий пинг из FOLLOWUP_TEMPLATES
+    (общий на все кампании), максимум len(FOLLOWUP_TEMPLATES) раз, потом nurture.
+    Кампания может добавить СВОЙ третий шаг (campaigns.extra_followup_template) —
+    оффер у каждой кампании свой, а общий список один, поэтому доп. шаг привязан
+    именно к кампании, которая сейчас ведёт контакт (см. _campaign_extra_followup).
   • НЕДОШЁЛ — встреча прошла, а статус не сдвинулся: предложить новый слот.
 
 Запуск:
@@ -65,7 +69,9 @@ class Action:
     name: str
     text: str
     deal_id: int | None = None
-    followup_n: int = 0   # какой по счёту пинг (для followup)
+    followup_n: int = 0    # какой по счёту пинг (для followup)
+    followup_max: int = 0  # сколько пингов допустимо ИМЕННО для этого контакта
+                            # (глобальный список + доп. шаг кампании, если задан)
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -120,6 +126,20 @@ def _trailing_out_streak(history) -> tuple[int, str | None]:
     return streak, last_ts
 
 
+def _campaign_extra_followup(conn, contact_id: int) -> str | None:
+    """Доп. шаблон дожима (шаг сверх FOLLOWUP_TEMPLATES) кампании, которая СЕЙЧАС
+    ведёт этот контакт. «Сейчас ведёт» — последняя запись в campaign_contacts:
+    тестовые/повторно используемые номера успевают побывать в нескольких
+    кампаниях, и брать нужно не первую попавшуюся, а самую свежую."""
+    row = conn.execute(
+        "SELECT c.extra_followup_template AS t FROM campaign_contacts cc "
+        "JOIN campaigns c ON c.id = cc.campaign_id "
+        "WHERE cc.contact_id = ? ORDER BY cc.id DESC LIMIT 1", (contact_id,)
+    ).fetchone()
+    t = (row["t"] or "").strip() if row else ""
+    return t or None
+
+
 def collect_due(conn, now: datetime | None = None) -> list[Action]:
     now = now or _utcnow()
     actions: list[Action] = []
@@ -168,16 +188,18 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         streak, last_ts = _trailing_out_streak(history)
         if streak == 0 or last_ts is None:
             continue  # ждём не мы, либо диалога нет
-        if streak > len(FOLLOWUP_TEMPLATES):
+        extra = _campaign_extra_followup(conn, c["id"])
+        templates = FOLLOWUP_TEMPLATES + ([extra] if extra else [])
+        if streak > len(templates):
             continue  # уже дожали максимум — оставляем планировщику nurture (ниже)
         last_dt = _parse_dt(last_ts)
         if not last_dt:
             continue
         if (now - last_dt).total_seconds() / 3600 >= FOLLOWUP_GAP_HOURS:
-            tmpl = FOLLOWUP_TEMPLATES[streak - 1]
+            tmpl = templates[streak - 1]
             actions.append(Action(
                 "followup", c["id"], c["tg_user_id"], c["name"] or "",
-                tmpl.format(name=_name(c)), followup_n=streak,
+                tmpl.format(name=_name(c)), followup_n=streak, followup_max=len(templates),
             ))
     return actions
 
@@ -192,7 +214,8 @@ def apply(conn, action: Action) -> None:
     elif action.kind == "followup":
         # фиксируем сам пинг как исходящее — счётчик дожима = trailing-out streak
         database.add_message(conn, action.contact_id, "out", action.text, intent=None)
-        if action.followup_n >= len(FOLLOWUP_TEMPLATES):
+        cap = action.followup_max or len(FOLLOWUP_TEMPLATES)
+        if action.followup_n >= cap:
             database.set_status(conn, action.contact_id, "nurture")  # дожали максимум
 
 

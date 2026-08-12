@@ -1412,6 +1412,8 @@ async function viewAgents(v){
         <span class="hint" id="a-sess-msg"></span>
       </div>
       <div class="hint" style="margin-top:8px">Это НЕ то же, что «Прокси» и «@SpamBot». Прокси — доедет ли трафик до Telegram; @SpamBot — есть ли ограничения у живого аккаунта; живость — <b>аккаунт вообще ещё наш</b> (сессия не отозвана, номер не забанен). «TG ✓» в «Подключении» значит лишь, что сессия записана в базу, а не что она рабочая. Если прокси мёртв — стучимся напрямую, и только когда молчат оба, ставим «<span class="sdot gy"></span>нет связи» (а не «мёртв»): не хороним рабочий аккаунт из-за канала.</div></div>
+    <details id="acc-settings" style="margin:0 0 12px">
+      <summary style="cursor:pointer;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:6px 0">⚙ Настройки агента и встреч <span class="hint" style="text-transform:none;letter-spacing:0;font-weight:400">— скорость ответа, модель, ссылка на созвон, уведомления</span></summary>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">⏱ Скорость ответа в диалоге</b>
@@ -1449,6 +1451,7 @@ async function viewAgents(v){
         <span class="hint" id="ntf-msg"></span>
       </div>
       <div class="hint" style="margin-top:8px">Отправитель назначается кнопкой «🔔 назначить» в колонке «Уведомляет о встречах» в таблице ниже — обычно «родной» номер, чтобы сообщение выглядело как обычная переписка. Без назначенного отправителя И получателя уведомление просто не уходит, остальное (карточка встречи в колокольчике) работает как раньше.</div></div>
+    </details>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">Автопрогрев</b>

@@ -2067,6 +2067,53 @@ def agent_why_silent() -> JSONResponse:
                          "recent_errors": mute})
 
 
+def _meetings_scheduler() -> None:
+    """Напоминания о встрече, дожим молчунов, «не дошёл» — раз в 15 минут.
+
+    Ядро (scheduler.collect_due) считало это давно, но ОТПРАВЛЯЛ результат только
+    channels/telegram.run_loop(), который поднимается лишь при ручном запуске из
+    консоли. На сервере крутится один web.app — значит напоминания о созвонах и дожим
+    не работали ВООБЩЕ: сделка назначена, а человеку за час до встречи никто не пишет
+    и ссылку не присылает.
+
+    Свой Telethon-клиент здесь заводить нельзя (одна сессия в двух местах = сгоревший
+    аккаунт), поэтому шлём через соединения слушателя — см. listener.send_via_listener.
+    Аккаунт берём тот, что вёл переписку с этим контактом.
+    """
+    import time
+    while True:
+        time.sleep(900)
+        try:
+            from channels import antiban, listener
+            from scheduler import apply as sched_apply, collect_due
+            if not antiban.within_work_hours():
+                continue                      # ночью не пишем даже напоминания
+            with database.get_conn() as conn:
+                actions = collect_due(conn)
+            for a in actions:
+                if not a.tg_user_id:
+                    continue
+                with database.get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
+                        "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (a.contact_id,)
+                    ).fetchone()
+                if not row:
+                    continue                  # не знаем, с какого аккаунта вести диалог
+                parts = [p for p in a.text.split("\n\n") if p.strip()] or [a.text]
+                if not listener.send_via_listener(row["account_id"], int(a.tg_user_id), parts):
+                    continue                  # не ушло — пробуем на следующем тике
+                with database.get_conn() as conn:
+                    sched_apply(conn, a)
+                    database.add_event(
+                        conn, "scheduler", f"⏰ {a.kind}: {a.name or a.contact_id}",
+                        a.text[:200], level="good", contact_id=a.contact_id,
+                        account_id=row["account_id"])
+                print(f"[sched] {a.kind} -> contact {a.contact_id}")
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[meetings scheduler] {e}")
+
+
 def _night_reply_scheduler() -> None:
     """Утренняя досылка ответов тем, кто написал ночью.
 
@@ -2106,6 +2153,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
     threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
     threading.Thread(target=_night_reply_scheduler, daemon=True).start()
+    threading.Thread(target=_meetings_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:

@@ -29,16 +29,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # ⚠️ ПРАВЬ ПОД СЕБЯ. Плейсхолдеры: {name} {time}.
-REMINDER_TEMPLATE = "{name}, напоминаю про созвон сегодня в {time}) ссылку скину перед стартом. на связи?"
+# {link} подставляется ссылкой на созвон, если она есть у сделки. Раньше шаблон обещал
+# «скину перед стартом», но не слал НИЧЕГО: ссылка уходила клиенту в момент
+# договорённости и к началу тонула в переписке. Теперь напоминание и есть тот момент,
+# когда ссылка нужна. Сделки без ссылки (звонок по телефону) остаются с прежним текстом.
+REMINDER_TEMPLATE = "{name}, напоминаю про созвон сегодня в {time}) на связи?{link}"
 FOLLOWUP_TEMPLATES = [
     "{name}, привет) не пропало? я про короткое демо на zoom, 15 минут. глянешь?",
     "{name}, последний раз напомню) если не актуально, просто скажи, не буду дёргать. а если интересно, давай созвонимся минут на 15",
 ]
 NOSHOW_TEMPLATE = "{name}, не получилось созвониться( давай перенесём? когда удобно на этой неделе?"
 
-# Окно напоминания: за сколько часов до встречи и не позже скольки.
-REMINDER_BEFORE_HOURS = 3
-REMINDER_MIN_HOURS = 2
+# Окно напоминания: за сколько часов до встречи и не позже скольки. Целимся В ЧАС до
+# старта — именно тогда ссылка нужнее всего: раньше она теряется в переписке, позже
+# человек уже не успевает перестроить планы. Окно шире точки (тик раз в 15 минут),
+# иначе напоминание проскакивало бы мимо.
+REMINDER_BEFORE_HOURS = 1.5
+REMINDER_MIN_HOURS = 0.5
 # Дожим: через сколько часов тишины пинговать. Максимум len(FOLLOWUP_TEMPLATES) раз.
 FOLLOWUP_GAP_HOURS = 24
 # Недошёл: через сколько часов после времени встречи предлагать перенос.
@@ -119,7 +126,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
 
     # --- НАПОМИНАНИЯ о встрече ---
     deals = conn.execute(
-        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, c.name, c.tg_user_id "
+        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, d.zoom_link, c.name, c.tg_user_id "
         "FROM deals d JOIN contacts c ON c.id = d.contact_id "
         "WHERE d.stage = 'meeting_set' AND d.reminder_sent = 0 AND d.meeting_at IS NOT NULL"
     ).fetchall()
@@ -129,9 +136,12 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
             continue
         hours_left = (dt - now).total_seconds() / 3600
         if REMINDER_MIN_HOURS <= hours_left <= REMINDER_BEFORE_HOURS:
+            link = (d["zoom_link"] or "").strip()
             actions.append(Action(
                 "reminder", d["contact_id"], d["tg_user_id"], d["name"] or "",
-                REMINDER_TEMPLATE.format(name=_name(d), time=_local_hhmm(dt)), deal_id=d["deal_id"],
+                REMINDER_TEMPLATE.format(name=_name(d), time=_local_hhmm(dt),
+                                         link=f"\n\nссылка: {link}" if link else ""),
+                deal_id=d["deal_id"],
             ))
 
     # --- НЕДОШЁЛ: встреча прошла, стадия не сдвинулась ---

@@ -491,6 +491,34 @@ async def run() -> None:
     await _supervise()
 
 
+def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: float = 120.0) -> bool:
+    """Отправить сообщение аккаунтом, который УЖЕ подключён слушателем.
+
+    Планировщику (напоминания, дожим, «не дошёл») тоже нужно писать в Telegram. Своего
+    клиента ему заводить нельзя: одна сессия в двух процессах — это AuthKeyDuplicated,
+    так уже сгорели аккаунты при перезапусках, а вживую 11.08 отправка теста выбила
+    слушатель, и ответ клиента не поймали вовсе. Поэтому переиспользуем соединение
+    слушателя: он и так держит все боевые аккаунты подключёнными.
+
+    Вызывается из ОБЫЧНОГО потока (фоновый тик пульта), а клиент живёт в event loop
+    слушателя — отсюда run_coroutine_threadsafe.
+    """
+    loop = _LOOP
+    client = CLIENTS.get(acc_id)
+    if loop is None or client is None:
+        _log(f"[sched] аккаунт #{acc_id} не подключён слушателем — отправку пропускаю")
+        return False
+    from channels.telegram import _send_parts
+
+    fut = asyncio.run_coroutine_threadsafe(_send_parts(client, tg_user_id, parts), loop)
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:  # noqa: BLE001 — сеть/флуд: пусть решает вызывающий
+        _log(f"[sched] не отправилось аккаунтом #{acc_id}: {e}")
+        return False
+
+
 def start_in_thread() -> None:
     """Запуск в отдельном демон-потоке со своим event loop — для веб-пульта."""
     import threading

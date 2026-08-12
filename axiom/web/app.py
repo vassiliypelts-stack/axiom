@@ -2067,6 +2067,37 @@ def agent_why_silent() -> JSONResponse:
                          "recent_errors": mute})
 
 
+def _night_reply_scheduler() -> None:
+    """Утренняя досылка ответов тем, кто написал ночью.
+
+    Ночью агент молчит намеренно (09:00–21:30 МСК, см. channels/listener): ответ в три
+    часа ночи — это и потерянный лид, и сигнал автоматики для Telegram. Но без этого
+    тика такой человек остался бы без ответа НАВСЕГДА: событие Telegram давно ушло,
+    переспрашивать он не обязан. Раз в 10 минут проверяем, наступило ли рабочее время,
+    и отвечаем накопившимся.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    while True:
+        time.sleep(600)
+        try:
+            from channels import antiban
+            if not antiban.within_work_hours():
+                continue
+            res = subprocess.run([sys.executable, "-m", "channels.telegram", "--night-replies"],
+                                 cwd=str(BASE_DIR.parent), timeout=900, env=env,
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace")
+            if (res.stdout or "").strip():
+                _log_run("night_replies", res)
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[night replies] {e}")
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
@@ -2074,6 +2105,7 @@ def _start_scheduler() -> None:
     _startup_account_report()   # быстрая сводка готовности → колокольчик (до запуска прогрева)
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
     threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
+    threading.Thread(target=_night_reply_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:

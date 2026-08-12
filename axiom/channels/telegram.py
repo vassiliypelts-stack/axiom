@@ -28,6 +28,7 @@ from telethon.tl.types import InputPhoneContact, InputUser, PeerUser
 
 import config
 from agent.agent import generate_reply
+from channels import antiban
 from db import database
 from integrations import meetings
 
@@ -687,6 +688,75 @@ def _register(client: TelegramClient) -> None:
     client.add_event_handler(_handle_incoming, events.NewMessage(incoming=True, forwards=False))
 
 
+class _PseudoEvent:
+    """Заменитель telethon-события для ответа БЕЗ входящего апдейта.
+
+    _agent_reply умеет отвечать только «по событию»: берёт из него клиента и чат.
+    Утренняя досылка (см. night_reply_pass) отвечает на сообщение, пришедшее ночью
+    несколько часов назад, — события уже нет, а весь остальной путь (агент, встреча,
+    ссылка, уведомление владельцу) нужен ровно тот же. Дублировать его второй раз
+    было бы приглашением к расхождению логики, поэтому подставляем минимальный
+    объект с тем же интерфейсом."""
+
+    def __init__(self, client: TelegramClient, peer) -> None:
+        self.client = client
+        self._peer = peer
+
+    async def get_input_chat(self):
+        return self._peer
+
+
+async def night_reply_pass(limit: int = 20) -> int:
+    """Ответить тем, кто написал в нерабочее время и остался без ответа.
+
+    Ночью агент молчит намеренно (см. listener: 09:00–21:30 МСК). Без этой досылки
+    такой лид остался бы без ответа НАВСЕГДА — то есть тишина, от которой лечились,
+    просто переехала бы на утро. Здесь берём диалоги, где последнее сообщение —
+    входящее, и отвечаем обычным путём агента.
+
+    Возвращает число отвеченных. Вне рабочих часов не делает ничего.
+    """
+    if not antiban.within_work_hours():
+        return 0
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.contact_id, m.account_id, c.username "
+            "FROM messages m JOIN contacts c ON c.id = m.contact_id "
+            "WHERE m.id IN (SELECT MAX(id) FROM messages GROUP BY contact_id) "
+            "AND m.direction='in' AND m.account_id IS NOT NULL "
+            "AND c.status IN ('in_dialog','messaged','new') "
+            "ORDER BY m.id LIMIT ?", (limit,)).fetchall()
+        pending = [dict(r) for r in rows]
+    done = 0
+    for p in pending:
+        acc_id = p["account_id"]
+        try:
+            client, _ = client_for_account(acc_id)
+        except Exception as e:  # noqa: BLE001 — мёртвый аккаунт не должен рвать проход
+            print(f"[night] contact {p['contact_id']}: аккаунт #{acc_id} недоступен: {e}")
+            continue
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                print(f"[night] аккаунт #{acc_id}: сессия не авторизована — пропускаю")
+                continue
+            with database.get_conn() as conn:
+                row = conn.execute("SELECT * FROM contacts WHERE id=?", (p["contact_id"],)).fetchone()
+            peer = await _resolve_entity(client, row)
+            await _agent_reply(_PseudoEvent(client, peer), p["contact_id"],
+                               p["username"], account_id=acc_id)
+            done += 1
+            print(f"[night] ответили контакту {p['contact_id']} (утренняя досылка)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[night] contact {p['contact_id']}: {e}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    return done
+
+
 def _make_sender(client: TelegramClient):
     """Отдаёт планировщику способ отправки: Action → сообщение в TG."""
     async def send(action) -> None:
@@ -737,9 +807,14 @@ if __name__ == "__main__":
     p.add_argument("--listen", action="store_true", help="слушать входящие и отвечать")
     p.add_argument("--scheduler", action="store_true", help="крутить напоминания + дожим")
     p.add_argument("--run", type=int, metavar="N", help="разослать N, слушать и крутить планировщик")
+    p.add_argument("--night-replies", action="store_true",
+                   help="ответить тем, кто написал ночью (утренняя досылка)")
     args = p.parse_args()
 
-    if args.run is not None:
+    if args.night_replies:
+        n = asyncio.run(night_reply_pass())
+        print(f"утренняя досылка: отвечено {n}")
+    elif args.run is not None:
         asyncio.run(_main(outreach=args.run, listen=True, scheduler=True))
     elif args.outreach is not None and not args.listen:
         asyncio.run(_main(outreach=args.outreach, listen=False, scheduler=args.scheduler))

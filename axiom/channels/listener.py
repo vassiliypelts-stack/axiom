@@ -24,6 +24,7 @@ from telethon.sessions import StringSession
 from telethon.tl.types import User
 
 import config
+from channels import antiban
 from channels.telegram import _agent_reply, _record_incoming, build_client
 from db import database
 
@@ -240,6 +241,23 @@ async def _handle_private(event, acc_id: int) -> None:
         return
     _record_incoming(contact["id"], text_in, username, account_id=acc_id)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
+    # НОЧЬЮ ЖИВЫМ ЛЮДЯМ НЕ ПИШЕМ (09:00–21:30 МСК). Ответ в три часа ночи — это и
+    # потерянный лид (утром прочитают вполуха), и явный признак автоматики для
+    # Telegram. Сообщение уже сохранено, ответ уйдёт утром: его подберёт планировщик
+    # (scheduler._night_replies). Свои тест-номера исключение — их проверяют вживую
+    # в любое время, и запрет мешал бы работе.
+    is_test = bool(dict(contact).get("is_test") or 0)
+    if not is_test and not antiban.within_work_hours():
+        wake = antiban.next_work_start()
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "agent_paused", "🌙 Ответ отложен до утра",
+                f"Контакт #{contact['id']} написал в нерабочее время "
+                f"({antiban.msk_now():%H:%M} МСК). Агент ответит после "
+                f"{wake:%d.%m %H:%M} МСК — ночью живым людям не пишем.",
+                level="info", contact_id=contact["id"], account_id=acc_id)
+        _log(f"[#{acc_id}] 🌙 контакт {contact['id']}: ночь, ответ отложен до {wake:%d.%m %H:%M} МСК")
+        return
     if _should_reply(acc_id, contact["id"]):
         await _agent_reply(event, contact["id"], username, account_id=acc_id)
         _log(f"[#{acc_id}] → авто-ответ контакту {contact['id']}")

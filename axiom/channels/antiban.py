@@ -113,3 +113,37 @@ def active_window_ok(start_h: int = 9, end_h: int = 22, tz_offset_h: int = 3) ->
     Антибан: живые люди не пишут пачками ночью. tz_offset_h — под страну аккаунтов."""
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=tz_offset_h)
     return start_h <= now.hour < end_h
+
+
+# Рабочее окно переписки по умолчанию: 09:00–21:30 МСК. Считаем ВСЕГДА по Москве, а
+# не по городу собеседника: город заполнен далеко не у всех, а «примерно вечер» лучше
+# «наверняка ночь». Ночное сообщение живому человеку — это и потерянный лид (утром оно
+# уже прочитано вполуха), и явный сигнал автоматизации для Telegram.
+QUIET_TZ_OFFSET_H = 3          # МСК
+WORK_START_MIN = 9 * 60        # 09:00
+WORK_END_MIN = 21 * 60 + 30    # 21:30
+
+
+def msk_now() -> datetime.datetime:
+    """Текущее московское время (сервер живёт в UTC — в Европе или в США, неважно)."""
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=QUIET_TZ_OFFSET_H)
+
+
+def within_work_hours(now: datetime.datetime | None = None) -> bool:
+    """Можно ли сейчас писать ЖИВОМУ человеку (09:00–21:30 МСК).
+
+    Тестовые номера оператора этой проверкой не ограничены — их проверяют вживую в
+    любое время суток, и запрет мешал бы работе (см. вызовы: is_test обходит окно).
+    """
+    n = now or msk_now()
+    return WORK_START_MIN <= (n.hour * 60 + n.minute) < WORK_END_MIN
+
+
+def next_work_start(now: datetime.datetime | None = None) -> datetime.datetime:
+    """Ближайший момент, когда снова можно писать (сегодня 09:00 или завтра 09:00).
+    Нужен, чтобы отложенный ответ ушёл утром, а не «когда-нибудь»."""
+    n = now or msk_now()
+    today_start = n.replace(hour=9, minute=0, second=0, microsecond=0)
+    if n < today_start:
+        return today_start
+    return today_start + datetime.timedelta(days=1)

@@ -249,10 +249,16 @@ async def _handle_private(event, acc_id: int) -> None:
     # НОЧЬЮ ЖИВЫМ ЛЮДЯМ НЕ ПИШЕМ (09:00–21:30 МСК). Ответ в три часа ночи — это и
     # потерянный лид (утром прочитают вполуха), и явный признак автоматики для
     # Telegram. Сообщение уже сохранено, ответ уйдёт утром: его подберёт планировщик
-    # (scheduler._night_replies). Свои тест-номера исключение — их проверяют вживую
-    # в любое время, и запрет мешал бы работе.
+    # (scheduler._night_replies). Исключения — свои тест-номера и «родные» (protected)
+    # аккаунты: и то и другое личная переписка/проверка, а не холодная рассылка, риск
+    # для антибана и потери лида тут другой. «Родные тоже тестовые» — прямая просьба
+    # оператора не душить ночным окном личные чаты.
     is_test = bool(dict(contact).get("is_test") or 0)
-    if not is_test and not antiban.within_work_hours():
+    with database.get_conn() as conn:
+        acc_row = conn.execute("SELECT COALESCE(protected,0) protected FROM accounts "
+                               "WHERE id=?", (acc_id,)).fetchone()
+    is_protected = bool(acc_row and acc_row["protected"])
+    if not is_test and not is_protected and not antiban.within_work_hours():
         wake = antiban.next_work_start()
         with database.get_conn() as conn:
             database.add_event(

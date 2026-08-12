@@ -1,0 +1,46 @@
+# AXIOM — Leadgen Machine (Msgr/SMM)
+
+FastAPI + одностраничный дашборд. Многоканальная система лидогенерации и рассылок (Telegram/WhatsApp/MAX), CRM, парсинг чатов, прогрев аккаунтов.
+
+## ⚠️ КРИТИЧНО: не читай эти файлы целиком
+
+| Файл | Размер | Что делать вместо Read целиком |
+|---|---|---|
+| `axiom/web/app.py` | ~6100 строк, ~210 роутов | Grep по домену (таблица ниже) → Read с `offset`/`limit` вокруг нужной строки |
+| `axiom/web/index.html` | ~6500 строк, один inline `<script>` + один `<style>` на весь файл | Grep по имени функции/id элемента → Read диапазона строк |
+| `axiom/vendor/**` | 19 файлов, ~12000 строк (`opentele/devices.py` — 6108) | Сторонняя библиотека, не редактируется. Не читать вообще и исключать из Grep, если не открыт явный баг именно в вендоре |
+
+Полное чтение любого из них — это ~100–170k токенов за один вызов, которые потом висят в контексте до `/clear`. Почти любая задача решается через Grep + точечный Read.
+
+### Карта роутов app.py (Grep по префиксу, затем читай найденную строку ±50)
+
+| Домен | Префиксы роутов |
+|---|---|
+| Авторизация | `/login`, `/logout`, `/api/auth/` |
+| Аккаунты и прокси | `/api/accounts`, `/api/account/{`, `/api/proxy`, `/api/proxies`, `/api/proxy6`, `/api/accounts/twofa`, `/api/accounts/identity` |
+| Регистрация номеров (hero-sms, авторег) | `/api/sms/`, `/api/auto/` |
+| Настройки | `/api/settings/` |
+| Оргструктура | `/api/org/` |
+| AI-агенты | `/api/aiagents` |
+| CRM (контакты/компании/сделки) | `/api/contacts`, `/api/contact/{`, `/api/companies`, `/api/company/{`, `/api/deals`, `/api/deal/{`, `/api/pipelines`, `/api/pipeline/{` |
+| ChatCat (сканирование чатов) | `/api/chatcat` |
+| Кампании/рассылки | `/api/campaign`, `/api/campaigns` |
+| Импорт/парсинг/обогащение | `/api/import`, `/api/parse`, `/api/enrich`, `/api/dossier` |
+| Ниши/лиды/хиты/ключевые слова | `/api/niches`, `/api/niche/{`, `/api/hits`, `/api/hit/{`, `/api/keywords`, `/api/leads`, `/api/target_leads` |
+| Прогрев | `/api/warmup` |
+| Деплой | `/api/deploy` |
+| Встречи/уведомления/календарь | `/api/meetings`, `/api/gcal`, `/api/notifications`, `/api/today`, `/api/event/{` |
+| Статистика/логи/health | `/api/stats`, `/api/logs`, `/api/health` |
+| Проекты | `/api/projects`, `/api/project/{` |
+| Listener/ChatScan | `/api/listener`, `/api/chatscan` |
+| Прочее | `/api/tgcheck`, `/api/copilot`, `/api/agent/`, `/api/chats`, `/api/coverage`, `/api/maintenance/`, `/` (отдача index.html) |
+
+Пример: нужно поправить логику кампаний → `Grep pattern="/api/campaign" path="axiom/web/app.py" output_mode="content" -n` → взять номер строки → `Read` с `offset` вокруг неё, а не файл целиком.
+
+## Деплой
+
+Сервер на GCP (34.16.12.181, IP эфемерный — сверяй перед SSH). **Кнопка деплоя стирает любые ручные правки на сервере.** Изменения вносятся только локально → коммит → штатный деплой. Не редактировать код через SSH напрямую.
+
+## Модель по умолчанию
+
+Рутинные правки — Sonnet. Рискованные операции (рефакторинг/разбиение `app.py` и `index.html` на модули, миграции БД) — Opus.

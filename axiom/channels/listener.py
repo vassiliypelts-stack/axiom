@@ -232,7 +232,20 @@ async def _handle_private(event, acc_id: int) -> None:
     username = getattr(sender, "username", None)
     text_in = (event.raw_text or "").strip()
     if not text_in:
-        return
+        if not event.media:
+            return  # пустой апдейт (реакция, закреп и т.п.) — правда нечего показывать
+        # Голосовое/фото/файл без подписи: raw_text у него пустой, и это молча
+        # выходило через return выше — контакт написал, а в «Диалоги» не попадало
+        # НИЧЕГО, неотличимо от «агент проигнорировал». Слушать/распознавать голос
+        # агент не умеет, но скрывать сам факт обращения нельзя — фиксируем
+        # заглушкой, чтобы было видно в карточке и чтобы агент мог сам попросить
+        # написать текстом, а не молчать в ответ на молчание.
+        kind = ("голосовое" if getattr(event, "voice", False) else
+                "видео-кружок" if getattr(event, "video_note", False) else
+                "фото" if getattr(event, "photo", False) else
+                "видео" if getattr(event, "video", False) else
+                "файл")
+        text_in = f"[{kind}]"
     with database.get_conn() as conn:
         contact = database.find_contact_by_tg(
             conn, tg_user_id=int(sender.id), username=username)

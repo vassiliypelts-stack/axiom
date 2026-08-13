@@ -22,9 +22,19 @@ NOTIFY_SENDER_SETTING = "notify_sender_account_id"
 NOTIFY_TARGET_SETTING = "notify_owner_target"
 
 
-def _dossier_link(contact_id: int) -> str:
+def _chat_link(contact_id: int) -> str:
+    """Ссылка на РЕАЛЬНУЮ переписку (#chats/{id} → openThread), а не на карточку CRM
+    (#dossier). Раньше уведомление вело в досье, а там нужно было ещё сообразить
+    нажать «переписка» — оператору важнее всего сразу увидеть, о чём говорили."""
     base = (config.PUBLIC_URL or "").rstrip("/")
-    return f"{base}/#dossier/{contact_id}" if base else f"#dossier/{contact_id}"
+    return f"{base}/#chats/{contact_id}" if base else f"#chats/{contact_id}"
+
+
+def _phone_link(phone: str | None) -> str | None:
+    """Номер как кликабельная ссылка Telegram: https://t.me/+79137876067 — открывает
+    диалог с этим номером сразу, без ручного набора/копирования в поиск."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return f"https://t.me/+{digits}" if digits else None
 
 
 def _build_text(row, meeting_at: str | None, notes: str | None, zoom_link: str | None) -> str:
@@ -35,13 +45,16 @@ def _build_text(row, meeting_at: str | None, notes: str | None, zoom_link: str |
     if spec:
         lines.append(f"Чем занимается: {spec}")
     lines.append(f"TG: {uname}")
+    phone_link = _phone_link(row["phone"])
+    if phone_link:
+        lines.append(f"Номер: {phone_link}")
     if meeting_at:
         lines.append(f"Время: {meeting_at}")
     if zoom_link:
         lines.append(f"Ссылка: {zoom_link}")
     if notes and notes.strip():
         lines.append(f"О чём говорили: {notes.strip()[:300]}")
-    lines.append(_dossier_link(row["id"]))
+    lines.append(_chat_link(row["id"]))
     return "\n".join(lines)
 
 
@@ -69,7 +82,7 @@ async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | N
             if not sender_id or not target:
                 return  # не настроено — тихо пропускаем
             row = conn.execute(
-                "SELECT id, name, person_name, username, specialization, niche "
+                "SELECT id, name, person_name, username, phone, specialization, niche "
                 "FROM contacts WHERE id=?", (contact_id,),
             ).fetchone()
         if not row:

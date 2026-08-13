@@ -6564,7 +6564,7 @@ const SKELS={
   orgchart:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:60%"></div><div class="skel-grid"><div class="skel skel-card" style="height:120px"></div><div class="skel skel-card" style="height:120px;width:70%"></div></div></div>',
   default:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:60%"></div></div>',
 };
-// Прямые ссылки на сущности (как в Битрикс): #dossier/295, #deals/12, #contacts/7
+// Прямые ссылки на сущности (как в Битрикс): #dossier/295, #deals/12, #contacts/7, #chats/295
 function openEntityDeep(section,id){
   id=+id; if(!id)return;
   setTimeout(()=>{
@@ -6572,6 +6572,11 @@ function openEntityDeep(section,id){
       if(section==="dossier"||section==="contacts"||section==="leads")openDossier(id);
       else if(section==="deals")openDeal(id);
       else if(section==="companies")openCompany(id);
+      // #chats/{id} — сразу открыть переписку с контактом, а не карточку CRM. Нужен
+      // отдельный раздел от dossier: ссылка «договорились о встрече» (channels/notify.py)
+      // ведёт СЮДА — оператору важно увидеть, о чём именно был разговор, а не полезть
+      // сначала в досье и оттуда ещё кликать «переписка».
+      else if(section==="chats")openThread(id);
     }catch(e){}
   },400);
 }

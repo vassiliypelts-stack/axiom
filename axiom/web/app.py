@@ -4608,7 +4608,15 @@ def chats() -> JSONResponse:
                       ORDER BY m.id DESC LIMIT 1) AS account_label,
                    (SELECT m.account_id FROM messages m
                       WHERE m.contact_id=c.id AND m.account_id IS NOT NULL
-                      ORDER BY m.id DESC LIMIT 1) AS account_id
+                      ORDER BY m.id DESC LIMIT 1) AS account_id,
+                   -- кампания: контакт мог участвовать в нескольких по очереди
+                   -- (ретаргет), берём последнюю по sent_at — у campaign_contacts
+                   -- нет автоинкрементного id, только UNIQUE(campaign_id, contact_id)
+                   (SELECT cc.campaign_id FROM campaign_contacts cc
+                      WHERE cc.contact_id=c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_id,
+                   (SELECT camp.name FROM campaign_contacts cc
+                      JOIN campaigns camp ON camp.id=cc.campaign_id
+                      WHERE cc.contact_id=c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_name
             FROM contacts c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = c.id)
             ORDER BY last_ts DESC

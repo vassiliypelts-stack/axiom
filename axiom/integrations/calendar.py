@@ -21,6 +21,59 @@ def enabled() -> bool:
     return Path(config.GOOGLE_CREDENTIALS_FILE).exists()
 
 
+def _notify_down(exc: Exception) -> None:
+    """Календарь отвалился — сказать в колокольчик, а не молчать в логах сервера.
+
+    Раньше единственным следом был print() в консоль systemd — узнавали об этом
+    только когда встреча состоялась без ссылки в личном календаре, и то не всегда.
+    Событие деградирует мягко и дальше (зум-ссылка и напоминание клиенту не зависят
+    от Google Calendar), но оператор должен УЗНАТЬ, а не догадываться постфактум.
+
+    invalid_grant отдельно: это истёкший/отозванный refresh-токен, чинится только
+    руками в браузере (см. журнал деплоя) — не транзиентная сетевая ошибка, которая
+    сама пройдёт. Дедуп 6 часов по DB (не in-memory — процессов несколько: веб и
+    планировщик), чтобы пачка встреч подряд не завалила ленту одинаковыми записями."""
+    import time
+
+    from db import database
+
+    msg = str(exc)
+    if "invalid_grant" in msg:
+        title = "🔴 Google Calendar отключился — токен просрочен"
+        hint = ("Refresh-токен OAuth умер (обычно потому что проект в Google Cloud "
+                "остался в статусе «Testing» — там токен живёт максимум 7 дней). "
+                "Встречи и ссылка на созвон всё равно уходят клиенту, но событие в "
+                "твой личный календарь не попадает. Почини разово: Google Cloud "
+                f"Console → проект «{_project_id()}» → APIs & Services → OAuth "
+                "consent screen → Publish App, затем удали google_token.json и "
+                "заново открой «Календарь» в пульте для повторного входа.")
+    else:
+        title = "🔴 Google Calendar не отвечает"
+        hint = msg[:200]
+    try:
+        with database.get_conn() as conn:
+            last = database.get_setting(conn, "calendar_error_ts", "0")
+            prev = database.get_setting(conn, "calendar_error_sig", "")
+            if title == prev and (time.time() - float(last or 0)) < 21600:
+                return
+            database.set_setting(conn, "calendar_error_ts", str(time.time()))
+            database.set_setting(conn, "calendar_error_sig", title)
+            database.add_event(conn, "calendar_error", title, hint, level="warn")
+    except Exception:  # noqa: BLE001 — уведомление не должно ронять создание встречи
+        pass
+
+
+def _project_id() -> str:
+    """project_id из google_credentials.json — чтобы в подсказке была прямая ссылка
+    на нужный проект, а не общее «зайди в консоль» без ориентира."""
+    try:
+        import json
+        raw = json.loads(Path(config.GOOGLE_CREDENTIALS_FILE).read_text(encoding="utf-8"))
+        return next(iter(raw.values())).get("project_id", "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _service():
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -70,6 +123,7 @@ def list_events(days_ahead: int = 21, max_results: int = 50) -> list[dict] | Non
         return out
     except Exception as e:  # noqa: BLE001
         print(f"[calendar list error] {e}")
+        _notify_down(e)
         return None
 
 
@@ -95,4 +149,5 @@ def create_event(
         return {"id": ev.get("id"), "htmlLink": ev.get("htmlLink")}
     except Exception as e:
         print(f"[calendar error] {e}")
+        _notify_down(e)
         return None

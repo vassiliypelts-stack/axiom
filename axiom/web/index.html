@@ -5370,7 +5370,7 @@ function renderCampList(mount,camps){
           <button class="cl-prog" data-id="${c.id}">Прогресс</button>
           <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
-          <button class="cl-econ" data-id="${c.id}">📊 Экономика</button>
+          <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <button class="cl-test-reset" data-id="${c.id}" title="удалить переписку, встречи и очередь у СВОИХ тестовых номеров этой кампании — начать тест с нуля, не путая со вчерашним диалогом. Живых лидов не трогает">🔄 Обнулить тест</button>
@@ -5532,9 +5532,11 @@ function renderCampList(mount,camps){
       const e=d.econ,m=d.metrics;
       const rub=v=>v==null?"—":Number(v).toLocaleString("ru-RU")+" ₽";
       const inp=(k,ph)=>`<input data-ek="${k}" value="${e[k]!=null?esc(e[k]):''}" placeholder="${ph||''}" style="max-width:130px">`;
+      const fieldSave=(k,label)=>`<div class="field"><label>${label}</label><textarea data-ek="${k}" rows="2">${esc(e[k]||"")}</textarea>
+          <button class="econ-fsave" data-ek="${k}" style="margin-top:4px">💾 сохранить</button> <span class="hint econ-fmsg" data-ek="${k}"></span></div>`;
       box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
-        <div class="field"><label>🎯 Цель на старте</label><textarea data-ek="goal_start" rows="2">${esc(e.goal_start||"")}</textarea></div>
-        <div class="field"><label>📈 Результат (факт)</label><textarea data-ek="result_note" rows="2">${esc(e.result_note||"")}</textarea></div>
+        ${fieldSave("goal_start","🎯 Цель на старте")}
+        ${fieldSave("result_note","📈 Результат (факт)")}
         <b style="font-size:13px">Расходы, ₽/мес</b>
         <div class="ttoolbar" style="margin:6px 0;flex-wrap:wrap">
           <label>прокси ${inp("cost_proxy")}</label><label>аккаунты ${inp("cost_accounts")}</label>
@@ -5553,9 +5555,22 @@ function renderCampList(mount,camps){
           <div><div class="sub">Стоимость сделки</div><div style="font-size:18px;font-weight:700">${rub(m.cost_per_deal)}</div></div>
         </div>
         <div class="row2" style="margin-top:8px">
+          <div><div class="sub">📞 Выведено на КЭВ (созвон)</div><div style="font-size:18px;font-weight:700;color:var(--accent)">${m.kev}${m.leads?` <span class="sub" style="font-weight:400">(${Math.round(m.kev/m.leads*100)}% от лидов)</span>`:""}</div></div>
+          <div><div class="sub">Стоимость КЭВ</div><div style="font-size:18px;font-weight:700">${rub(m.cost_per_kev)}</div></div>
+        </div>
+        <div class="row2" style="margin-top:8px">
           <div><div class="sub">Доход / ROI</div><div style="font-size:18px;font-weight:700;color:${m.roi!=null&&m.roi>=0?'var(--green)':'#c0392b'}">${rub(m.revenue)} · ${m.roi!=null?m.roi+"%":"—"}</div></div>
           <div><div class="sub">🤖 vs 🧑 лид (робот / человек)</div><div style="font-size:16px;font-weight:700">${rub(m.cost_per_lead)} / ${rub(m.human_cost_per_lead)}${m.saving_vs_human!=null?` <span style="color:var(--green)">(экономия ${rub(m.saving_vs_human)}/лид)</span>`:""}</div></div>
         </div></div>`;
+      box.querySelectorAll(".econ-fsave").forEach(btn=>{
+        btn.onclick=async()=>{
+          const k=btn.dataset.ek,ta=box.querySelector(`textarea[data-ek="${k}"]`),msg=box.querySelector(`.econ-fmsg[data-ek="${k}"]`);
+          btn.disabled=true;
+          await api(`/api/campaign/${id}/econ`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({[k]:ta.value})});
+          msg.textContent="✅ сохранено";btn.disabled=false;
+          setTimeout(()=>{if(msg.textContent==="✅ сохранено")msg.textContent="";},2000);
+        };
+      });
       box.querySelector(`#econ-save-${id}`).onclick=async()=>{
         const body={};box.querySelectorAll("[data-ek]").forEach(el=>body[el.dataset.ek]=el.value);
         await api(`/api/campaign/${id}/econ`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -6300,7 +6315,8 @@ async function showAudiencePicker(d,onApplied){
       </div></div>
     <div style="padding:8px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
       <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600"><input type="checkbox" id="ap-all"> выбрать все отфильтрованные (<span id="ap-count">0</span>)</label>
-      <span class="hint" id="ap-sel">выбрано: 0</span></div>
+      <span class="hint" id="ap-sel">выбрано: 0</span>
+      <span id="ap-warn" style="color:#c0392b;font-weight:600"></span></div>
     <div id="ap-list" style="flex:1;overflow-y:auto;padding:0 20px"></div>
     <div style="padding:14px 20px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <label style="font-weight:600">Тег сегмента:</label>
@@ -6333,10 +6349,15 @@ async function showAudiencePicker(d,onApplied){
       return true;
     });
   }
+  function updateSelWarn(){
+    const dead=[...sel].reduce((n,id)=>{const c=all.find(x=>x.id===id);return n+((c&&!c.username&&!c.phone)?1:0);},0);
+    $m("#ap-warn").textContent=dead?`⚠️ у ${dead} из выбранных нет ни телефона, ни @username — их не достать ни в одном канале`:"";
+  }
   function renderList(){
     const list=filtered();
     $m("#ap-count").textContent=list.length;
     $m("#ap-sel").textContent="выбрано: "+sel.size;
+    updateSelWarn();
     $m("#ap-all").checked=list.length>0&&list.every(c=>sel.has(c.id));
     $m("#ap-list").innerHTML=list.length?list.map(c=>{
       const handle=c.username?("@"+c.username):(c.phone||c.wa_phone||"—");
@@ -6352,6 +6373,7 @@ async function showAudiencePicker(d,onApplied){
     $m("#ap-list").querySelectorAll(".ap-cb").forEach(cb=>cb.onchange=()=>{
       const id=+cb.dataset.id;if(cb.checked)sel.add(id);else sel.delete(id);
       $m("#ap-sel").textContent="выбрано: "+sel.size;
+      updateSelWarn();
       const lst=filtered();$m("#ap-all").checked=lst.length>0&&lst.every(c=>sel.has(c.id));});
   }
   ["#ap-q","#ap-source","#ap-city","#ap-chan","#ap-status","#ap-enr"].forEach(s=>{const el=$m(s);el.oninput=renderList;el.onchange=renderList;});

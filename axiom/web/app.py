@@ -5964,6 +5964,9 @@ def campaign_unpause_next(cid: int, payload: dict = Body(...)) -> JSONResponse:
 _ECON_FIELDS = ("goal_start", "result_note", "cost_proxy", "cost_accounts", "cost_ai",
                 "cost_other", "revenue_per_deal", "manager_salary", "manager_leads")
 _ENGAGED = ("in_dialog", "meeting_set", "met", "won")
+# КЭВ (созвон) достигнут — статус проставляет database.record_meeting() по факту
+# meeting_agreed из разбора переписки агентом, не вручную.
+_KEV_REACHED = ("meeting_set", "met", "won")
 
 # Статусы, при которых тест-номер НЕЛЬЗЯ откатывать в 'new' и слать ему опенер заново.
 # Кнопка «🧪 Тест» намеренно сбрасывает свои номера, чтобы гонять проверку многократно,
@@ -5976,7 +5979,7 @@ _TEST_KEEP_STATUS = _ENGAGED + ("refused",)
 
 @app.get("/api/campaign/{cid}/econ")
 def campaign_econ(cid: int) -> JSONResponse:
-    """Экономика кампании: цели, расходы, стоимость лида, ROI, робот vs человек."""
+    """Аналитика кампании: цели, расходы, стоимость лида/КЭВ, ROI, робот vs человек."""
     database.init_db()
     with database.get_conn() as conn:
         row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
@@ -5995,6 +5998,12 @@ def campaign_econ(cid: int) -> JSONResponse:
             "JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status='won'",
             (cid,),
         ).fetchone()["c"]
+        kmarks = ",".join("?" for _ in _KEV_REACHED)
+        kev = conn.execute(
+            f"SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
+            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status IN ({kmarks})",
+            (cid, *_KEV_REACHED),
+        ).fetchone()["c"]
 
     def num(k):
         v = row.get(k)
@@ -6004,6 +6013,7 @@ def campaign_econ(cid: int) -> JSONResponse:
     rev = deals * num("revenue_per_deal")
     cost_per_lead = round(total_cost / leads) if leads else None
     cost_per_deal = round(total_cost / deals) if deals else None
+    cost_per_kev = round(total_cost / kev) if kev else None
     roi = round((rev - total_cost) / total_cost * 100) if total_cost else None
     # робот vs человек
     human_cpl = round(num("manager_salary") / num("manager_leads")) if num("manager_leads") else None
@@ -6011,9 +6021,10 @@ def campaign_econ(cid: int) -> JSONResponse:
     return JSONResponse({
         "econ": econ,
         "metrics": {
-            "reached": reached, "leads": leads, "deals": deals,
+            "reached": reached, "leads": leads, "deals": deals, "kev": kev,
             "total_cost": round(total_cost), "revenue": round(rev),
-            "cost_per_lead": cost_per_lead, "cost_per_deal": cost_per_deal, "roi": roi,
+            "cost_per_lead": cost_per_lead, "cost_per_deal": cost_per_deal,
+            "cost_per_kev": cost_per_kev, "roi": roi,
             "human_cost_per_lead": human_cpl,
             "saving_vs_human": (round((human_cpl - cost_per_lead)) if (human_cpl and cost_per_lead) else None),
         },

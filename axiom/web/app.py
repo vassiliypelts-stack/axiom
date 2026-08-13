@@ -5913,6 +5913,38 @@ def campaign_unpause_contacts(cid: int, payload: dict = Body(...)) -> JSONRespon
     return JSONResponse({"ok": True, "unpaused": len(ids)})
 
 
+@app.post("/api/campaign/{cid}/unpause_next")
+def campaign_unpause_next(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Контролируемый раскат: снять паузу ровно со следующих N контактов, а не со
+    всех разом. 13.08.2026 просьба оператора — после «снять все» вся живая
+    аудитория ушла бы одним заходом, а хочется сначала посмотреть на 1-3 живых
+    диалогах, что говорит модель, доправить промпт, и только потом открывать
+    следующую пачку — без ожидания «ещё полгода тестировать»."""
+    n = int(payload.get("n") or 3)
+    if n <= 0:
+        return JSONResponse({"error": "n должно быть больше нуля"}, status_code=400)
+    with database.get_conn() as conn:
+        paused = sorted(database.paused_contact_ids(conn, cid))
+        batch = paused[:n]
+        if not batch:
+            return JSONResponse({"error": "снимать нечего — пауза пуста"}, status_code=400)
+        database.unpause_campaign_contacts(conn, cid, batch)
+        rows = conn.execute(
+            f"SELECT id, COALESCE(person_name, name) AS who FROM contacts "
+            f"WHERE id IN ({','.join('?' * len(batch))})", batch,
+        ).fetchall()
+        database.add_event(
+            conn, "info", f"▶ Открыта пачка: {len(batch)} контакт(ов)",
+            "Открыты: " + ", ".join((r["who"] or f"#{r['id']}") for r in rows),
+            level="good", campaign_id=cid,
+        )
+    return JSONResponse({
+        "ok": True, "opened": len(batch),
+        "names": [(r["who"] or f"#{r['id']}") for r in rows],
+        "left_paused": len(paused) - len(batch),
+    })
+
+
 _ECON_FIELDS = ("goal_start", "result_note", "cost_proxy", "cost_accounts", "cost_ai",
                 "cost_other", "revenue_per_deal", "manager_salary", "manager_leads")
 _ENGAGED = ("in_dialog", "meeting_set", "met", "won")

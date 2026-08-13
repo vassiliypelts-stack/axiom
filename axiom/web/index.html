@@ -3019,9 +3019,11 @@ function orgDeptField(depts,selId){
   return `<div class="field"><label>Отдел</label><select class="om-dept">${depts.map(d=>`<option value="${d.id}" ${String(selId)===String(d.id)?'selected':''}>${esc(d.name)}</option>`).join("")}</select></div>`;
 }
 async function renderOrgMembers(body){
-  const [items,tree]=await Promise.all([api("/api/org/members"),api("/api/org/tree")]);
+  const [items,tree,accounts]=await Promise.all([api("/api/org/members"),api("/api/org/tree"),api("/api/accounts")]);
   const depts=(tree.departments||[]);
   const accCell=m=>m.account_id?`${m.account_alive===1?'<span class=\"sdot g\"></span>':(m.account_alive===0?'<span class=\"sdot r\"></span>':'<span class=\"sdot gy\"></span>')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
+  const byAcc={};items.forEach(m=>{if(m.account_id)byAcc[m.account_id]=m;});
+  const liveAccs=(accounts||[]).filter(isAccLive);
   body.innerHTML=`
     <div class="card" style="margin-bottom:14px">
       <div style="font-weight:700;margin-bottom:8px">Новая должность</div>
@@ -3038,7 +3040,21 @@ async function renderOrgMembers(body){
       <td class="sub">${m.kind==='agent'?esc(AI_TASKS[m.task||m.agent_task]||m.task||'—'):'—'}</td>
       <td><button class="omt-edit" data-id="${m.id}">✏️</button> <button class="omt-del" data-id="${m.id}">🗑</button></td>
     </tr>`).join(""):'<tr><td colspan="7" class="empty">Должностей нет — добавь формой выше.</td></tr>'}</tbody></table>
-    <div id="om-editform"></div>`;
+    <div id="om-editform"></div>
+    <div style="font-weight:700;margin:18px 0 8px">🔑 Живые аккаунты <span class="hint" style="font-weight:400">— ${liveAccs.length} шт., клик по «Назначить» откроет форму должности</span></div>
+    <table><thead><tr>
+      <th></th><th>Аккаунт</th><th>Телефон</th><th>Текущая роль</th><th></th>
+    </tr></thead><tbody>${liveAccs.length?liveAccs.map(a=>{
+      const m=byAcc[a.id];
+      const roleCell=m?`${esc(m.role||m.name||'—')}${m.department_name?' · '+esc(m.department_name):''}`:'<span class="no">— не назначена —</span>';
+      return `<tr data-accid="${a.id}">
+        <td><span class="sdot g"></span></td>
+        <td>${esc(a.label||a.username||('#'+a.id))}</td>
+        <td class="mono">${esc(a.phone)||'—'}</td>
+        <td>${roleCell}</td>
+        <td><button class="oma-assign" data-accid="${a.id}">${m?'✏️ Изменить':'🔑 Назначить'}</button></td>
+      </tr>`;
+    }).join(""):'<tr><td colspan="5" class="empty">Живых аккаунтов нет.</td></tr>'}</tbody></table>`;
   if(depts.length){
     const af=$("#om-addform");
     af.innerHTML=orgDeptField(depts,depts[0].id)+orgMemberFormHtml(depts[0].id,null);
@@ -3056,6 +3072,11 @@ async function renderOrgMembers(body){
     if(!confirm("Удалить должность?"))return;
     await api(`/api/org/member/${b.dataset.id}/delete`,{method:"POST"});
     renderOrgBody();
+  });
+  body.querySelectorAll(".oma-assign").forEach(b=>b.onclick=()=>{
+    if(!depts.length){alert("Сначала создай отдел — должности живут внутри отделов.");return;}
+    const accId=+b.dataset.accid, m=byAcc[accId];
+    orgMemberModal(m?m.department_id:depts[0].id,m||{account_id:accId,kind:"agent"},()=>renderOrgBody());
   });
 }
 
@@ -5321,7 +5342,9 @@ function renderCampList(mount,camps){
         <div style="flex:1;min-width:240px">
           <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
           <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${(c.channel||"").split(",").map(x=>CH_RU[x.trim()]||x.trim()).filter(Boolean).join(" + ")||"—"} · создана ${c.created_at?fmt(c.created_at):"—"}</div>
-          <div class="sub mono">отправлено ${done} · в очереди ${left}${c.paused?` · <span style="color:#c0392b" title="кнопка «снять все» в окне «Кто в рассылке» отключила эти контакты именно у этой кампании — вернуть галочкой там">снято вручную: ${c.paused}</span>`:""}</div>
+          <div class="sub mono">отправлено ${done} · в очереди ${left}${c.paused?` · <span style="color:#c0392b" title="кнопка «снять все» в окне «Кто в рассылке» отключила эти контакты именно у этой кампании — вернуть галочкой там или пачкой ниже">снято вручную: ${c.paused}</span>
+            <input type="number" value="3" min="1" max="${c.paused}" id="cl-batch-${c.id}" style="max-width:56px;margin-left:8px" title="сколько контактов открыть из паузы за раз">
+            <button class="cl-openbatch" data-id="${c.id}" title="Снять паузу ровно с N контактов — остальные останутся в паузе. Посмотри, как проходят эти диалоги, поправь промпт если нужно, и открой следующую пачку">▶ Открыть пачку</button>`:""}</div>
           <div style="background:var(--bg);border:1px solid var(--border);border-radius:20px;height:8px;margin-top:6px;overflow:hidden;max-width:340px">
             <div style="height:100%;width:${pct}%;background:var(--green)"></div></div>
         </div>
@@ -5586,6 +5609,16 @@ function renderCampList(mount,camps){
     b.textContent=t;
   });
   mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));
+  mount.querySelectorAll(".cl-openbatch").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,n=+(document.getElementById("cl-batch-"+id).value||3);
+    const t=b.textContent;b.textContent="…";
+    try{
+      const r=await api(`/api/campaign/${id}/unpause_next`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({n})});
+      if(r.error){alert(r.error);}
+      else{alert(`▶ Открыто ${r.opened}: ${r.names.join(", ")}.\nОсталось в паузе: ${r.left_paused}.\nЖми «▶ Запустить», чтобы им ушёл опенер.`);}
+    }catch(e){alert("ошибка открытия пачки");}
+    b.textContent=t;route();
+  });
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;
     if(!confirm(`Отправить первое сообщение ${n} контактам?\nЭто РЕАЛЬНАЯ отправка живым людям с аккаунта.`))return;

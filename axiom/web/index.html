@@ -5600,12 +5600,19 @@ function renderCampList(mount,camps){
   });
   mount.querySelectorAll(".cl-test-reset").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id;
-    if(!confirm("🔄 Обнулить тест.\nУдалит переписку, встречи и очередь опенера у ТВОИХ тестовых номеров (is_test) этой кампании — со следующего касания агент начнёт с нуля, не путая со старым диалогом.\nЖивых лидов не трогает НИКОГДА.\n\nОтменить нельзя. Продолжить?"))return;
+    if(!confirm("🔄 Обнулить и запустить тест заново.\nУдалит переписку, встречи и очередь опенера у ТВОИХ тестовых номеров (is_test) этой кампании и СРАЗУ ЖЕ пошлёт им опенер с нуля — второй кнопки нажимать не нужно.\nЖивых лидов не трогает НИКОГДА.\n\nОтменить нельзя. Продолжить?"))return;
     const t=b.textContent;b.textContent="…";
-    try{const r=await api(`/api/campaign/${id}/test/reset_dialogs`,{method:"POST"});
-      if(r.error){alert(r.error);}
-      else{alert(`✅ Переписка обнулена у ${r.reset} тестовых номер(ов). Можно запускать тест заново.`);}
-    }catch(e){alert("ошибка обнуления теста");}
+    try{
+      const r=await api(`/api/campaign/${id}/test/reset_dialogs`,{method:"POST"});
+      if(r.error){alert(r.error);b.textContent=t;return;}
+      // Обнуление само по себе не шлёт опенер — жмём «Тест» тем же вызовом, что и
+      // отдельная кнопка, чтобы оператору не нужно было щёлкать дважды.
+      const r2=await api(`/api/campaign/${id}/test`,{method:"POST"});
+      if(r2.error){alert(`✅ Переписка обнулена у ${r.reset} номер(ов), но тест не запустился: ${r2.error}`);}
+      else{
+        const skip=r2.skipped_in_dialog?`\n⏸ Пропущено: ${r2.skipped_in_dialog}`:"";
+        alert(`✅ Обнулено ${r.reset} номер(ов) и тест запущен на ${r2.test_targets} свой(их) номер(а).\nПроверь Telegram — сообщение придёт с паузой.${skip}`);}
+    }catch(e){alert("ошибка обнуления/запуска теста");}
     b.textContent=t;
   });
   mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));

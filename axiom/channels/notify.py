@@ -58,27 +58,43 @@ def _build_text(row, meeting_at: str | None, notes: str | None, zoom_link: str |
     return "\n".join(lines)
 
 
+def _owner_route(conn, campaign_id: int | None) -> tuple[str | None, str | None]:
+    """(sender_id, target) — сначала настройки САМОЙ кампании: разные кампании ведут
+    разные люди, уведомление должно падать тому, кто эту встречу/лида ведёт. Пусто в
+    кампании → общие настройки пульта. Добираем по отдельности: в кампании может быть
+    задан только один из двух, терять из-за этого второй нельзя."""
+    sender_id = target = None
+    if campaign_id:
+        c = conn.execute("SELECT notify_account_id, notify_target FROM campaigns "
+                         "WHERE id=?", (campaign_id,)).fetchone()
+        if c:
+            sender_id = c["notify_account_id"]
+            target = (c["notify_target"] or "").strip() or None
+    sender_id = sender_id or database.get_setting(conn, NOTIFY_SENDER_SETTING)
+    target = target or database.get_setting(conn, NOTIFY_TARGET_SETTING)
+    return sender_id, target
+
+
+async def _send_to_owner(sender_id, target: str, text: str, what: str, contact_id: int) -> None:
+    client, _ = client_for_account(int(sender_id))
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            print(f"[notify] аккаунт #{sender_id} не авторизован — уведомление не ушло")
+            return
+        await client.send_message(target, text)
+        print(f"[notify] владелец уведомлён: {what} (контакт #{contact_id})")
+    finally:
+        await client.disconnect()
+
+
 async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | None,
                           zoom_link: str | None = None, campaign_id: int | None = None) -> None:
     """Лучшая попытка — сбой не должен ронять основной поток ответа агента, поэтому
-    ничего не бросаем наружу, только логируем.
-
-    Кому и с какого аккаунта — сначала смотрим настройки САМОЙ кампании: разные
-    кампании ведут разные люди, и «договорились о встрече» должно падать тому, кто эту
-    встречу проводит. Пусто в кампании → общие настройки пульта (прежнее поведение)."""
+    ничего не бросаем наружу, только логируем."""
     try:
         with database.get_conn() as conn:
-            sender_id = target = None
-            if campaign_id:
-                c = conn.execute("SELECT notify_account_id, notify_target FROM campaigns "
-                                 "WHERE id=?", (campaign_id,)).fetchone()
-                if c:
-                    sender_id = c["notify_account_id"]
-                    target = (c["notify_target"] or "").strip() or None
-            # Отправителя и получателя добираем по отдельности: в кампании может быть
-            # задан только один из них, и терять из-за этого второй нельзя.
-            sender_id = sender_id or database.get_setting(conn, NOTIFY_SENDER_SETTING)
-            target = target or database.get_setting(conn, NOTIFY_TARGET_SETTING)
+            sender_id, target = _owner_route(conn, campaign_id)
             if not sender_id or not target:
                 return  # не настроено — тихо пропускаем
             row = conn.execute(
@@ -88,16 +104,42 @@ async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | N
         if not row:
             return
         text = _build_text(row, meeting_at, notes, zoom_link)
-
-        client, _ = client_for_account(int(sender_id))
-        await client.connect()
-        try:
-            if not await client.is_user_authorized():
-                print(f"[notify] аккаунт #{sender_id} не авторизован — уведомление не ушло")
-                return
-            await client.send_message(target, text)
-            print(f"[notify] владелец уведомлён о встрече (контакт #{contact_id})")
-        finally:
-            await client.disconnect()
+        await _send_to_owner(sender_id, target, text, "договорились о встрече", contact_id)
     except Exception as e:  # noqa: BLE001 — вспомогательное уведомление, не должно ронять диалог
         print(f"[notify] сбой отправки владельцу: {e}")
+
+
+async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int | None = None) -> None:
+    """Горячий лид: готов действовать ПРЯМО СЕЙЧАС, не в назначенное время (agent.Reply.hot).
+
+    Отдельно от notify_meeting намеренно: встреча — плановое событие, горячий лид — это
+    «звони, пока не остыл», и текст должен читаться иначе с первой секунды (эмодзи,
+    формулировка), а не как обычное «договорились» с пустым временем."""
+    try:
+        with database.get_conn() as conn:
+            sender_id, target = _owner_route(conn, campaign_id)
+            if not sender_id or not target:
+                return
+            row = conn.execute(
+                "SELECT id, name, person_name, username, phone, specialization, niche "
+                "FROM contacts WHERE id=?", (contact_id,),
+            ).fetchone()
+        if not row:
+            return
+        who = (row["person_name"] or row["name"] or "контакт").strip()
+        spec = (row["specialization"] or row["niche"] or "").strip()
+        uname = f"@{row['username']}" if row["username"] else "без ника в TG"
+        lines = [f"🔥 Горячий лид — звони, пока не остыл: {who}"]
+        if spec:
+            lines.append(f"Чем занимается: {spec}")
+        lines.append(f"TG: {uname}")
+        phone_link = _phone_link(row["phone"])
+        if phone_link:
+            lines.append(f"Номер: {phone_link}")
+        if last_message and last_message.strip():
+            lines.append(f"Последнее сообщение: {last_message.strip()[:300]}")
+        lines.append(_chat_link(row["id"]))
+        text = "\n".join(lines)
+        await _send_to_owner(sender_id, target, text, "горячий лид", contact_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[notify] сбой отправки о горячем лиде: {e}")

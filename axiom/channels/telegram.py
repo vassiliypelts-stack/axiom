@@ -660,6 +660,20 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             if reply.intent in ("positive", "agreed"):
                 database.add_event(conn, "lead", f"🔥 Тёплый лид: {who}",
                                    (text_in or "").strip()[:160], level="good", contact_id=contact_id)
+        # Горячий лид (agent.Reply.hot) — готов действовать ПРЯМО СЕЙЧАС, не «на этой
+        # неделе». hot_since — метка «жду оператора»: следующий тик _hot_lead_scheduler
+        # (web/app.py) либо застанет его снятым (человек написал снова / оператор сам
+        # ответил), либо — молчание HOT_LEAD_TIMEOUT_MIN минут — мягко закроет разговор
+        # сам, чтобы человек не завис в ожидании звонка, который не пришёл вовремя.
+        if reply.hot:
+            conn.execute("UPDATE contacts SET hot_since=datetime('now') WHERE id=?", (contact_id,))
+        else:
+            conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (contact_id,))
+
+    if reply.hot:
+        print(f"[HOT] contact {contact_id}: {who} готов действовать сейчас")
+        from channels import notify
+        await notify.notify_hot(contact_id, text_in, camp["id"] if camp else None)
 
     if meeting is not None:
         print(f"[MEETING] contact {contact_id}: {meeting.meeting_at_iso} | "

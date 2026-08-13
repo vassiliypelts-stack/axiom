@@ -68,6 +68,10 @@ _EXTRA_CONTACT_COLS = {
     "gender": "TEXT",           # male|female — угадан по имени (channels/ru_names.gender_of)
     "is_premium": "INTEGER",    # Telegram Premium: 1/0/NULL=неизвестно (виден при парсинге User-сущности)
     "has_photo": "INTEGER DEFAULT 0",  # 1 = аватар скачан в data/avatars/{tg_user_id}.jpg (для карточки)
+    # Горячий лид: готов созвониться ПРЯМО СЕЙЧАС, не в назначенное время (см. agent.Reply.hot).
+    # NOT NULL = ждём, что оператор возьмёт трубку/напишет сам; если за HOT_LEAD_TIMEOUT_MIN
+    # (см. web/app.py) ничего не изменилось — бот сам мягко закрывает разговор и чистит поле.
+    "hot_since": "TEXT",
 }
 
 # Поля компаний, добавляемые миграцией

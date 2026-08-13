@@ -2151,6 +2151,51 @@ def _night_reply_scheduler() -> None:
             print(f"[night replies] {e}")
 
 
+HOT_LEAD_TIMEOUT_MIN = 10  # см. channels/telegram._agent_reply — сколько молчания терпим
+
+
+def _hot_lead_scheduler() -> None:
+    """Горячий лид (contacts.hot_since, см. agent.Reply.hot) — готов действовать
+    ПРЯМО СЕЙЧАС. Оператору уже упало уведомление в личку (channels/notify.notify_hot);
+    этот тик — подстраховка на случай, если он не успел откликнуться за
+    HOT_LEAD_TIMEOUT_MIN минут: бот сам мягко закрывает разговор, чтобы человек не
+    завис в ожидании звонка, который не пришёл вовремя.
+
+    Проверяем каждые 2 минуты — 15-минутный тик планировщика встреч для 10-минутного
+    окна слишком грубый, мог бы упустить дедлайн вдвое. Отправляем через уже
+    подключённого слушателя (listener.send_via_listener), не заводя свой Telethon-клиент
+    — та же причина, что и у планировщика встреч: одна сессия в двух местах уже роняла
+    слушатель на этом сервере (см. 11.08.2026)."""
+    import time
+    while True:
+        time.sleep(120)
+        try:
+            from channels import listener
+            with database.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT id, tg_user_id FROM contacts WHERE hot_since IS NOT NULL "
+                    "AND hot_since <= datetime('now', ?) AND tg_user_id IS NOT NULL",
+                    (f"-{HOT_LEAD_TIMEOUT_MIN} minutes",),
+                ).fetchall()
+            for r in rows:
+                with database.get_conn() as conn:
+                    acc = conn.execute(
+                        "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
+                        "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (r["id"],)
+                    ).fetchone()
+                if not acc:
+                    continue
+                text = "спасибо, до связи)"
+                if listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), [text]):
+                    with database.get_conn() as conn:
+                        database.add_message(conn, r["id"], "out", text, intent=None,
+                                             account_id=acc["account_id"])
+                        conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
+                    print(f"[hot] contact {r['id']}: {HOT_LEAD_TIMEOUT_MIN} мин тишины — закрыл мягко")
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[hot lead scheduler] {e}")
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
@@ -2160,6 +2205,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
     threading.Thread(target=_night_reply_scheduler, daemon=True).start()
     threading.Thread(target=_meetings_scheduler, daemon=True).start()
+    threading.Thread(target=_hot_lead_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:

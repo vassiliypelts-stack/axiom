@@ -2297,6 +2297,13 @@ function setOrgTab(){ORG_VIEWS.forEach(([k])=>{const b=$("#ot-"+k);if(b)b.classL
 async function viewOrgChart(v){
   orgLoadState();
   v.innerHTML=`<div class="orgwrap">
+      <details id="org-notes-wrap" style="margin:0 0 12px">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:6px 0">📝 Заметки к оргструктуре <span class="hint" style="text-transform:none;letter-spacing:0;font-weight:400">— цели, план по департаментам, расчёты</span></summary>
+        <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+          <textarea id="org-notes-ta" rows="10" style="width:100%;resize:vertical" placeholder="Мои цели на 2026 год — 10 млн чистого дохода&#10;1. Департамент развития и нетворкинга (10 нетворкеров) × 5 в день × 30 = 1500 диалогов в месяц = 100 новых партнёров&#10;2. Департамент лидгенерации (10 ИИ-менеджеров) × 5 в день × 30 = 1500 в месяц = 100 лидов в месяц&#10;3. Департамент инвайтинга (15 инвайт-менеджеров) × 5 в день × 30 = 1500 в месяц = 15 000 человек в группе за год"></textarea>
+          <div style="margin-top:8px"><button class="primary" id="org-notes-save">💾 Сохранить</button> <span class="hint" id="org-notes-msg"></span></div>
+        </div>
+      </details>
       <div class="ttoolbar" style="margin-bottom:10px">
         ${ORG_VIEWS.map(([k,l])=>`<button id="ot-${k}">${l}</button>`).join("")}
       </div>
@@ -2304,6 +2311,14 @@ async function viewOrgChart(v){
     </div>`;
   ORG_VIEWS.forEach(([k])=>{$("#ot-"+k).onclick=()=>{ORG_TAB=k;orgSaveState();setOrgTab();renderOrgBody();};});
   setOrgTab();renderOrgBody();
+  api("/api/settings/org_notes").then(r=>{$("#org-notes-ta").value=r.notes||"";});
+  $("#org-notes-save").onclick=async()=>{
+    const msg=$("#org-notes-msg");
+    msg.textContent="сохраняю…";
+    await api("/api/settings/org_notes",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes:$("#org-notes-ta").value})});
+    msg.textContent="✅ сохранено";
+    setTimeout(()=>{if(msg.textContent==="✅ сохранено")msg.textContent="";},3000);
+  };
 }
 let ORG_ACCOUNTS=[], ORG_AGENTS=[];   // общие данные для формы/таблицы оргструктуры
 function isAccLive(a){return a&&a.session_alive===1&&a.status!=='banned';}  // «живой» аккаунт
@@ -3023,7 +3038,7 @@ async function renderOrgMembers(body){
   const depts=(tree.departments||[]);
   const accCell=m=>m.account_id?`${m.account_alive===1?'<span class=\"sdot g\"></span>':(m.account_alive===0?'<span class=\"sdot r\"></span>':'<span class=\"sdot gy\"></span>')} ${esc(m.account_label||m.account_username||('#'+m.account_id))}`:'<span class="no">— не назначен</span>';
   const byAcc={};items.forEach(m=>{if(m.account_id)byAcc[m.account_id]=m;});
-  const liveAccs=(accounts||[]).filter(isAccLive);
+  const liveAccs=(accounts||[]).filter(a=>isAccLive(a)&&!a.protected);
   body.innerHTML=`
     <div class="card" style="margin-bottom:14px">
       <div style="font-weight:700;margin-bottom:8px">Новая должность</div>

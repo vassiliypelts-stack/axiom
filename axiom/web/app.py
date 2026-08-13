@@ -688,6 +688,22 @@ def settings_meeting_url_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "url": url})
 
 
+@app.get("/api/settings/org_notes")
+def settings_org_notes_get() -> JSONResponse:
+    """Свободные заметки к оргструктуре — план по департаментам, цели, расчёты."""
+    with database.get_conn() as conn:
+        notes = database.get_setting(conn, "org_notes", "") or ""
+    return JSONResponse({"notes": notes})
+
+
+@app.post("/api/settings/org_notes")
+def settings_org_notes_set(payload: dict = Body(...)) -> JSONResponse:
+    notes = payload.get("notes") or ""
+    with database.get_conn() as conn:
+        database.set_setting(conn, "org_notes", notes)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/accounts")
 def accounts_add(payload: dict = Body(...)) -> JSONResponse:
     import phone_geo

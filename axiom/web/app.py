@@ -2068,7 +2068,7 @@ def agent_why_silent() -> JSONResponse:
 
 
 def _meetings_scheduler() -> None:
-    """Напоминания о встрече, дожим молчунов, «не дошёл» — раз в 15 минут.
+    """Напоминания о встрече, дожим молчунов, «не дошёл», сторож молчания — раз в 15 мин.
 
     Ядро (scheduler.collect_due) считало это давно, но ОТПРАВЛЯЛ результат только
     channels/telegram.run_loop(), который поднимается лишь при ручном запуске из
@@ -2079,17 +2079,23 @@ def _meetings_scheduler() -> None:
     Свой Telethon-клиент здесь заводить нельзя (одна сессия в двух местах = сгоревший
     аккаунт), поэтому шлём через соединения слушателя — см. listener.send_via_listener.
     Аккаунт берём тот, что вёл переписку с этим контактом.
-    """
+
+    check_stuck_replies — отдельным вызовом, не через scheduler.tick(): tick() тут не
+    подходит целиком, у него своя, более простая send-петля без учёта account_id, а
+    сторож ничего не шлёт контакту вообще, только тревогу в колокольчик."""
     import time
     while True:
         time.sleep(900)
         try:
             from channels import antiban, listener
-            from scheduler import apply as sched_apply, collect_due
+            from scheduler import apply as sched_apply, check_stuck_replies, collect_due
             if not antiban.within_work_hours():
                 continue                      # ночью не пишем даже напоминания
             with database.get_conn() as conn:
                 actions = collect_due(conn)
+                stuck = check_stuck_replies(conn)
+                if stuck:
+                    print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")
             for a in actions:
                 if not a.tg_user_id:
                     continue

@@ -62,11 +62,36 @@ def parse_slot(slot: str | None) -> datetime | None:
     return slot_parse.parse_human(slot, datetime.now(tz))
 
 
-def arrange(contact: dict, slot: str | None, campaign_id: int | None = None) -> MeetingResult:
+def _campaign_line(campaign_id: int | None) -> str:
+    """Название и ссылка на кампанию — событие в Google Calendar раньше не говорило,
+    ОТКУДА этот лид, и вернуться к контексту (промпт, оффер, остальная аудитория)
+    можно было только вспомнив/угадав кампанию по имени контакта."""
+    if not campaign_id:
+        return ""
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT name FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row:
+            return ""
+        base = (config.PUBLIC_URL or "").rstrip("/")
+        link = f"{base}/#campaigns/{campaign_id}" if base else f"#campaigns/{campaign_id}"
+        return f"Кампания: {row['name']} — {link}"
+    except Exception:  # noqa: BLE001 — не мешаем встрече состояться
+        return ""
+
+
+def arrange(contact: dict, slot: str | None, campaign_id: int | None = None,
+           notes: str | None = None, contact_id: int | None = None,
+           username: str | None = None, phone: str | None = None) -> MeetingResult:
     """Создаёт Zoom + событие под согласованный слот. Внешние вызовы синхронные —
     из async-кода зови через asyncio.to_thread.
 
-    campaign_id — чтобы взять переговорку именно этой кампании (см. _meeting_url)."""
+    campaign_id — чтобы взять переговорку именно этой кампании (см. _meeting_url).
+    notes/contact_id/username/phone — та же информация, что уходит владельцу личным
+    уведомлением (channels/notify.py): раньше событие в календаре несло только имя и
+    Zoom-ссылку, а чем человек занимается, из какой он кампании и о чём вообще был
+    разговор — можно было узнать только вернувшись в переписку."""
     name = contact.get("name") or "риелтор"
     dt = parse_slot(slot)
     if dt is None:
@@ -85,7 +110,28 @@ def arrange(contact: dict, slot: str | None, campaign_id: int | None = None) -> 
         z = zoom.create_meeting(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ)
         zoom_link = z["join_url"] if z else None
 
-    desc = f"Созвон с {name}. {('Zoom: ' + zoom_link) if zoom_link else ''}".strip()
+    lines = [f"Созвон с {name}."]
+    if zoom_link:
+        lines.append(f"Zoom: {zoom_link}")
+    spec = (contact.get("specialization") or contact.get("niche") or "").strip()
+    if spec:
+        lines.append(f"Чем занимается: {spec}")
+    if username:
+        lines.append(f"TG: @{username}")
+    if phone:
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        if digits:
+            lines.append(f"Номер: https://t.me/+{digits}")
+    if notes and notes.strip():
+        lines.append(f"О чём говорили: {notes.strip()[:300]}")
+    camp_line = _campaign_line(campaign_id)
+    if camp_line:
+        lines.append(camp_line)
+    if contact_id:
+        base = (config.PUBLIC_URL or "").rstrip("/")
+        chat_link = f"{base}/#chats/{contact_id}" if base else f"#chats/{contact_id}"
+        lines.append(f"Переписка: {chat_link}")
+    desc = "\n".join(lines)
     ev = gcal.create_event(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ, description=desc)
     event_id = ev["id"] if ev else None
 

@@ -615,8 +615,10 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # Согласие на встречу → создаём Zoom + событие (сетевые вызовы вне БД-блока)
     meeting = None
     if reply.meeting_agreed:
-        meeting = await asyncio.to_thread(meetings.arrange, contact_info,
-                                          reply.proposed_datetime, camp["id"] if camp else None)
+        meeting = await asyncio.to_thread(
+            meetings.arrange, contact_info, reply.proposed_datetime,
+            camp["id"] if camp else None, reply.notes, contact_id, username, contact["phone"],
+        )
 
     with database.get_conn() as conn:
         # входящее уже записано в _record_incoming — тут только проставляем ему intent

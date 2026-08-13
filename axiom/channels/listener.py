@@ -160,10 +160,26 @@ def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
     всем» тут запрещён категорически: это переписка с мамой, друзьями, партнёрами,
     и агент не имеет права встрять в неё только потому, что случайный собеседник
     когда-то попал в таблицу контактов. Разрешаем ответ ТОЛЬКО если кампания САМА
-    написала этому человеку с этого аккаунта первой — остальное чужое."""
+    написала этому человеку с этого аккаунта первой — остальное чужое.
+
+    ГОРЯЧИЙ ЛИД (contacts.hot_since) — бот на паузу. 13.08.2026 живой прогон: человек
+    согласился на звонок «прямо сейчас», агент это честно уловил (agent.Reply.hot,
+    notify.notify_hot уже шлёт оператору личку) — но САМ продолжал бы отвечать на
+    любое следующее сообщение, хотя разговор по факту уже передан оператору (тот
+    должен позвонить). Дальнейшие реплики бота поверх реального звонка — это и
+    задвоенный контакт с лидом, и бот, отвечающий за оператора, которого лид не
+    просил. hot_since снимает web/app.py._hot_lead_scheduler — если оператор не
+    среагировал за HOT_LEAD_TIMEOUT_MIN (10 мин), бот сам мягко закрывает разговор
+    и очищает hot_since; до этого момента новые входящие от контакта в книжку
+    по-прежнему пишутся (см. _record_incoming выше по коду), просто без авто-ответа."""
     with database.get_conn() as conn:
         if database.get_setting(conn, "tg_auto_reply", "on") != "on":
             return False
+        if contact_id:
+            hot = conn.execute("SELECT hot_since FROM contacts WHERE id=?",
+                               (contact_id,)).fetchone()
+            if hot and hot["hot_since"]:
+                return False
         row = conn.execute("SELECT status, COALESCE(protected,0) protected FROM accounts "
                            "WHERE id=?", (acc_id,)).fetchone()
         if not row:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import io
 import json
@@ -519,6 +520,9 @@ def accounts_list() -> JSONResponse:
     for r in rows:
         d = dict(r)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
+        # Запасная сессия — тоже полноценный доступ к аккаунту. В браузер отдаём только
+        # факт наличия: строку не показываем даже оператору, ей нечего делать в UI.
+        d["has_spare"] = bool((d.pop("tg_session_spare", None) or "").strip())
         d["chats_count"] = chats_by.get(d["id"], 0)
         # кто шлёт владельцу личное уведомление при назначенной встрече (channels/notify.py)
         d["is_notifier"] = bool(notify_id) and str(d["id"]) == str(notify_id)
@@ -1232,6 +1236,7 @@ def account_detail(acc_id: int) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
     d = dict(row)
     d["tg_connected"] = bool(d.pop("tg_session", None))   # секрет наружу не отдаём
+    d["has_spare"] = bool((d.pop("tg_session_spare", None) or "").strip())   # то же самое
     with database.get_conn() as conn:
         d["chats_count"] = conn.execute(
             "SELECT COUNT(*) c FROM chats WHERE joined_by=? AND in_account='yes'", (acc_id,)
@@ -5573,6 +5578,102 @@ def accounts_twofa_status() -> JSONResponse:
                          "at_risk": len(unprotected)})
 
 
+@contextlib.contextmanager
+def _listener_released(active: bool = True):
+    """Отпустить сессии слушателем на время операции, которая сама подключается к Telegram.
+
+    ЗАЧЕМ ОТДЕЛЬНЫМ ПОМОЩНИКОМ. Слушатель — фоновый поток пульта — держит подключения к
+    сессиям аккаунтов. Любая операция, открывающая ВТОРОЕ подключение тем же ключом,
+    сжигает аккаунт: Telegram считает это угоном (AuthKeyDuplicatedError). Так за одну
+    секунду сгорело три аккаунта на установке 2FA, а восстановить их нечем — номер
+    остаётся у продавца. Купленный аккаунт разовый, то есть каждый такой промах = деньги.
+
+    Пауза жила инлайном в одном роуте — и это ровно та форма, при которой следующий
+    похожий роут добавляют, забыв её скопировать. Любой новый эндпоинт, лезущий в
+    Telegram сессией аккаунта, обязан оборачиваться сюда.
+    """
+    paused = False
+    if active:
+        with database.get_conn() as conn:
+            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        if was_on:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "off")
+            paused = True
+            import time as _time
+            _time.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+    try:
+        yield
+    finally:
+        if paused:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "on")
+
+
+@app.get("/api/accounts/spare")
+def accounts_spare_status() -> JSONResponse:
+    """Сколько аккаунтов застраховано запасной сессией, а сколько ходит без страховки."""
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) total, "
+            "SUM(CASE WHEN tg_session_spare IS NOT NULL AND tg_session_spare<>'' THEN 1 ELSE 0 END) with_spare "
+            "FROM accounts WHERE session_alive=1 AND COALESCE(protected,0)=0 "
+            "AND tg_session IS NOT NULL AND tg_session<>''").fetchone()
+        dead_with_spare = conn.execute(
+            "SELECT id, label FROM accounts WHERE COALESCE(session_alive,1)=0 "
+            "AND tg_session_spare IS NOT NULL AND tg_session_spare<>''").fetchall()
+    total = row["total"] or 0
+    with_spare = row["with_spare"] or 0
+    return JSONResponse({
+        "total": total, "with_spare": with_spare, "without_spare": total - with_spare,
+        # мёртвые, которые можно поднять прямо сейчас — это деньги, лежащие на полу
+        "recoverable": [dict(r) for r in dead_with_spare],
+    })
+
+
+@app.post("/api/accounts/spare")
+def accounts_spare_mint(payload: dict = Body(default={})) -> JSONResponse:
+    """Выпустить запасную (холодную) сессию: вторую независимую авторизацию Telegram.
+
+    Не копия основной сессии — у копии тот же ключ, и поднятая параллельно она аккаунт
+    сжигает, а не страхует (см. шапку channels/session_spare.py). kick_others=true
+    дополнительно сбрасывает чужие сессии (выкидывает продавца) — строго ДО выпуска
+    запаски, иначе сброс снёс бы и её."""
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    dry = bool(payload.get("dry"))
+    args = ["channels.session_spare"]
+    if ids:
+        args += ["--ids", ",".join(str(i) for i in ids)]
+    if dry:
+        args.append("--dry")
+    if payload.get("kick_others"):
+        args.append("--kick-others")
+
+    with _listener_released(active=not dry):
+        res = _run_capture(args, timeout=900)
+
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-400:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    data["log"] = (res.get("output") or "").splitlines()[-20:]
+    return JSONResponse(data)
+
+
+@app.post("/api/account/{acc_id}/spare_promote")
+def account_spare_promote(acc_id: int) -> JSONResponse:
+    """Основная сессия мертва → поднять запаску как основную. Запаска при этом
+    расходуется: после успеха надо выпустить новую, пока аккаунт жив."""
+    with _listener_released():
+        res = _run_capture(["channels.session_spare", "--promote", str(acc_id)], timeout=300)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-400:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    return JSONResponse(data)
+
+
 @app.post("/api/accounts/twofa")
 def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
     """Поставить облачный пароль. Пароль генерится и пишется в БД ДО установки —
@@ -5593,23 +5694,8 @@ def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
     if dry:
         args.append("--dry")
 
-    paused = False
-    if not dry:
-        with database.get_conn() as conn:
-            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-        if was_on:
-            with database.get_conn() as conn:
-                database.set_setting(conn, "listener_enabled", "off")
-            paused = True
-            import time as _time
-            _time.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
-
-    try:
+    with _listener_released(active=not dry):
         res = _run_capture(args, timeout=900)
-    finally:
-        if paused:
-            with database.get_conn() as conn:
-                database.set_setting(conn, "listener_enabled", "on")
 
     data = _last_json(res.get("output"))
     if data is None:

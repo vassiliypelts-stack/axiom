@@ -82,7 +82,21 @@ def _targets(limit: int | None, recheck: bool, tag: str | None = None) -> list[d
     if tag:
         where.append("tags LIKE ?")
         params.append(f"%{tag}%")
-    sql = f"SELECT id, name, phone FROM contacts WHERE {' AND '.join(where)} ORDER BY id"
+    # Порядок: сперва аудитории ЗАПУЩЕННЫХ кампаний, остальное — как раньше, по id.
+    #
+    # Без этого фоновый пробив (web/app.py, tgcheck_scheduler) идёт голым ORDER BY id и
+    # выгребает дневной потолок на самых старых контактах базы. Свежая кампания с
+    # высокими id ждёт своей очереди неделями: аккаунтов на пробив 10 × 25 номеров в
+    # сутки = 250, то есть скорости хватает с запасом, а кампания всё равно стоит с
+    # «has_tg=unknown» и не может отправить ни одного сообщения.
+    #
+    # Ровно та же мысль, что у ручного --tag, только применяется сама и ко всем активным
+    # кампаниям сразу — руками этот флаг никто каждый раз не поставит.
+    priority = ("(CASE WHEN EXISTS (SELECT 1 FROM campaigns k "
+                "WHERE k.status='running' AND COALESCE(k.audience_tag,'')<>'' "
+                "AND contacts.tags LIKE '%'||k.audience_tag||'%') THEN 0 ELSE 1 END)")
+    sql = (f"SELECT id, name, phone FROM contacts WHERE {' AND '.join(where)} "
+           f"ORDER BY {priority}, id")
     if limit:
         sql += f" LIMIT {int(limit)}"
     with database.get_conn() as conn:

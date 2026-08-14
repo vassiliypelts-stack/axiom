@@ -4333,15 +4333,25 @@ def _parse_people(text: str, tag: str, source: str = "import") -> tuple[int, int
             # (campaign_send._greeting), а не «Иванов Пётр Сергеевич», что читается
             # автоматикой из госуслуг с первой секунды.
             nm = (r.get("name") or "").strip()
+            # Колонка «Описание» в ALIASES тоже ведёт в specialization, но в выгрузках
+            # экспертов это простыня на 400–1000 знаков. В шаблоне {спец} подставляется
+            # одной строкой («вы всё так же работаете как {спец}?»), поэтому длинный текст
+            # уводим в niche, а короткий оставляем специализацией.
+            spec, long_desc = _person_topics(
+                r.get("specialization") or "", r.get("person_role") or "", "", "", "")
+            if len(r.get("specialization") or "") > 120:
+                spec, long_desc = _person_topics(
+                    "", r.get("person_role") or "", r.get("specialization") or "", "", "")
             cid = database.upsert_contact(
                 conn, source=source, phone=phone, username=username,
                 name=nm or None, person_name=nm if len(nm.split()) == 3 else None,
                 city=r.get("city") or None, agency=r.get("agency") or None,
                 tags=", ".join(t for t in (tag, r.get("tags")) if t) or None,
                 notes=r.get("notes") or None,
-                specialization=r.get("specialization") or None,
+                specialization=spec, niche=long_desc,
                 person_role=r.get("person_role") or None,
                 email=r.get("email") or None,
+                match_name=True,
             )
             # @username — это «достанем без ImportContacts» (см. TG_REACHABLE_SQL):
             # такой контакт идёт в рассылку сразу, без дозированного пробива номера.
@@ -4386,7 +4396,52 @@ _COL_MAP = {
     "сайт": "site",
     "email": "email",
     "e-mail": "email",
+    # Колонки «про человека». В компанию они не пишутся (co_vals собирается по отдельному
+    # белому списку ниже) — нужны только для карточки контакта. Без них выгрузка экспертов
+    # приезжала как «ФИО + телефон и всё»: у 216 контактов из vsetreningi специализация
+    # пустая, и холодный заход «вы всё так же по теме {спец}?» разваливался на первом шаге.
+    # Порядок важен: словарь обходится сверху вниз с проверкой «pat in h», поэтому
+    # «должность» стоит ПОСЛЕ «должность руководителя», иначе перехватило бы её заголовок.
+    "описание": "description",
+    "навыки": "skills",
+    "основные направления": "directions",
+    "категории": "categories",
+    "категория": "categories",
+    "должность": "director_role",
+    "специализация": "categories",
+    "чем занимается": "description",
 }
+
+# «Все консультанты», «Все компании» и т.п. — это не тема эксперта, а название раздела
+# каталога, откуда сделана выгрузка. В {спец} такое подставлять нельзя: получается
+# «вы всё так же работаете как все консультанты?».
+_JUNK_CATEGORIES = {"все консультанты", "все компании", "все тренеры", "все эксперты",
+                    "все специалисты", "прочее", "другое", "-"}
+
+
+def _person_topics(*values: str | None) -> tuple[str | None, str | None]:
+    """Из колонок «Категории/Должность/Описание/Навыки» собирает пару
+    (короткая специализация, развёрнутое описание).
+
+    Разделение принципиальное. specialization уходит в шаблон одной строкой
+    («вы всё так же работаете как {спец}?») — туда годится только короткая тема вроде
+    «увеличение продаж». Полный текст «Описания» в выгрузках — медиана 450 символов,
+    максимум под 10 000; подставленный в реплику, он превращает первое касание в простыню.
+    Поэтому длинный текст кладём в niche — агент читает его как контекст, но в реплику
+    целиком не тащит.
+    """
+    cats, role, desc, skills, dirs = ([v or "" for v in values] + [""] * 5)[:5]
+    topics = [t.strip() for t in cats.replace("|", ";").split(";") if t.strip()]
+    topics = [t for t in topics if t.lower() not in _JUNK_CATEGORIES]
+    spec = ", ".join(topics[:2]) or (role or "").strip() or None
+    if spec and len(spec) > 120:
+        spec = spec[:117].rstrip(" ,.;") + "…"
+    long = " · ".join(x.strip() for x in (desc, dirs, skills) if x and x.strip())
+    # Неразрывный пробел из html-выгрузок ломает и поиск, и перенос строк в переписке.
+    long = long.replace("\xa0", " ").replace("\r", " ").strip() or None
+    if long and len(long) > 1200:
+        long = long[:1197].rstrip() + "…"
+    return spec, long
 
 # Поля для contacts, если они есть в шапке
 _CONTACT_COL_MAP = {
@@ -4444,6 +4499,18 @@ def _parse_universal(text: str, tag: str, source: str = "import") -> tuple[int, 
             return 1 if "да" in v.lower() or v == "1" else 0
         return v or None
 
+    # Один и тот же номер у нескольких РАЗНЫХ людей — это не личный телефон, а номер
+    # агентства/организатора, который каталог показывает во всех профилях сразу.
+    # В выгрузке vsetreningi таких 12 номеров, за одним стоит до пяти «экспертов».
+    # Брать его как контактный нельзя вдвойне: писать будем не тому человеку, а дедуп по
+    # телефону (upsert_contact) склеит всех пятерых в одну карточку с чужим именем.
+    _by_phone: dict[str, set] = {}
+    for r in rows[1:]:
+        p = norm(r, "director_phone") or norm(r, "phone")
+        if p:
+            _by_phone.setdefault(p, set()).add(cell(r, "name").strip().lower())
+    shared_phones = {p for p, names in _by_phone.items() if len(names) > 1}
+
     added = skipped = 0
     database.init_db()
     with database.get_conn() as conn:
@@ -4494,13 +4561,26 @@ def _parse_universal(text: str, tag: str, source: str = "import") -> tuple[int, 
             if director_phone:
                 contact_name = norm(row, "director_name") or cname
                 contact_role = norm(row, "director_role") or None
+                spec, long_desc = _person_topics(
+                    cell(row, "categories"), contact_role or "", cell(row, "description"),
+                    cell(row, "skills"), cell(row, "directions"))
+                pers_phone = norm(row, "director_phone") or norm(row, "phone")
+                note = f"импорт из {source}"
+                if pers_phone in shared_phones:
+                    note += (f" · общий номер каталога {pers_phone} — в карточку не пишем, "
+                             f"он указан ещё у других людей из этой же выгрузки")
+                    pers_phone = None
                 cid = database.upsert_contact(
-                    conn, source=source, phone=norm(row, "director_phone") or norm(row, "phone"),
+                    conn, source=source, phone=pers_phone,
                     email=norm(row, "director_email") or norm(row, "email"),
                     name=contact_name, person_name=contact_name,
                     person_role=contact_role,
+                    specialization=spec, niche=long_desc,
                     agency=cname, tags=tag or None,
-                    notes=f"импорт из {source}",
+                    notes=note,
+                    # см. upsert_contact: файл людей — единственный случай, где имя можно
+                    # считать ключом, иначе строка без телефона плодит по карточке за импорт
+                    match_name=True,
                 )
                 conn.execute(
                     "UPDATE contacts SET company_id=? WHERE id=?",

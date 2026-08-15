@@ -1874,6 +1874,36 @@ def _proxy_scheduler() -> None:
                 _log_run("warmup_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[warmup scheduler] {e}")
+        # --- автозащита новых аккаунтов: 2FA + запасная сессия ---
+        # Ручная защита не работает как процесс: аккаунты покупаются пачками, а «зайти и
+        # нажать» после каждой покупки никто не будет — в итоге 10 боевых номеров жили
+        # вообще без страховки, и 8 уже потеряны навсегда. Поэтому защита должна
+        # догонять аккаунт сама, без участия оператора.
+        #
+        # Оба модуля идемпотентны и сами выбирают, кому ещё не поставлено: account_protect
+        # пропускает тех, у кого 2FA уже наша, session_spare — тех, у кого запаска есть.
+        # Денег это не тратит: --country не передаём, значит смена номера (hero-sms) не
+        # запускается, только бесплатный слой 2FA.
+        #
+        # Порядок важен: сначала 2FA, потом запаска. QR-подтверждение новой сессии при
+        # включённой 2FA требует пароль, и он должен быть уже наш и записан в БД.
+        try:
+            with database.get_conn() as conn:
+                pauto = database.get_setting(conn, "protect_auto", "off")
+                pint = int(database.get_setting(conn, "protect_interval_min", "60"))
+                plast = database.get_setting(conn, "protect_last_run_ts", "0")
+            if pauto == "on" and (time.time() - float(plast or 0)) >= pint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "protect_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "protect_last_run",
+                                         __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                for mod, tmo in (("channels.account_protect", 900), ("channels.session_spare", 1800)):
+                    res = subprocess.run([sys.executable, "-m", mod],
+                                         cwd=str(BASE_DIR.parent), timeout=tmo, env=env,
+                                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    _log_run("protect_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[protect scheduler] {e}")
         # --- авто-прослушка чатов по ключам (niches) ---
         try:
             with database.get_conn() as conn:
@@ -5625,11 +5655,35 @@ def accounts_spare_status() -> JSONResponse:
             "AND tg_session_spare IS NOT NULL AND tg_session_spare<>''").fetchall()
     total = row["total"] or 0
     with_spare = row["with_spare"] or 0
+    with database.get_conn() as conn:
+        auto = database.get_setting(conn, "protect_auto", "off") == "on"
+        last_run = database.get_setting(conn, "protect_last_run", None)
     return JSONResponse({
         "total": total, "with_spare": with_spare, "without_spare": total - with_spare,
         # мёртвые, которые можно поднять прямо сейчас — это деньги, лежащие на полу
         "recoverable": [dict(r) for r in dead_with_spare],
+        "auto": auto, "last_run": last_run,
     })
+
+
+@app.post("/api/accounts/protect_auto")
+def accounts_protect_auto(payload: dict = Body(default={})) -> JSONResponse:
+    """Тумблер автозащиты: сам догоняет новые аккаунты 2FA и запасной сессией.
+
+    Денег не тратит — смена номера (hero-sms) в авторежим не входит, только бесплатные
+    слои. Выключать имеет смысл разве что на время разбора инцидента."""
+    with database.get_conn() as conn:
+        if "auto" in payload:
+            database.set_setting(conn, "protect_auto", "on" if payload.get("auto") else "off")
+        if payload.get("interval_min"):
+            database.set_setting(conn, "protect_interval_min",
+                                 str(max(10, int(payload["interval_min"]))))
+        return JSONResponse({
+            "ok": True,
+            "auto": database.get_setting(conn, "protect_auto", "off") == "on",
+            "interval_min": int(database.get_setting(conn, "protect_interval_min", "60")),
+            "last_run": database.get_setting(conn, "protect_last_run", None),
+        })
 
 
 @app.post("/api/accounts/spare")

@@ -1342,6 +1342,53 @@ async function loadTwofa(){
     if(r.log)console.log(r.log.join("\n"));
     setTimeout(route,1500);};
 }
+// Страховка от ожога ключа. Купленный аккаунт разовый: номер у продавца, SMS не придёт,
+// и сгоревшая сессия = списанный лот. Запаска — вторая НЕЗАВИСИМАЯ авторизация (свой
+// ключ), она переживает смерть основной. Копией .session застраховаться нельзя: это тот
+// же ключ, и поднятая параллельно она аккаунт как раз сжигает.
+async function loadSpare(){
+  const box=$("#acc-spare");if(!box)return;
+  let d;try{d=await api("/api/accounts/spare");}catch(e){return;}
+  if(!d||d.error){box.innerHTML="";return;}
+  const autoRow=`<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="Раз в час сам догоняет новые аккаунты: ставит 2FA и выпускает запаску. Денег не тратит — смена номера в авторежим не входит">
+      <input type="checkbox" id="sp-auto" ${d.auto?"checked":""}> <b>автозащита</b></label>
+    <span class="hint" id="sp-auto-msg">${d.last_run?`последний заход ${esc(d.last_run)}`:(d.auto?"ждёт первого захода":"выключена — новые аккаунты остаются без страховки")}</span>`;
+  const recover=(d.recoverable||[]).length
+    ? `<div class="card" style="padding:9px 12px;margin-top:8px;border-left:3px solid var(--accent)">
+        <b>♻️ Можно вернуть: ${d.recoverable.length}</b>
+        <div class="hint" style="margin-top:4px">Сессия мертва, но запаска цела — открой карточку и жми «Поднять запаску»: ${d.recoverable.map(x=>esc(x.label||("#"+x.id))).join(" · ")}</div></div>`
+    : "";
+  if(!d.without_spare){
+    box.innerHTML=`<div class="card" style="padding:9px 12px"><span class="badge b-active">🧯 застрахованы все ${d.with_spare}</span>
+      <span class="hint" style="margin-left:8px">у каждого есть запасная авторизация — ожог ключа больше не списывает аккаунт</span>
+      <div class="ttoolbar" style="margin:8px 0 0">${autoRow}</div></div>${recover}`;
+  }else{
+    box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
+      <b>🧯 Без страховки: ${d.without_spare} аккаунт(ов)</b>${d.with_spare?` · с запаской: ${d.with_spare}`:""}
+      <div class="hint" style="margin:6px 0">Если Telegram сожжёт ключ (например, увидит сессию с двух IP), вернуть аккаунт будет нечем: номер у продавца, SMS не придёт. Запаска — вторая независимая авторизация, она такое переживает. Копия .session НЕ спасает: это тот же ключ.</div>
+      <div class="ttoolbar" style="margin:0">
+        <button class="primary" id="sp-go">🧯 Выпустить запаски всем</button>
+        ${autoRow}
+        <span class="hint" id="sp-msg"></span></div></div>${recover}`;
+    $("#sp-go").onclick=async()=>{
+      if(!confirm(`Выпустить запасную сессию для ${d.without_spare} аккаунт(ов)?\n\nК каждому подключаемся вживую — это несколько минут. Слушатель на это время приостановится.`))return;
+      const b=$("#sp-go"),m=$("#sp-msg");b.disabled=true;b.textContent="выпускаю…";
+      let sec=0;const t=setInterval(()=>{sec++;m.textContent=`подключаюсь к каждому аккаунту… ${sec} с`;},1000);
+      let r;try{r=await api("/api/accounts/spare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});}
+      catch(e){r={error:e.message};}
+      clearInterval(t);b.disabled=false;b.textContent="🧯 Выпустить запаски всем";
+      if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+      m.textContent=`готово: выпущено ${r.minted||0}`+((r.failed||[]).length?`, не вышло у ${r.failed.length}`:"");
+      if(r.log)console.log(r.log.join("\n"));
+      setTimeout(route,1500);};
+  }
+  const au=$("#sp-auto");
+  if(au)au.onchange=async()=>{
+    const msg=$("#sp-auto-msg");msg.textContent="сохраняю…";
+    const r=await api("/api/accounts/protect_auto",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:au.checked})});
+    msg.textContent=r.auto?"включена — новые аккаунты защищаются сами":"выключена — новые аккаунты остаются без страховки";
+  };
+}
 // Пересечение прокси — главная причина потери аккаунтов. Сессия, увиденная с двух
 // IP, жжётся Telegram навсегда (AuthKeyDuplicatedError). Два аккаунта на одном
 // адресе опасны и сами по себе, и потому что при смене прокси в пуле один из них
@@ -1376,6 +1423,7 @@ async function viewAgents(v){
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
     <div id="acc-identity" style="margin-bottom:12px"></div>
     <div id="acc-twofa" style="margin-bottom:12px"></div>
+    <div id="acc-spare" style="margin-bottom:12px"></div>
     <div id="acc-proxy" style="margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:12px;padding:10px 12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -1506,6 +1554,7 @@ async function viewAgents(v){
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
   loadIdentityCheck();
   loadTwofa();
+  loadSpare();
   loadProxyCheck();
   const akGo=$("#ak-go");
   if(akGo)akGo.onclick=async()=>{

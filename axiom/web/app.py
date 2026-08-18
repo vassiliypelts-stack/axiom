@@ -4881,6 +4881,59 @@ def projects_delete(pid: int) -> JSONResponse:
 
 
 # ---- Контекст контакта для агента (досье) --------------------------------- #
+@app.post("/api/contact/{contact_id}/send")
+def contact_send(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
+    """Написать человеку РУКАМИ из «Диалогов», от имени того же аккаунта, что вёл диалог.
+
+    Зачем: оператор видит переписку в пульте, но вмешаться мог только уйдя в Telegram с
+    телефона — а там он пишет от СВОЕГО номера, и для клиента в одной ветке вдруг
+    появляется второй собеседник. Плюс такое сообщение не попадало в книжку, и агент,
+    подключившись позже, отвечал так, будто его не было: переспрашивал уже отвеченное.
+
+    Сообщение пишется в messages как direction='out' с тем же account_id — то есть
+    ложится в ту же ленту, что и реплики бота. Агент историю берёт оттуда же
+    (database.get_history → _history_for_agent, где 'out' становится его собственной
+    репликой), поэтому подключившись позже он видит ручную переписку как свою и
+    продолжает с того же места, не начиная заново.
+
+    Шлём через соединение слушателя (listener.send_via_listener), а не своим клиентом:
+    вторая сессия тем же ключом с другого IP сжигает аккаунт (см. session_check)."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "пустое сообщение"}, status_code=400)
+
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT c.id, c.name, c.username, c.tg_user_id, "
+            # аккаунт диалога — из последнего сообщения, тот же источник, что у
+            # «Диалогов» и подписей под пузырями (см. /api/chats)
+            "(SELECT m.account_id FROM messages m WHERE m.contact_id=c.id "
+            " AND m.account_id IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS account_id "
+            "FROM contacts c WHERE c.id=?", (contact_id,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "контакт не найден"}, status_code=404)
+    d = dict(row)
+    acc_id = payload.get("account_id") or d.get("account_id")
+    if not acc_id:
+        return JSONResponse({"error": "непонятно, с какого аккаунта писать: в этом диалоге ещё "
+                                      "не было исходящих. Напиши первым из кампании."},
+                            status_code=400)
+    if not d.get("tg_user_id"):
+        return JSONResponse({"error": "у контакта нет tg_user_id — Telegram не пробит, "
+                                      "отправлять некуда"}, status_code=400)
+
+    from channels import listener
+    sent = listener.send_via_listener(int(acc_id), int(d["tg_user_id"]), [text])
+    if not sent:
+        return JSONResponse({"error": "слушатель не держит этот аккаунт — сообщение не ушло. "
+                                      "Проверь его сессию и прокси в «Аккаунтах»."}, status_code=502)
+
+    with database.get_conn() as conn:
+        database.add_message(conn, contact_id, "out", text, intent=None, account_id=int(acc_id))
+    return JSONResponse({"ok": True, "account_id": int(acc_id)})
+
+
 @app.post("/api/contact/{contact_id}/context")
 def set_agent_context(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
     ctx = (payload.get("agent_context") or "").strip() or None

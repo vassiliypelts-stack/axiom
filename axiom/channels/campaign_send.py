@@ -139,7 +139,11 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     Telegram нет — это промах. Промахов у нас 38% от проверенных, а серия промахов
     подряд с одного аккаунта — самый явный признак спамера. Пробив делает отдельный
     дозированный phone_resolve (25/аккаунт в сутки, контакт удаляется сразу)."""
-    where = "status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
+    # deleted_at — контакт в корзине (web/app.py contacts_bulk_delete). Карточка ещё
+    # жива и восстановима, но писать ей нельзя: выделенный по ошибке и удалённый
+    # человек не должен получить сообщение только потому, что рассылка не знает о
+    # корзине.
+    where = "status='new' AND deleted_at IS NULL AND (username IS NOT NULL OR phone IS NOT NULL)"
     params: list = []
     if exclude_paused:
         where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"

@@ -2499,21 +2499,28 @@ def event_detail(eid: int) -> JSONResponse:
 
 # ---- CRM / Контакты ------------------------------------------------------- #
 @app.get("/api/contacts")
-def contacts() -> JSONResponse:
+def contacts(trash: int = 0) -> JSONResponse:
+    """trash=1 — показать КОРЗИНУ (contacts.deleted_at IS NOT NULL) вместо активной базы.
+    По умолчанию удалённые не возвращаются: активные списки/таблицы их просто не видят,
+    как будто их нет, хотя карточка ещё жива и её можно вернуть."""
     database.init_db()
+    cond = "c.deleted_at IS NOT NULL" if trash else "c.deleted_at IS NULL"
+    order = "c.deleted_at DESC" if trash else "(last_ts IS NULL), last_ts DESC, c.id DESC"
     with database.get_conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.id, c.name, c.person_name, c.person_role, c.username, c.phone, c.wa_phone,
                    c.city, c.agency, c.tags, c.notes, c.status, c.has_tg, c.has_wa,
                    c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
                    c.specialization, c.hook, c.enriched_at, c.source, c.created_at, c.email,
+                   c.deleted_at,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts
             FROM contacts c
             LEFT JOIN companies co ON co.id = c.company_id
-            ORDER BY (last_ts IS NULL), last_ts DESC, c.id DESC
+            WHERE {cond}
+            ORDER BY {order}
             """
         ).fetchall()
     out = []
@@ -2771,39 +2778,82 @@ def deals_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
 
 @app.post("/api/contacts/bulk-delete")
 def contacts_bulk_delete(payload: dict = Body(...)) -> JSONResponse:
-    """Удалить выбранные контакты вместе с их перепиской и сделками.
+    """Переносит выбранные контакты в корзину — ничего не стирает физически.
 
-    Переписку удаляем осознанно: висящие сообщения без карточки нигде не видны и
-    только мешают счётчикам. Если по контакту есть сделка — предупреждаем: это уже
-    не мусор из импорта, а работа, и снести её случайно обиднее всего.
-    """
+    Раньше это была необратимая операция: один клик по «выделить всё» на
+    отфильтрованной таблице сносил ВСЮ базу вместе со сделками и перепиской без
+    возможности передумать (заголовок отмечал галочкой все строки под текущим
+    фильтром, а не только видимую страницу — на 1713 контактах это было бы 1713
+    трупов одним нажатием). Теперь контакт просто помечается deleted_at и пропадает
+    из активных списков и из рассылки/пробива (см. фильтр в channels/campaign_send
+    ._audience и channels/phone_resolve._targets), а вернуть его можно из «Корзины»
+    в один клик. Настоящее уничтожение — только через /api/contacts/purge, и только
+    для того, что уже здесь."""
     ids = _bulk_ids(payload)
     if not ids:
         return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
     qs = ",".join("?" for _ in ids)
     with database.get_conn() as conn:
+        n = conn.execute(
+            f"SELECT COUNT(*) c FROM contacts WHERE id IN ({qs}) AND deleted_at IS NULL", ids
+        ).fetchone()["c"]
+        conn.execute(f"UPDATE contacts SET deleted_at=datetime('now') WHERE id IN ({qs})", ids)
+        # Уже поставленные в очередь первые сообщения — снимаем сразу, а не ждём
+        # следующего фонового прохода: иначе контакт лежит в корзине, а письмо ему
+        # всё равно уходит из ранее собранной очереди.
+        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qs})", ids)
+    return JSONResponse({"ok": True, "deleted": n})
+
+
+@app.post("/api/contacts/restore")
+def contacts_restore(payload: dict = Body(...)) -> JSONResponse:
+    """Возвращает контакты из корзины: снимает deleted_at, карточка снова видна и
+    участвует в рассылке/пробиве на общих основаниях."""
+    ids = _bulk_ids(payload)
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
+    qs = ",".join("?" for _ in ids)
+    with database.get_conn() as conn:
+        n = conn.execute(
+            f"SELECT COUNT(*) c FROM contacts WHERE id IN ({qs}) AND deleted_at IS NOT NULL", ids
+        ).fetchone()["c"]
+        conn.execute(f"UPDATE contacts SET deleted_at=NULL WHERE id IN ({qs})", ids)
+    return JSONResponse({"ok": True, "restored": n})
+
+
+@app.post("/api/contacts/purge")
+def contacts_purge(payload: dict = Body(...)) -> JSONResponse:
+    """Окончательно стирает контакты — ТОЛЬКО те, что уже в корзине (deleted_at не
+    NULL). Позвать эту ручку напрямую по живому контакту и снести его в обход
+    корзины нельзя — сначала /bulk-delete, потом уже отсюда."""
+    ids = _bulk_ids(payload)
+    if not ids:
+        return JSONResponse({"error": "не выбрано ни одного контакта"}, status_code=400)
+    qs = ",".join("?" for _ in ids)
+    with database.get_conn() as conn:
+        trashed = [r["id"] for r in conn.execute(
+            f"SELECT id FROM contacts WHERE id IN ({qs}) AND deleted_at IS NOT NULL", ids
+        ).fetchall()]
+        if not trashed:
+            return JSONResponse({"error": "среди выбранных нет ничего в корзине"}, status_code=400)
+        qs2 = ",".join("?" for _ in trashed)
         with_deals = conn.execute(
-            f"SELECT COUNT(*) c FROM deals WHERE contact_id IN ({qs})", ids).fetchone()["c"]
+            f"SELECT COUNT(*) c FROM deals WHERE contact_id IN ({qs2})", trashed).fetchone()["c"]
         if with_deals and not payload.get("force"):
             return JSONResponse({"needs_confirm": True,
-                                 "warn": f"По выбранным контактам есть сделок: {with_deals}. "
-                                         f"Они удалятся вместе с контактами. Продолжить?"})
-        n = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE id IN ({qs})", ids).fetchone()["c"]
-        conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qs})", ids)
-        conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qs})", ids)
-        conn.execute(f"DELETE FROM campaign_contacts WHERE contact_id IN ({qs})", ids)
-        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qs})", ids)
-        # Хвосты, которые тоже держат contact_id. Забытая campaign_paused_contacts —
-        # не косметика: строка «этот контакт в кампании на паузе» переживала удаление,
-        # и следующий контакт, получивший тот же id из AUTOINCREMENT, молча выпадал
-        # из рассылки. Остальное — журналы и распарсенные посты, без карточки мусор.
+                                 "warn": f"По контактам из корзины есть сделок: {with_deals}. "
+                                         f"Они удалятся вместе с контактами БЕЗВОЗВРАТНО. Продолжить?"})
+        n = len(trashed)
+        conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qs2})", trashed)
+        conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qs2})", trashed)
+        conn.execute(f"DELETE FROM campaign_contacts WHERE contact_id IN ({qs2})", trashed)
+        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qs2})", trashed)
         for t in ("campaign_paused_contacts", "campaign_logs", "inbox_items", "tg_user_posts"):
-            conn.execute(f"DELETE FROM {t} WHERE contact_id IN ({qs})", ids)
-        # события — журнал, его не переписываем: просто отвязываем от удалённого
-        conn.execute(f"UPDATE events SET contact_id=NULL WHERE contact_id IN ({qs})", ids)
+            conn.execute(f"DELETE FROM {t} WHERE contact_id IN ({qs2})", trashed)
+        conn.execute(f"UPDATE events SET contact_id=NULL WHERE contact_id IN ({qs2})", trashed)
         conn.execute(f"UPDATE chat_hits SET contact_id=NULL, status='new' "
-                     f"WHERE contact_id IN ({qs})", ids)
-        conn.execute(f"DELETE FROM contacts WHERE id IN ({qs})", ids)
+                     f"WHERE contact_id IN ({qs2})", trashed)
+        conn.execute(f"DELETE FROM contacts WHERE id IN ({qs2})", trashed)
     return JSONResponse({"ok": True, "deleted": n})
 
 

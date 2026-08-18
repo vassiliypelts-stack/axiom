@@ -75,7 +75,9 @@ def _targets(limit: int | None, recheck: bool, tag: str | None = None) -> list[d
     tag — сузить до аудитории конкретной кампании (contacts.tags LIKE). Без него порядок
     ORDER BY id тянет самые старые контакты в базе, и свежая кампания с высокими id может
     не дождаться своей очереди неделями, пока дневной потолок съедают чужие номера."""
-    where = ["phone IS NOT NULL", "phone<>''", "tg_user_id IS NULL"]
+    # deleted_at IS NULL — не трогаем корзину: контакт помечен на удаление, зря
+    # рисковать аккаунтом (ImportContacts) ради человека, которого сейчас не шлём.
+    where = ["phone IS NOT NULL", "phone<>''", "tg_user_id IS NULL", "deleted_at IS NULL"]
     params: list = []
     if not recheck:
         where.append("tg_checked_at IS NULL")

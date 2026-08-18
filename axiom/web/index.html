@@ -738,7 +738,7 @@ function smartTable(mount,cfg){
   // рисовать галочки и панель. selWord — родительный падеж для вопроса «Удалить N …?».
   const sel=new Set();
   const allCols=cfg.selectable?[{key:"__sel",
-    label:'<input type="checkbox" class="st-all" title="выделить всё, что сейчас отфильтровано в таблице">',
+    label:'<input type="checkbox" class="st-all" title="выделить всё на этой странице">',
     render:r=>`<input type="checkbox" class="st-sel" data-id="${r.id}"${sel.has(r.id)?" checked":""}>`},
     ...cfg.columns]:cfg.columns;
   let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
@@ -798,19 +798,27 @@ function smartTable(mount,cfg){
     if(!bar)return;
     if(!sel.size){bar.style.display="none";bar.innerHTML="";return;}
     bar.style.display="flex";
+    // cfg.softDelete — эта таблица шлёт в корзину (сейчас так только контакты), а не
+    // сносит запись физически. Кнопка и вопрос подтверждения об этом честно говорят —
+    // «необратимо» рядом с обратимой операцией только приучает жать «Отмена» и на
+    // случаях, где отменить уже нельзя (сделки, компании).
+    const delLabel=cfg.softDelete?"🗑 В корзину":"✕ Удалить выбранные";
     bar.innerHTML=`<span>выделено <b>${sel.size}</b></span>
-      <button id="st-del" style="color:#c0392b;border-color:#c0392b">✕ Удалить выбранные</button>
+      <button id="st-del" style="color:#c0392b;border-color:#c0392b">${delLabel}</button>
       <button id="st-unsel">снять выделение</button>`;
     bar.querySelector("#st-unsel").onclick=()=>{sel.clear();draw();};
     const db=bar.querySelector("#st-del");
     db.onclick=async()=>{
       const ids=[...sel];
-      if(!confirm(`Удалить ${ids.length} ${cfg.selWord||"записей"}?\n\nЭто необратимо.`))return;
-      db.disabled=true;db.textContent="удаляю…";
+      const q=cfg.softDelete
+        ?`Перенести ${ids.length} ${cfg.selWord||"записей"} в корзину?\n\nМожно будет восстановить в разделе «Корзина».`
+        :`Удалить ${ids.length} ${cfg.selWord||"записей"}?\n\nЭто необратимо.`;
+      if(!confirm(q))return;
+      db.disabled=true;db.textContent=cfg.softDelete?"переношу…":"удаляю…";
       let res=null;
       try{res=await cfg.onDelete(ids);}catch(err){res={error:String(err)};}
       if(!res||res.error){
-        db.disabled=false;db.textContent="✕ Удалить выбранные";
+        db.disabled=false;db.textContent=delLabel;
         alert((res&&res.error)||"не удалось удалить");return;}
       // выкидываем из данных на месте: route() перерисовал бы весь раздел и увёл прокрутку
       for(let i=cfg.rows.length-1;i>=0;i--)if(sel.has(cfg.rows[i].id))cfg.rows.splice(i,1);
@@ -848,9 +856,6 @@ function smartTable(mount,cfg){
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
     if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
-    // «Выделить всё» = весь отфильтрованный набор, а не только текущая страница:
-    // человек отфильтровал 216 из 1494 и хочет снести именно эти 216, а не первые 50.
-    const filteredIds=rows.map(r=>r.id);
     // пагинация: режем на страницы только без группировки (в группировке показываем всё)
     const ps=st.pageSize||50, total=rows.length, pages=Math.max(1,Math.ceil(total/ps));
     if(st.page>=pages)st.page=pages-1; if(st.page<0)st.page=0;
@@ -884,15 +889,21 @@ function smartTable(mount,cfg){
     wrap.querySelector("#st-tbl").innerHTML=`<table role="grid"><thead>${head}${filtRow}</thead><tbody>${body}</tbody></table>`;
     wrap.querySelectorAll("thead tr:first-child th").forEach(th=>th.onclick=e=>{if(e.target.classList.contains("rsz")||e.target.closest("input"))return;const k=th.dataset.k;if(st.sortKey===k)st.sortDir*=-1;else{st.sortKey=k;st.sortDir=1;}draw();});
     if(cfg.selectable){
+      // «Выделить всё» цепляет ТОЛЬКО текущую страницу (rows===paged к этому месту),
+      // а не весь отфильтрованный список: заголовок раньше отмечал все страницы
+      // разом, и на несортированной таблице в 1713 строк одна галочка молча выделяла
+      // все 1713 — риск снести базу целиком одной невнимательной отправкой формы.
+      // Нужно больше одной страницы — листай и отмечай, либо сузь фильтром.
+      const pageIds=rows.map(r=>r.id);
       const all=wrap.querySelector(".st-all");
       if(all){
-        all.checked=filteredIds.length>0&&filteredIds.every(id=>sel.has(id));
-        all.onchange=()=>{filteredIds.forEach(id=>all.checked?sel.add(id):sel.delete(id));draw();};
+        all.checked=pageIds.length>0&&pageIds.every(id=>sel.has(id));
+        all.onchange=()=>{pageIds.forEach(id=>all.checked?sel.add(id):sel.delete(id));draw();};
       }
       wrap.querySelectorAll(".st-sel").forEach(cb=>cb.onchange=()=>{
         const id=+cb.dataset.id;
         cb.checked?sel.add(id):sel.delete(id);
-        if(all)all.checked=filteredIds.length>0&&filteredIds.every(x=>sel.has(x));
+        if(all)all.checked=pageIds.length>0&&pageIds.every(x=>sel.has(x));
         drawSelBar();
       });
       drawSelBar();
@@ -3547,8 +3558,20 @@ async function viewContacts(v){
       <button id="ct-resolve-tg" title="пробить номера в Telegram — узнать tg_user_id, username, аватар, bio">📡 Пробив TG</button>
       <button id="ct-enrich" title="обогатить пачку контактов: DaData (ИНН/директор) + AI-досье">🧠 Обогатить пачку</button>
       <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать</button>
+      <button id="ct-trash" title="удалённые отсюда не пропадают сразу — лежат тут, пока не восстановишь или не почистишь навсегда">🗑 Корзина<span id="ct-trash-n"></span></button>
       <span class="grow"></span>
       <span class="hint" id="ct-seg-msg">Физлица. Клик — карточка с историей и досье.</span>
+    </div>
+    <div id="ct-trash-panel" class="card" style="display:none;margin-bottom:12px">
+      <div class="ttoolbar" style="margin:0">
+        <b>🗑 Корзина</b>
+        <span class="hint" id="ct-trash-cnt"></span>
+        <span class="grow"></span>
+        <button id="ct-trash-restore-all">↩ Восстановить всё</button>
+        <button id="ct-trash-purge-all" style="color:#c0392b;border-color:#c0392b">✕ Очистить корзину навсегда</button>
+      </div>
+      <div class="hint" style="margin-top:6px">Контакты из «В корзину» лежат тут. Не участвуют в рассылке и пробиве TG, пока не восстановлены. «Очистить навсегда» стирает физически, вместе со сделками и перепиской, — без отмены.</div>
+      <div id="ct-trash-list" style="margin-top:10px"></div>
     </div>
     <div id="ct-imp-panel" class="card" style="display:none;margin-bottom:12px">
       <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
@@ -3573,6 +3596,58 @@ async function viewContacts(v){
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
   $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";if(loadSources)loadSources();};
+  // Корзина: те, у кого contacts.deleted_at выставлен. Их не видно в основной таблице
+  // (loadContacts фильтрует на бэкенде), рассылка и пробив TG их тоже не трогают —
+  // см. фильтр deleted_at в channels/campaign_send._audience и
+  // channels/phone_resolve._targets. Здесь только восстановить или стереть навсегда.
+  const trashRow=r=>`<div class="card" style="padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;gap:10px" data-id="${r.id}">
+      <span style="flex:1">${esc(r.person_name||r.name)||'<span class="no">без имени</span>'}
+        <span class="sub" style="margin-left:8px">${esc(r.phone||r.username||"")}</span>
+        <span class="hint" style="margin-left:8px">удалён ${fmt(r.deleted_at)||""}</span></span>
+      <button class="tr-restore" data-id="${r.id}">↩ Восстановить</button>
+      <button class="tr-purge" data-id="${r.id}" style="color:#c0392b;border-color:#c0392b">✕ Навсегда</button>
+    </div>`;
+  const loadTrash=async(render)=>{
+    const rows=await api("/api/contacts?trash=1");
+    $("#ct-trash-n").textContent=rows.length?` (${rows.length})`:"";
+    if(render){
+      const list=$("#ct-trash-list");
+      list.innerHTML=rows.length?rows.map(trashRow).join(""):'<p class="hint">Корзина пуста.</p>';
+      list.querySelectorAll(".tr-restore").forEach(b=>b.onclick=async()=>{
+        b.disabled=true;
+        const r=await api("/api/contacts/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids:[+b.dataset.id]})});
+        if(r.error){alert(r.error);b.disabled=false;return;}
+        route();});
+      list.querySelectorAll(".tr-purge").forEach(b=>b.onclick=async()=>{
+        if(!confirm("Стереть этот контакт НАВСЕГДА, вместе со сделками и перепиской?\n\nОтменить будет нельзя."))return;
+        b.disabled=true;
+        const send=force=>api("/api/contacts/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids:[+b.dataset.id],force})});
+        let r=await send(false);
+        if(r&&r.needs_confirm){if(!confirm(r.warn)){b.disabled=false;return;}r=await send(true);}
+        if(r.error){alert(r.error);b.disabled=false;return;}
+        route();});
+    }
+    return rows;
+  };
+  loadTrash(false);
+  $("#ct-trash").onclick=()=>{const p=$("#ct-trash-panel");const show=p.style.display==="none";p.style.display=show?"block":"none";if(show)loadTrash(true);};
+  $("#ct-trash-restore-all").onclick=async()=>{
+    const rows=await loadTrash(false);
+    if(!rows.length){alert("корзина пуста");return;}
+    if(!confirm(`Восстановить все ${rows.length} контактов из корзины?`))return;
+    const r=await api("/api/contacts/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids:rows.map(x=>x.id)})});
+    if(r.error){alert(r.error);return;}
+    route();};
+  $("#ct-trash-purge-all").onclick=async()=>{
+    const rows=await loadTrash(false);
+    if(!rows.length){alert("корзина пуста");return;}
+    if(!confirm(`Стереть НАВСЕГДА все ${rows.length} контактов из корзины, вместе со сделками и перепиской?\n\nОтменить будет нельзя.`))return;
+    const ids=rows.map(x=>x.id);
+    const send=force=>api("/api/contacts/purge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,force})});
+    let r=await send(false);
+    if(r&&r.needs_confirm){if(!confirm(r.warn))return;r=await send(true);}
+    if(r.error){alert(r.error);return;}
+    route();};
   $("#ct-imp-go").onclick=async()=>{
     const f=$("#ct-imp-file").files[0],msg=$("#ct-imp-msg");
     if(!f){msg.textContent="выбери CSV-файл";return;}
@@ -3625,7 +3700,7 @@ async function viewContacts(v){
   };
   smartTable($("#ct-body"),{
     tableKey:"contacts",
-    selectable:true,selWord:"контактов",onDelete:bulkDelete("/api/contacts/bulk-delete"),
+    selectable:true,selWord:"контактов",softDelete:true,onDelete:bulkDelete("/api/contacts/bulk-delete"),
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
     groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
@@ -4940,7 +5015,7 @@ async function viewDossier(v){
   $("#dl-q").addEventListener("keydown",e=>{if(e.key==="Enter")dlRun();});
   smartTable($("#dz"),{
     tableKey:"dossier",
-    selectable:true,selWord:"человек",onDelete:bulkDelete("/api/contacts/bulk-delete"),
+    selectable:true,selWord:"человек",softDelete:true,onDelete:bulkDelete("/api/contacts/bulk-delete"),
     rows:STATE.contacts,searchKeys:["name","username","phone","city","agency"],
     groupOptions:[{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"source",label:"источник"},{key:"status",label:"статус"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,

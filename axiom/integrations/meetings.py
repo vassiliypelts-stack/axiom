@@ -17,6 +17,55 @@ from integrations import slot_parse
 from integrations import zoom
 
 
+_NAME_SEPARATORS = ("|", "·", "•", "—", "–", "/", ",")
+
+
+def _clean_name(contact: dict) -> str:
+    """Имя человека для заголовка события — без «визитки» из профиля Telegram.
+
+    У контактов из TG-парсинга в `name` лежит отображаемое имя целиком, а люди
+    вписывают туда свои услуги: «Роман Галанкин | AI-агенты | ИИ-боты | нейросети».
+    Так это и уезжало в Google Calendar, а оттуда — в дайджест бота, где строка
+    занимала пол-экрана и событие невозможно было опознать. person_name (когда есть)
+    заведомо чище — это разобранное ФИО, поэтому берём его первым."""
+    pn = (contact.get("person_name") or "").strip()
+    if pn:
+        return pn[:80]
+    raw = (contact.get("name") or "").strip()
+    for sep in _NAME_SEPARATORS:
+        if sep in raw:
+            raw = raw.split(sep, 1)[0].strip()
+    return raw[:80] or "риелтор"
+
+
+def _already_booked(contact_id: int | None) -> dict | None:
+    """Встреча по этому контакту уже заведена? Возвращает её, если да.
+
+    Защита от размножения событий. Заголовок «договорились о созвоне» ставит модель
+    на КАЖДЫЙ свой ответ, пока согласие висит в контексте диалога, — а событие
+    создавалось безусловно, без оглядки на уже существующее. 18.08.2026 в календаре
+    хозяина оказалось 22 одинаковых события по одному человеку: бот в том диалоге
+    отвечал бесконечно (дыра в listener._should_reply, закрыта отдельно), и каждый
+    ответ добавлял новую копию. Обновления события в Google Calendar у нас нет —
+    только создание, поэтому единственный безопасный шаг — не создавать второе.
+
+    Побочный эффект: перенос времени в календаре не отразится (в базе и в карточке
+    сделки новое время сохранится). Это осознанный размен: пропущенный перенос
+    исправляется руками за секунды, а засыпанный дублями календарь — нет."""
+    if not contact_id:
+        return None
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            row = conn.execute(
+                "SELECT meeting_at, zoom_link, calendar_event_id FROM deals "
+                "WHERE contact_id=? AND calendar_event_id IS NOT NULL AND calendar_event_id<>'' "
+                "ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+        return dict(row) if row else None
+    except Exception:  # noqa: BLE001 — БД недоступна: ведём себя как раньше
+        return None
+
+
 @dataclass
 class MeetingResult:
     meeting_at_iso: str | None   # ISO с таймзоной, либо исходная строка, если не распарсилось
@@ -92,11 +141,25 @@ def arrange(contact: dict, slot: str | None, campaign_id: int | None = None,
     уведомлением (channels/notify.py): раньше событие в календаре несло только имя и
     Zoom-ссылку, а чем человек занимается, из какой он кампании и о чём вообще был
     разговор — можно было узнать только вернувшись в переписку."""
-    name = contact.get("name") or "риелтор"
+    name = _clean_name(contact)
     dt = parse_slot(slot)
     if dt is None:
         # не смогли распарсить время — фиксируем как есть, без внешних сервисов
         return MeetingResult(meeting_at_iso=slot, zoom_link=None, calendar_event_id=None, parsed=False)
+
+    # Встреча по этому человеку уже стоит в календаре — второй раз не заводим.
+    # Возвращаем то, что уже есть: вызывающий код перезапишет заметки в сделке, но
+    # новое событие не появится и напоминание не задвоится (см. _already_booked).
+    booked = _already_booked(contact_id)
+    if booked:
+        print(f"[meetings] у контакта #{contact_id} встреча уже заведена "
+              f"({booked.get('meeting_at')}) — новое событие не создаю")
+        return MeetingResult(
+            meeting_at_iso=booked.get("meeting_at") or dt.isoformat(),
+            zoom_link=booked.get("zoom_link") or (_meeting_url(campaign_id) or "").strip() or None,
+            calendar_event_id=booked.get("calendar_event_id"),
+            parsed=True,
+        )
 
     topic = f"AXIOM: созвон с {name}"
     # Постоянная ссылка (личная комната Zoom, Телемост, Meet) — если задана, берём её

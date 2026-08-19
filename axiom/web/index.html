@@ -737,10 +737,15 @@ function smartTable(mount,cfg){
   // `onDelete(ids)` — таблица не знает, какой ручке слать, а раздел не знает, как
   // рисовать галочки и панель. selWord — родительный падеж для вопроса «Удалить N …?».
   const sel=new Set();
-  const allCols=cfg.selectable?[{key:"__sel",
+  // cfg.numbered — колонка «№», порядковый номер строки в ТЕКУЩЕЙ сортировке/фильтре
+  // (не id из базы — тот скачет из-за дублей/удалений и ничего не говорит о позиции
+  // в списке). Сквозной по страницам: на странице 2 идёт со 101, а не заново с 1 —
+  // так же, как считает пейджер снизу «101–200 из 1713».
+  let allCols=cfg.numbered?[{key:"__num",label:"№",cls:"sub mono"},...cfg.columns]:cfg.columns;
+  if(cfg.selectable)allCols=[{key:"__sel",
     label:'<input type="checkbox" class="st-all" title="выделить всё на этой странице">',
     render:r=>`<input type="checkbox" class="st-sel" data-id="${r.id}"${sel.has(r.id)?" checked":""}>`},
-    ...cfg.columns]:cfg.columns;
+    ...allCols];
   let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
   // hiddenByDefault — редкие/служебные колонки, которые есть в списке «⚙ колонки»,
   // но не занимают место в таблице, пока их не включат. Применяется ТОЛЬКО при
@@ -874,7 +879,15 @@ function smartTable(mount,cfg){
     const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
     const head=`<tr>${cols.map(c=>`<th scope="col" data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
     const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
-    const cell=(r,c)=>`<td class="${c.cls||""}"${w(c.key)}>${c.render?c.render(r):esc(r[c.key])}</td>`;
+    // Счётчик для колонки «№»: продолжает с номера первой строки текущей страницы
+    // (st.page*ps), а не с 1 — иначе на странице 2 снова шло бы 1,2,3…, что не
+    // совпадает с «101–200 из 1713» в пейджере снизу и сбивает с толку сильнее,
+    // чем просто id из базы.
+    let numCounter=(!st.group&&total>ps)?st.page*ps:0;
+    const cell=(r,c)=>{
+      if(c.key==="__num")return `<td class="${c.cls||""}"${w(c.key)}>${++numCounter}</td>`;
+      return `<td class="${c.cls||""}"${w(c.key)}>${c.render?c.render(r):esc(r[c.key])}</td>`;
+    };
     const rowHtml=r=>`<tr class="${cfg.onRowClick?"clk":""} ${cfg.rowClass?(cfg.rowClass(r)||""):""}" data-id="${r.id}">${cols.map(c=>cell(r,c)).join("")}</tr>`;
     let body="";
     if(st.group){
@@ -3532,7 +3545,7 @@ async function viewCompanies(v){
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   smartTable($("#co-body"),{
     tableKey:"companies",
-    selectable:true,selWord:"компаний",onDelete:bulkDelete("/api/companies/bulk-delete"),
+    selectable:true,numbered:true,selWord:"компаний",onDelete:bulkDelete("/api/companies/bulk-delete"),
     rows:COMPANIES,searchKeys:["name","city","phone","inn","company_type"],
     groupOptions:[{key:"city",label:"город"},{key:"company_type",label:"тип"},{key:"source",label:"источник"}],
     onRowClick:openCompany,
@@ -3701,7 +3714,7 @@ async function viewContacts(v){
   };
   smartTable($("#ct-body"),{
     tableKey:"contacts",
-    selectable:true,selWord:"контактов",softDelete:true,onDelete:bulkDelete("/api/contacts/bulk-delete"),
+    selectable:true,numbered:true,selWord:"контактов",softDelete:true,onDelete:bulkDelete("/api/contacts/bulk-delete"),
     rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
     groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
@@ -5128,11 +5141,17 @@ async function openSrcPicker(inputEl){
   const draw=()=>{
     const q=(inputEl.value||"").trim().toLowerCase();
     const filtered=q?list.filter(s=>s.name.toLowerCase().includes(q)):list;
+    // flex:1 (flex-basis:0%) + overflow:hidden здесь схлопывал имя в 0px ширины —
+    // видны были только эмодзи-кнопки, а название источника пропадало целиком.
+    // flex:1 1 auto (flex-basis:auto) вместо голого flex:1 — фикс. Второй нюанс:
+    // .omenu button{width:100%} (стиль вертикального контекст-меню оргструктуры)
+    // иначе заставляет ✏️/🗑 расталкивать друг друга на всю строку — width:auto
+    // инлайном перебивает это для кнопок в один ряд.
     el.innerHTML=(filtered.length?filtered.map(s=>`
       <div class="src-row" data-name="${esc(s.name)}" style="display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:8px">
-        <span class="src-pick" style="flex:1;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}">${esc(s.name)} <span class="hint">${s.contacts}к·${s.companies}ко</span></span>
-        <button class="src-edit" title="переименовать" style="padding:2px 6px;font-size:12px">✏️</button>
-        <button class="src-del" title="удалить источник — снимает метку, записи остаются" style="padding:2px 6px;font-size:12px;color:var(--red)">🗑</button>
+        <span class="src-pick" style="flex:1 1 auto;min-width:0;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}">${esc(s.name)} <span class="hint">${s.contacts}к·${s.companies}ко</span></span>
+        <button class="src-edit" title="переименовать" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px">✏️</button>
+        <button class="src-del" title="удалить источник — снимает метку, записи остаются" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px;color:var(--red)">🗑</button>
       </div>`).join(""):'<div class="hint" style="padding:6px 8px">источников не найдено</div>')
       +'<hr style="border:0;border-top:1px solid var(--border);margin:4px 6px">'
       +'<div class="hint" style="padding:4px 8px">впиши новое имя в поле — источник появится тут при загрузке</div>';

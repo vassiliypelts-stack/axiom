@@ -151,3 +151,38 @@ def create_event(
         print(f"[calendar error] {e}")
         _notify_down(e)
         return None
+
+
+def update_event(
+    event_id: str, start: datetime, duration_min: int, tz: str,
+    summary: str | None = None, description: str | None = None,
+) -> dict | None:
+    """Двигает существующее событие на новое время. Возвращает {'id','htmlLink'} или None.
+
+    Нужно для переносов: человек соглашается на созвон, потом просит «давайте не в
+    четверг, а в пятницу». Создания было мало — второй insert плодил дубль (так в
+    календаре и оказалось 22 копии одной встречи), а без переноса событие оставалось
+    висеть на старом времени, и напоминание уходило не тогда.
+
+    patch, а не update: PATCH меняет только переданные поля и не затирает то, что
+    оператор мог поправить в самом Google Calendar руками (участников, напоминания,
+    заметки). Summary/description трогаем, только если их явно передали."""
+    if not enabled() or not event_id:
+        return None
+    try:
+        svc = _service()
+        end = start + timedelta(minutes=duration_min)
+        body: dict = {
+            "start": {"dateTime": start.isoformat(), "timeZone": tz},
+            "end": {"dateTime": end.isoformat(), "timeZone": tz},
+        }
+        if summary is not None:
+            body["summary"] = summary
+        if description is not None:
+            body["description"] = description
+        ev = svc.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
+        return {"id": ev.get("id"), "htmlLink": ev.get("htmlLink")}
+    except Exception as e:
+        print(f"[calendar update error] {e}")
+        _notify_down(e)
+        return None

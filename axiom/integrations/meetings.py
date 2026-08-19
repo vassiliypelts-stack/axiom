@@ -38,6 +38,26 @@ def _clean_name(contact: dict) -> str:
     return raw[:80] or "риелтор"
 
 
+def _same_slot(stored: str | None, dt: datetime) -> bool:
+    """Та же встреча по времени или человек попросил перенести?
+
+    Сравниваем с точностью до минуты: в базе время лежит строкой ISO, а обратно
+    разобранное содержит секунды/микросекунды, и посимвольное сравнение считало бы
+    переносом каждое повторное согласие — то есть дёргало бы Google Calendar на
+    ровном месте."""
+    if not stored:
+        return False
+    try:
+        prev = datetime.fromisoformat(str(stored))
+    except (TypeError, ValueError):
+        return False
+    if (prev.tzinfo is None) != (dt.tzinfo is None):
+        # одно наивное, другое с зоной — сравнивать нельзя, считаем «то же самое»,
+        # чтобы не устроить ложный перенос на пустом месте
+        return True
+    return prev.replace(second=0, microsecond=0) == dt.replace(second=0, microsecond=0)
+
+
 def _already_booked(contact_id: int | None) -> dict | None:
     """Встреча по этому контакту уже заведена? Возвращает её, если да.
 
@@ -147,17 +167,25 @@ def arrange(contact: dict, slot: str | None, campaign_id: int | None = None,
         # не смогли распарсить время — фиксируем как есть, без внешних сервисов
         return MeetingResult(meeting_at_iso=slot, zoom_link=None, calendar_event_id=None, parsed=False)
 
-    # Встреча по этому человеку уже стоит в календаре — второй раз не заводим.
-    # Возвращаем то, что уже есть: вызывающий код перезапишет заметки в сделке, но
-    # новое событие не появится и напоминание не задвоится (см. _already_booked).
+    # Встреча по этому человеку уже стоит в календаре — второго события не заводим
+    # никогда (см. _already_booked). Но если время изменилось — это ПЕРЕНОС: двигаем
+    # то же самое событие, а не плодим новое и не оставляем висеть старое время.
     booked = _already_booked(contact_id)
     if booked:
-        print(f"[meetings] у контакта #{contact_id} встреча уже заведена "
-              f"({booked.get('meeting_at')}) — новое событие не создаю")
+        ev_id = booked.get("calendar_event_id")
+        same_time = _same_slot(booked.get("meeting_at"), dt)
+        if same_time:
+            print(f"[meetings] у контакта #{contact_id} встреча уже заведена "
+                  f"({booked.get('meeting_at')}) — новое событие не создаю")
+        else:
+            moved = gcal.update_event(ev_id, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ)
+            print(f"[meetings] перенос встречи контакта #{contact_id}: "
+                  f"{booked.get('meeting_at')} → {dt.isoformat()}"
+                  + ("" if moved else " (календарь не ответил — в базе время всё равно обновим)"))
         return MeetingResult(
-            meeting_at_iso=booked.get("meeting_at") or dt.isoformat(),
+            meeting_at_iso=booked.get("meeting_at") if same_time else dt.isoformat(),
             zoom_link=booked.get("zoom_link") or (_meeting_url(campaign_id) or "").strip() or None,
-            calendar_event_id=booked.get("calendar_event_id"),
+            calendar_event_id=ev_id,
             parsed=True,
         )
 

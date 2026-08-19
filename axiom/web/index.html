@@ -3549,10 +3549,12 @@ async function viewCompanies(v){
     if(!f){msg.textContent="выбери файл";return;}
     msg.textContent="загружаю…";
     const fd=new FormData();fd.append("file",f);fd.append("tag",$("#imp-tag").value);
+    fd.append("target","companies");   // раздел «Компании» — грузим юрлица, и только их
     const srcEl=$("#imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
     try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
       if(r.error){msg.textContent="ошибка: "+r.error;return;}
-      msg.textContent=`✅ импортировано ${r.imported}, всего ${r.total}`;route();
+      msg.innerHTML=`✅ импортировано ${r.imported}, всего компаний ${r.companies}`
+        +(r.src_contacts?`<br>Плюс ${r.src_contacts} контактов (директора с телефоном) — они в разделе «Контакты».`:"");route();
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   smartTable($("#co-body"),{
     tableKey:"companies",
@@ -3679,6 +3681,8 @@ async function viewContacts(v){
     msg.textContent="загружаю…";
     const fd=new FormData();fd.append("file",f);
     fd.append("tag",$("#ct-imp-tag").value||"Контакты");
+    // раздел решает, куда лягут записи: тут «Контакты» — значит физлица, и только они
+    fd.append("target","contacts");
     const srcEl=$("#ct-imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
     try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
       if(r.error){msg.textContent="ошибка: "+r.error;return;}

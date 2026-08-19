@@ -4800,7 +4800,14 @@ def _parse_2gis(text: str, tag: str, source: str = "2gis") -> tuple[int, int]:
 
 @app.post("/api/import")
 async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агентства недвижимости"),
-                      source: str = Form("2gis")) -> JSONResponse:
+                      source: str = Form("2gis"), target: str = Form("")) -> JSONResponse:
+    """target — КУДА грузить, задаёт раздел, из которого нажали: contacts | companies.
+
+    Раньше разбор выбирался только по колонкам файла, и раздел не значил ничего: файл,
+    загруженный в «Контактах», мог уехать в «Компании» (так «пропали» 51 запись источника
+    190826hrtime). Правило простое и без угадывания: контакты — это физлица, компании —
+    юрлица, и раздел решает. Пустой target — старое поведение (автоопределение), чтобы не
+    ломать сторонние вызовы."""
     raw = await file.read()
 
     # Если Excel (.xlsx) — читаем через openpyxl, конвертируем в CSV-текст для парсера
@@ -4842,8 +4849,17 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
     # юрлиц уезжал в «Компании», пока оператор искал его в «Контактах» и видел пустой
     # список: 51 запись источника «190826hrtime» именно так и «пропала».
     kind = None
-    for kind, parser in (("companies", _parse_universal), ("contacts", _parse_2gis),
-                         ("contacts", _parse_people)):
+    # Раздел решает, какие разборы вообще допустимы. В «Контактах» юрлицевый разбор
+    # (_parse_universal) не предлагается совсем — иначе он снова уведёт файл в компании.
+    tgt = (target or "").strip().lower()
+    if tgt == "contacts":
+        chain = (("contacts", _parse_people), ("contacts", _parse_2gis))
+    elif tgt == "companies":
+        chain = (("companies", _parse_universal),)
+    else:
+        chain = (("companies", _parse_universal), ("contacts", _parse_2gis),
+                 ("contacts", _parse_people))
+    for kind, parser in chain:
         try:
             added, skipped = parser(text, tag_clean, src)
             break
@@ -4852,6 +4868,18 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=400)
     if added is None:
+        if tgt == "contacts":
+            return JSONResponse({"error": "В файле нет ни телефона, ни @username — по такому "
+                                          "человеку невозможно завести контакт: писать будет "
+                                          "некуда. Нужна колонка «Телефон» или «Telegram». "
+                                          "Если это выгрузка ЮРЛИЦ (Наименование/ИНН) — грузи "
+                                          "её в разделе «Компании». Подробно: "
+                                          + " / ".join(errors)}, status_code=400)
+        if tgt == "companies":
+            return JSONResponse({"error": "Не нашёл колонку «Наименование» — для компаний она "
+                                          "обязательна. Если это список ЛЮДЕЙ (Имя/Телефон/"
+                                          "Telegram) — грузи его в разделе «Контакты». Подробно: "
+                                          + " / ".join(errors)}, status_code=400)
         return JSONResponse({"error": "не понял формат файла. " + " / ".join(errors)},
                             status_code=400)
     with database.get_conn() as conn:

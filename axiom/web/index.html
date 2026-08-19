@@ -5782,7 +5782,7 @@ function renderCampList(mount,camps){
     const p=await api(`/api/campaign/${id}/progress`);
     if(p.error){box.innerHTML=`<div class="empty">${esc(p.error)}</div>`;return;}
     if(!p.rows.length){box.innerHTML='<div class="sub">Аудитория пуста — некому слать (проверь тег/канал/статусы).</div>';return;}
-    const rowsHtml=p.rows.map(r=>{
+    const rowHtml=(r)=>{
       const bg=r.is_paused?'background:color-mix(in srgb,var(--red) 10%,transparent)':(r.is_test?'background:var(--accent-soft)':'');
       const cb=r.sent?'':`<input type="checkbox" class="pg-cb" data-id="${r.id}" data-src="${esc(r.source||"")}" data-paused="${r.is_paused?1:0}">`;
       const testBadge=r.is_test?' <span class="badge b-active" title="Тестовый номер — уходит первым, до боевой аудитории">🧪 тест</span>':'';
@@ -5795,7 +5795,8 @@ function renderCampList(mount,camps){
       <td class="mono">${esc(r.handle)}</td>
       <td class="sub">${esc(r.source)||"—"}</td>
       <td>${esc(r.account)}</td>
-      <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`;}).join("");
+      <td class="sub">${r.sent?fmt(r.sent_at):"в очереди"}</td></tr>`;};
+    const rowsHtml=p.rows.map(rowHtml).join("");
     // В списке ВСЕ источники неотправленных — и активные, и уже снятые. Прятать снятые
     // нельзя: когда убрали источник целиком, он исчезал из выпадайки вместе с
     // возможностью вернуть его обратно (поймано вживую: все 2gis на паузе → выбрать
@@ -5819,12 +5820,44 @@ function renderCampList(mount,camps){
         <button id="pg-src-pause-${id}" style="font-size:11px">🗑 Убрать из рассылки весь этот источник</button>
         <button id="pg-src-unpause-${id}" style="font-size:11px">↩ Вернуть весь этот источник</button>
         <span class="hint" id="pg-msg-${id}"></span></div>
+      <div class="sub" id="pg-srcstat-${id}" style="margin:0 0 8px"></div>
       <div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px">
         <table style="width:100%;border-collapse:collapse">
           <tr><th style="width:26px"></th><th style="width:34px">✓</th><th>Кому</th><th>Контакт</th><th>Источник</th><th>С аккаунта</th><th>Когда</th></tr>
-          ${rowsHtml}</table></div>`;
+          <tbody id="pg-tbody-${id}">${rowsHtml}</tbody></table></div>`;
     const selIds=()=>[...box.querySelectorAll(".pg-cb:checked")].map(cb=>+cb.dataset.id);
     const msgEl=document.getElementById(`pg-msg-${id}`);
+    // Выбор источника СРАЗУ фильтрует таблицу и показывает прогресс именно по нему.
+    // Отдельная кнопка «Применить» тут не нужна и была бы лишним шагом: выпадайка и так
+    // однозначно говорит, что показывать. Раньше выбор источника вообще ни на что не
+    // влиял визуально — он только питал две кнопки массового снятия/возврата, и было
+    // непонятно, сработал ли выбор.
+    const srcFilterEl=document.getElementById(`pg-src-${id}`);
+    const applySrcFilter=()=>{
+      const src=srcFilterEl?srcFilterEl.value:"";
+      const shown=src?p.rows.filter(r=>(r.source||"")===src):p.rows;
+      const tb=document.getElementById(`pg-tbody-${id}`);
+      if(tb)tb.innerHTML=shown.map(rowHtml).join("")
+        ||`<tr><td colspan="7" class="empty">в этом источнике строк нет</td></tr>`;
+      const st=document.getElementById(`pg-srcstat-${id}`);
+      if(st){
+        if(!src){st.textContent="";}
+        else{
+          const sent=shown.filter(r=>r.sent).length;
+          const paused=shown.filter(r=>!r.sent&&r.is_paused).length;
+          const queue=shown.filter(r=>!r.sent&&!r.is_paused).length;
+          st.innerHTML=`Источник <b>${esc(src)}</b>: всего ${shown.length} · `
+            +`<span style="color:var(--green)">отправлено ${sent}</span> · в очереди ${queue}`
+            +(paused?` · <span style="color:#c0392b">снято вручную ${paused}</span>`:"");
+        }
+      }
+      // Обработчики висят на самих строках, а те перерисованы — вешаем заново.
+      // Заодно сбрасываем «выбрать все»: галочка относилась к прошлому набору строк,
+      // и оставить её включённой на новом фильтре — прямой путь снять с рассылки не тех.
+      box.querySelectorAll(".pg-cb").forEach(cb=>cb.addEventListener("change",selCount));
+      const ac=document.getElementById(`pg-all-${id}`);if(ac)ac.checked=false;
+      selCount();
+    };
     // Счётчик выделенных: без него галочка «выбрать все» выглядела как ничего не
     // делающая — строк много, экран прокручен, результат клика просто не видно.
     const selCount=()=>{const n=box.querySelectorAll(".pg-cb:checked").length;
@@ -5839,6 +5872,7 @@ function renderCampList(mount,camps){
         cb.checked=allCb.checked;});
       selCount();};
     box.querySelectorAll(".pg-cb").forEach(cb=>cb.addEventListener("change",selCount));
+    if(srcFilterEl)srcFilterEl.onchange=applySrcFilter;
     // flash-сообщение переживает перерисовку: box НЕ пересоздаётся, только его innerHTML —
     // атрибут на самом box цел, читаем его сразу после перезагрузки таблицы (выше).
     if(flash){msgEl.innerHTML='<span style="color:var(--green)">'+esc(flash)+'</span>';}

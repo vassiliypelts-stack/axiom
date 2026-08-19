@@ -6256,7 +6256,12 @@ def tgcheck_set(payload: dict = Body(default={})) -> JSONResponse:
         # тех, у кого tg_checked_at пустой.
         if payload.get("recheck"):
             args.append("--recheck")
-        res = _run_capture(args, timeout=3600)
+        # Пробив поднимает своё подключение к сессиям — слушателя на это время отпускаем,
+        # иначе один ключ виден Telegram с двух адресов и аккаунт сгорает (19.08.2026 так
+        # потеряны Александр758 и Василий418). Сам модуль тоже страхуется, но роут не
+        # должен на это полагаться: _listener_released — единая точка для всех таких мест.
+        with _listener_released():
+            res = _run_capture(args, timeout=3600)
         return JSONResponse(_last_json(res.get("output")) or res)
     return JSONResponse({"ok": True})
 

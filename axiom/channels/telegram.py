@@ -756,6 +756,18 @@ async def night_reply_pass(limit: int = 20) -> int:
     done = 0
     for p in pending:
         acc_id = p["account_id"]
+        # ТО ЖЕ правило, что и у живого слушателя: агент разговаривает только с теми,
+        # кому кампания реально писала с этого аккаунта (listener._should_reply).
+        # Досылка звала _agent_reply напрямую и правило обходила — 19.08.2026 из-за
+        # этого личный номер владельца ночью «догнал» ответом людей, которых не было ни
+        # в одной кампании: их сообщения пришли в 21:28-21:55, а бот ответил в 09:07,
+        # когда открылось рабочее окно. Проверка в слушателе к тому моменту уже стояла,
+        # но этот путь шёл мимо неё.
+        from channels.listener import _should_reply
+        if not _should_reply(acc_id, p["contact_id"]):
+            print(f"[night] контакт {p['contact_id']}: не в рассылке этого аккаунта — "
+                  f"молчу, разговор за оператором")
+            continue
         try:
             client, _ = client_for_account(acc_id)
         except Exception as e:  # noqa: BLE001 — мёртвый аккаунт не должен рвать проход

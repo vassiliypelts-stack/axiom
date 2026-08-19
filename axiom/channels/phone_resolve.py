@@ -328,7 +328,28 @@ def main() -> None:
                    help="только аудитория с этим тегом (напр. audience_tag кампании) — "
                         "иначе идёт по ORDER BY id и свежая кампания ждёт очереди неделями")
     args = p.parse_args()
-    asyncio.run(run(args.limit, args.per, args.recheck, args.tag))
+
+    # Слушателя на время пробива ОТПУСКАЕМ. Пробив поднимает собственное подключение к
+    # сессии аккаунта, а слушатель в это время держит своё — тем же ключом. Telegram жжёт
+    # ключ, увидев его с двух адресов, и «через тот же прокси» тут не спасает: прокси
+    # отдаёт разные выходные IP на разные соединения. 19.08.2026 прогон перепроверки без
+    # этой паузы сжёг Александр758 и Василий418 — оба насмерть, запаски погибли вместе с
+    # основными сессиями (AuthKeyDuplicated убивает ВСЕ авторизации аккаунта разом).
+    database.init_db()
+    with database.get_conn() as conn:
+        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        if was_on:
+            database.set_setting(conn, "listener_enabled", "off")
+    if was_on:
+        print("[tgcheck] слушатель приостановлен на время пробива")
+        time.sleep(7)      # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+    try:
+        asyncio.run(run(args.limit, args.per, args.recheck, args.tag))
+    finally:
+        if was_on:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "on")
+            print("[tgcheck] слушатель возвращён")
 
 
 if __name__ == "__main__":

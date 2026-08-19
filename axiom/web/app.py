@@ -4838,7 +4838,12 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
     # «Наименование»» на файл, где её и не должно быть.
     errors = []
     added = skipped = None
-    for parser in (_parse_universal, _parse_2gis, _parse_people):
+    # kind — В КАКОЙ раздел легли записи. Без него импорт молчал о выборе разбора, и файл
+    # юрлиц уезжал в «Компании», пока оператор искал его в «Контактах» и видел пустой
+    # список: 51 запись источника «190826hrtime» именно так и «пропала».
+    kind = None
+    for kind, parser in (("companies", _parse_universal), ("contacts", _parse_2gis),
+                         ("contacts", _parse_people)):
         try:
             added, skipped = parser(text, tag_clean, src)
             break
@@ -4852,7 +4857,13 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
     with database.get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) c FROM contacts").fetchone()["c"]
         co_total = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
-    return JSONResponse({"ok": True, "imported": added, "skipped": skipped, "total": total, "companies": co_total})
+        # сколько именно этот источник дал в каждом разделе — чтобы ответ был проверяемым,
+        # а не «загружено 51» без указания места
+        src_contacts = conn.execute("SELECT COUNT(*) c FROM contacts WHERE source=?", (src,)).fetchone()["c"]
+        src_companies = conn.execute("SELECT COUNT(*) c FROM companies WHERE source=?", (src,)).fetchone()["c"]
+    return JSONResponse({"ok": True, "imported": added, "skipped": skipped, "total": total,
+                         "companies": co_total, "kind": kind,
+                         "src_contacts": src_contacts, "src_companies": src_companies})
 
 
 # ---- Чаты ----------------------------------------------------------------- #

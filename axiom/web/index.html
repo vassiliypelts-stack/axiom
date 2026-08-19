@@ -3684,7 +3684,23 @@ async function viewContacts(v){
       if(r.error){msg.textContent="ошибка: "+r.error;return;}
       // пропущенные показываем ОТДЕЛЬНО: строка без телефона и без @ника в рассылку
       // не попадёт никогда, и знать об этом надо сразу, а не при нулевой отправке
-      msg.textContent=`✅ импортировано ${r.imported}`+(r.skipped?`, пропущено ${r.skipped} (нет ни телефона, ни @ника)`:"")+`, всего ${r.total}`;route();
+      //
+      // И главное — КУДА легло. Импорт сам выбирает разбор по колонкам файла: выгрузка
+      // юрлиц («Наименование», «ИНН») уезжает в «Компании», а человек, загрузивший её
+      // на экране «Контакты», видит там пустой список и считает, что импорт не сработал.
+      // Ровно так «потерялся» источник 190826hrtime: 51 компания и ноль контактов,
+      // потому что в файле не было телефонов людей — контакт создаётся только под них.
+      let where="";
+      if(r.kind==="companies"){
+        where=`<br><b>Файл распознан как выгрузка ЮРЛИЦ</b> — записи в разделе «Компании»`
+             +` (по этому источнику там ${r.src_companies}).`
+             +(r.src_contacts?` В «Контакты» попало ${r.src_contacts} (директора с телефоном).`
+                             :` В «Контакты» не попало ничего: в файле нет телефонов людей,`
+                              +` а контакт заводится только под живой номер.`);
+      }else if(r.src_contacts!=null){
+        where=`<br>В «Контактах» по этому источнику: ${r.src_contacts}.`;
+      }
+      msg.innerHTML=`✅ импортировано ${r.imported}`+(r.skipped?`, пропущено ${r.skipped} (нет ни телефона, ни @ника)`:"")+`, всего ${r.total}`+where;route();
     }catch(e){msg.textContent="ошибка: "+e.message;}};
   $("#ct-imp-text-go").onclick=async()=>{
     const text=$("#ct-imp-text").value.trim(),msg=$("#ct-imp-msg");
@@ -5175,7 +5191,7 @@ async function openSrcPicker(inputEl){
     // инлайном перебивает это для кнопок в один ряд.
     el.innerHTML=(filtered.length?filtered.map(s=>`
       <div class="src-row" data-name="${esc(s.name)}" style="display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:8px">
-        <span class="src-pick" style="flex:1 1 auto;min-width:0;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)} — контактов: ${s.contacts}, компаний: ${s.companies}">${esc(s.name)} <span class="hint">${s.contacts}&nbsp;чел · ${s.companies}&nbsp;комп</span></span>
+        <span class="src-pick" style="flex:1 1 auto;min-width:0;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)} — контактов: ${s.contacts}, компаний: ${s.companies}">${esc(s.name)}</span>
         <button class="src-edit" title="переименовать" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px">✏️</button>
         <button class="src-del" title="удалить источник — снимает метку, записи остаются" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px;color:var(--red)">🗑</button>
       </div>`).join(""):'<div class="hint" style="padding:6px 8px">источников не найдено</div>')

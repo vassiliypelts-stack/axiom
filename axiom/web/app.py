@@ -6208,6 +6208,15 @@ def tgcheck_set(payload: dict = Body(default={})) -> JSONResponse:
         args = ["channels.phone_resolve", "--per", str(payload.get("per") or 25)]
         if payload.get("tag"):
             args += ["--tag", str(payload["tag"])]
+        # recheck — пройти заново и по тем, кому уже поставлен вердикт «нет в Telegram».
+        # Нужен, потому что вердикт бывает ложным: Telegram молчит не только когда номера
+        # нет, но и когда упёрся в лимит импорта, и когда человек закрыл себя настройкой
+        # «кто найдёт меня по номеру». 07.08.2026 целая пачка получила «нет» одной и той
+        # же секундой (14:04:11) — при ручной проверке аккаунты у этих людей есть.
+        # Без этого флага такие контакты не перепроверятся никогда: _targets берёт только
+        # тех, у кого tg_checked_at пустой.
+        if payload.get("recheck"):
+            args.append("--recheck")
         res = _run_capture(args, timeout=3600)
         return JSONResponse(_last_json(res.get("output")) or res)
     return JSONResponse({"ok": True})

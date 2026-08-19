@@ -1068,6 +1068,7 @@ async function openAudience(cid){
         <div class="ttoolbar" style="margin:6px 0 0">
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="фоном, по 25 номеров на аккаунт в сутки — безопасный темп"><input type="checkbox" id="aud-tgauto"> пробивать Telegram фоном</label>
           <button id="aud-tgrun" title="пробить порцию прямо сейчас (25 на аккаунт)">Пробить сейчас</button>
+          <button id="aud-tgre" title="Пройти заново и по тем, кому уже стоит «нет в Telegram». Вердикт бывает ложным: Telegram молчит и когда упёрся в свой лимит, и когда человек закрыл поиск по номеру настройкой приватности. Без этого такие контакты не перепроверятся никогда.">↻ Перепроверить «нет в TG»</button>
           <span class="hint" id="aud-tgmsg"></span></div>`:""}
       </div>
       <div class="ttoolbar" style="margin:0 0 8px">
@@ -1128,6 +1129,16 @@ async function openAudience(cid){
         const r=await api("/api/tgcheck",{method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({run:true,tag:d.tag||null})});
         clearInterval(t);tgRun.disabled=false;tgRun.textContent="Пробить сейчас";
+        m.textContent=r&&r.error?("ошибка: "+r.error):`готово: ${JSON.stringify(r).slice(0,160)}`;
+        draw();};
+      const tgRe=inner.querySelector("#aud-tgre");
+      if(tgRe)tgRe.onclick=async()=>{const m=inner.querySelector("#aud-tgmsg");
+        if(!confirm("Пройти заново по тем, кому уже стоит «нет в Telegram»?\n\nЭто снова расходует дневной лимит аккаунтов (по 25 номеров на каждый). Имеет смысл, если вердикт выглядит ложным — например, ты вручную нашёл человека в Telegram."))return;
+        tgRe.disabled=true;tgRe.textContent="перепроверяю…";
+        let sec=0;const t=setInterval(()=>{sec++;m.textContent=`перепроверяю номера… ${sec} с`;},1000);
+        const r=await api("/api/tgcheck",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({run:true,recheck:true,tag:d.tag||null})});
+        clearInterval(t);tgRe.disabled=false;tgRe.textContent="↻ Перепроверить «нет в TG»";
         m.textContent=r&&r.error?("ошибка: "+r.error):`готово: ${JSON.stringify(r).slice(0,160)}`;
         draw();};
     }

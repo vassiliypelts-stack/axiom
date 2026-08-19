@@ -3505,14 +3505,15 @@ async function viewCompanies(v){
       <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
         <input type="file" id="imp-file" accept=".csv">
         <input id="imp-tag" value="Агентства недвижимости" placeholder="тег" style="max-width:160px">
-        <input id="imp-source" list="src-list" placeholder="источник" style="max-width:170px">
+        <input id="imp-source" placeholder="источник" style="max-width:170px" autocomplete="off">
         <button class="primary" id="imp-go">Загрузить</button>
         <span class="hint" id="imp-msg"></span>
       </div>
       <div class="hint" style="margin-top:8px">CSV с любыми столбцами: Наименование, ИНН, ОГРН, ФИО руководителя, Телефон, Адрес, Сайт, Выручка… — система сама сопоставит. Дубли по ИНН/названию обновляются.</div>
     </div>
     <div id="co-body"></div>`;
-  $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";loadSources();};
+  wireSourcePicker($("#imp-source"));
+  $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
   $("#co-enr").onclick=async()=>{const n=prompt("Сколько НЕобогащённых обогатить за раз?","10");if(!n)return;
     const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
     alert(`Запущено обогащение до ${r.limit} в фоне. Обнови через минуту-две.`);};
@@ -3577,8 +3578,7 @@ async function viewContacts(v){
       <div class="ttoolbar" style="margin:0;flex-wrap:wrap">
         <input type="file" id="ct-imp-file" accept=".csv,.xlsx" style="max-width:260px">
         <input id="ct-imp-tag" value="Контакты" placeholder="тег для всех" style="max-width:160px">
-        <input id="ct-imp-source" list="src-list" placeholder="источник" style="max-width:170px">
-        <datalist id="src-list"></datalist>
+        <input id="ct-imp-source" placeholder="источник" style="max-width:170px" autocomplete="off">
         <button class="primary" id="ct-imp-go">⬆ Загрузить</button>
         <span class="hint" id="ct-imp-msg"></span>
       </div>
@@ -3595,7 +3595,8 @@ async function viewContacts(v){
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
-  $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";if(loadSources)loadSources();};
+  wireSourcePicker($("#ct-imp-source"));
+  $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
   // Корзина: те, у кого contacts.deleted_at выставлен. Их не видно в основной таблице
   // (loadContacts фильтрует на бэкенде), рассылка и пробив TG их тоже не трогают —
   // см. фильтр deleted_at в channels/campaign_send._audience и
@@ -5104,7 +5105,70 @@ function _channelLink(d){
   return m?m[1]:null;
 }
 
-async function loadSources(){try{const s=await api("/api/import/sources");const dl=$("#src-list");if(dl)dl.innerHTML=s.map(x=>`<option value="${esc(x)}">`).join("");}catch(e){}}
+// Пикер источника: свой список вместо нативного <datalist>, потому что там некуда
+// приткнуть кнопки редактирования/удаления. Открывается по фокусу/клику на поле
+// «источник», живёт как позиционированный .omenu (тот же класс, что у меню отдела
+// в оргструктуре) и закрывается по клику вне себя.
+function closeSrcPicker(){const m=document.querySelector(".src-picker");if(m)m.remove();}
+async function openSrcPicker(inputEl){
+  closeSrcPicker();
+  const el=document.createElement("div");
+  el.className="omenu src-picker";
+  el.style.cssText="min-width:260px;max-width:340px;max-height:320px;overflow-y:auto";
+  document.body.appendChild(el);
+  el.innerHTML='<div class="hint" style="padding:6px 8px">загружаю…</div>';
+  const pos=()=>{const r=inputEl.getBoundingClientRect();
+    el.style.left=Math.max(6,Math.min(r.left,innerWidth-el.offsetWidth-10))+"px";
+    el.style.top=Math.min(r.bottom+4,innerHeight-el.offsetHeight-10)+"px";};
+  pos();
+  const close=()=>{closeSrcPicker();document.removeEventListener("mousedown",out);inputEl.removeEventListener("input",onType);};
+  const out=e=>{if(!el.contains(e.target)&&e.target!==inputEl)close();};
+  setTimeout(()=>document.addEventListener("mousedown",out),0);
+  let list=[];
+  const draw=()=>{
+    const q=(inputEl.value||"").trim().toLowerCase();
+    const filtered=q?list.filter(s=>s.name.toLowerCase().includes(q)):list;
+    el.innerHTML=(filtered.length?filtered.map(s=>`
+      <div class="src-row" data-name="${esc(s.name)}" style="display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:8px">
+        <span class="src-pick" style="flex:1;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}">${esc(s.name)} <span class="hint">${s.contacts}к·${s.companies}ко</span></span>
+        <button class="src-edit" title="переименовать" style="padding:2px 6px;font-size:12px">✏️</button>
+        <button class="src-del" title="удалить источник — снимает метку, записи остаются" style="padding:2px 6px;font-size:12px;color:var(--red)">🗑</button>
+      </div>`).join(""):'<div class="hint" style="padding:6px 8px">источников не найдено</div>')
+      +'<hr style="border:0;border-top:1px solid var(--border);margin:4px 6px">'
+      +'<div class="hint" style="padding:4px 8px">впиши новое имя в поле — источник появится тут при загрузке</div>';
+    el.querySelectorAll(".src-pick").forEach(s=>s.onclick=()=>{inputEl.value=s.closest(".src-row").dataset.name;close();});
+    el.querySelectorAll(".src-edit").forEach(b=>b.onclick=async e=>{
+      e.stopPropagation();
+      const old=b.closest(".src-row").dataset.name;
+      const val=prompt(`Новое имя источника вместо «${old}»:`,old);
+      if(!val||!val.trim()||val.trim()===old)return;
+      const r=await api("/api/import/sources/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({old,new:val.trim()})});
+      if(r.error){alert(r.error);return;}
+      if(inputEl.value===old)inputEl.value=val.trim();
+      list=await api("/api/import/sources");draw();pos();
+    });
+    el.querySelectorAll(".src-del").forEach(b=>b.onclick=async e=>{
+      e.stopPropagation();
+      const name=b.closest(".src-row").dataset.name;
+      if(!confirm(`Удалить источник «${name}»? Сами контакты/компании останутся, просто у них пропадёт эта метка.`))return;
+      const send=force=>api("/api/import/sources/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:name,force})});
+      let r=await send(false);
+      if(r&&r.needs_confirm){if(!confirm(r.warn))return;r=await send(true);}
+      if(r.error){alert(r.error);return;}
+      if(inputEl.value===name)inputEl.value="";
+      list=await api("/api/import/sources");draw();pos();
+    });
+    pos();
+  };
+  const onType=()=>draw();
+  inputEl.addEventListener("input",onType);
+  try{list=await api("/api/import/sources");}catch(e){list=[];}
+  draw();
+}
+function wireSourcePicker(inputEl){if(!inputEl)return;
+  inputEl.onfocus=()=>openSrcPicker(inputEl);
+  inputEl.onclick=()=>openSrcPicker(inputEl);
+}
 const CH_RU={telegram:"Telegram",whatsapp:"WhatsApp"};
 const CST={draft:"черновик",running:"идёт",paused:"пауза",done:"готово"};
 function kpCard(eid,k){

@@ -4355,17 +4355,59 @@ def import_phones(payload: dict = Body(...)) -> JSONResponse:
 # ---- Источники импорта (автокомплит) ------------------------------------- #
 @app.get("/api/import/sources")
 def import_sources() -> JSONResponse:
-    """Список всех уникальных source из contacts + companies."""
+    """Список source из contacts + companies со счётчиками — сколько строк на каждом,
+    чтобы в выпадайке было видно, что стоит на кону перед переименованием/очисткой."""
     database.init_db()
     with database.get_conn() as conn:
-        cs = [r["source"] for r in conn.execute(
-            "SELECT DISTINCT source FROM contacts WHERE source IS NOT NULL AND source<>'' ORDER BY 1"
-        ).fetchall()]
-        cos = [r["source"] for r in conn.execute(
-            "SELECT DISTINCT source FROM companies WHERE source IS NOT NULL AND source<>'' ORDER BY 1"
-        ).fetchall()]
-    all_src = sorted(set(cs + cos))
-    return JSONResponse(all_src)
+        cs = {r["source"]: r["n"] for r in conn.execute(
+            "SELECT source, COUNT(*) n FROM contacts WHERE source IS NOT NULL AND source<>'' "
+            "GROUP BY source"
+        ).fetchall()}
+        cos = {r["source"]: r["n"] for r in conn.execute(
+            "SELECT source, COUNT(*) n FROM companies WHERE source IS NOT NULL AND source<>'' "
+            "GROUP BY source"
+        ).fetchall()}
+    names = sorted(set(cs) | set(cos))
+    return JSONResponse([{"name": n, "contacts": cs.get(n, 0), "companies": cos.get(n, 0)}
+                        for n in names])
+
+
+@app.post("/api/import/sources/rename")
+def import_sources_rename(payload: dict = Body(...)) -> JSONResponse:
+    """Переименовать source сразу в contacts и companies — исправить опечатку или
+    привести к общему виду задним числом, без пересборки импорта."""
+    old = (payload.get("old") or "").strip()
+    new = (payload.get("new") or "").strip()
+    if not old or not new:
+        return JSONResponse({"error": "нужны старое и новое имя источника"}, status_code=400)
+    if old == new:
+        return JSONResponse({"ok": True, "contacts": 0, "companies": 0})
+    with database.get_conn() as conn:
+        n1 = conn.execute("UPDATE contacts SET source=? WHERE source=?", (new, old)).rowcount
+        n2 = conn.execute("UPDATE companies SET source=? WHERE source=?", (new, old)).rowcount
+    return JSONResponse({"ok": True, "contacts": n1, "companies": n2})
+
+
+@app.post("/api/import/sources/clear")
+def import_sources_clear(payload: dict = Body(...)) -> JSONResponse:
+    """«Удалить источник» — снимает метку source (ставит NULL) у всех, кто ей помечен.
+    Сами контакты/компании остаются: это чистка названия в выпадайке, а не снос базы.
+    На заметной пачке просим подтверждение — превратить источник в пусто у полутысячи
+    контактов одним кликом можно и по ошибке."""
+    src = (payload.get("source") or "").strip()
+    if not src:
+        return JSONResponse({"error": "не указан источник"}, status_code=400)
+    with database.get_conn() as conn:
+        n1 = conn.execute("SELECT COUNT(*) c FROM contacts WHERE source=?", (src,)).fetchone()["c"]
+        n2 = conn.execute("SELECT COUNT(*) c FROM companies WHERE source=?", (src,)).fetchone()["c"]
+        if (n1 + n2) > 20 and not payload.get("force"):
+            return JSONResponse({"needs_confirm": True,
+                                 "warn": f"У источника «{src}» помечено контактов: {n1}, "
+                                         f"компаний: {n2}. Снять метку у всех? Сами записи "
+                                         f"останутся, source станет пустым."})
+        conn.execute("UPDATE contacts SET source=NULL WHERE source=?", (src,))
+        conn.execute("UPDATE companies SET source=NULL WHERE source=?", (src,))
+    return JSONResponse({"ok": True, "contacts": n1, "companies": n2})
 
 
 def _sniff_delimiter(text: str) -> str:
@@ -4628,10 +4670,16 @@ def _parse_universal(text: str, tag: str, source: str = "import") -> tuple[int, 
 
             if existing:
                 co_id = existing["id"]
-                sets = ", ".join(f"{k}=COALESCE(?,{k})" for k in co_vals)
+                # source не трогаем при обновлении — это ОТКУДА компания появилась
+                # первый раз, а не откуда её видели в последний. Без этого повторный
+                # импорт другого файла, где та же компания совпала по ИНН/названию,
+                # тихо переписывал историю: попал в новую выгрузку с тем же именем и
+                # без единого нового поля — source вчерашней выгрузки затирал вчерашний.
+                up_vals = {**co_vals, "source": None}
+                sets = ", ".join(f"{k}=COALESCE(?,{k})" for k in up_vals)
                 conn.execute(
                     f"UPDATE companies SET {sets} WHERE id=?",
-                    [*co_vals.values(), co_id]
+                    [*up_vals.values(), co_id]
                 )
             else:
                 cur = conn.execute(

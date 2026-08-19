@@ -61,6 +61,11 @@ _EXTRA_CONTACT_COLS = {
     "niche": "TEXT",            # чем занимается / род деятельности (по bio + канал)
     "offer": "TEXT",            # что ПРОДАЁТ/предлагает — оффер (из bio/канала)
     "web_note": "TEXT",         # обогащение из соцсетей/веба с пометкой «не подтверждено»
+    # Ссылка на первоисточник: профиль в каталоге (hrtime/vsetreningi/…), сайт, соцсеть.
+    # Держим отдельно от web_note (там ИИ-догадки) и от notes (там текст свободной формы):
+    # по этой ссылке человека можно открыть и дообогатить руками или скрапером, когда
+    # телефона в выгрузке не было вовсе — а таких выгрузок большинство.
+    "site": "TEXT",
     "email": "TEXT",                  # email из импорта/обогащения
     "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
     "test_campaign_id": "INTEGER",   # для какой кампании он тестовый (NULL = легаси, для любой)
@@ -700,7 +705,7 @@ def upsert_contact(conn: sqlite3.Connection, **fields) -> int:
     # когда короткой специализации нет.
     cols = ["source", "phone", "username", "tg_user_id", "name", "city", "agency", "tags", "notes",
             "gender", "is_premium", "email", "person_name", "person_role", "specialization",
-            "niche"]
+            "niche", "site"]
     vals = {c: fields.get(c) for c in cols}
     # username пишем ВСЕГДА без «@»: раз поиск умеет оба вида, значит легаси-строки с
     # «@vasya» в базе есть. Записав «vasya» рядом, мы получили бы две неотличимые для

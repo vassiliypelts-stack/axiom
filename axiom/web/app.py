@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import contextlib
 import csv
 import io
@@ -2513,7 +2514,7 @@ def contacts(trash: int = 0) -> JSONResponse:
                    c.city, c.agency, c.tags, c.notes, c.status, c.has_tg, c.has_wa,
                    c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
                    c.specialization, c.hook, c.enriched_at, c.source, c.created_at, c.email,
-                   c.deleted_at,
+                   c.deleted_at, c.site,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts
@@ -4805,6 +4806,7 @@ _IMPORT_FIELDS = {
         ("name", "Имя / ФИО"), ("phone", "Телефон"), ("username", "Telegram (@ник)"),
         ("email", "Email"), ("city", "Город"), ("agency", "Компания / агентство"),
         ("person_role", "Должность"), ("specialization", "Чем занимается"),
+        ("niche", "Описание (подробно)"), ("site", "Ссылка / профиль"),
         ("tags", "Теги"), ("notes", "Заметки"),
     ],
     "companies": [
@@ -4844,6 +4846,30 @@ def _guess_mapping(headers: list[str], target: str) -> dict:
     return out
 
 
+def _decode_table(raw: bytes) -> str | None:
+    """Байты CSV → текст. Порядок кодировок здесь — не мелочь, а источник битых импортов.
+
+    Раньше первым пробовался cp1251, и это молча ломало КАЖДЫЙ utf-8 файл: cp1251
+    отображает почти любой байт, поэтому русский utf-8 «успешно» декодировался в
+    «РќР°РёРјРµРЅРѕРІР°РЅРёРµ» вместо «Наименование». Исключения не было — значит,
+    и фолбэка не случалось. Наружу это выглядело так: заголовки в предпросмотре
+    превращались в кашу, ни одна колонка не угадывалась, и файл приходилось
+    раскладывать руками (а если не заметить — импортировать мусор).
+
+    Правильный порядок: BOM (однозначная метка) → строгий utf-8 → cp1251. Валидный
+    utf-8 почти никогда не является осмысленным cp1251-текстом, поэтому «сначала utf-8»
+    безопасно: настоящий cp1251-файл на строгом utf-8 упадёт и уйдёт в фолбэк.
+    """
+    if raw.startswith(codecs.BOM_UTF8):
+        return raw.decode("utf-8-sig", errors="replace")
+    for enc in ("utf-8", "cp1251"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 def _read_table(raw: bytes, filename: str) -> tuple[list[str], list[list[str]]]:
     """Файл → (заголовки, строки). Понимает .xlsx и CSV в трёх кодировках."""
     import csv
@@ -4854,13 +4880,7 @@ def _read_table(raw: bytes, filename: str) -> tuple[list[str], list[list[str]]]:
         ws = wb.active
         rows = [["" if c is None else str(c) for c in r] for r in ws.iter_rows(values_only=True)]
     else:
-        text = None
-        for enc in ("cp1251", "utf-8-sig", "utf-8"):
-            try:
-                text = raw.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
+        text = _decode_table(raw)
         if text is None:
             raise ValueError("не удалось распознать кодировку файла")
         rows = list(csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text)))
@@ -4881,7 +4901,7 @@ def _import_by_mapping(headers: list[str], rows: list[list[str]], mapping: dict,
     idx = {int(i): f for i, f in (mapping or {}).items() if str(i).isdigit()}
     if not idx:
         raise ValueError("не задано ни одно поле")
-    added = skipped = 0
+    added = skipped = no_contact = 0
     database.init_db()
     with database.get_conn() as conn:
         for row in rows:
@@ -4889,17 +4909,33 @@ def _import_by_mapping(headers: list[str], rows: list[list[str]], mapping: dict,
             if target == "contacts":
                 phone = normalize_phone(r.get("phone", ""))
                 username = normalize_username(r.get("username", ""))
-                if not phone and not username:
-                    skipped += 1          # писать некуда — карточка бесполезна
-                    continue
                 nm = (r.get("name") or "").strip()
+                # Раньше строка без телефона И без @ника молча выбрасывалась. На выгрузках
+                # каталогов (hrtime, vsetreningi) контактов в файле нет почти никогда —
+                # получалось «в файле 100 строк» → «импортировано 0», и человек делал
+                # вывод, что импорт сломан. Он не сломан: писать таким ДЕЙСТВИТЕЛЬНО
+                # нечем, но выбрасывать их нельзя — по ссылке на профиль и описанию их
+                # дообогащают позже, а до тех пор они просто лежат в базе.
+                # Безопасно: _audience() (channels/campaign_send) требует phone или
+                # username, поэтому в рассылку такие карточки не попадут ни при каких
+                # настройках — они не «мусор в очереди», а сырьё для обогащения.
+                if not nm and not phone and not username:
+                    skipped += 1          # пустая строка — ни имени, ни контактов
+                    continue
+                if not phone and not username:
+                    no_contact += 1       # импортируем, но помечаем в отчёте
                 cid = database.upsert_contact(
                     conn, source=source, phone=phone or None, username=username or None,
                     name=nm or phone or username, person_name=nm or None,
                     city=r.get("city") or None, agency=r.get("agency") or None,
                     tags=r.get("tags") or tag, notes=r.get("notes") or None,
                     specialization=r.get("specialization") or None,
+                    niche=r.get("niche") or None,
                     person_role=r.get("person_role") or None, email=r.get("email") or None,
+                    site=r.get("site") or None,
+                    # выгрузка людей — единственный случай, где имя годится как ключ
+                    # дедупа: без него строка без телефона плодит карточку за импорт
+                    match_name=True,
                 )
                 if cid:
                     added += 1
@@ -4922,7 +4958,7 @@ def _import_by_mapping(headers: list[str], rows: list[list[str]], mapping: dict,
                     conn.execute(f"INSERT INTO companies ({', '.join(vals)}) "
                                  f"VALUES ({', '.join('?' for _ in vals)})", list(vals.values()))
                 added += 1
-    return added, skipped
+    return added, skipped, no_contact
 
 
 @app.post("/api/import/preview")
@@ -4987,13 +5023,7 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
         except Exception as e:
             return JSONResponse({"error": f"ошибка чтения Excel: {e}"}, status_code=400)
     else:
-        text = None
-        for enc in ("cp1251", "utf-8-sig", "utf-8"):
-            try:
-                text = raw.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
+        text = _decode_table(raw)
         if text is None:
             return JSONResponse({"error": "не удалось распознать кодировку файла"}, status_code=400)
 
@@ -5019,7 +5049,8 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
             return JSONResponse({"error": "не разобрал сопоставление полей"}, status_code=400)
         try:
             headers, rows_all = _read_table(raw, file.filename or "")
-            added, skipped = _import_by_mapping(headers, rows_all, mp, tgt_pre, tag_clean, src)
+            added, skipped, no_contact = _import_by_mapping(
+                headers, rows_all, mp, tgt_pre, tag_clean, src)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         with database.get_conn() as conn:
@@ -5027,9 +5058,15 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
             co_total = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
             src_contacts = conn.execute("SELECT COUNT(*) c FROM contacts WHERE source=?", (src,)).fetchone()["c"]
             src_companies = conn.execute("SELECT COUNT(*) c FROM companies WHERE source=?", (src,)).fetchone()["c"]
+        # Сразу догоняем пробивом тех, у кого телефон есть, но личность в TG ещё не
+        # известна. Отдельной кнопки для этого больше не нужно: технология уже есть
+        # (phone_resolve, 25 номеров на аккаунт в сутки, контакт удаляется сразу),
+        # просто её приходилось звать руками и про это забывали.
+        tg_queued = _kick_tgcheck_tag(tag_clean) if tgt_pre == "contacts" else 0
         return JSONResponse({"ok": True, "imported": added, "skipped": skipped, "total": total,
                              "companies": co_total, "kind": tgt_pre, "by_mapping": True,
-                             "rows_total": len(rows_all),
+                             "rows_total": len(rows_all), "no_contact": no_contact,
+                             "tg_queued": tg_queued,
                              "src_contacts": src_contacts, "src_companies": src_companies})
     # Раздел решает, какие разборы вообще допустимы. В «Контактах» юрлицевый разбор
     # (_parse_universal) не предлагается совсем — иначе он снова уведёт файл в компании.
@@ -6843,6 +6880,40 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
     )
     checking = _kick_tgcheck(cid)
     return JSONResponse({"ok": True, "launched": limit, "tgcheck_started": checking})
+
+
+def _kick_tgcheck_tag(tag: str) -> int:
+    """Догнать пробивом свежий импорт: у кого телефон есть, а личности в TG ещё нет.
+
+    Зачем отдельно от _kick_tgcheck(cid): там точка входа — кампания, а здесь импорт,
+    кампании ещё может не быть вовсе. Раньше после загрузки файла надо было вспомнить
+    и нажать «📡 Пробив TG» руками — про это забывали, номера лежали непробитыми, и
+    кампания потом «молча не слала», потому что гейт tg_verified_only не пускал их в
+    очередь.
+
+    Возвращает, сколько номеров встало в очередь на пробив (0 = догонять нечего).
+    Пробив дозированный (25 номеров на аккаунт в сутки, контакт удаляется из книги
+    сразу после проверки), поэтому запускать его сразу после импорта безопасно.
+    """
+    import subprocess
+    import sys
+    if not (tag or "").strip():
+        return 0
+    try:
+        with database.get_conn() as conn:
+            pending = conn.execute(
+                "SELECT COUNT(*) c FROM contacts WHERE tags LIKE ? "
+                "AND phone IS NOT NULL AND phone<>'' AND tg_user_id IS NULL "
+                "AND tg_checked_at IS NULL AND deleted_at IS NULL",
+                (f"%{tag}%",)).fetchone()["c"]
+        if not pending:
+            return 0
+        subprocess.Popen([sys.executable, "-m", "channels.phone_resolve", "--tag", tag],
+                         cwd=str(BASE_DIR.parent))
+        return pending
+    except Exception as e:  # noqa: BLE001
+        print(f"[tgcheck after import] {e}")
+        return 0
 
 
 def _kick_tgcheck(cid: int) -> int:

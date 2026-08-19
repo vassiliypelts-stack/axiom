@@ -2148,6 +2148,13 @@ def _meetings_scheduler() -> None:
                 stuck = check_stuck_replies(conn)
                 if stuck:
                     print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")
+            # Потолок дожимов на ОДИН тик и на аккаунт. Без него накопившаяся очередь
+            # (после простоя планировщика её было 22) уходит одной пачкой за секунды с
+            # двух-трёх аккаунтов — ровно тот почерк, по которому Telegram узнаёт
+            # рассылку. Напоминания о созвоне и «не дошёл» под лимит НЕ попадают: их
+            # единицы, они привязаны к конкретному времени и ждать не могут.
+            FOLLOWUP_PER_TICK = 3             # тик раз в 15 минут → до ~12 дожимов в час
+            sent_by_acc: dict = {}
             for a in actions:
                 if not a.tg_user_id:
                     continue
@@ -2158,6 +2165,11 @@ def _meetings_scheduler() -> None:
                     ).fetchone()
                 if not row:
                     continue                  # не знаем, с какого аккаунта вести диалог
+                if a.kind == "followup":
+                    acc = row["account_id"]
+                    if sent_by_acc.get(acc, 0) >= FOLLOWUP_PER_TICK:
+                        continue              # остальное догоним следующими тиками
+                    sent_by_acc[acc] = sent_by_acc.get(acc, 0) + 1
                 parts = [p for p in a.text.split("\n\n") if p.strip()] or [a.text]
                 if not listener.send_via_listener(row["account_id"], int(a.tg_user_id), parts):
                     continue                  # не ушло — пробуем на следующем тике

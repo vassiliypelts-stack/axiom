@@ -3533,6 +3533,7 @@ async function viewCompanies(v){
         <button class="primary" id="imp-go">Загрузить</button>
         <span class="hint" id="imp-msg"></span>
       </div>
+      <div id="co-map" style="display:none;margin-top:10px"></div>
       <div class="hint" style="margin-top:8px">CSV с любыми столбцами: Наименование, ИНН, ОГРН, ФИО руководителя, Телефон, Адрес, Сайт, Выручка… — система сама сопоставит. Дубли по ИНН/названию обновляются.</div>
     </div>
     <div id="co-body"></div>`;
@@ -3544,18 +3545,10 @@ async function viewCompanies(v){
   $("#co-new").onclick=async()=>{const name=prompt("Название компании:");if(!name)return;
     const r=await api("/api/companies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openCompany(r.id),200);};
-  $("#imp-go").onclick=async()=>{
-    const f=$("#imp-file").files[0];const msg=$("#imp-msg");
-    if(!f){msg.textContent="выбери файл";return;}
-    msg.textContent="загружаю…";
-    const fd=new FormData();fd.append("file",f);fd.append("tag",$("#imp-tag").value);
-    fd.append("target","companies");   // раздел «Компании» — грузим юрлица, и только их
-    const srcEl=$("#imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
-    try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
-      if(r.error){msg.textContent="ошибка: "+r.error;return;}
-      msg.innerHTML=`✅ импортировано ${r.imported}, всего компаний ${r.companies}`
-        +(r.src_contacts?`<br>Плюс ${r.src_contacts} контактов (директора с телефоном) — они в разделе «Контакты».`:"");route();
-    }catch(e){msg.textContent="ошибка: "+e.message;}};
+  // Раздел «Компании» → только юрлица, и тоже через шаг сопоставления колонок
+  $("#imp-go").onclick=()=>importWithMapping({
+    fileEl:$("#imp-file"),tagEl:$("#imp-tag"),srcEl:$("#imp-source"),
+    msgEl:$("#imp-msg"),mapEl:$("#co-map"),target:"companies",onDone:route});
   smartTable($("#co-body"),{
     tableKey:"companies",
     selectable:true,numbered:true,selWord:"компаний",onDelete:bulkDelete("/api/companies/bulk-delete"),
@@ -3608,6 +3601,7 @@ async function viewContacts(v){
         <button class="primary" id="ct-imp-go">⬆ Загрузить</button>
         <span class="hint" id="ct-imp-msg"></span>
       </div>
+      <div id="ct-map" style="display:none;margin-top:10px"></div>
       <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
         <textarea id="ct-imp-text" rows="3" placeholder="Или вставь номера телефонов сюда (каждый с новой строки)" style="flex:1;min-width:240px"></textarea>
         <button id="ct-imp-text-go">📱 Вставить номера</button>
@@ -3675,37 +3669,10 @@ async function viewContacts(v){
     if(r&&r.needs_confirm){if(!confirm(r.warn))return;r=await send(true);}
     if(r.error){alert(r.error);return;}
     route();};
-  $("#ct-imp-go").onclick=async()=>{
-    const f=$("#ct-imp-file").files[0],msg=$("#ct-imp-msg");
-    if(!f){msg.textContent="выбери CSV-файл";return;}
-    msg.textContent="загружаю…";
-    const fd=new FormData();fd.append("file",f);
-    fd.append("tag",$("#ct-imp-tag").value||"Контакты");
-    // раздел решает, куда лягут записи: тут «Контакты» — значит физлица, и только они
-    fd.append("target","contacts");
-    const srcEl=$("#ct-imp-source");if(srcEl&&srcEl.value.trim())fd.append("source",srcEl.value.trim());
-    try{const r=await fetch("/api/import",{method:"POST",body:fd}).then(x=>x.json());
-      if(r.error){msg.textContent="ошибка: "+r.error;return;}
-      // пропущенные показываем ОТДЕЛЬНО: строка без телефона и без @ника в рассылку
-      // не попадёт никогда, и знать об этом надо сразу, а не при нулевой отправке
-      //
-      // И главное — КУДА легло. Импорт сам выбирает разбор по колонкам файла: выгрузка
-      // юрлиц («Наименование», «ИНН») уезжает в «Компании», а человек, загрузивший её
-      // на экране «Контакты», видит там пустой список и считает, что импорт не сработал.
-      // Ровно так «потерялся» источник 190826hrtime: 51 компания и ноль контактов,
-      // потому что в файле не было телефонов людей — контакт создаётся только под них.
-      let where="";
-      if(r.kind==="companies"){
-        where=`<br><b>Файл распознан как выгрузка ЮРЛИЦ</b> — записи в разделе «Компании»`
-             +` (по этому источнику там ${r.src_companies}).`
-             +(r.src_contacts?` В «Контакты» попало ${r.src_contacts} (директора с телефоном).`
-                             :` В «Контакты» не попало ничего: в файле нет телефонов людей,`
-                              +` а контакт заводится только под живой номер.`);
-      }else if(r.src_contacts!=null){
-        where=`<br>В «Контактах» по этому источнику: ${r.src_contacts}.`;
-      }
-      msg.innerHTML=`✅ импортировано ${r.imported}`+(r.skipped?`, пропущено ${r.skipped} (нет ни телефона, ни @ника)`:"")+`, всего ${r.total}`+where;route();
-    }catch(e){msg.textContent="ошибка: "+e.message;}};
+  // Раздел «Контакты» → только физлица (target), и сначала шаг сопоставления колонок
+  $("#ct-imp-go").onclick=()=>importWithMapping({
+    fileEl:$("#ct-imp-file"),tagEl:$("#ct-imp-tag"),srcEl:$("#ct-imp-source"),
+    msgEl:$("#ct-imp-msg"),mapEl:$("#ct-map"),target:"contacts",onDone:route});
   $("#ct-imp-text-go").onclick=async()=>{
     const text=$("#ct-imp-text").value.trim(),msg=$("#ct-imp-msg");
     if(!text){msg.textContent="вставь номера";return;}
@@ -5149,6 +5116,76 @@ function _channelLink(d){
   return m?m[1]:null;
 }
 
+// Шаг сопоставления колонок перед импортом. Один на оба раздела: «Контакты» и
+// «Компании» отличаются только набором полей, который приходит с сервера (target).
+// Зачем: раньше «Загрузить» работало вслепую — сколько строк в файле, какие колонки
+// распознались и что из них станет полями, оператор узнавал только по результату.
+// Файл с чужими заголовками («Column1», «поле 3») импортировать было нечем вовсе.
+async function importWithMapping(opts){
+  const {fileEl,tagEl,srcEl,msgEl,mapEl,target,onDone}=opts;
+  const f=fileEl.files[0];
+  if(!f){msgEl.textContent="выбери файл";return;}
+  msgEl.textContent="читаю файл…";mapEl.style.display="none";
+  const fd=new FormData();fd.append("file",f);fd.append("target",target);
+  let p;
+  try{p=await fetch("/api/import/preview",{method:"POST",body:fd}).then(x=>x.json());}
+  catch(e){msgEl.textContent="ошибка: "+e.message;return;}
+  if(p.error){msgEl.textContent="ошибка: "+p.error;return;}
+  msgEl.textContent="";
+  const opt=(sel,i)=>`<option value="">— не импортировать —</option>`
+    +p.fields.map(fl=>`<option value="${fl.key}" ${sel===fl.key?"selected":""}>${esc(fl.label)}</option>`).join("");
+  mapEl.style.display="";
+  mapEl.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
+    <b style="font-size:13px">Проверь, как разложить колонки</b>
+    <div class="hint" style="margin:4px 0 10px">В файле <b>${p.rows_total}</b> строк.
+      Слева — колонки файла и пример значения, справа — куда это попадёт.
+      Что не нужно — оставь «не импортировать».</div>
+    ${p.warn?`<div class="hint" style="color:#c0392b;margin-bottom:8px">⚠️ ${esc(p.warn)}</div>`:""}
+    <div style="max-height:320px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <tr><th style="text-align:left">Колонка файла</th><th style="text-align:left">Пример</th><th style="text-align:left">Поле AXIOM</th></tr>
+        ${p.headers.map((h,i)=>{
+          const ex=(p.sample.find(r=>(r[i]||"").trim())||[])[i]||"";
+          return `<tr>
+            <td class="mono" style="font-size:12px">${esc(h)||`<span class="no">колонка ${i+1}</span>`}</td>
+            <td class="sub" style="font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(ex).slice(0,60))}</td>
+            <td><select class="imp-map" data-i="${i}" style="width:100%;font-size:12px">${opt(p.mapping[String(i)],i)}</select></td>
+          </tr>`;}).join("")}
+      </table></div>
+    <div class="ttoolbar" style="margin:10px 0 0">
+      <!-- type="button" обязателен: панель импорта лежит внутри формы, и кнопка по
+           умолчанию получает type="submit" — клик уходил в submit, страница
+           перезагружалась, шаг сопоставления исчезал, импорт не выполнялся вовсе -->
+      <button type="button" class="primary imp-run">✔ Импортировать ${p.rows_total} строк</button>
+      <button type="button" class="imp-cancel">отмена</button>
+      <span class="hint imp-progress"></span></div></div>`;
+  mapEl.querySelector(".imp-cancel").onclick=()=>{mapEl.style.display="none";mapEl.innerHTML="";};
+  mapEl.querySelector(".imp-run").onclick=async()=>{
+    const mapping={};
+    mapEl.querySelectorAll(".imp-map").forEach(s=>{if(s.value)mapping[s.dataset.i]=s.value;});
+    if(!Object.keys(mapping).length){mapEl.querySelector(".imp-progress").textContent="не выбрано ни одно поле";return;}
+    const btn=mapEl.querySelector(".imp-run"),pr=mapEl.querySelector(".imp-progress");
+    btn.disabled=true;btn.textContent="импортирую…";
+    let sec=0;const t=setInterval(()=>{sec++;pr.textContent=`обрабатываю ${p.rows_total} строк… ${sec} с`;},1000);
+    const fd2=new FormData();fd2.append("file",f);fd2.append("target",target);
+    fd2.append("tag",tagEl.value||"Импорт");fd2.append("mapping",JSON.stringify(mapping));
+    if(srcEl&&srcEl.value.trim())fd2.append("source",srcEl.value.trim());
+    let r;try{r=await fetch("/api/import",{method:"POST",body:fd2}).then(x=>x.json());}
+    catch(e){r={error:e.message};}
+    clearInterval(t);btn.disabled=false;btn.textContent=`✔ Импортировать ${p.rows_total} строк`;
+    if(r.error){pr.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    const where=target==="contacts"?`В «Контактах» по этому источнику: ${r.src_contacts}.`
+                                   :`В «Компаниях» по этому источнику: ${r.src_companies}.`;
+    // Результат НЕ затираем автоперерисовкой: раньше route() срабатывал через секунду
+    // и уносил цифры вместе с панелью — оператор не успевал прочитать, сколько строк
+    // прошло и сколько пропущено. Обновление списка — по явной кнопке.
+    pr.innerHTML=`✅ загружено ${r.imported} из ${r.rows_total}`
+      +(r.skipped?` · пропущено ${r.skipped} (${target==="contacts"?"нет ни телефона, ни @ника":"нет наименования"})`:"")
+      +`<br>${where} <button type="button" class="imp-done" style="margin-left:8px">Показать список</button>`;
+    const doneBtn=mapEl.querySelector(".imp-done");
+    if(doneBtn&&onDone)doneBtn.onclick=()=>{mapEl.style.display="none";mapEl.innerHTML="";onDone();};
+  };
+}
 // Пикер источника: свой список вместо нативного <datalist>, потому что там некуда
 // приткнуть кнопки редактирования/удаления. Открывается по фокусу/клику на поле
 // «источник», живёт как позиционированный .omenu (тот же класс, что у меню отдела

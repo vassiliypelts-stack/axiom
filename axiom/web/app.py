@@ -4798,9 +4798,169 @@ def _parse_2gis(text: str, tag: str, source: str = "2gis") -> tuple[int, int]:
     return added, skipped
 
 
+# Поля, в которые можно разложить колонки файла. Показываются оператору в шаге
+# сопоставления, поэтому подписи человеческие, а не имена столбцов БД.
+_IMPORT_FIELDS = {
+    "contacts": [
+        ("name", "Имя / ФИО"), ("phone", "Телефон"), ("username", "Telegram (@ник)"),
+        ("email", "Email"), ("city", "Город"), ("agency", "Компания / агентство"),
+        ("person_role", "Должность"), ("specialization", "Чем занимается"),
+        ("tags", "Теги"), ("notes", "Заметки"),
+    ],
+    "companies": [
+        ("name", "Наименование"), ("inn", "ИНН"), ("kpp", "КПП"), ("ogrn", "ОГРН"),
+        ("director_name", "ФИО руководителя"), ("director_phone", "Телефон директора"),
+        ("director_email", "Email директора"), ("director_role", "Должность руководителя"),
+        ("phone", "Телефон компании"), ("email", "Email компании"),
+        ("address", "Адрес"), ("site", "Сайт"), ("city", "Город"), ("region", "Регион"),
+        ("main_activity", "Основной вид деятельности"), ("employee_count", "Сотрудников"),
+        ("revenue", "Выручка"), ("profit", "Прибыль"),
+    ],
+}
+
+
+def _guess_mapping(headers: list[str], target: str) -> dict:
+    """Угадать «колонка файла → поле AXIOM» по тем же словарям, что и обычный импорт.
+
+    Один словарь синонимов на автоугадывание и на сам разбор: иначе подсказка в шаге
+    сопоставления начнёт расходиться с тем, что импорт делает на самом деле."""
+    from importer.import_contacts import ALIASES
+    allowed = {f for f, _ in _IMPORT_FIELDS.get(target, [])}
+    out: dict[str, str] = {}
+    for i, h in enumerate(headers):
+        key = (h or "").strip().lower()
+        if not key:
+            continue
+        field = None
+        if target == "contacts":
+            field = ALIASES.get(key)
+        else:
+            for pat, f in _COL_MAP.items():
+                if pat in key:
+                    field = f
+                    break
+        if field and field in allowed and field not in out.values():
+            out[str(i)] = field
+    return out
+
+
+def _read_table(raw: bytes, filename: str) -> tuple[list[str], list[list[str]]]:
+    """Файл → (заголовки, строки). Понимает .xlsx и CSV в трёх кодировках."""
+    import csv
+    import io
+    if (filename or "").endswith(".xlsx"):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        rows = [["" if c is None else str(c) for c in r] for r in ws.iter_rows(values_only=True)]
+    else:
+        text = None
+        for enc in ("cp1251", "utf-8-sig", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            raise ValueError("не удалось распознать кодировку файла")
+        rows = list(csv.reader(io.StringIO(text), delimiter=_sniff_delimiter(text)))
+    if not rows:
+        raise ValueError("файл пустой")
+    return [str(h or "").strip() for h in rows[0]], rows[1:]
+
+
+def _import_by_mapping(headers: list[str], rows: list[list[str]], mapping: dict,
+                       target: str, tag: str, source: str) -> tuple[int, int]:
+    """Импорт ПО ЯВНОМУ сопоставлению колонок, которое подтвердил оператор.
+
+    Отдельно от парсеров-угадаек: те решают по заголовкам и молча пропускают колонку,
+    которую не узнали, — а здесь состав полей задан человеком, и «не понял заголовок»
+    невозможно по определению. Файл без заголовков или с чужими названиями колонок
+    («Column1», «поле 3») импортируется только так."""
+    from importer.import_contacts import normalize_phone, normalize_username
+    idx = {int(i): f for i, f in (mapping or {}).items() if str(i).isdigit()}
+    if not idx:
+        raise ValueError("не задано ни одно поле")
+    added = skipped = 0
+    database.init_db()
+    with database.get_conn() as conn:
+        for row in rows:
+            r = {f: (row[i].strip() if i < len(row) and row[i] else "") for i, f in idx.items()}
+            if target == "contacts":
+                phone = normalize_phone(r.get("phone", ""))
+                username = normalize_username(r.get("username", ""))
+                if not phone and not username:
+                    skipped += 1          # писать некуда — карточка бесполезна
+                    continue
+                nm = (r.get("name") or "").strip()
+                cid = database.upsert_contact(
+                    conn, source=source, phone=phone or None, username=username or None,
+                    name=nm or phone or username, person_name=nm or None,
+                    city=r.get("city") or None, agency=r.get("agency") or None,
+                    tags=r.get("tags") or tag, notes=r.get("notes") or None,
+                    specialization=r.get("specialization") or None,
+                    person_role=r.get("person_role") or None, email=r.get("email") or None,
+                )
+                if cid:
+                    added += 1
+            else:
+                cname = (r.get("name") or "").strip()
+                if not cname:
+                    skipped += 1          # компания без названия — не компания
+                    continue
+                vals = {k: (v or None) for k, v in r.items() if k != "name"}
+                vals["name"] = cname
+                vals["source"] = source
+                ex = conn.execute(
+                    "SELECT id FROM companies WHERE (inn=? AND inn IS NOT NULL AND inn<>'') "
+                    "OR name=?", (vals.get("inn") or "", cname)).fetchone()
+                if ex:
+                    up = {**vals, "source": None}   # откуда появилась впервые — не переписываем
+                    conn.execute(f"UPDATE companies SET {', '.join(f'{k}=COALESCE(?,{k})' for k in up)} "
+                                 f"WHERE id=?", [*up.values(), ex["id"]])
+                else:
+                    conn.execute(f"INSERT INTO companies ({', '.join(vals)}) "
+                                 f"VALUES ({', '.join('?' for _ in vals)})", list(vals.values()))
+                added += 1
+    return added, skipped
+
+
+@app.post("/api/import/preview")
+async def import_preview(file: UploadFile = File(...), target: str = Form("contacts")) -> JSONResponse:
+    """Что в файле и как его понял AXIOM — ДО того, как что-то создано.
+
+    Оператор жал «Загрузить» вслепую: сколько строк, какие колонки распознались и что
+    из них станет полями — было видно только по результату, задним числом. Теперь
+    сначала показываем разбор и даём поправить сопоставление руками."""
+    raw = await file.read()
+    tgt = (target or "contacts").strip().lower()
+    if tgt not in _IMPORT_FIELDS:
+        return JSONResponse({"error": "неизвестный раздел"}, status_code=400)
+    try:
+        headers, rows = _read_table(raw, file.filename or "")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"не смог прочитать файл: {e}"}, status_code=400)
+    mapping = _guess_mapping(headers, tgt)
+    return JSONResponse({
+        "ok": True, "target": tgt, "headers": headers,
+        "rows_total": len(rows),
+        "sample": [r[:len(headers)] for r in rows[:5]],
+        "mapping": mapping,
+        "fields": [{"key": k, "label": l} for k, l in _IMPORT_FIELDS[tgt]],
+        # чего не хватает, чтобы импорт вообще имел смысл
+        "warn": ("Не нашёл ни телефона, ни Telegram — по такому человеку писать будет некуда."
+                 if tgt == "contacts" and not ({"phone", "username"} & set(mapping.values()))
+                 else ("Не нашёл колонку с наименованием — для компании она обязательна."
+                       if tgt == "companies" and "name" not in mapping.values() else "")),
+    })
+
+
 @app.post("/api/import")
 async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агентства недвижимости"),
-                      source: str = Form("2gis"), target: str = Form("")) -> JSONResponse:
+                      source: str = Form("2gis"), target: str = Form(""),
+                      mapping: str = Form("")) -> JSONResponse:
     """target — КУДА грузить, задаёт раздел, из которого нажали: contacts | companies.
 
     Раньше разбор выбирался только по колонкам файла, и раздел не значил ничего: файл,
@@ -4849,6 +5009,28 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
     # юрлиц уезжал в «Компании», пока оператор искал его в «Контактах» и видел пустой
     # список: 51 запись источника «190826hrtime» именно так и «пропала».
     kind = None
+    tgt_pre = (target or "").strip().lower()
+    # Оператор подтвердил сопоставление на шаге предпросмотра — идём строго по нему,
+    # без угадывания по заголовкам.
+    if mapping and tgt_pre in _IMPORT_FIELDS:
+        try:
+            mp = json.loads(mapping)
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"error": "не разобрал сопоставление полей"}, status_code=400)
+        try:
+            headers, rows_all = _read_table(raw, file.filename or "")
+            added, skipped = _import_by_mapping(headers, rows_all, mp, tgt_pre, tag_clean, src)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        with database.get_conn() as conn:
+            total = conn.execute("SELECT COUNT(*) c FROM contacts").fetchone()["c"]
+            co_total = conn.execute("SELECT COUNT(*) c FROM companies").fetchone()["c"]
+            src_contacts = conn.execute("SELECT COUNT(*) c FROM contacts WHERE source=?", (src,)).fetchone()["c"]
+            src_companies = conn.execute("SELECT COUNT(*) c FROM companies WHERE source=?", (src,)).fetchone()["c"]
+        return JSONResponse({"ok": True, "imported": added, "skipped": skipped, "total": total,
+                             "companies": co_total, "kind": tgt_pre, "by_mapping": True,
+                             "rows_total": len(rows_all),
+                             "src_contacts": src_contacts, "src_companies": src_companies})
     # Раздел решает, какие разборы вообще допустимы. В «Контактах» юрлицевый разбор
     # (_parse_universal) не предлагается совсем — иначе он снова уведёт файл в компании.
     tgt = (target or "").strip().lower()

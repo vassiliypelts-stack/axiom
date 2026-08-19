@@ -364,6 +364,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         if col not in deal:
             conn.execute(f"ALTER TABLE deals ADD COLUMN {col} {typ}")
     _relax_deals_contact_notnull(conn)
+    _repair_unverified_has_tg(conn)
     chat = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
     if chat:  # таблица существует
         for col, typ in _EXTRA_CHAT_COLS.items():
@@ -395,6 +396,30 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     msg = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
     if msg and "account_id" not in msg:
         conn.execute("ALTER TABLE messages ADD COLUMN account_id INTEGER")
+
+
+def _repair_unverified_has_tg(conn: sqlite3.Connection) -> None:
+    """has_tg='no' без отметки о проверке — не вердикт, а мусор. Возвращаем в 'unknown'.
+
+    Инвариант: «нет в Telegram» имеет право поставить ТОЛЬКО channels/phone_resolve,
+    реально спросив Telegram, и он всегда пишет вместе с вердиктом tg_checked_at
+    (см. _save_absent). Значит has_tg='no' при пустом tg_checked_at физически не может
+    быть результатом проверки — это след старой версии кода, писавшей вердикт вслепую.
+
+    Цена ошибки высокая: 'no' исключает контакт из рассылки навсегда и не перепроверяется
+    (_targets берёт только tg_checked_at IS NULL). 19.08.2026 на боевой базе таких
+    оказалось 637 из 637 — то есть КАЖДЫЙ «нет в Telegram» был ложным. Среди них личный
+    номер владельца и номера, покорёженные Excel в «3,75298E+11». Люди в Telegram есть,
+    проверено вручную (@dina_dusova, @Usrist_administrator), а рассылка их не видела.
+
+    Идемпотентно: после починки под условие не попадает ни одна строка."""
+    n = conn.execute(
+        "UPDATE contacts SET has_tg='unknown' "
+        "WHERE has_tg='no' AND tg_checked_at IS NULL"
+    ).rowcount
+    if n:
+        print(f"[db] снят непроверенный вердикт «нет в Telegram» с {n} контактов — "
+              f"уйдут в обычную очередь пробива")
 
 
 def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:

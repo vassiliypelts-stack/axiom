@@ -224,6 +224,12 @@ async def _worker(acc_id: int, queue: asyncio.Queue, tally: dict, state: dict, p
             for imp in (res.imported or []):
                 found_users[imp.client_id] = imp.user_id
             users_by_id = {u.id: u for u in (res.users or [])}
+            # retry_contacts — номера, которые Telegram СЕЙЧАС обрабатывать отказался
+            # (упёрлись в его внутренний лимит на импорт), и просит повторить позже.
+            # Это НЕ «телефона нет в Telegram». Раньше поле игнорировалось, и такие
+            # номера уходили в has_tg='no' — то есть выбрасывались из рассылки навсегда
+            # по чужой временной отсечке. Возвращаем их в очередь неразобранными.
+            retry_ids = set(getattr(res, "retry_contacts", None) or [])
 
             # СРАЗУ чистим адресную книгу: аккаунт не должен копить чужие номера.
             if res.users:
@@ -233,6 +239,14 @@ async def _worker(acc_id: int, queue: asyncio.Queue, tally: dict, state: dict, p
                     print(f"[{who}] не удалось убрать контакты: {type(e).__name__}")
 
             for cid_key, c in by_client_id.items():
+                if cid_key in retry_ids:
+                    # Telegram попросил повторить — вердикта по этому номеру нет.
+                    # Не трогаем has_tg (останется 'unknown') и кладём обратно в очередь.
+                    await queue.put(c)
+                    tally["retry"] = tally.get("retry", 0) + 1
+                    print(f"[{who}] {c['phone']} → Telegram просит повторить позже "
+                          f"(лимит импорта), вердикт не ставлю")
+                    continue
                 uid = found_users.get(cid_key)
                 u = users_by_id.get(uid) if uid else None
                 if u is None or not _is_lead_user(u):

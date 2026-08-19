@@ -5122,8 +5122,20 @@ function _channelLink(d){
 // приткнуть кнопки редактирования/удаления. Открывается по фокусу/клику на поле
 // «источник», живёт как позиционированный .omenu (тот же класс, что у меню отдела
 // в оргструктуре) и закрывается по клику вне себя.
-function closeSrcPicker(){const m=document.querySelector(".src-picker");if(m)m.remove();}
+// Снятие слушателей прошлого пикера. БЕЗ этого клики внутри списка не работали вовсе:
+// по клику на поле срабатывают И onfocus, И onclick, то есть openSrcPicker звался
+// дважды. Первый список удалялся, а его обработчик mousedown оставался висеть на
+// document — и, ссылаясь на уже оторванный от DOM элемент, у него el.contains(target)
+// всегда false, то есть он закрывал ЖИВОЙ список при любом клике внутри него. Клик
+// по ✏️ или по имени источника не успевал дойти до кнопки: список исчезал под курсором.
+let _srcPickerCleanup=null;
+function closeSrcPicker(){
+  if(_srcPickerCleanup){const f=_srcPickerCleanup;_srcPickerCleanup=null;f();}
+  const m=document.querySelector(".src-picker");if(m)m.remove();
+}
 async function openSrcPicker(inputEl){
+  // уже открыт для этого же поля — не пересоздаём (иначе тот же дубль слушателей)
+  if(document.querySelector(".src-picker"))return;
   closeSrcPicker();
   const el=document.createElement("div");
   el.className="omenu src-picker";
@@ -5134,9 +5146,12 @@ async function openSrcPicker(inputEl){
     el.style.left=Math.max(6,Math.min(r.left,innerWidth-el.offsetWidth-10))+"px";
     el.style.top=Math.min(r.bottom+4,innerHeight-el.offsetHeight-10)+"px";};
   pos();
-  const close=()=>{closeSrcPicker();document.removeEventListener("mousedown",out);inputEl.removeEventListener("input",onType);};
-  const out=e=>{if(!el.contains(e.target)&&e.target!==inputEl)close();};
+  const out=e=>{if(!el.contains(e.target)&&e.target!==inputEl)closeSrcPicker();};
+  const close=()=>closeSrcPicker();
   setTimeout(()=>document.addEventListener("mousedown",out),0);
+  // единая точка снятия: closeSrcPicker() позовёт это, кто бы ни закрывал список
+  _srcPickerCleanup=()=>{document.removeEventListener("mousedown",out);
+                         inputEl.removeEventListener("input",onType);};
   let list=[];
   const draw=()=>{
     const q=(inputEl.value||"").trim().toLowerCase();
@@ -5149,7 +5164,7 @@ async function openSrcPicker(inputEl){
     // инлайном перебивает это для кнопок в один ряд.
     el.innerHTML=(filtered.length?filtered.map(s=>`
       <div class="src-row" data-name="${esc(s.name)}" style="display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:8px">
-        <span class="src-pick" style="flex:1 1 auto;min-width:0;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}">${esc(s.name)} <span class="hint">${s.contacts}к·${s.companies}ко</span></span>
+        <span class="src-pick" style="flex:1 1 auto;min-width:0;cursor:pointer;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)} — контактов: ${s.contacts}, компаний: ${s.companies}">${esc(s.name)} <span class="hint">${s.contacts}&nbsp;чел · ${s.companies}&nbsp;комп</span></span>
         <button class="src-edit" title="переименовать" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px">✏️</button>
         <button class="src-del" title="удалить источник — снимает метку, записи остаются" style="flex:0 0 auto;width:auto;padding:2px 6px;font-size:12px;color:var(--red)">🗑</button>
       </div>`).join(""):'<div class="hint" style="padding:6px 8px">источников не найдено</div>')

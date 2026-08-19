@@ -143,7 +143,12 @@ def _campaign_extra_followup(conn, contact_id: int) -> str | None:
     row = conn.execute(
         "SELECT c.extra_followup_template AS t FROM campaign_contacts cc "
         "JOIN campaigns c ON c.id = cc.campaign_id "
-        "WHERE cc.contact_id = ? ORDER BY cc.id DESC LIMIT 1", (contact_id,)
+        # ORDER BY по sent_at, а НЕ по cc.id: в campaign_contacts столбца id нет вовсе
+        # (ключ — пара campaign_id+contact_id). Запрос падал с «no such column: cc.id»,
+        # и падал он ВНУТРИ collect_due — то есть весь тик планировщика умирал целиком:
+        # ни дожима молчунов, ни напоминаний о созвоне, ни «не дошёл» не отправлялось
+        # НИ РАЗУ. Наружу это выглядело как «дожим просто не настроен».
+        "WHERE cc.contact_id = ? ORDER BY cc.sent_at DESC LIMIT 1", (contact_id,)
     ).fetchone()
     t = (row["t"] or "").strip() if row else ""
     return t or None

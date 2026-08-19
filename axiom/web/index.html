@@ -5181,9 +5181,23 @@ async function openSrcPicker(inputEl){
       </div>`).join(""):'<div class="hint" style="padding:6px 8px">источников не найдено</div>')
       +'<hr style="border:0;border-top:1px solid var(--border);margin:4px 6px">'
       +'<div class="hint" style="padding:4px 8px">впиши новое имя в поле — источник появится тут при загрузке</div>';
-    el.querySelectorAll(".src-pick").forEach(s=>s.onclick=()=>{inputEl.value=s.closest(".src-row").dataset.name;close();});
-    el.querySelectorAll(".src-edit").forEach(b=>b.onclick=async e=>{
-      e.stopPropagation();
+    // mousedown, а не click — и с e.preventDefault()/stopPropagation(). Клик по строке
+    // сначала бьёт по нативному mousedown, а тот двумя путями рвал выбор ДО click:
+    // 1) document слушает mousedown ЖЕ (out, снятие пикера по клику вне) — на bubble-
+    //    фазе он срабатывает ПОСЛЕ строчного обработчика, но без stopPropagation успевал
+    //    получить событие тоже, и в паре с 2) это выглядело как «клик проваливается»;
+    // 2) mousedown на элементе внутри поля источника уводит фокус с инпута — сам по
+    //    себе безобиден, но preventDefault() на mousedown стабильно этого не допускает,
+    //    так что ряд ниже не успевает перерисоваться между mousedown и следующим click.
+    // Итог: mousedown решает делом СРАЗУ, а не ждёт полного цикла mousedown→mouseup→click,
+    // который на живой странице (в отличие от программного .click() в тестах) не всегда
+    // долетает целиком до одной и той же точки.
+    el.querySelectorAll(".src-pick").forEach(s=>s.onmousedown=e=>{
+      e.preventDefault();e.stopPropagation();
+      inputEl.value=s.closest(".src-row").dataset.name;close();
+    });
+    el.querySelectorAll(".src-edit").forEach(b=>b.onmousedown=async e=>{
+      e.preventDefault();e.stopPropagation();
       const old=b.closest(".src-row").dataset.name;
       const val=prompt(`Новое имя источника вместо «${old}»:`,old);
       if(!val||!val.trim()||val.trim()===old)return;
@@ -5192,8 +5206,8 @@ async function openSrcPicker(inputEl){
       if(inputEl.value===old)inputEl.value=val.trim();
       list=await api("/api/import/sources");draw();pos();
     });
-    el.querySelectorAll(".src-del").forEach(b=>b.onclick=async e=>{
-      e.stopPropagation();
+    el.querySelectorAll(".src-del").forEach(b=>b.onmousedown=async e=>{
+      e.preventDefault();e.stopPropagation();
       const name=b.closest(".src-row").dataset.name;
       if(!confirm(`Удалить источник «${name}»? Сами контакты/компании останутся, просто у них пропадёт эта метка.`))return;
       const send=force=>api("/api/import/sources/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:name,force})});

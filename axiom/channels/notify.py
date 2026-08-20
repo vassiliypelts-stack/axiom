@@ -109,6 +109,69 @@ async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | N
         print(f"[notify] сбой отправки владельцу: {e}")
 
 
+DAILY_REPORT_TARGET_SETTING = "daily_report_target"
+
+
+async def send_daily_report() -> None:
+    """Утренняя сводка по кампаниям в личку — название, всего в кампании, отправлено,
+    ответило, выведено на КЭВ (созвон). Одним сообщением по всем активным кампаниям
+    (архивные и черновики не в счёт — по ним отчитываться нечем)."""
+    try:
+        with database.get_conn() as conn:
+            sender_id = database.get_setting(conn, NOTIFY_SENDER_SETTING)
+            # Отдельная настройка получателя — по умолчанию @neiro_0001 (запрошено явно),
+            # но не жёстко зашито: сменится получатель — правится тут же в app_settings.
+            target = database.get_setting(conn, DAILY_REPORT_TARGET_SETTING, "@neiro_0001")
+            if not sender_id or not target:
+                print("[daily report] не настроен отправитель — см. пульт: «Аккаунты» → "
+                      "«уведомляет о встречах»")
+                return
+            camps = conn.execute(
+                "SELECT id, name, audience_tag, channel, tg_verified_only FROM campaigns "
+                "WHERE archived=0 AND status != 'draft' ORDER BY id"
+            ).fetchall()
+            if not camps:
+                return
+            lines = ["📊 Сводка по кампаниям на утро"]
+            for camp in camps:
+                cid = camp["id"]
+                sent = conn.execute(
+                    "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (cid,)
+                ).fetchone()["c"]
+                where, params = _audience_where_for_report(camp["audience_tag"], camp["channel"])
+                total_left = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where}",
+                                          params).fetchone()["c"]
+                replied = conn.execute(
+                    "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
+                    "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+                    "WHERE m.direction='in'", (cid,)
+                ).fetchone()["c"]
+                meetings = conn.execute(
+                    "SELECT COUNT(DISTINCT d.contact_id) c FROM deals d "
+                    "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
+                    "WHERE d.meeting_at IS NOT NULL", (cid,)
+                ).fetchone()["c"]
+                lines.append(
+                    f"\n🎯 {camp['name']}\nвсего в кампании: {sent + total_left} · "
+                    f"отправлено: {sent} · ответило: {replied} · на КЭВ: {meetings}"
+                )
+            text = "\n".join(lines)
+        await _send_to_owner(sender_id, target, text, "утренняя сводка", 0)
+    except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+        print(f"[daily report] сбой: {e}")
+
+
+def _audience_where_for_report(tag: str | None, channel: str | None) -> tuple[str, list]:
+    """Урезанная копия web/app.py:_audience_where — своя, чтобы не тянуть web.app сюда
+    (channels/ не должен зависеть от web/, это отдельный слой)."""
+    where = "deleted_at IS NULL AND status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
+    params: list = []
+    if tag:
+        where += " AND tags LIKE ?"
+        params.append(f"%{tag}%")
+    return where, params
+
+
 async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int | None = None) -> None:
     """Горячий лид: готов действовать ПРЯМО СЕЙЧАС, не в назначенное время (agent.Reply.hot).
 
@@ -143,3 +206,14 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
         await _send_to_owner(sender_id, target, text, "горячий лид", contact_id)
     except Exception as e:  # noqa: BLE001
         print(f"[notify] сбой отправки о горячем лиде: {e}")
+
+
+if __name__ == "__main__":
+    import argparse
+    import asyncio
+
+    p = argparse.ArgumentParser(description="Уведомления владельцу AXIOM")
+    p.add_argument("--daily-report", action="store_true", help="утренняя сводка по кампаниям")
+    args = p.parse_args()
+    if args.daily_report:
+        asyncio.run(send_daily_report())

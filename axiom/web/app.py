@@ -2287,6 +2287,39 @@ def _night_reply_scheduler() -> None:
             print(f"[night replies] {e}")
 
 
+def _daily_report_scheduler() -> None:
+    """Утренняя сводка по кампаниям в личку (channels/notify.send_daily_report),
+    раз в сутки в 09:00 МСК. Дата последней отправки в app_settings — иначе за 10
+    минут окна 09:00-09:10 тик (раз в 10 мин) выстрелил бы дважды, а после рестарта
+    пульта в этом окне — ещё раз."""
+    import os
+    import subprocess
+    import sys
+    import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    while True:
+        time.sleep(600)
+        try:
+            from channels.antiban import msk_now
+            now = msk_now()
+            if now.hour != 9 or now.minute >= 10:   # окно 09:00-09:10 МСК
+                continue
+            today = now.strftime("%Y-%m-%d")
+            with database.get_conn() as conn:
+                last = database.get_setting(conn, "daily_report_sent_date")
+                if last == today:
+                    continue
+                database.set_setting(conn, "daily_report_sent_date", today)
+            res = subprocess.run([sys.executable, "-m", "channels.notify", "--daily-report"],
+                                 cwd=str(BASE_DIR.parent), timeout=300, env=env,
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace")
+            _log_run("daily_report", res)
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[daily report scheduler] {e}")
+
+
 HOT_LEAD_TIMEOUT_MIN = 10  # см. channels/telegram._agent_reply — сколько молчания терпим
 
 
@@ -2341,6 +2374,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
     threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
     threading.Thread(target=_night_reply_scheduler, daemon=True).start()
+    threading.Thread(target=_daily_report_scheduler, daemon=True).start()
     threading.Thread(target=_meetings_scheduler, daemon=True).start()
     threading.Thread(target=_hot_lead_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
@@ -2651,6 +2685,10 @@ def contact_detail(contact_id: int) -> JSONResponse:
             "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
             "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
         deal = conn.execute("SELECT * FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+        camp = database.get_contact_campaign(conn, contact_id)
+        paused = bool(camp) and conn.execute(
+            "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+            (camp["id"], contact_id)).fetchone() is not None
         comp = None
         if row["company_id"]:
             comp = conn.execute("SELECT id, name FROM companies WHERE id=?", (row["company_id"],)).fetchone()
@@ -2671,6 +2709,9 @@ def contact_detail(contact_id: int) -> JSONResponse:
     d = dict(row); d["tags"] = _split_tags(d.get("tags"))
     d["company_name"] = comp["name"] if comp else None
     d["history"] = history; d["deal"] = dict(deal) if deal else None
+    d["campaign_id"] = camp["id"] if camp else None
+    d["campaign_name"] = camp["name"] if camp else None
+    d["bot_paused"] = paused
     # has_photo — авторитетно по файлу (флаг в БД мог отстать/файл могли удалить)
     d["has_photo"] = bool(d.get("tg_user_id")) and _avatar_path(d.get("tg_user_id")).exists()
     if src:
@@ -5446,6 +5487,27 @@ def contact_message_delete(contact_id: int, msg_id: int) -> JSONResponse:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM messages WHERE id=?", (msg_id,))
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/contact/{contact_id}/bot_pause")
+def contact_bot_pause(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
+    """Ручное управление диалогом: приостановить/вернуть авто-ответ агента ИМЕННО
+    этому контакту, не трогая всю кампанию. Приостановленный контакт агент не
+    дожимает и не отвечает ему сам (см. _agent_reply/scheduler) — оператор ведёт
+    переписку сам через «Написать самому». Включив авто обратно, агент подхватит
+    диалог с полной историей, включая ручные реплики — как обычно."""
+    paused = bool(payload.get("paused"))
+    with database.get_conn() as conn:
+        camp = database.get_contact_campaign(conn, contact_id)
+        if not camp:
+            return JSONResponse({"error": "у контакта нет кампании — управлять паузой нечем"},
+                                status_code=400)
+        if paused:
+            database.pause_campaign_contacts(conn, camp["id"], [contact_id])
+        else:
+            conn.execute("DELETE FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+                        (camp["id"], contact_id))
+    return JSONResponse({"ok": True, "paused": paused})
 
 
 @app.post("/api/contact/{contact_id}/context")

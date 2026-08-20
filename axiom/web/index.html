@@ -396,6 +396,8 @@
   .bubble.in{background:var(--panel);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:5px;}
   .bubble.out{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);align-self:flex-end;border-bottom-right-radius:5px;}
   .bubble .t{font-size:10px;color:var(--muted);margin-top:5px;}
+  .bubble-del{cursor:pointer;opacity:.55;padding:0 2px;}
+  .bubble-del:hover{opacity:1;color:#c0392b;}
 
   /* ---- Detail drawer (досье) ---- */
   .drawer{position:fixed;top:0;right:0;width:430px;max-width:92vw;height:100vh;background:var(--panel);
@@ -6191,8 +6193,10 @@ async function openThread(id){
              c.phone?esc(c.phone):""].filter(Boolean).join(" · ");
   th.innerHTML=`<div class="th-hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
       <span><a id="th-name" href="javascript:void(0)" style="color:inherit;text-decoration:underline dotted;cursor:pointer" title="Открыть карточку контакта">${esc(c.name)||"@"+esc(c.username||id)}</a> · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}${c.company_id?` · <a id="th-company" href="javascript:void(0)" class="hint" style="text-decoration:underline dotted;cursor:pointer" title="Открыть карточку компании">🏢 ${esc(c.company_name||"компания")}</a>`:""}</span>
-      <span class="ttoolbar" style="margin:0"><button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
-    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}">${esc(m.text)}<div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>
+      <span class="ttoolbar" style="margin:0">
+        ${c.campaign_id?`<button id="th-pause" title="${c.bot_paused?"Вернуть агенту — он подхватит диалог с полной историей":"Взять диалог на себя — агент перестанет писать этому человеку"}">${c.bot_paused?"✋ Ручное":"🤖 Авто"}</button>`:""}
+        <button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
+    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}" ${m.id?`data-msgid="${m.id}"`:""}>${esc(m.text)}<div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}${m.direction==="out"&&m.tg_msg_id?` · <span class="bubble-del" data-msgid="${m.id}" title="Удалить у обеих сторон в Telegram">✕</span>`:""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>
     <div class="th-send" style="border-top:1px solid var(--border);padding:10px 12px">
       <div style="display:flex;gap:8px;align-items:flex-end">
         <textarea id="th-text" rows="2" placeholder="Написать самому — уйдёт с того же аккаунта, что вёл диалог. Enter — отправить, Shift+Enter — новая строка" style="flex:1;resize:vertical"></textarea>
@@ -6220,6 +6224,21 @@ async function openThread(id){
   const cp=$("#th-company");if(cp)cp.onclick=()=>openCompany(c.company_id);
   const dl=$("#th-deal");if(dl)dl.onclick=async()=>{dl.disabled=true;dl.textContent="…";
     await convertToDeal(id);dl.disabled=false;dl.textContent="✅ В сделку";};
+  const pb=$("#th-pause");
+  if(pb)pb.onclick=async()=>{
+    pb.disabled=true;
+    await api(`/api/contact/${id}/bot_pause`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({paused:!c.bot_paused})});
+    openThread(id);
+  };
+  th.querySelectorAll(".bubble-del").forEach(el=>el.onclick=async(e)=>{
+    e.stopPropagation();
+    if(!confirm("Удалить это сообщение у себя и у собеседника в Telegram? Отменить нельзя."))return;
+    el.textContent="…";
+    const r=await api(`/api/contact/${id}/message/${el.dataset.msgid}/delete`,{method:"POST"});
+    if(r.error){alert(r.error);el.textContent="✕";return;}
+    openThread(id);
+  });
 }
 
 // ----------------------------------------------------------------- drawer (досье)

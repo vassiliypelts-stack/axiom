@@ -540,6 +540,18 @@ async def _agent_reply(event, contact_id: int, username: str | None,
               f"{camp.get('work_hours_tz') or 'UTC'} — ответ отложен")
         return
 
+    # Оператор взял диалог на себя (кнопка «✋ Ручное» в «Диалогах») — агент молчит,
+    # пока не вернут «🤖 Авто». История при этом не теряется: включив обратно, агент
+    # читает её всю целиком, включая ручные реплики (см. contact_send).
+    if camp:
+        with database.get_conn() as conn:
+            paused = conn.execute(
+                "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+                (camp["id"], contact_id)).fetchone() is not None
+        if paused:
+            print(f"[manual] contact {contact_id}: оператор ведёт сам — агент молчит")
+            return
+
     try:
         reply = await asyncio.to_thread(
             generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,

@@ -295,6 +295,15 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         streak, last_ts = _trailing_out_streak(history)
         if streak == 0 or last_ts is None:
             continue  # ждём не мы, либо диалога нет
+        camp = database.get_contact_campaign(conn, c["id"])
+        if camp:
+            # Оператор ведёт диалог сам («✋ Ручное» в «Диалогах») — дожим этого
+            # контакта не трогаем, чтобы не столкнуться с человеком лбами.
+            paused = conn.execute(
+                "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+                (camp["id"], c["id"])).fetchone() is not None
+            if paused or not database.in_work_hours(camp):
+                continue
         extra = _campaign_extra_followup(conn, c["id"])
         # Кампания может добавить СВОЙ последний шаг поверх лесенки — через сутки после
         # третьего пинга. Остальные шаги общие: они намеренно нейтральны и не обещают

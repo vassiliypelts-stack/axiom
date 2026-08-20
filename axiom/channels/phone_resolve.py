@@ -184,6 +184,16 @@ async def _worker(acc_id: int, queue: asyncio.Queue, tally: dict, state: dict, p
         return
     state["live_workers"].append(acc_id)
     done_by_me = 0
+    # Сколько раз уже возвращали в очередь конкретный номер из-за retry_contacts.
+    # БЕЗ этого потолка цикл не имеет условия выхода: `while done_by_me < per`
+    # продвигается только когда контакт получает вердикт, а retry-контакт вердикта
+    # не получает и уходит обратно в очередь — тот же самый номер вытягивается
+    # заново на следующем шаге, бесконечно. 20.08.2026 так залип «Пробить сейчас» на
+    # одном номере #9313 на час с лишним: подпроцесс не завершался, копился в
+    # системе, а его частые обращения к БД (see _save_progress) держали сервер
+    # настолько занятым, что внешние HTTP-запросы к пульту переставали доходить.
+    _retry_count: dict[int, int] = {}
+    MAX_RETRY_ATTEMPTS = 3
     try:
         while done_by_me < per:
             batch: list[dict] = []
@@ -240,12 +250,23 @@ async def _worker(acc_id: int, queue: asyncio.Queue, tally: dict, state: dict, p
 
             for cid_key, c in by_client_id.items():
                 if cid_key in retry_ids:
-                    # Telegram попросил повторить — вердикта по этому номеру нет.
-                    # Не трогаем has_tg (останется 'unknown') и кладём обратно в очередь.
-                    await queue.put(c)
-                    tally["retry"] = tally.get("retry", 0) + 1
-                    print(f"[{who}] {c['phone']} → Telegram просит повторить позже "
-                          f"(лимит импорта), вердикт не ставлю")
+                    n = _retry_count[c["id"]] = _retry_count.get(c["id"], 0) + 1
+                    if n < MAX_RETRY_ATTEMPTS:
+                        # Telegram попросил повторить — вердикта по этому номеру нет.
+                        # Не трогаем has_tg (останется 'unknown'), пробуем ещё раз.
+                        await queue.put(c)
+                        tally["retry"] = tally.get("retry", 0) + 1
+                        print(f"[{who}] {c['phone']} → Telegram просит повторить позже "
+                              f"(лимит импорта, попытка {n}/{MAX_RETRY_ATTEMPTS})")
+                        continue
+                    # Лимит попыток исчерпан — сдаёмся на ЭТОТ заход. has_tg по-прежнему
+                    # не трогаем (не 'no' — это не отказ, а неопределённость), контакт
+                    # просто останется unknown и попробуется заново в следующем прогоне.
+                    tally["retry_gaveup"] = tally.get("retry_gaveup", 0) + 1
+                    print(f"[{who}] {c['phone']} → Telegram так и не ответил за "
+                          f"{MAX_RETRY_ATTEMPTS} попыток — оставляю на следующий прогон")
+                    state["done"] += 1
+                    done_by_me += 1
                     continue
                 uid = found_users.get(cid_key)
                 u = users_by_id.get(uid) if uid else None

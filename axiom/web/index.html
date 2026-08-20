@@ -3882,13 +3882,15 @@ async function openAgent(id){
   // Запаска: показываем ТОЛЬКО когда она реально что-то решает — аккаунт мёртв и есть чем
   // поднять. Живому аккаунту эта плашка не нужна (статус виден в колонке «🧯 Запаска»),
   // а лишняя кнопка «восстановить» рядом с живой сессией провоцирует нажать её зря.
-  const spareBlock=(a.has_spare&&a.session_alive===0)?`
+  const spareBlock=(a.session_alive===0)?`
     <div class="card" style="margin-bottom:12px;background:var(--accent-soft);border-left:3px solid var(--accent);padding:12px">
-      <b>🧯 Сессия мертва, но есть запаска</b>
-      <div class="hint" style="margin:6px 0 8px;line-height:1.5">Вторая независимая авторизация цела — аккаунт можно вернуть без SMS.
-        После восстановления запаска израсходуется: выпусти новую, пока аккаунт жив.</div>
-      <button class="primary" id="ag-spare-promote">♻️ Поднять запаску как основную</button>
-      <span class="hint" id="ag-spare-msg"></span>
+      <b>🧯 Сессия AXIOM мертва</b>
+      <div class="hint" style="margin:6px 0 8px;line-height:1.5">Аккаунт при этом не обязательно мёртв — Telegram разрешает несколько
+        параллельных сессий, и телефон/десктоп продолжают работать своей. Мертва конкретно та, которой пользовался AXIOM
+        (Telegram выкинул её за подключение с двух IP сразу). Если аккаунт отвечает в обычном Telegram — просто перелогинь.</div>
+      ${a.has_spare?`<button class="primary" id="ag-spare-promote">♻️ Поднять запаску как основную (без SMS)</button>
+      <span class="hint" id="ag-spare-msg"></span><br><br>`:""}
+      <button class="acc-login" data-id="${id}" data-phone="${esc(a.phone||"")}" data-label="${esc(a.label||a.username||("#"+id))}">🔌 Перелогинить (код придёт в Telegram)</button>
     </div>`:"";
   $("#dr-body").innerHTML=`
     ${spareBlock}
@@ -4058,6 +4060,8 @@ async function openAgent(id){
     else{spb.disabled=false;spb.textContent="♻️ Поднять запаску как основную";
       msg.innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error||r.msg||"не вышло")+'</span>';}
   };
+  const rlb=$("#dr-body .acc-login");
+  if(rlb)rlb.onclick=()=>showLoginDialog(rlb.dataset.id,rlb.dataset.phone,rlb.dataset.label);
   const fileInp=$("#ag-ava-file");
   $("#ag-ava-btn").onclick=()=>fileInp.click();
   fileInp.onchange=async()=>{if(!fileInp.files.length)return;

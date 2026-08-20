@@ -344,13 +344,14 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
             break
         try:
             ent = await _resolve_entity(client, row)
-            await _send_parts(client, ent, parts)
+            sent_ids = await _send_parts(client, ent, parts)
         except Exception as e:  # noqa: BLE001
             print(f"  [ca-mix skip {row['id']}] {e}")
             continue
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(ent.id))
-            database.add_message(conn, row["id"], "out", "\n".join(parts), intent=None)
+            database.add_message(conn, row["id"], "out", "\n".join(parts), intent=None,
+                                 tg_msg_ids=sent_ids)
             database.set_status(conn, row["id"], "messaged")
             conn.execute("UPDATE contacts SET tags=? WHERE id=?",
                          (_add_tag(row["tags"], f"кампания #{camp['id']}"), row["id"]))

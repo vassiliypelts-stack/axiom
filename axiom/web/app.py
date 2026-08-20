@@ -709,6 +709,65 @@ def settings_org_notes_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+CONNECTOR_IDS = ("max", "avito", "threads", "vk", "whatsapp", "instagram", "facebook")
+
+
+@app.get("/api/connectors")
+def connectors_list() -> JSONResponse:
+    """Статус всех коннекторов — какие настроены, у каких есть токен."""
+    items = {}
+    with database.get_conn() as conn:
+        for cid in CONNECTOR_IDS:
+            raw = database.get_setting(conn, f"connector_{cid}", "")
+            if not raw:
+                items[cid] = {"configured": False}
+                continue
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = {}
+            items[cid] = {
+                "configured": bool((data.get("fields") or {}).get("token")),
+                "note": data.get("note", ""),
+                "fields": data.get("fields", {}),
+                "updated_at": data.get("updated_at", ""),
+            }
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/connectors/{cid}/config")
+def connectors_set_config(cid: str, payload: dict = Body(...)) -> JSONResponse:
+    if cid not in CONNECTOR_IDS:
+        return JSONResponse({"error": "неизвестный коннектор"}, status_code=404)
+    import datetime as _dt
+    data = {
+        "fields": payload.get("fields") or {},
+        "note": payload.get("note") or "",
+        "updated_at": _dt.datetime.now().strftime("%d.%m.%Y %H:%M"),
+    }
+    with database.get_conn() as conn:
+        database.set_setting(conn, f"connector_{cid}", json.dumps(data, ensure_ascii=False))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/connectors/{cid}/test")
+def connectors_test(cid: str) -> JSONResponse:
+    """Проверка связи — пока заглушка до реализации самого коннектора (см. axiom/channels/connectors/)."""
+    if cid not in CONNECTOR_IDS:
+        return JSONResponse({"error": "неизвестный коннектор"}, status_code=404)
+    with database.get_conn() as conn:
+        raw = database.get_setting(conn, f"connector_{cid}", "")
+    if not raw:
+        return JSONResponse({"ok": False, "error": "коннектор не настроен — сначала укажи токен"})
+    try:
+        from channels.connectors import registry
+        return JSONResponse(registry.test_connection(cid, json.loads(raw)))
+    except NotImplementedError:
+        return JSONResponse({"ok": False, "error": "проверка связи для этого коннектора ещё не реализована"})
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
 @app.post("/api/accounts")
 def accounts_add(payload: dict = Body(...)) -> JSONResponse:
     import phone_geo
@@ -1972,6 +2031,19 @@ def _proxy_scheduler() -> None:
                                      cwd=str(BASE_DIR.parent), timeout=3600, env=env,
                                      capture_output=True, text=True, encoding="utf-8", errors="replace")
                 _log_run("tgcheck_scheduler", res)
+                # Сразу следом — обогащение из Telegram по тем, кого только что нашли.
+                # Логика цепочки: пробив даёт tg_user_id и bio, и ровно в этот момент
+                # появляется, что читать. Отдельным расписанием это делать незачем —
+                # без свежепробитых людей обогащать всё равно некого.
+                with database.get_conn() as conn:
+                    enrich_on = database.get_setting(conn, "tgenrich_auto", "on") != "off"
+                if enrich_on:
+                    res2 = subprocess.run([sys.executable, "-m", "channels.enrich_tg",
+                                           "--limit", "50"],
+                                          cwd=str(BASE_DIR.parent), timeout=3600, env=env,
+                                          capture_output=True, text=True, encoding="utf-8",
+                                          errors="replace")
+                    _log_run("tgenrich_scheduler", res2)
         except Exception as e:  # noqa: BLE001
             print(f"[tgcheck scheduler] {e}")
         time.sleep(60)
@@ -2250,10 +2322,11 @@ def _hot_lead_scheduler() -> None:
                 if not acc:
                     continue
                 text = "спасибо, до связи)"
-                if listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), [text]):
+                sent_ids = listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), [text])
+                if sent_ids:
                     with database.get_conn() as conn:
                         database.add_message(conn, r["id"], "out", text, intent=None,
-                                             account_id=acc["account_id"])
+                                             account_id=acc["account_id"], tg_msg_ids=sent_ids)
                         conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
                     print(f"[hot] contact {r['id']}: {HOT_LEAD_TIMEOUT_MIN} мин тишины — закрыл мягко")
         except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
@@ -2573,7 +2646,7 @@ def contact_detail(contact_id: int) -> JSONResponse:
         # каждое сообщение, если по контакту работало несколько аккаунтов команды.
         # Отдельный запрос здесь, а не правка get_history — её читает и agent/agent.py.
         history = [dict(m) for m in conn.execute(
-            "SELECT m.direction, m.text, m.intent, m.ts, m.account_id, "
+            "SELECT m.id, m.direction, m.text, m.intent, m.ts, m.account_id, m.tg_msg_id, "
             "COALESCE(a.label, a.username, a.phone) AS account_label "
             "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
             "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
@@ -3289,6 +3362,31 @@ def _spawn(*args: str) -> None:
 def enrich_one(contact_id: int) -> JSONResponse:
     _spawn("agent.enrich", "--id", str(contact_id))
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/contact/{contact_id}/enrich_tg")
+def enrich_tg_one(contact_id: int) -> JSONResponse:
+    """Обогащение ИЗ TELEGRAM: описание профиля + личный канал человека (закреп и посты).
+
+    Отдельная кнопка от обычного «Обогатить»: тот читает сайт и справочники — там про
+    юрлицо, а продаёт человек, и говорит он об этом в своём канале. Ждём ответа, а не
+    уходим в фон: оператор жмёт её точечно по одному лиду и хочет увидеть результат."""
+    res = _run_capture(["channels.enrich_tg", "--ids", str(contact_id)], timeout=300)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-300:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    data["log"] = (res.get("output") or "").splitlines()[-8:]
+    return JSONResponse(data)
+
+
+@app.post("/api/enrich_tg")
+def enrich_tg_batch(payload: dict = Body(default={})) -> JSONResponse:
+    """Пачкой — по тем, кого ещё не читали из Telegram. В фон: это десятки минут."""
+    limit = int(payload.get("limit") or 50)
+    _spawn("channels.enrich_tg", "--limit", str(limit))
+    return JSONResponse({"ok": True, "limit": limit,
+                         "message": "запущено обогащение из Telegram в фоне"})
 
 
 @app.post("/api/enrich")
@@ -5310,8 +5408,44 @@ def contact_send(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
                                       "Проверь его сессию и прокси в «Аккаунтах»."}, status_code=502)
 
     with database.get_conn() as conn:
-        database.add_message(conn, contact_id, "out", text, intent=None, account_id=int(acc_id))
+        database.add_message(conn, contact_id, "out", text, intent=None, account_id=int(acc_id),
+                             tg_msg_ids=sent)
     return JSONResponse({"ok": True, "account_id": int(acc_id)})
+
+
+@app.post("/api/contact/{contact_id}/message/{msg_id}/delete")
+def contact_message_delete(contact_id: int, msg_id: int) -> JSONResponse:
+    """Удалить конкретную реплику бота «для всех» — и у нас, и в Telegram у собеседника.
+
+    Только для direction='out' с известным tg_msg_id: свои сообщения Telegram даёт стереть
+    у обеих сторон (revoke=True), чужие — нет и не должен. Шлём через то же соединение
+    слушателя, что и обычную отправку (см. contact_send) — второй клиент той же сессией
+    сжигает аккаунт."""
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT m.id, m.direction, m.account_id, m.tg_msg_id, c.tg_user_id "
+            "FROM messages m JOIN contacts c ON c.id = m.contact_id "
+            "WHERE m.id=? AND m.contact_id=?", (msg_id, contact_id)).fetchone()
+    if not row:
+        return JSONResponse({"error": "сообщение не найдено"}, status_code=404)
+    if row["direction"] != "out":
+        return JSONResponse({"error": "нельзя удалить чужое сообщение — Telegram это не позволяет"},
+                            status_code=400)
+    if not row["tg_msg_id"] or not row["account_id"] or not row["tg_user_id"]:
+        return JSONResponse({"error": "у этого сообщения нет id в Telegram (старая запись, "
+                                      "до появления удаления) — стереть можно только вручную в самом Telegram"},
+                            status_code=400)
+
+    ids = [int(x) for x in str(row["tg_msg_id"]).split(",") if x.strip()]
+    from channels import listener
+    ok = listener.delete_via_listener(int(row["account_id"]), int(row["tg_user_id"]), ids)
+    if not ok:
+        return JSONResponse({"error": "слушатель не держит этот аккаунт — не удалилось. "
+                                      "Проверь его сессию в «Аккаунтах»."}, status_code=502)
+
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM messages WHERE id=?", (msg_id,))
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/contact/{contact_id}/context")
@@ -5466,6 +5600,13 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
              int(payload["notify_account_id"]) if payload.get("notify_account_id") else None,
              cur.lastrowid),
         )
+        conn.execute(
+            "UPDATE campaigns SET work_hours_tz=?, work_hours_start=?, work_hours_end=? WHERE id=?",
+            ((payload.get("work_hours_tz") or "").strip() or None,
+             (payload.get("work_hours_start") or "").strip() or None,
+             (payload.get("work_hours_end") or "").strip() or None,
+             cur.lastrowid),
+        )
         _sync_campaign_accounts(conn, cur.lastrowid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
@@ -5506,6 +5647,10 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
             acc = payload.get("notify_account_id")
             conn.execute("UPDATE campaigns SET notify_account_id=? WHERE id=?",
                          (int(acc) if acc else None, cid))
+        for key in ("work_hours_tz", "work_hours_start", "work_hours_end"):
+            if key in payload:
+                conn.execute(f"UPDATE campaigns SET {key}=? WHERE id=?",
+                             ((payload.get(key) or "").strip() or None, cid))
         if account_ids is not None:
             _sync_campaign_accounts(conn, cid, account_ids, account_limits)
     return JSONResponse({"ok": True, "id": cid})
@@ -6532,7 +6677,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             params.append(f"%{tag}%")
         rows = conn.execute(
             f"SELECT id, COALESCE(person_name, name) AS who, username, phone, status, "
-            f"has_tg, has_wa, tg_checked_at, checked_at, tags, agency, city "
+            f"has_tg, has_wa, tg_checked_at, checked_at, tags, agency, city, source "
             f"FROM contacts WHERE {where} "
             f"ORDER BY (status='new') DESC, id LIMIT ?", (*params, max(1, min(limit, 5000)))
         ).fetchall()
@@ -6542,9 +6687,11 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             "SELECT contact_id FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchall()}
 
     is_tg = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
-    items, reasons = [], {}
+    items, reasons, sources = [], {}, {}
     for r in rows:
         d = dict(r)
+        src = (d.get("source") or "").strip() or "(без источника)"
+        sources[src] = sources.get(src, 0) + 1
         why = None
         if d["id"] in paused:
             why = "снят вручную"
@@ -6565,6 +6712,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         "total": len(items),
         "in_queue": sum(1 for i in items if i["in_queue"]),
         "reasons": reasons,          # почему остальные не пойдут, с количеством
+        "sources": sources,          # источник → сколько контактов из него в этой аудитории
         # Сколько ещё не проверено: пока номер не пробит, рассылка резолвит его прямо
         # в момент отправки (ImportContacts) — самый быстрый способ поймать бан.
         "unchecked_tg": sum(1 for i in items if (i.get("has_tg") or "unknown") == "unknown"),

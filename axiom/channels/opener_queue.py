@@ -123,7 +123,7 @@ async def _send_next_line(row: dict) -> None:
         await client.start()
         # резолвим по username/телефону (не по id — свежая сессия не помнит чужой entity-кэш)
         entity = await _resolve_entity(client, row)
-        await _send_parts(client, entity, parts[:1])
+        sent_ids = await _send_parts(client, entity, parts[:1])
     except Exception as e:  # noqa: BLE001
         cat = classify_error(e)
         if cat == "ban":
@@ -151,7 +151,7 @@ async def _send_next_line(row: dict) -> None:
     rest = parts[1:]
     with database.get_conn() as conn:
         database.add_message(conn, row["contact_id"], "out", parts[0], intent=None,
-                             account_id=acc["id"])
+                             account_id=acc["id"], tg_msg_ids=sent_ids)
         if rest:
             next_at = (datetime.utcnow()
                        + timedelta(seconds=random.uniform(*NEXT_LINE_MIN))).isoformat(sep=" ", timespec="seconds")

@@ -645,7 +645,6 @@
       <div class="right"><span class="upd" id="upd">—</span>
         <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 2a6 6 0 00-6 6v3l-1 3h14l-1-3V8a6 6 0 00-6-6z"/><path d="M7.5 16a2.5 2.5 0 005 0"/></svg><span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
           <div class="notif" id="notif" style="display:none" role="menu"></div></div>
-        <button id="deploy" title="Обновить код с GitHub и перезапустить пульт" style="display:none"></button>
         <button id="refresh" aria-label="Обновить">⟳ Обновить</button><button id="logout-btn" title="Выйти" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;color:var(--text-muted);cursor:pointer;font-size:13px">🚪</button></div>
     </div>
     <main id="view" role="main" aria-live="polite"></main>
@@ -721,6 +720,7 @@ const NAV_GROUPS=[
     {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
     {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
+    {id:"connectors",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="10" r="2.5"/><circle cx="16" cy="4" r="2.5"/><circle cx="16" cy="16" r="2.5"/><line x1="6.2" y1="9" x2="13.8" y2="5"/><line x1="6.2" y1="11" x2="13.8" y2="15"/></svg>',label:"Коннекторы"},
   ]}
 ];
 // «ИИ-агенты» слиты в «Структуру»: должность сама несёт аккаунт/задачу/промпт.
@@ -1050,14 +1050,26 @@ async function openAudience(cid){
   document.addEventListener("keydown",function esc4(e){
     if(e.key==="Escape"){close();document.removeEventListener("keydown",esc4);}});
   let AUD_ONLY="";    // "" | queue | blocked
+  let AUD_SRC="";     // "" (все источники) | конкретный source, как в списке контактов CRM
   const draw=async()=>{
     const inner=wrap.querySelector(".org-mform-inner");
     let d;try{d=await api(`/api/campaign/${cid}/audience`);}catch(e){d=null;}
     if(!d||d.error){inner.innerHTML=`<div style="color:#c0392b">${esc((d&&d.error)||"не загрузилось")}</div>
       <div style="margin-top:12px"><button class="modal-close">закрыть</button></div>`;
       inner.querySelector(".modal-close").onclick=close;return;}
-    const rows=d.items.filter(r=>AUD_ONLY==="queue"?r.in_queue:AUD_ONLY==="blocked"?!r.in_queue:true);
+    // AUD_SRC мог протухнуть после /pause_contacts (перезагружаем d, а прошлого
+    // источника в новой выборке может уже не быть) — сбрасываем в «все», а не молча
+    // показываем пустой список.
+    if(AUD_SRC&&!(d.sources||{})[AUD_SRC])AUD_SRC="";
+    const rows=d.items.filter(r=>
+      (AUD_ONLY==="queue"?r.in_queue:AUD_ONLY==="blocked"?!r.in_queue:true)
+      &&(AUD_SRC?((r.source||"").trim()||"(без источника)")===AUD_SRC:true));
     const reasons=Object.entries(d.reasons||{}).map(([k,v])=>`${esc(k)}: <b>${v}</b>`).join(" · ");
+    // Источники — тем же принципом, что и в «Контактах»: откуда пришли ЭТИ конкретные
+    // люди аудитории, и сколько из них. Без этого нельзя было понять, что «0 из 400
+    // пойдёт» — это конкретно 216 контактов из одного битого импорта, а не вся база.
+    const srcOpts=Object.entries(d.sources||{}).sort((a,b)=>b[1]-a[1])
+      .map(([s,n])=>`<option value="${esc(s)}" ${AUD_SRC===s?"selected":""}>${esc(s)} (${n})</option>`).join("");
     inner.innerHTML=`
       <div style="font-weight:700;font-size:15px">👥 Кто в рассылке — ${esc(d.campaign||"")}</div>
       <div class="hint" style="margin-bottom:10px">тег аудитории: ${d.tag?esc(d.tag):"<i>не задан (вся база)</i>"} · канал: ${esc(d.channel||"")}</div>
@@ -1074,6 +1086,7 @@ async function openAudience(cid){
       <div class="ttoolbar" style="margin:0 0 8px">
         ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"]].map(([k,l])=>
           `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}</button>`).join("")}
+        <select id="aud-src" title="источник — откуда пришли контакты этой аудитории"><option value="">все источники (${d.total})</option>${srcOpts}</select>
         <span class="grow"></span>
         <button id="aud-selall" title="поставить галочки на все строки текущего фильтра, кому это ещё разрешено (не выпавшие по другой причине)">☑ выделить все</button>
         <button id="aud-selnone" title="снять со всех строк текущего фильтра — контакт пропускается ИМЕННО в этой кампании">☐ снять все</button>
@@ -1113,6 +1126,8 @@ async function openAudience(cid){
       m.textContent=r.error?("ошибка: "+r.error):(ch.checked?"вернули в рассылку":"снят из этой кампании");
       if(!r.error)route();});
     inner.querySelectorAll(".aud-f").forEach(b=>b.onclick=()=>{AUD_ONLY=b.dataset.f;draw();});
+    const srcSel=inner.querySelector("#aud-src");
+    if(srcSel)srcSel.onchange=()=>{AUD_SRC=srcSel.value;draw();};
     // Пробив TG — прямо здесь, где проблема и видна: иначе оператор читает
     // предупреждение и не знает, куда идти его лечить.
     const tgAuto=inner.querySelector("#aud-tgauto"),tgRun=inner.querySelector("#aud-tgrun");
@@ -5396,6 +5411,29 @@ async function viewCampaigns(v){
           <span class="hint" id="c-team-msg">выбрано: 0</span></div>
         <div id="c-team-box" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div></div>
       <div class="field"><label>Лимит контактов в день (на аккаунт)</label><input id="c-limit" type="number" value="15" style="max-width:160px"></div>
+      <div class="field"><label>🕐 Рабочие часы — когда агент может писать и отвечать (пусто = без ограничений)</label>
+        <div class="hint" style="margin-bottom:6px">Вне этого окна кампания не начинает новую рассылку, а входящим отвечает при следующем контакте в рабочие часы — ответ не теряется, просто откладывается.</div>
+        <div class="row2">
+          <div class="field"><label>Часовой пояс</label><select id="c-wh-tz">
+            <option value="">— без ограничений (UTC, если время задано) —</option>
+            <option value="Europe/Kaliningrad">Калининград (UTC+2)</option>
+            <option value="Europe/Moscow">Москва (UTC+3)</option>
+            <option value="Europe/Samara">Самара (UTC+4)</option>
+            <option value="Asia/Yekaterinburg">Екатеринбург (UTC+5)</option>
+            <option value="Asia/Omsk">Омск (UTC+6)</option>
+            <option value="Asia/Krasnoyarsk">Красноярск (UTC+7)</option>
+            <option value="Asia/Irkutsk">Иркутск (UTC+8)</option>
+            <option value="Asia/Yakutsk">Якутск (UTC+9)</option>
+            <option value="Asia/Vladivostok">Владивосток (UTC+10)</option>
+            <option value="UTC">UTC</option>
+          </select></div>
+          <div class="field"><label>С — до</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="c-wh-start" type="time" value="09:00" style="max-width:120px">
+              <span>—</span>
+              <input id="c-wh-end" type="time" value="20:00" style="max-width:120px">
+            </div></div>
+        </div></div>
       <div class="field"><label>📨 Первое сообщение — уйдёт получателю ДОСЛОВНО, каждая строка = отдельное сообщение. {name} = имя контакта, {sender} = имя аккаунта-отправителя (команда ротируется — не вписывай имя руками)</label>
         <textarea id="c-msg" rows="5" placeholder="Здравствуйте, {name}!&#10;Меня зовут Василий, я из Фонда доступного жилья.&#10;Бывает, что клиент выбрал объект, но срывается — банк отказал или не хватает взноса?"></textarea></div>
       <div class="field"><label>🧠 Модель, которая ведёт диалоги ЭТОЙ кампании</label>
@@ -5504,6 +5542,9 @@ async function viewCampaigns(v){
     mainAcc=c.account_id?String(c.account_id):"";
     $("#c-project").value=c.project_id||(PROJECT_SEL?PROJECT_SEL.id:"");
     $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
+    $("#c-wh-tz").value=c.work_hours_tz||"";
+    $("#c-wh-start").value=c.work_hours_start||"09:00";
+    $("#c-wh-end").value=c.work_hours_end||"20:00";
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
     // модель диалогов этой кампании (пусто = общая из «Аккаунтов»)
     api("/api/settings/agent_model").then(s=>{
@@ -5653,6 +5694,9 @@ async function viewCampaigns(v){
       notify_target:$("#c-notify-target").value.trim(),
       notify_account_id:$("#c-notify-acc").value||null,
       agent_model:$("#c-agent-model").value,
+      work_hours_tz:$("#c-wh-tz").value,
+      work_hours_start:$("#c-wh-tz").value?$("#c-wh-start").value:"",
+      work_hours_end:$("#c-wh-tz").value?$("#c-wh-end").value:"",
       message_template:$("#c-msg").value,agent_prompt:$("#c-prompt").value,kp_text:$("#c-kp").value};
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",
@@ -6199,6 +6243,26 @@ async function openDossier(id){
         <div class="sub">обогащён ${fmt(c.enriched_at)}</div>`
       :`<div class="sub">Ещё не обогащён. Нажми «Обогатить» — агент прочитает сайт и достроит карточку (5-15 сек), потом обнови.</div>`}
     </div>`;
+  // Обогащение ИЗ TELEGRAM — отдельным блоком, а не вперемешку с обычным.
+  // Разные источники и разная достоверность: обычное читает сайт и справочники (там
+  // про ЮРЛИЦО), это — bio профиля и личный канал человека, где он своими словами
+  // говорит, что продаёт. Поэтому видно, ЧТО именно прочитано (tg_enrich_note) и
+  // когда: иначе непонятно, откуда взялась строчка «продаёт наставничество».
+  const tgEnr=c.tg_enriched_at;
+  const tgRow=(label,val)=>val?`<div class="field"><label>${label}</label><div class="v">${esc(val)}</div></div>`:"";
+  const tgBlock=`<div class="card" style="margin-bottom:14px;background:var(--panel2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b style="font-size:13px">📣 Что говорит о себе в Telegram</b>
+        <button id="dr-enrich-tg" data-id="${c.id}">${tgEnr?"↻ Перечитать":"Прочитать профиль и канал"}</button></div>
+      ${tgEnr?`
+        ${tgRow("Кто он по жизни", c.social_role)}
+        ${tgRow("Что продаёт", c.offer)}
+        ${tgRow("Чем занимается", c.niche)}
+        ${tgRow("Ключевые интересы", c.interests)}
+        ${c.tg_channel?`<div class="field"><label>Его канал</label><div class="v"><a class="ext" href="${esc(c.tg_channel)}" target="_blank">${esc(c.tg_channel)} ↗</a></div></div>`:""}
+        <div class="sub">прочитано: ${esc(c.tg_enrich_note)||"—"} · ${fmt(c.tg_enriched_at)}</div>`
+      :`<div class="sub">Ещё не читали. Кнопка откроет описание профиля и, если в нём есть ссылка на его канал, — закреп и последние посты. Оттуда достаём: кто он по жизни (предприниматель / эксперт / наёмный), что продаёт и о чём пишет. Идёт после пробива номера, поэтому нужен найденный в Telegram контакт.</div>`}
+    </div>`;
   // 🧠 H1: AI-досье физлица по его сообщениям из чатов (enrich_person.py).
   const hasDossier=(c.score!=null)||c.pains||c.rec_message;
   const pct=v=>v==null?"—":Math.round(v*100)+"%";
@@ -6218,6 +6282,7 @@ async function openDossier(id){
       <div class="field"><label>Сообщений</label><div class="v mono">${(c.history||[]).length}</div></div></div>
     ${sourceBlock}
     ${enrichBlock}
+    ${tgBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
       <div class="field"><label>🏢 Компания</label><div class="v">${c.company_id?`<span class="lnk" data-coid="${c.company_id}" style="cursor:pointer;color:var(--accent)">${esc(c.company_name||c.agency||"компания")} ↗</span>`:(esc(c.agency)||"—")}</div></div></div>
     <div class="field"><label>🗂 Воронка / продукт</label>
@@ -6248,6 +6313,18 @@ async function openDossier(id){
   if(eb)eb.onclick=async()=>{eb.textContent="обогащаю…";eb.disabled=true;
     await api(`/api/contact/${id}/enrich`,{method:"POST"});
     setTimeout(()=>openDossier(id),9000);};
+  // Чтение Telegram ЖДЁМ ответа, а не уходим в фон по таймеру: тут надо сходить в
+  // канал и разобрать посты — по одному лиду это секунды, и результат хочется увидеть
+  // сразу, а не гадать, обновилась ли карточка.
+  const etb=$("#dr-enrich-tg");
+  if(etb)etb.onclick=async()=>{
+    const was=etb.textContent;etb.textContent="читаю профиль и канал…";etb.disabled=true;
+    let r;try{r=await api(`/api/contact/${id}/enrich_tg`,{method:"POST"});}
+    catch(e){r={error:e.message};}
+    etb.disabled=false;etb.textContent=was;
+    if(r&&(r.error||r.ok===false)){alert("не вышло: "+(r.error||"нет ответа"));return;}
+    openDossier(id);
+  };
   $("#drawer").classList.add("open");
 }
 $("#dr-close").onclick=()=>$("#drawer").classList.remove("open");
@@ -6549,6 +6626,72 @@ async function viewProxy(v){
   };
 }
 
+// ----------------------------------------------------------------- connectors
+const CONNECTOR_META={
+  max:{label:"MAX",ic:"🔴",tier:"Приоритет",hint:"Bot API (dev.max.ru), REST, лимит 30 запр/сек. С 08.2025 бота публикует только юрлицо РФ — самозанятому/ИП токен не выдадут, нужна компания."},
+  avito:{label:"Авито",ic:"🟢",tier:"Приоритет",hint:"Messenger API (developers.avito.ru/api-catalog/messenger) — доступ по заявке, OAuth client_id/secret на партнёрский кабинет, вебхук на входящие."},
+  threads:{label:"Threads",ic:"⬛",tier:"Приоритет",hint:"Graph API Threads (graph.threads.net) — только постинг/ответы, ЛС нет. Нужна Tech Provider Verification у Meta и OAuth-приложение."},
+  vk:{label:"VK",ic:"🔵",tier:"Второстепенное",hint:"VK Bot API/Callback API для сообщений сообщества — токен группы, без верификации юрлица."},
+  whatsapp:{label:"WhatsApp",ic:"🟩",tier:"Второстепенное",hint:"Уже частично есть: Baileys-мост (axiom/whatsapp). Тут — довести до статуса «подключён» и завести в общий реестр коннекторов."},
+  instagram:{label:"Instagram",ic:"📷",tier:"Второстепенное",hint:"Meta Graph API (Instagram Messaging) — Business-аккаунт, привязка к Facebook-странице, App Review у Meta."},
+  facebook:{label:"Facebook",ic:"📘",tier:"Второстепенное",hint:"Meta Graph API (Messenger Platform) — Facebook-страница + приложение Meta, page_messaging разрешение."},
+};
+async function viewConnectors(v){
+  const st=await api("/api/connectors").catch(()=>({items:{}}));
+  const items=st.items||{};
+  const order=["max","avito","threads","vk","whatsapp","instagram","facebook"];
+  const card=id=>{const m=CONNECTOR_META[id],s=items[id]||{};const on=!!s.configured;
+    return `<div class="card" style="margin-bottom:12px" data-conn="${id}">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">${m.ic}</span>
+        <b style="font-size:14px">${m.label}</b>
+        <span class="tag">${m.tier}</span>
+        <span class="badge b-${on?"active":"stop"}" style="margin-left:auto">${on?"подключён":"не подключён"}</span>
+      </div>
+      <div class="sub" style="margin:8px 0">${m.hint}</div>
+      <div class="ttoolbar" style="margin:0">
+        <button data-act="cfg" data-id="${id}">${on?"Настройки":"⚙ Подключить"}</button>
+        ${on?`<button data-act="test" data-id="${id}">Проверить связь</button>`:""}
+        ${s.updated_at?`<span class="hint">обновлено ${esc(s.updated_at)}</span>`:""}
+      </div>
+    </div>`;};
+  v.innerHTML=`
+    <div class="sub" style="margin-bottom:14px">Интеграции с внешними каналами: мессенджеры и соцсети, откуда приходят и куда уходят сообщения кампаний. Приоритет реализации — сверху вниз.</div>
+    ${order.map(card).join("")}
+  `;
+  v.querySelectorAll('[data-act="cfg"]').forEach(b=>b.onclick=()=>showConnectorConfigDialog(b.dataset.id,items[b.dataset.id]||{},()=>route()));
+  v.querySelectorAll('[data-act="test"]').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;b.textContent="проверяю…";
+    const r=await api(`/api/connectors/${b.dataset.id}/test`,{method:"POST"});
+    b.disabled=false;b.textContent="Проверить связь";
+    alert(r.ok?"Связь есть: "+(r.detail||"ok"):"Ошибка: "+(r.error||"нет связи"));
+  });
+}
+function showConnectorConfigDialog(id,cur,onSaved){
+  const m=CONNECTOR_META[id];
+  const fields=(cur.fields&&Object.keys(cur.fields).length)?cur.fields:{token:""};
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:480px;width:92%;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">${m.ic} ${m.label} — настройка коннектора</b><button class="cf-close">✕</button></div>
+    <div class="sub" style="margin-bottom:10px">${m.hint}</div>
+    <div class="field"><label>Токен / ключ доступа</label><input id="cf-token" value="${esc(fields.token||"")}" placeholder="вставь API-токен ${m.label}" style="width:100%"></div>
+    <div class="field"><label>Комментарий (кабинет, срок действия, кто выдал)</label><textarea id="cf-note" style="width:100%;min-height:60px">${esc(cur.note||"")}</textarea></div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:10px"><button class="cf-close">Отмена</button><button class="primary" id="cf-save">Сохранить</button></div>
+  </div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelectorAll(".cf-close").forEach(b=>b.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  modal.querySelector("#cf-save").onclick=async()=>{
+    const token=modal.querySelector("#cf-token").value.trim();
+    const note=modal.querySelector("#cf-note").value.trim();
+    await api(`/api/connectors/${id}/config`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({fields:{token},note})});
+    close();onSaved&&onSaved();
+  };
+}
+
 // ----------------------------------------------------------------- calendar
 async function viewCalendar(v){
   const [m,g]=await Promise.all([api("/api/meetings"),api("/api/gcal").catch(()=>({connected:false}))]);
@@ -6636,7 +6779,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier};
+const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 
@@ -7047,49 +7190,6 @@ async function showEvent(eid){
   const ob=inner.querySelector("#ev-open");
   if(ob)ob.onclick=()=>{close();$("#notif").style.display="none";openDossier(c.id);};
 }
-// `git pull` отвечал «Already up to date» и никого не настораживал.
-// location.reload(true) современные браузеры игнорируют: страница приходит из кеша,
-// и после успешного деплоя пульт продолжает показывать старый интерфейс с висящей
-// кнопкой «Обновить». Уникальный параметр в адресе заставляет взять свежий файл.
-function hardReload(){
-  const u=new URL(location.href);
-  u.searchParams.set("v",Date.now());
-  location.replace(u.toString());   // replace, а не href — не засоряем историю
-}
-async function checkDeploy(){
-  const b=$("#deploy");if(!b)return;
-  let d;try{d=await api("/api/deploy/status");}catch(e){return;}
-  if(!d||d.error)return;
-  const wrongBranch=d.branch&&d.branch!=="main";
-  if(!d.behind&&!wrongBranch){b.style.display="none";return;}
-  b.style.display="";
-  b.textContent=wrongBranch?`⬇ Обновить (ветка ${d.branch})`:`⬇ Обновить (${d.behind})`;
-  b.style.background="var(--accent)";b.style.color="#fff";b.style.border="none";
-  b.title=(wrongBranch?`Сервер на ветке «${d.branch}», а код едет в main — поэтому обновления и не приходят.\n\n`:"")
-    +`Не привезено: ${d.behind}\n\n`+(d.pending||[]).join("\n");
-  b.onclick=async()=>{
-    if(!confirm(`Обновить пульт до последней версии?\n\n${(d.pending||[]).slice(0,8).join("\n")}\n\nПульт перезапустится, страница обновится сама через ~15 секунд.`))return;
-    b.disabled=true;b.textContent="обновляю…";
-    const send=force=>api("/api/deploy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force,restart:true})});
-    let r=await send(false);
-    if(r&&r.needs_confirm){
-      if(!confirm("⚠️ "+r.warn)){b.disabled=false;checkDeploy();return;}
-      r=await send(true);
-    }
-    if(!r||r.ok===false){alert("не обновилось: "+((r&&r.error)||"нет ответа")+"\n\n"+(((r&&r.log)||[]).join("\n").slice(-600)));
-      b.disabled=false;checkDeploy();return;}
-    b.textContent="перезапуск…";
-    // ждём, пока systemd поднимет процесс, и перезагружаем страницу без кеша
-    let tries=0;
-    const wait=setInterval(async()=>{
-      tries++;
-      try{const s=await api("/api/deploy/status");
-        if(s&&!s.error){clearInterval(wait);hardReload();}
-      }catch(e){}
-      if(tries>20){clearInterval(wait);hardReload();}
-    },1500);
-  };
-}
 $("#bell").onclick=()=>{const box=$("#notif");const open=box.style.display==="none";
   if(open){renderNotif();box.style.display="block";
     if(NOTIF.length)localStorage.setItem("axiom_notif_seen",NOTIF.reduce((a,n)=>n.ts>a?n.ts:a,""));
@@ -7157,8 +7257,6 @@ $("#refresh").onclick=route;
 $("#logout-btn").onclick=()=>{document.cookie="axiom_auth=;path=/;max-age=0";location.href="/login";};
 route();
 setInterval(refreshNotif,60000);
-checkDeploy();
-setInterval(checkDeploy,300000);   // раз в 5 минут: не приехало ли обновление
 </script>
 </body>
 </html>

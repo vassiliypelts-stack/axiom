@@ -443,6 +443,16 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     if not camp:
         print(f"кампания #{cid} не найдена")
         return
+    if not test and not database.in_work_hours(camp):
+        print(f"кампания #{cid} «{camp['name']}»: сейчас вне рабочих часов "
+              f"({camp.get('work_hours_start')}–{camp.get('work_hours_end')} "
+              f"{camp.get('work_hours_tz') or 'UTC'}) — не шлём, живым людям ночью не пишем")
+        with database.get_conn() as conn:
+            database.add_event(conn, "info", f"⏰ Кампания «{camp['name']}»: вне рабочих часов",
+                               "заход пропущен — попадаешь в окно тишины кампании. "
+                               "Запусти снова в рабочие часы, или поправь их в настройках кампании.",
+                               level="warn", campaign_id=cid)
+        return
     chans = _channels(camp["channel"])
     if "telegram" not in chans:
         print(f"канал '{camp['channel']}': отправка через WhatsApp пока не подключена "
@@ -586,6 +596,10 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     for row in rows:
         if sent >= cap:
             break
+        if not test and not database.in_work_hours(camp):
+            print(f"кампания #{cid}: рабочие часы закончились посреди захода — "
+                  f"дальше {len(rows) - rows.index(row)} контактов достанутся следующему заходу")
+            break
         s = _pick(live, rr)
         if s is None:
             print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
@@ -632,7 +646,7 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана
             # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
             # опенер целиком сразу — очередь на потом ставить некому.
-            await _send_parts(s["client"], entity,
+            sent_ids = await _send_parts(s["client"], entity,
                               parts if s["id"] is None else parts[:OPENER_BURST])
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
@@ -702,9 +716,10 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
         rest = parts[len(burst):]
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
-            for p in burst:
+            for i, p in enumerate(burst):
+                mid = sent_ids[i] if i < len(sent_ids) else None
                 database.add_message(conn, row["id"], "out", p, intent=None,
-                                     account_id=s["id"])
+                                     account_id=s["id"], tg_msg_ids=[mid] if mid else None)
             database.set_status(conn, row["id"], "messaged")
             conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
             conn.execute(

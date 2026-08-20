@@ -66,6 +66,19 @@ _EXTRA_CONTACT_COLS = {
     # по этой ссылке человека можно открыть и дообогатить руками или скрапером, когда
     # телефона в выгрузке не было вовсе — а таких выгрузок большинство.
     "site": "TEXT",
+    # --- Обогащение ИЗ TELEGRAM: bio профиля + личный канал человека ---
+    # Отдельный слой поверх обычного обогащения (agent/enrich.py читает сайт/2ГИС).
+    # Здесь источник — сам Telegram: описание профиля и, если в нём есть ссылка на
+    # свой канал, закреп и несколько последних постов. Именно там человек своими
+    # словами говорит, ЧТО продаёт, — сайт и справочники этого не дают.
+    "tg_channel": "TEXT",             # ссылка на личный канал, найденная в bio
+    # Позиция в социуме: предприниматель | эксперт/тренер | наёмный | госслужащий |
+    # инвестор | студент… Заводится отдельно от person_role (там должность из
+    # справочника) и от segment (там сфера): для захода важно не «директор ООО», а
+    # «сам себе хозяин» против «работает на дядю» — это разные разговоры.
+    "social_role": "TEXT",
+    "tg_enriched_at": "TEXT",         # когда прошло обогащение из Telegram (NULL = не проходило)
+    "tg_enrich_note": "TEXT",         # что именно удалось прочитать (bio / канал / сколько постов)
     "email": "TEXT",                  # email из импорта/обогащения
     "is_test": "INTEGER DEFAULT 0",  # свой тестовый номер — встаёт первым в очереди кампании
     "test_campaign_id": "INTEGER",   # для какой кампании он тестовый (NULL = легаси, для любой)
@@ -177,6 +190,12 @@ _EXTRA_CAMPAIGN_COLS = {
     # нетворкинга с экспертами звучат по-разному, а дожим один и тот же был бы для
     # обоих. Пусто → кампания дожимается только общими шаблонами, как раньше.
     "extra_followup_template": "TEXT",
+    # --- рабочие часы кампании: когда боту можно писать/отвечать живым людям ---
+    # Ночная рассылка и полуночный ответ — то, что моментально выдаёт бота и пугает
+    # людей. Пусто во всех трёх = ограничений нет (как раньше, ничего не ломаем).
+    "work_hours_tz": "TEXT",       # IANA-зона, напр. Europe/Moscow; пусто = UTC
+    "work_hours_start": "TEXT",    # "09:00"
+    "work_hours_end": "TEXT",      # "20:00"
 }
 
 
@@ -401,6 +420,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     msg = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
     if msg and "account_id" not in msg:
         conn.execute("ALTER TABLE messages ADD COLUMN account_id INTEGER")
+    # ID реального сообщения в Telegram (через запятую, если один блок в БД — это
+    # несколько раздельных сообщений в живом чате). Нужен, чтобы оператор мог удалить
+    # ошибочную реплику бота «для всех» кнопкой из «Диалогов» — без него Telegram
+    # нечем адресовать, какое именно сообщение стирать.
+    if msg and "tg_msg_id" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN tg_msg_id TEXT")
 
 
 def _repair_unverified_has_tg(conn: sqlite3.Connection) -> None:
@@ -450,6 +475,31 @@ def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
     conn.execute(f"INSERT INTO deals_new ({names}) SELECT {names} FROM deals")
     conn.execute("DROP TABLE deals")
     conn.execute("ALTER TABLE deals_new RENAME TO deals")
+
+
+def in_work_hours(camp_row) -> bool:
+    """Сейчас можно писать/отвечать по этой кампании? Пусто в start/end = ограничений
+    нет (старое поведение). Часовой пояс — IANA-имя (Europe/Moscow); пусто = UTC.
+
+    Окно, переходящее через полночь (start > end, напр. 20:00-02:00), тоже
+    поддержано — просто two-side сравнение вместо одностороннего."""
+    start = camp_row["work_hours_start"] if "work_hours_start" in camp_row.keys() else None
+    end = camp_row["work_hours_end"] if "work_hours_end" in camp_row.keys() else None
+    if not start or not end:
+        return True
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = camp_row["work_hours_tz"] if "work_hours_tz" in camp_row.keys() else None
+        tz = ZoneInfo(tz_name) if tz_name else _dt.timezone.utc
+        now = _dt.datetime.now(tz).time()
+        t_start = _dt.time.fromisoformat(start)
+        t_end = _dt.time.fromisoformat(end)
+    except (ValueError, KeyError):
+        return True  # битые настройки — не блокируем рассылку молча
+    if t_start <= t_end:
+        return t_start <= now <= t_end
+    return now >= t_start or now <= t_end   # окно через полночь
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
@@ -814,10 +864,13 @@ def mark_photos_by_tg(conn: sqlite3.Connection, tg_user_ids) -> None:
 
 
 def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str,
-                intent: str | None = None, account_id: int | None = None) -> None:
+                intent: str | None = None, account_id: int | None = None,
+                tg_msg_ids: list[int] | None = None) -> None:
+    tg_msg_id = ",".join(str(i) for i in tg_msg_ids) if tg_msg_ids else None
     conn.execute(
-        "INSERT INTO messages (contact_id, direction, text, intent, account_id) VALUES (?, ?, ?, ?, ?)",
-        (contact_id, direction, text, intent, account_id),
+        "INSERT INTO messages (contact_id, direction, text, intent, account_id, tg_msg_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (contact_id, direction, text, intent, account_id, tg_msg_id),
     )
 
 

@@ -571,7 +571,7 @@ async def run() -> None:
     await _supervise()
 
 
-def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: float = 120.0) -> bool:
+def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: float = 120.0) -> list[int] | None:
     """Отправить сообщение аккаунтом, который УЖЕ подключён слушателем.
 
     Планировщику (напоминания, дожим, «не дошёл») тоже нужно писать в Telegram. Своего
@@ -587,15 +587,37 @@ def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: f
     client = CLIENTS.get(acc_id)
     if loop is None or client is None:
         _log(f"[sched] аккаунт #{acc_id} не подключён слушателем — отправку пропускаю")
-        return False
+        return None
     from channels.telegram import _send_parts
 
     fut = asyncio.run_coroutine_threadsafe(_send_parts(client, tg_user_id, parts), loop)
     try:
-        fut.result(timeout=timeout)
-        return True
+        return fut.result(timeout=timeout)
     except Exception as e:  # noqa: BLE001 — сеть/флуд: пусть решает вызывающий
         _log(f"[sched] не отправилось аккаунтом #{acc_id}: {e}")
+        return None
+
+
+def delete_via_listener(acc_id: int, tg_user_id: int, msg_ids: list[int],
+                        timeout: float = 30.0) -> bool:
+    """Удалить «для всех» сообщения, отправленные этим аккаунтом — тем же
+    подключением слушателя (см. send_via_listener про запрет второго клиента
+    на ту же сессию)."""
+    loop = _LOOP
+    client = CLIENTS.get(acc_id)
+    if loop is None or client is None:
+        _log(f"[del] аккаунт #{acc_id} не подключён слушателем — удаление пропускаю")
+        return False
+
+    async def _do():
+        await client.delete_messages(tg_user_id, msg_ids, revoke=True)
+
+    fut = asyncio.run_coroutine_threadsafe(_do(), loop)
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"[del] не удалилось аккаунтом #{acc_id}: {e}")
         return False
 
 

@@ -172,6 +172,8 @@ class Action:
     followup_n: int = 0    # какой по счёту пинг (для followup)
     followup_max: int = 0  # сколько пингов допустимо ИМЕННО для этого контакта
                             # (глобальный список + доп. шаг кампании, если задан)
+    tg_msg_ids: list | None = None  # id реально отправленных TG-сообщений — send()
+                                     # проставляет ПОСЛЕ отправки, apply() кладёт в messages
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -324,7 +326,8 @@ def apply(conn, action: Action) -> None:
         database.set_status(conn, action.contact_id, "nurture")
     elif action.kind == "followup":
         # фиксируем сам пинг как исходящее — счётчик дожима = trailing-out streak
-        database.add_message(conn, action.contact_id, "out", action.text, intent=None)
+        database.add_message(conn, action.contact_id, "out", action.text, intent=None,
+                             tg_msg_ids=action.tg_msg_ids)
         cap = action.followup_max or len(FOLLOWUP_TEMPLATES)
         if action.followup_n >= cap:
             database.set_status(conn, action.contact_id, "nurture")  # дожали максимум

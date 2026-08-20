@@ -301,17 +301,24 @@ async def _humanize_before_reply(client, peer) -> None:
     await asyncio.sleep(random.uniform(*_reply_delay_range()))
 
 
-async def _send_parts(client, peer, parts: list[str]) -> None:
+async def _send_parts(client, peer, parts: list[str]) -> list[int]:
     """Шлёт сообщения по очереди как живой человек: показывает «печатает…»,
-    держит паузу пропорционально длине текста, паузит между сообщениями."""
+    держит паузу пропорционально длине текста, паузит между сообщениями.
+
+    Возвращает id отправленных в Telegram сообщений (по одному на часть) — нужны,
+    чтобы потом можно было адресно удалить конкретную реплику «для всех» (см.
+    tg_msg_id в messages и /api/contact/{id}/message/{msg_id}/delete)."""
     clean = [p.strip() for p in parts if p and p.strip()]
+    sent_ids: list[int] = []
     for i, part in enumerate(clean):
         typing = min(len(part) / random.uniform(*TYPING_CPS), MAX_TYPING_SEC)
         async with client.action(peer, "typing"):
             await asyncio.sleep(max(1.2, typing))
-        await client.send_message(peer, part)
+        sent = await client.send_message(peer, part)
+        sent_ids.append(sent.id)
         if i < len(clean) - 1:
             await asyncio.sleep(random.uniform(*PART_PAUSE))
+    return sent_ids
 
 
 def _col(row, name: str):
@@ -408,7 +415,7 @@ async def run_outreach(client: TelegramClient, limit: int | None = None) -> int:
         try:
             entity = await _resolve_entity(client, row)
             parts = _first_message_parts(row)
-            await _send_parts(client, entity, parts)
+            sent_ids = await _send_parts(client, entity, parts)
             text = "\n".join(parts)
         except FloodWaitError as e:
             print(f"[floodwait] ждём {e.seconds}с (Telegram попросил притормозить)")
@@ -422,7 +429,7 @@ async def run_outreach(client: TelegramClient, limit: int | None = None) -> int:
 
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
-            database.add_message(conn, row["id"], "out", text, intent=None)
+            database.add_message(conn, row["id"], "out", text, intent=None, tg_msg_ids=sent_ids)
             database.set_status(conn, row["id"], "messaged")
         sent += 1
         print(f"[sent {sent}/{cap}] -> {row['name'] or row['username'] or row['phone']}")
@@ -521,6 +528,18 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     if not messages or messages[-1]["role"] != "user":
         return  # нечего отвечать (нет реплики собеседника)
 
+    # Вне рабочих часов кампании агент молчит — полуночный ответ выдаёт бота вернее
+    # всего остального. Входящее уже сохранено (см. докстринг), не теряется: как
+    # только кто-то следующий напишет этому контакту В рабочие часы, агент ответит
+    # сразу на оба сообщения (см. паузу «дописанное успевает лечь в базу» выше).
+    # Известный пробел: если человек больше НЕ напишет, ответ сам не «догонит» его с
+    # открытием окна — это требует отдельного катчап-тика планировщика, пока не сделан.
+    if camp and not database.in_work_hours(camp):
+        print(f"[work hours] contact {contact_id}: кампания «{camp['name']}» молчит вне "
+              f"{camp.get('work_hours_start')}–{camp.get('work_hours_end')} "
+              f"{camp.get('work_hours_tz') or 'UTC'} — ответ отложен")
+        return
+
     try:
         reply = await asyncio.to_thread(
             generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,
@@ -564,10 +583,10 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             peer = await event.get_input_chat()
             await _humanize_before_reply(event.client, peer)
             stall = random.choice(_STALL_REPLIES)
-            await _send_parts(event.client, peer, [stall])
+            stall_ids = await _send_parts(event.client, peer, [stall])
             with database.get_conn() as conn:
                 database.add_message(conn, contact_id, "out", stall, intent=None,
-                                     account_id=account_id)
+                                     account_id=account_id, tg_msg_ids=stall_ids)
         except Exception as e2:  # noqa: BLE001 — фолбэк best-effort, не роняем обработку
             print(f"[agent fallback error] contact {contact_id}: {e2}")
         return
@@ -577,7 +596,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # Паузу «заметил → прочитал → печатает» уже выдержали В НАЧАЛЕ, до чтения истории
     # (см. docstring): так дописанные сообщения попадают в этот же ответ. Второй раз
     # ждать нельзя — человек и без того ждёт ответа полминуты.
-    await _send_parts(event.client, peer, reply.reply_parts)
+    reply_ids = await _send_parts(event.client, peer, reply.reply_parts)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 
     # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужное (kp_choice по названию).
@@ -592,7 +611,8 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         try:
             await asyncio.sleep(random.uniform(*REPLY_DELAY))
             if chosen.get("kp_text"):
-                await _send_parts(event.client, peer, [chosen["kp_text"]])
+                kp_ids = await _send_parts(event.client, peer, [chosen["kp_text"]])
+                reply_ids += kp_ids
                 reply_text += f"\n[КП «{chosen.get('name')}»: {chosen['kp_text']}]"
             cp = _kp_path(chosen.get("kp_file"))
             if cp is not None:
@@ -627,7 +647,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
                      "SELECT id FROM messages WHERE contact_id=? AND direction='in' "
                      "ORDER BY id DESC LIMIT 1)", (reply.intent, contact_id))
         database.add_message(conn, contact_id, "out", reply_text, intent=None,
-                             account_id=account_id)
+                             account_id=account_id, tg_msg_ids=reply_ids)
         who = contact_info.get("name") or contact_info.get("person_name") or (f"@{username}" if username else str(contact_id))
         if meeting is not None:
             database.record_meeting(
@@ -804,7 +824,7 @@ def _make_sender(client: TelegramClient):
         await asyncio.sleep(random.uniform(*REPLY_DELAY))
         # B1: дожим/напоминание тоже шлём человекоподобно (печатает… + по частям)
         parts = [c for c in action.text.split("\n\n") if c.strip()] or [action.text]
-        await _send_parts(client, int(action.tg_user_id), parts)
+        action.tg_msg_ids = await _send_parts(client, int(action.tg_user_id), parts)
         print(f"[scheduler {action.kind}] -> {action.name or action.contact_id}")
     return send
 

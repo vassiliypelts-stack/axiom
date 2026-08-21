@@ -5424,6 +5424,11 @@ async function viewCampaigns(v){
           <input id="c-acc-q" placeholder="поиск: номер / @username / ярлык" style="flex:1;min-width:140px">
           <select id="c-acc-fchan"><option value="">любой канал</option><option value="tg">TG подключён</option><option value="wa">WA подключён</option></select>
           <select id="c-acc-fst"><option value="">любой статус</option><option value="active">готовые</option><option value="warming">на прогреве</option></select>
+          <select id="c-acc-fprot" title="Родные — личные номера (мама, друзья, партнёры). Отдельно, чтобы случайно не утащить в боевую рассылку.">
+            <option value="">родные + боевые</option>
+            <option value="0">только боевые (без родных)</option>
+            <option value="1">только родные 🏠</option>
+          </select>
           <button type="button" id="c-acc-selready" title="Отметить только реально живых (подключён + сессия жива + прокси жив + не бан) из текущего фильтра, остальных снять">Выделить живых</button>
           <button type="button" id="c-acc-selnone" title="Снять всё выделение">Снять всё</button>
           <span class="hint" id="c-team-msg">выбрано: 0</span></div>
@@ -5486,10 +5491,12 @@ async function viewCampaigns(v){
     const q=(($("#c-acc-q")||{}).value||"").toLowerCase().trim();
     const fchan=(($("#c-acc-fchan")||{}).value)||"";
     const fst=(($("#c-acc-fst")||{}).value)||"";
+    const fprot=(($("#c-acc-fprot")||{}).value)||"";
     const list=accounts.filter(a=>{
       if(fchan==="tg"&&!a.tg_connected)return false;
       if(fchan==="wa"&&!a.wa_authed)return false;
       if(fst&&a.status!==fst)return false;
+      if(fprot!==""&&!!a.protected!==(fprot==="1"))return false;
       if(q){const hay=((a.label||"")+" "+(a.phone||"")+" "+(a.username||"")).toLowerCase();if(!hay.includes(q))return false;}
       return true;
     }).sort((a,b)=>(isAccReady(b)-isAccReady(a)));   // живые — всегда сверху, без прокрутки
@@ -5510,7 +5517,7 @@ async function viewCampaigns(v){
       return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border);${ready?'':'opacity:.6'}">
         <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""}>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:13px">${dot}${esc(a.label||a.username||("#"+a.id))} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
+          <div style="font-weight:600;font-size:13px">${dot}${esc(a.label||a.username||("#"+a.id))}${a.protected?' <span class="badge b-active" title="Родной — личный номер, автоматика его не трогает без явного включения в команду">🏠 родной</span>':""} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
           <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam}</div>
         </div>
         <input type="number" min="0" class="c-acc-lim mono" data-id="${a.id}" value="${lim!=null?lim:''}"
@@ -5529,15 +5536,17 @@ async function viewCampaigns(v){
     box.querySelectorAll(".c-acc-star").forEach(b=>b.onclick=()=>{
       mainAcc=b.dataset.id;teamSet.add(+mainAcc);renderMain();renderTeam();});
   };
-  ["#c-acc-q","#c-acc-fchan","#c-acc-fst"].forEach(s=>{const el=$(s);if(el){el.oninput=renderTeam;el.onchange=renderTeam;}});
+  ["#c-acc-q","#c-acc-fchan","#c-acc-fst","#c-acc-fprot"].forEach(s=>{const el=$(s);if(el){el.oninput=renderTeam;el.onchange=renderTeam;}});
   const c_selready=$("#c-acc-selready");if(c_selready)c_selready.onclick=()=>{
     const q=(($("#c-acc-q")||{}).value||"").toLowerCase().trim();
     const fchan=(($("#c-acc-fchan")||{}).value)||"";
     const fst=(($("#c-acc-fst")||{}).value)||"";
+    const fprot=(($("#c-acc-fprot")||{}).value)||"";
     const list=accounts.filter(a=>{
       if(fchan==="tg"&&!a.tg_connected)return false;
       if(fchan==="wa"&&!a.wa_authed)return false;
       if(fst&&a.status!==fst)return false;
+      if(fprot!==""&&!!a.protected!==(fprot==="1"))return false;
       if(q){const hay=((a.label||"")+" "+(a.phone||"")+" "+(a.username||"")).toLowerCase();if(!hay.includes(q))return false;}
       return true;
     });

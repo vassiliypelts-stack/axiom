@@ -296,14 +296,23 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if streak == 0 or last_ts is None:
             continue  # ждём не мы, либо диалога нет
         camp = database.get_contact_campaign(conn, c["id"])
-        if camp:
-            # Оператор ведёт диалог сам («✋ Ручное» в «Диалогах») — дожим этого
-            # контакта не трогаем, чтобы не столкнуться с человеком лбами.
-            paused = conn.execute(
-                "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
-                (camp["id"], c["id"])).fetchone() is not None
-            if paused or not database.in_work_hours(camp):
-                continue
+        if not camp:
+            # ГЛАВНОЕ ПРАВИЛО (то же, что у listener._should_reply): автоматика
+            # трогает только тех, кому кампания РЕАЛЬНО писала. Раньше «нет кампании»
+            # просто пропускало проверки паузы/рабочих часов и дожим уходил ВСЕГДА —
+            # человеку, попавшему в contacts парсингом чата (не рассылкой), «дожим
+            # молчунов» слал «тук-тук, видели сообщение?» бесконечно. 21.08.2026 так
+            # получил серию дожимов Виталий Хомутинников — личный знакомый оператора,
+            # написавший сам, ни разу не бывший ни в одной кампании. Нет кампании —
+            # значит рассылка этому контакту не шла, и дожимать нечего: пропускаем.
+            continue
+        # Оператор ведёт диалог сам («✋ Ручное» в «Диалогах») — дожим этого
+        # контакта не трогаем, чтобы не столкнуться с человеком лбами.
+        paused = conn.execute(
+            "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+            (camp["id"], c["id"])).fetchone() is not None
+        if paused or not database.in_work_hours(camp):
+            continue
         extra = _campaign_extra_followup(conn, c["id"])
         # Кампания может добавить СВОЙ последний шаг поверх лесенки — через сутки после
         # третьего пинга. Остальные шаги общие: они намеренно нейтральны и не обещают

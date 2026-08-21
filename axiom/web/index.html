@@ -6370,9 +6370,9 @@ async function viewParser(v){
   v.innerHTML=`
   <div class="card" style="margin-bottom:16px">
     <b style="font-size:14px">🛰️ Поиск и парсинг Telegram</b>
-    <div class="sub" style="margin:6px 0 12px">Поиск публичных групп по теме → парсинг (админы / активные комментаторы / участники) → лиды в книжку. Аккаунт подключается по сессии из .env.</div>
+    <div class="sub" style="margin:6px 0 12px">Поиск публичных групп по теме → парсинг (админы / активные комментаторы / участники) → лиды в книжку.</div>
     <div class="row2">
-      <div class="field"><label>Цель: @чат / ссылка / поисковый запрос</label><input id="p-target" placeholder="напр.: недвижимость сочи   или   @somechat"></div>
+      <div class="field"><label>Цель: @чат / ссылка / поисковый запрос</label><input id="p-target" placeholder="напр.: недвижимость сочи   или   @somechat   или   t.me/+инвайт"></div>
       <div class="field"><label>Режим</label><select id="p-mode">
         <option value="search">🔍 поиск групп по теме</option>
         <option value="admins">админы канала/чата</option>
@@ -6381,6 +6381,8 @@ async function viewParser(v){
         <option value="members">участники группы</option>
       </select></div>
     </div>
+    <div class="field"><label>Каким аккаунтом парсить</label><select id="p-acc"><option value="">— главный из .env —</option></select>
+      <div class="hint" style="margin-top:4px">Для ЗАКРЫТЫХ/приватных чатов обязательно выбери аккаунт, который в нём реально состоит, — список участников видит только тот, кто внутри. Для чата без публичной ссылки (только по инвайту) в поле «Цель» вставь тот самый пригласительный t.me/+…, которым сам вступал.</div></div>
     <div class="row2">
       <div class="field"><label>Глубина scan (для «активных»)</label><input id="p-scan" type="number" value="2000"></div>
       <div class="field"><label>Топ авторов / лимит выдачи</label><input id="p-top" type="number" value="50"></div>
@@ -6457,8 +6459,14 @@ async function viewParser(v){
     }catch(e){out.textContent="Ошибка сети: "+e.message;}
     btn.disabled=false;btn.textContent=t;
   };
+  api("/api/accounts").then(accs=>{
+    const sel=$("#p-acc");if(!sel)return;
+    sel.innerHTML='<option value="">— главный из .env —</option>'
+      +accs.filter(a=>a.tg_connected).map(a=>`<option value="${a.id}">${esc(a.label||a.username||a.phone||("#"+a.id))}</option>`).join("");
+  }).catch(()=>{});
   $("#p-run").onclick=()=>run($("#p-run"),"#p-out","/api/parse/run",{
     target:$("#p-target").value.trim(),mode:$("#p-mode").value,save:$("#p-save").checked,
+    account_id:$("#p-acc").value||null,
     scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30});
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});

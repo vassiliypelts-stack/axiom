@@ -3545,6 +3545,8 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
     if not target:
         return JSONResponse({"error": "укажи @чат/ссылку или поисковый запрос"}, status_code=400)
     args = ["channels.tg_parser", "--target", target, "--mode", mode]
+    if payload.get("account_id"):
+        args += ["--account", str(int(payload["account_id"]))]
     if payload.get("save"):
         args.append("--save")
     if mode == "members":

@@ -185,8 +185,14 @@ async def collect_active(client, entity, scan: int, top: int,
     return out, bios, photo_ids
 
 
-def _save_lead(conn, u: User, target: str, role: str) -> str:
-    """Кладёт пользователя в книжку. Дедуп по tg_user_id. Возвращает 'new'/'dup'."""
+def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse") -> str:
+    """Кладёт пользователя в книжку. Дедуп по tg_user_id. Возвращает 'new'/'dup'.
+
+    source — свой ярлык происхождения («210826точканетворк»). По умолчанию общий
+    'tg_parse': раньше он был зашит намертво, и все спарсенные чаты за всё время
+    сваливались в одну кучу — в «Контактах» нельзя было отделить участников одной
+    группы от другой и посмотреть, сколько дал конкретный заход (фильтр по источнику
+    там уже есть, фильтровать было нечего)."""
     existing = database.find_contact_by_tg(conn, tg_user_id=u.id, username=u.username)
     tag = f"TG-парсинг: {target}" + (f" / {role}" if role else "")
     if existing:
@@ -198,7 +204,7 @@ def _save_lead(conn, u: User, target: str, role: str) -> str:
     name = _display_name(u)
     cid = database.upsert_contact(
         conn,
-        source="tg_parse",
+        source=source,
         username=u.username,
         tg_user_id=u.id,
         name=name,
@@ -218,11 +224,11 @@ def _report(title: str, users: list, counts: dict | None = None) -> None:
         print(f"  {_display_name(u):30} @{u.username or '-':20}{extra}")
 
 
-def _persist(users: list, target: str, role: str) -> None:
+def _persist(users: list, target: str, role: str, source: str = "tg_parse") -> None:
     new = dup = 0
     with database.get_conn() as conn:
         for u in users:
-            r = _save_lead(conn, u, target, role)
+            r = _save_lead(conn, u, target, role, source)
             new += r == "new"; dup += r == "dup"
     print(f"[save] {role}: добавлено {new}, уже было {dup}")
 
@@ -247,7 +253,7 @@ async def search_chats(client, query: str, limit: int) -> None:
 
 async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
               harvest: bool = False, days: int = HARVEST_DAYS,
-              account_id: int | None = None) -> None:
+              account_id: int | None = None, source: str = "tg_parse") -> None:
     """account_id=None — главный аккаунт из .env; иначе рабочий аккаунт по id.
 
     ⚠️ Парсинг резолвит username'ы, а ResolveUsername — самый лимитируемый вызов TG.
@@ -271,14 +277,14 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         admins = await collect_admins(client, entity)
         _report("Админы", admins)
         if save:
-            _persist(admins, target, "админ")
+            _persist(admins, target, "админ", source)
         await asyncio.sleep(random.uniform(*SCRAPE_PAUSE))
 
     if mode == "members":
         members = await collect_members(client, entity, limit)
         _report("Участники", members)
         if save:
-            _persist(members, target, "участник")
+            _persist(members, target, "участник", source)
 
     if mode in ("active", "all"):
         active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
@@ -286,7 +292,7 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
         if save:
-            _persist(users, target, "активный")
+            _persist(users, target, "активный", source)
             with database.get_conn() as conn:
                 if bios:  # bio пишем в уже созданные карточки лидов
                     for uid, bio in bios.items():
@@ -312,6 +318,10 @@ def main() -> None:
     p.add_argument("--save", action="store_true", help="записать найденных в книжку (иначе только печать)")
     p.add_argument("--harvest", action="store_true", help="H1: собрать тексты+bio авторов в tg_user_posts (сырьё для досье)")
     p.add_argument("--days", type=int, default=HARVEST_DAYS, help="окно сбора сообщений для --harvest (дней)")
+    p.add_argument("--source", default="tg_parse",
+                   help="ярлык происхождения для «Контактов» (напр. 210826точканетворк). "
+                        "По умолчанию общий tg_parse — тогда разные чаты сваливаются в одну "
+                        "кучу и в CRM их не отделить друг от друга фильтром по источнику")
     p.add_argument("--account", type=int, default=None, dest="account_id",
                    help="аккаунт из БД, которым парсить (по id) — обязателен для ЗАКРЫТЫХ чатов: "
                         "список участников видит только тот, кто реально в чате состоит. "
@@ -319,7 +329,8 @@ def main() -> None:
                         "публичных @чатов, куда .env-аккаунт не обязан быть вступившим)")
     args = p.parse_args()
     asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
-                    harvest=args.harvest, days=args.days, account_id=args.account_id))
+                    harvest=args.harvest, days=args.days, account_id=args.account_id,
+                    source=args.source))
 
 
 if __name__ == "__main__":

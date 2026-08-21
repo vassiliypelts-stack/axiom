@@ -3549,6 +3549,11 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
         args += ["--account", str(int(payload["account_id"]))]
     if payload.get("save"):
         args.append("--save")
+    # Свой ярлык происхождения, чтобы в «Контактах» можно было отделить участников
+    # ЭТОГО чата от всех прошлых парсингов (раньше всё падало в общий 'tg_parse').
+    src = (payload.get("source") or "").strip()
+    if src:
+        args += ["--source", src]
     if mode == "members":
         args += ["--limit", str(int(payload.get("limit") or 500))]
     elif mode in ("active", "all"):

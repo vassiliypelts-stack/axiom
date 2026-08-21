@@ -6396,6 +6396,9 @@ async function viewParser(v){
       <div class="field"><label>Глубина scan (для «активных»)</label><input id="p-scan" type="number" value="2000"></div>
       <div class="field"><label>Топ авторов / лимит выдачи</label><input id="p-top" type="number" value="50"></div>
     </div>
+    <div class="field"><label>Источник (ярлык для «Контактов»)</label>
+      <input id="p-source" placeholder="напр.: 210826точканетворк" autocomplete="off">
+      <div class="hint" style="margin-top:4px">Под этим ярлыком найденные лягут в «Контакты» — там по нему можно отфильтровать и посмотреть, сколько дал именно этот чат. Оставишь пустым — попадут в общий «tg_parse» вперемешку со всеми прошлыми парсингами.</div></div>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="p-save"> записать найденных в книжку (без галочки — только показать)</label>
     <button id="p-run">Запустить</button>
     <pre id="p-out" style="${POUT}display:none"></pre>
@@ -6476,6 +6479,7 @@ async function viewParser(v){
   $("#p-run").onclick=()=>run($("#p-run"),"#p-out","/api/parse/run",{
     target:$("#p-target").value.trim(),mode:$("#p-mode").value,save:$("#p-save").checked,
     account_id:$("#p-acc").value||null,
+    source:($("#p-source").value||"").trim()||null,
     scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30});
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});

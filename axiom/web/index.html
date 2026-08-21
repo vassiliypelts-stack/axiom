@@ -1331,6 +1331,18 @@ const ACC_PRESETS={
   bought:{label:"🛒 Купленные",test:r=>!r.protected&&r.status!=='archived'},
   personal:{label:"🏠 Родные",test:r=>!!r.protected},
   nosession:{label:"⚠ Без сессии",test:r=>!r.tg_connected&&r.status!=='archived'},
+  // «Без сессии» — файла сессии нет вообще (37 таких). Это ДРУГОЕ: сессия ЕСТЬ
+  // (tg_connected=true, строка в базе не пуста), но Telegram её убил — отозвана
+  // или сожжена AuthKeyDuplicated (session_alive=0, а не NULL — NULL значит «не
+  // проверяли», а не «мертва», см. channels/session_check). Раньше эти 7-40+
+  // трупов не отделялись от живых нигде в интерфейсе ни одним фильтром — только
+  // общий счётчик в TODO. Реанимации для них нет (номер у продавца, SMS не
+  // придёт), держать их среди живых — чистая путаница при выборе, кому писать.
+  // Исключаем «родных» по ОБОИМ признакам, не только protected: на боевой базе нашёлся
+  // account #1 с kind='own' (это и есть «родной» по определению схемы, db/database.py)
+  // при protected=0 — расхождение флагов. Массовая архивация не должна зависеть от
+  // того, какой из двух флагов кто-то забыл проставить.
+  dead:{label:"💀 Мёртвые",test:r=>r.tg_connected&&r.session_alive===0&&!r.protected&&r.kind!=='own'&&r.status!=='archived'},
   banned:{label:"🚫 В бане",test:r=>r.status==='banned'},
   archived:{label:"🗄 Архив",test:r=>r.status==='archived'},
 };

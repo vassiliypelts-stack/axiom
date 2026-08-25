@@ -21,13 +21,21 @@ from db import database
 
 
 class Enrichment(BaseModel):
-    """Что агент извлекает по лиду."""
+    """Что агент извлекает по лиду.
 
-    person_name: str | None = Field(description="Имя контактного лица (как обратиться), если удалось понять. Иначе null.")
-    person_role: str | None = Field(description="Должность контактного лица (директор/руководитель/риелтор), иначе null.")
-    specialization: str = Field(description="На чём специализируется агентство: новостройки/вторичка/аренда/элитка/загородная/инвестиции и т.п. Кратко.")
-    hook: str = Field(description="ОДНА короткая персональная зацепка (1 фраза) для первого холодного сообщения от поставщика ИИ-автоматизации. Конкретная, не вода.")
-    summary: str = Field(description="1-2 фразы досье для CRM.")
+    Все поля НЕОБЯЗАТЕЛЬНЫЕ (null допустим и нормален). Раньше specialization и hook были
+    обязательными строками — модель физически не могла ответить «не знаю» и на пустом входе
+    дописывала правдоподобное. Живой случай 25.08.2026: у психолога и коуча Елены Мальцевой
+    специализация вышла «не определено», а зацепка — «У вас агентство недвижимости — боты
+    и автообработка заявок уже экономят вашим риелторам часы в день?». Пустое поле честнее
+    выдуманного: по нему видно, что нужно дообогатить, а ложный факт уходит человеку в
+    первое же сообщение и сжигает контакт."""
+
+    person_name: str | None = Field(default=None, description="Имя контактного лица (как обратиться), если прямо следует из данных. Иначе null.")
+    person_role: str | None = Field(default=None, description="Должность контактного лица, если прямо указана. Иначе null.")
+    specialization: str | None = Field(default=None, description="Чем занимается лид — по фактам из данных. Не выводи из ниши кампании и не угадывай. Не следует из данных — null.")
+    hook: str | None = Field(default=None, description="ОДНА короткая персональная зацепка для первого сообщения, опирающаяся на КОНКРЕТНЫЙ факт из данных. Нет такого факта — null (общая вода хуже, чем её отсутствие).")
+    summary: str | None = Field(default=None, description="1-2 фразы досье для CRM по фактам. Нечего сказать — null.")
 
 
 
@@ -112,11 +120,16 @@ def dadata_lookup(name: str | None, city: str | None) -> dict | None:
 
 
 SYSTEM = (
-    "Ты — аналитик отдела продаж. Обогащаешь карточку B2B-лида — агентства недвижимости. "
-    "Продаём им ИИ-автоматизацию (боты, обработка заявок, снятие рутины). "
-    "На входе: данные из справочника 2ГИС и текст их сайта (если есть). "
-    "Извлеки контактное лицо (если видно), специализацию и составь ОДНУ конкретную персональную зацепку "
-    "для первого холодного сообщения — без воды и общих фраз. Если данных мало — опирайся на специализацию."
+    "Ты — аналитик отдела продаж. Обогащаешь карточку лида по тем данным, которые тебе дали. "
+    "Мы продаём ИИ-автоматизацию, но лиды — из РАЗНЫХ сфер: психологи, тренеры, юристы, "
+    "агентства, производство, кто угодно. Сферу бери ТОЛЬКО из данных лида.\n\n"
+    "ЗАПРЕЩЕНО ДОМЫСЛИВАТЬ. Не выводи род деятельности из названия кампании, из того, что мы "
+    "продаём, из соседних лидов или из общих соображений. Не пиши «у вас агентство…», "
+    "«вашим сотрудникам…», если этого нет во входных данных.\n\n"
+    "Нет данных — верни null. Это нормальный и ожидаемый ответ, он лучше правдоподобной "
+    "выдумки: пустое поле оператор дозаполнит, а ложный факт уйдёт человеку в первое "
+    "сообщение и сожжёт контакт.\n\n"
+    "Зацепка (hook) должна опираться на КОНКРЕТНЫЙ факт из данных. Нет такого факта — null."
 )
 
 
@@ -129,12 +142,24 @@ def _build_context(contact: dict, dd: dict | None, site: str) -> str:
             f"руководитель={dd.get('director') or '-'} ({dd.get('role') or '-'}), "
             f"ОКВЭД={dd.get('okved') or '-'}, статус={dd.get('status') or '-'}, ИНН={dd.get('inn') or '-'}"
         )
+    # «Лид», а не «Агентство»: подпись поля сама по себе внушала модели сферу, и по
+    # психологу выходило «у вас агентство недвижимости». Плюс подкладываем то, что уже
+    # известно о человеке ИЗ ЕГО СОБСТВЕННЫХ слов (обогащение из Telegram, channels/
+    # enrich_tg.py) — это факты, а не догадки по справочнику, и они должны перевешивать.
+    known = []
+    for key, label in (("niche", "Чем занимается"), ("offer", "Что продаёт"),
+                       ("specialization", "Специализация"), ("bio", "Био в Telegram")):
+        v = (contact.get(key) or "").strip()
+        if v:
+            known.append(f"{label}: {v[:300]}")
     ctx = (
-        f"Агентство: {contact.get('name') or '-'}\n"
+        f"Лид: {contact.get('name') or '-'}\n"
         f"Город: {contact.get('city') or '-'}\n"
         f"Теги/категория: {contact.get('tags') or '-'}\n"
         f"Заметки (сайт/vk/email/адрес): {contact.get('notes') or '-'}"
     )
+    if known:
+        ctx += "\n\nУже известно о лиде (с его слов, это ФАКТЫ — им верь больше всего):\n" + "\n".join(known)
     if contact.get("username"):
         ctx += f"\nTelegram: @{contact.get('username')}"
     ctx += egrul
@@ -213,7 +238,9 @@ def run_batch(rows: list) -> None:
             e = Enrichment(**json.loads(text))
             _save(cid, e, dd)
             ok += 1
-            print(f"[ok #{cid}] лицо={(dd and dd.get('director')) or '-'}, hook={e.hook[:40]}…")
+            # hook теперь может быть None (модели разрешено молчать) — не падаем на срезе
+            print(f"[ok #{cid}] лицо={(dd and dd.get('director')) or '-'}, "
+                  f"hook={(e.hook or '(нет — данных не хватило)')[:40]}…")
         except Exception as ex:
             fail += 1
             print(f"[fail #{cid}] {ex}")
@@ -232,11 +259,20 @@ def _save(contact_id: int, e: Enrichment, dd: dict | None) -> None:
         notes = row["notes"] if row else None
         if e.summary and (not notes or e.summary not in notes):
             notes = f"{notes} | Досье: {e.summary}" if notes else f"Досье: {e.summary}"
+        # COALESCE(NULLIF(...)) — пустой ответ модели НЕ затирает уже заполненное. Поля
+        # теперь могут быть null (модели разрешено честно молчать, см. Enrichment), и без
+        # этой защиты «не знаю» стёрло бы данные из обогащения по Telegram, где факты со
+        # слов самого человека. Обогащение ДОПОЛНЯЕТ карточку, а не переписывает начисто.
         conn.execute(
-            "UPDATE contacts SET person_name=?, person_role=?, specialization=?, hook=?, "
+            "UPDATE contacts SET "
+            "person_name=COALESCE(NULLIF(?,''), person_name), "
+            "person_role=COALESCE(NULLIF(?,''), person_role), "
+            "specialization=COALESCE(NULLIF(?,''), specialization), "
+            "hook=COALESCE(NULLIF(?,''), hook), "
             "inn=COALESCE(?,inn), ogrn=COALESCE(?,ogrn), founders=COALESCE(?,founders), notes=?, "
             "enriched_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
-            (person_name, person_role, e.specialization, e.hook, inn, ogrn, founders, notes, contact_id),
+            (person_name or "", person_role or "", e.specialization or "", e.hook or "",
+             inn, ogrn, founders, notes, contact_id),
         )
 
 
@@ -282,7 +318,9 @@ def run(cid: int | None, tag: str | None, limit: int, no_llm: bool = False,
             if no_llm:
                 # без Claude: только ЕГРЮЛ (директор/ИНН/ОГРН). Зацепку добьём позже.
                 dd = dadata_lookup(c.get("name"), c.get("city"))
-                e = Enrichment(person_name=None, person_role=None, specialization="", hook="", summary="")
+                # Всё null: в этом режиме модель не спрашивали вообще, сказать нечего.
+                # Пустые строки тут были бы хуже — _save затёр бы ими то, что уже знаем.
+                e = Enrichment()
                 _save(c["id"], e, dd)
             else:
                 e, dd = enrich_contact(c)

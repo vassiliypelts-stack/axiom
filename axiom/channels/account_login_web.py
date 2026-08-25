@@ -50,6 +50,10 @@ async def start_login(acc_id: int) -> dict:
         }
         return {"ok": True, "phone": phone}
     except Exception as e:  # noqa: BLE001
+        import logging
+        import traceback
+        logging.getLogger("axiom").error(
+            "login/start #%s failed:\n%s", acc_id, traceback.format_exc())
         return {"error": f"не удалось отправить код: {e}"}
     finally:
         await client.disconnect()

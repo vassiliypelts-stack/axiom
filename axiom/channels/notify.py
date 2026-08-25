@@ -75,17 +75,108 @@ def _owner_route(conn, campaign_id: int | None) -> tuple[str | None, str | None]
     return sender_id, target
 
 
+def _targets(raw: str | None) -> list[str]:
+    """Строка получателей → список. Разделители: запятая, точка с запятой, перенос.
+
+    Получателей теперь МОЖЕТ БЫТЬ НЕСКОЛЬКО (два телефона, @ник и телефон и т.д.):
+    один Telegram-аккаунт оператора может оказаться недоступен, а уведомление о
+    согласии на встречу пропускать нельзя — цена промаха это пропущенная живая
+    встреча."""
+    if not raw:
+        return []
+    parts = [p.strip() for p in str(raw).replace(";", ",").replace("\n", ",").split(",")]
+    return [p for p in parts if p]
+
+
+def _sender_candidates(conn, preferred_id) -> list[int]:
+    """Кем слать: сначала назначенный аккаунт, следом — РЕЗЕРВ из живых.
+
+    ЗАЧЕМ РЕЗЕРВ. Отправитель был ровно один, и когда он умер (Василий610 сгорел с
+    AuthKeyDuplicatedError), уведомления перестали доходить МОЛЧА — в коде только
+    строчка в лог, который никто не читает. 24.08.2026 из-за этого пропущена живая
+    встреча с Олегом Дьяконовым: агент договорился, а оператор не узнал.
+
+    Резерв — любые живые аккаунты; «родные» (protected) в приоритете, потому что
+    уведомление в личку владельцу с личного номера выглядит естественно, а не как
+    служебная рассылка с рабочего."""
+    out: list[int] = []
+    if preferred_id:
+        try:
+            out.append(int(preferred_id))
+        except (TypeError, ValueError):
+            pass
+    rows = conn.execute(
+        "SELECT id FROM accounts WHERE session_alive=1 AND tg_session IS NOT NULL "
+        "AND tg_session<>'' ORDER BY COALESCE(protected,0) DESC, id"
+    ).fetchall()
+    for r in rows:
+        if r["id"] not in out:
+            out.append(r["id"])
+    return out
+
+
 async def _send_to_owner(sender_id, target: str, text: str, what: str, contact_id: int) -> None:
-    client, _ = client_for_account(int(sender_id))
-    await client.connect()
-    try:
-        if not await client.is_user_authorized():
-            print(f"[notify] аккаунт #{sender_id} не авторизован — уведомление не ушло")
-            return
-        await client.send_message(target, text)
-        print(f"[notify] владелец уведомлён: {what} (контакт #{contact_id})")
-    finally:
-        await client.disconnect()
+    """Доставка уведомления: перебираем отправителей, пока кто-то не отправит, и шлём
+    ВСЕМ получателям. Успехом считается хотя бы одна доставка.
+
+    Раньше здесь была ровно одна попытка одним аккаунтом: не авторизован — тихий
+    выход. Теперь мёртвый отправитель просто уступает место следующему живому."""
+    targets = _targets(target)
+    if not targets:
+        return
+    with database.get_conn() as conn:
+        senders = _sender_candidates(conn, sender_id)
+    if not senders:
+        print("[notify] нет ни одного живого аккаунта для отправки уведомления")
+        return
+
+    delivered: list[str] = []
+    pending = list(targets)
+    for acc_id in senders:
+        if not pending:
+            break
+        try:
+            client, _ = client_for_account(int(acc_id))
+            await client.connect()
+        except Exception as e:  # noqa: BLE001 — мёртвый/битый аккаунт: пробуем следующий
+            print(f"[notify] аккаунт #{acc_id} не поднялся ({str(e)[:60]}) — беру следующий")
+            continue
+        try:
+            if not await client.is_user_authorized():
+                print(f"[notify] аккаунт #{acc_id} не авторизован — беру следующий")
+                continue
+            still: list[str] = []
+            for t in pending:
+                try:
+                    await client.send_message(t, text)
+                    delivered.append(f"{t} (акк #{acc_id})")
+                except Exception as e:  # noqa: BLE001 — этот получатель не вышел, копим на ретрай
+                    print(f"[notify] «{t}» с акк #{acc_id} не вышло: {str(e)[:70]}")
+                    still.append(t)
+            pending = still
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if delivered:
+        print(f"[notify] владелец уведомлён: {what} (контакт #{contact_id}) → {', '.join(delivered)}")
+    if pending:
+        # Не молчим: если не дошло НИКОМУ — это ровно тот случай, который стоил
+        # пропущенной встречи. Кладём тревогу в колокольчик пульта.
+        print(f"[notify] НЕ ДОСТАВЛЕНО ни одному получателю: {', '.join(pending)}")
+        try:
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "warn",
+                    "🔴 Уведомление владельцу не доставлено",
+                    f"«{what}» по контакту #{contact_id} не ушло получателям: "
+                    f"{', '.join(pending)}. Проверь живость аккаунтов-отправителей "
+                    f"и поле «получатель уведомлений» в «Аккаунтах».",
+                    level="bad", contact_id=contact_id)
+        except Exception:  # noqa: BLE001 — тревога не должна ронять основной поток
+            pass
 
 
 async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | None,

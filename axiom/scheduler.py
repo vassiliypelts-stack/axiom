@@ -212,7 +212,24 @@ def _local_hhmm(dt: datetime) -> str:
 
 
 def _name(row) -> str:
-    return (row["name"] or "").strip()
+    """Обращение для шаблонов: «Имя Отчество» (или «Имя»), а НЕ полное ФИО.
+
+    Раньше отдавалось сырое contacts.name — и дожим уходил клиенту в виде «Оксана
+    Владимировна Шалыганова, видимо, завал)». По фамилии в личном обращении живые
+    люди друг к другу не пишут никогда: это мгновенно читается как рассылка из
+    базы. Логика разбора — общая с рассылкой (campaign_send._greeting → fio.address),
+    чтобы первое сообщение и дожим обращались к человеку ОДИНАКОВО: порядок слов в
+    ФИО у нас разный (импорт даёт «Имя Отчество Фамилия», ЕГРЮЛ — «Фамилия Имя
+    Отчество»), поэтому позицию не угадываем, а ищем отчество по суффиксу.
+
+    person_name (контактное лицо) в приоритете; если его нет — мягкий разбор name,
+    там может лежать организация («Эталон недвижимость»), её ломать нельзя."""
+    from channels import fio
+    keys = row.keys() if hasattr(row, "keys") else []
+    pn = (row["person_name"] or "").strip() if "person_name" in keys else ""
+    if pn:
+        return fio.address(pn)
+    return fio.address_soft((row["name"] or "").strip())
 
 
 def _trailing_out_streak(history) -> tuple[int, str | None]:

@@ -36,7 +36,29 @@ from db import database
 
 # Каналы-источники (можно дополнять).
 PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "MTProxy"]
-TARGET_ALIVE = 10          # сколько реально живых держим в пуле
+TARGET_ALIVE = 10          # запасной ориентир, если парк аккаунтов посчитать не удалось
+
+
+def target_alive() -> int:
+    """Сколько живых прокси держать в пуле — считается от парка, а не константой.
+
+    Правило антибана — «1 прокси = 1 аккаунт», поэтому нужный размер пула прямо
+    зависит от числа аккаунтов, которым нужен выход в сеть. Константа TARGET_ALIVE=10
+    ставилась, когда аккаунтов была горстка; парк дорос до 34, а планка осталась — и
+    пул честно добирал до десяти, пока девять аккаунтов стояли без адреса.
+
+    +30% сверху на естественную убыль: бесплатные MTProto из публичных каналов дохнут
+    пачками между прогонами, и пул без запаса приходит к дефициту на следующий же день.
+    """
+    try:
+        with database.get_conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) c FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+                "AND COALESCE(protected,0)=0 AND COALESCE(status,'') IN ('active','warming','paused')"
+            ).fetchone()["c"]
+        return max(TARGET_ALIVE, int(n * 1.3) + 1)
+    except Exception:  # noqa: BLE001 — БД недоступна: не хуже прежней константы
+        return TARGET_ALIVE
 MIN_ALIVE_BEFORE_REFILL = 2
 PING_TIMEOUT = 4.0         # TCP-пинг: таймаут на коннект (сек)
 TELETHON_TEST_TIMEOUT = 8.0  # Telethon-тест: таймаут на всю попытку (сек)
@@ -235,8 +257,12 @@ async def _harvest_client():
     return None, ""
 
 
-async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None) -> dict:
+async def refresh(target: int | None = None, ids: list[int] | None = None) -> dict:
+    """target=None — считать нужный размер пула от парка аккаунтов (см. target_alive()).
+    Число — жёсткая планка с CLI (--target)."""
     import config
+    target_alive_auto = target is None
+    target_alive_arg = target or TARGET_ALIVE
     database.init_db()
     client, who = await _harvest_client()
 
@@ -336,7 +362,29 @@ async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None
 
     print(f"[refresh] Telethon-совместимых живых: {alive} из {len(rows)}")
     assigned = assign(ids=ids)
-    return {"alive": alive, "harvested": len(fresh), "assigned": assigned}
+
+    # Хватило ли собранного на весь парк. Раньше target_alive был мёртвым параметром:
+    # он передавался в refresh() и нигде не использовался, поэтому «пул недобран» никак
+    # не проявлялось — аккаунты просто молча стояли без адреса, а понять это можно было
+    # только сверив два числа руками. Теперь дефицит виден сразу.
+    need = target_alive() if target_alive_auto else target_alive_arg
+    short = max(0, need - alive)
+    if short:
+        print(f"[refresh] ДЕФИЦИТ: живых {alive}, нужно ~{need} — не хватает {short}")
+        with database.get_conn() as conn:
+            dup = conn.execute(
+                "SELECT 1 FROM events WHERE type='proxy_short' "
+                "AND ts >= datetime('now','-12 hours') LIMIT 1").fetchone()
+            if not dup:
+                database.add_event(
+                    conn, "proxy_short", f"🌐 Прокси не хватает: живых {alive}, нужно ~{need}",
+                    f"Аккаунтам нужен отдельный адрес каждому (правило антибана «1 прокси = "
+                    f"1 аккаунт»), а живых в пуле меньше на {short}. Столько аккаунтов "
+                    f"останется без выхода в сеть: они выпадут из прогрева и из рассылки. "
+                    f"Бесплатные MTProto из публичных каналов дохнут быстро — если дефицит "
+                    f"держится, имеет смысл докупить платные (Proxy6).", level="warn")
+    return {"alive": alive, "harvested": len(fresh), "assigned": assigned,
+            "need": need, "short": short}
 
 
 def pick_free_mt(exclude: set[str] | None = None) -> str | None:
@@ -367,8 +415,13 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
     только на выбранные аккаунты (пусто = все подходящие)."""
     from channels.telegram import parse_mtproxy
     with database.get_conn() as conn:
+        # Берём ВЕСЬ живой пул, а не первые 20. Лимит ставился, когда аккаунтов была
+        # горстка, и с ростом парка превратился в потолок: при 34 аккаунтах раздать
+        # можно было максимум 20 адресов, остальные оставались без прокси независимо
+        # от того, сколько живых прокси реально лежит в пуле. Антибан от этого не
+        # страдает — «1 прокси = 1 аккаунт» держится ниже, на проверке занятости.
         live = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 20"
+            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
         ).fetchall()
         # только telethon-совместимые (не faketls ee…): иначе аккаунт молча уйдёт «напрямую»
         live = [p for p in live if parse_mtproxy(_mt_link(p["server"], p["port"], p["secret"]))]
@@ -481,8 +534,10 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
             print(f"[heal] освободил {released} прокси у архивных/забаненных аккаунтов")
 
         # Пул Telethon-живых прокси для подстановки
+        # Тот же потолок, что и в assign(): LIMIT отсекал хвост пула, и лечение
+        # упиралось в него раньше, чем в реальный запас адресов.
         pool = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
+            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
         ).fetchall()
         pool = [(p["server"], p["port"], p["secret"]) for p in pool]
 
@@ -613,7 +668,10 @@ def main() -> None:
     p.add_argument("--refresh", action="store_true", help="собрать+проверить+раздать")
     p.add_argument("--heal", action="store_true", help="проверить прокси прогреваемых и заменить битые на живые бесплатные")
     p.add_argument("--all", action="store_true", help="с --heal: лечить не только 'warming', а все не-родные с сессией")
-    p.add_argument("--target", type=int, default=TARGET_ALIVE)
+    # default=None, а не TARGET_ALIVE: иначе автоподсчёт от парка аккаунтов никогда
+    # не включался бы — планировщик зовёт refresh именно через CLI.
+    p.add_argument("--target", type=int, default=None,
+                   help="сколько живых держать в пуле (по умолчанию — от числа аккаунтов)")
     p.add_argument("--ids", help="сузить раздачу на конкретные id аккаунтов, через запятую")
     args = p.parse_args()
     ids = [int(x) for x in args.ids.split(",") if x.strip().isdigit()] if args.ids else None

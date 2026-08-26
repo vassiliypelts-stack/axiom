@@ -6381,13 +6381,18 @@ def accounts_spare_mint(payload: dict = Body(default={})) -> JSONResponse:
 @app.post("/api/account/{acc_id}/spare_promote")
 def account_spare_promote(acc_id: int) -> JSONResponse:
     """Основная сессия мертва → поднять запаску как основную. Запаска при этом
-    расходуется: после успеха надо выпустить новую, пока аккаунт жив."""
+    расходуется — сразу следом, пока ещё в одном _listener_released() окне,
+    выпускаем новую. Без этого аккаунт час (до автозащиты) висел бы вообще
+    без страховки: второй обрыв в это окно снова стоил бы номера."""
     with _listener_released():
         res = _run_capture(["channels.session_spare", "--promote", str(acc_id)], timeout=300)
-    data = _last_json(res.get("output"))
-    if data is None:
-        tail = (res.get("output") or "").strip()[-400:]
-        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+        data = _last_json(res.get("output"))
+        if data is None:
+            tail = (res.get("output") or "").strip()[-400:]
+            return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+        if data.get("ok"):
+            res2 = _run_capture(["channels.session_spare", "--ids", str(acc_id)], timeout=300)
+            data["new_spare"] = _last_json(res2.get("output"))
     return JSONResponse(data)
 
 

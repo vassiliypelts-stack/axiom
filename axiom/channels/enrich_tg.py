@@ -54,6 +54,7 @@ POSTS = 8               # сколько последних постов кан�
 POST_CHARS = 700        # обрезка одного поста — модели хватает, токены не жжём
 PAUSE = (3.0, 8.0)      # пауза между людьми
 CONNECT_TIMEOUT = 25
+ACC_TRIES = 4           # сколько аккаунтов перебрать, если у первых мёртвый прокси
 
 # t.me/name, @name — но НЕ приватные +hash/joinchat (туда нужно вступать)
 _CHANNEL_RE = re.compile(r"(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{3,31})|(?<![\w@])@([A-Za-z][A-Za-z0-9_]{3,31})")
@@ -215,22 +216,64 @@ async def run(ids: list[int] | None, limit: int | None, dry: bool) -> None:
 
     # Аккаунт для чтения: любой живой боевой. Читаем чужие публичные каналы — это
     # безопаснее вступлений, но всё равно с боевого номера, поэтому дозируем.
+    # Берём НЕСКОЛЬКО кандидатов, а не одного: session_alive=1 говорит про сессию, а не
+    # про прокси, и на дохлом прокси весь запрос падал ConnectionError'ом в трейсбек.
     with database.get_conn() as conn:
-        acc = conn.execute(
+        cands = conn.execute(
             "SELECT id FROM accounts WHERE session_alive=1 AND COALESCE(protected,0)=0 "
-            "AND tg_session IS NOT NULL AND tg_session<>'' ORDER BY RANDOM() LIMIT 1").fetchone()
-    if not acc:
+            "AND tg_session IS NOT NULL AND tg_session<>'' ORDER BY RANDOM() LIMIT ?",
+            (ACC_TRIES,)).fetchall()
+    if not cands:
         print(json.dumps({"ok": False, "error": "нет живого боевого аккаунта для чтения"},
                          ensure_ascii=False))
         return
-    client, _ = client_for_account(acc["id"])
+
+    # ВАЖНО: фолбэка «подключиться мимо прокси» здесь нет и быть не должно — проба с IP
+    # сервера при живом слушателе выглядит для Telegram как угон ключа и сжигает аккаунт
+    # навсегда (см. предупреждение в channels/session_check.py). Мёртвый прокси лечится
+    # только переходом на ДРУГОЙ аккаунт — со своим прокси.
+    client = acc_id = None
+    why: list[str] = []
+    for row in cands:
+        cid = row["id"]
+        try:
+            cand, _ = client_for_account(cid)
+        except Exception as e:  # noqa: BLE001 — нет сессии/битая строка: пробуем следующий
+            why.append(f"#{cid}: {str(e)[:60]}")
+            continue
+        try:
+            await asyncio.wait_for(cand.connect(), timeout=CONNECT_TIMEOUT)
+            if not await cand.is_user_authorized():
+                why.append(f"#{cid}: не авторизован")
+                await cand.disconnect()
+                continue
+        except asyncio.TimeoutError:
+            why.append(f"#{cid}: таймаут подключения ({CONNECT_TIMEOUT}с)")
+            try:
+                await cand.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        except Exception as e:  # noqa: BLE001 — почти всегда мёртвый прокси
+            why.append(f"#{cid}: {type(e).__name__}: {str(e)[:60]}")
+            try:
+                await cand.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        client, acc_id = cand, cid
+        break
+
+    if client is None:
+        print(json.dumps(
+            {"ok": False, "error": "не удалось подключиться к Telegram ни одним аккаунтом "
+                                   f"(проверь прокси). Пробовал: {'; '.join(why)}"},
+            ensure_ascii=False))
+        return
+
+    acc = {"id": acc_id}
     done = failed = 0
     try:
-        await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
-        if not await client.is_user_authorized():
-            print(json.dumps({"ok": False, "error": f"аккаунт #{acc['id']} не авторизован"},
-                             ensure_ascii=False))
-            return
         for c in people:
             try:
                 ok, msg = await _one(client, c)
@@ -259,7 +302,18 @@ def main() -> None:
     p.add_argument("--dry", action="store_true", help="показать кандидатов, ничего не менять")
     args = p.parse_args()
     ids = [int(x) for x in args.ids.split(",") if x.strip()] if args.ids else None
-    asyncio.run(run(ids, args.limit, args.dry))
+    # Последний рубеж: пульт ждёт JSON последней строкой. Без этого любое падение
+    # (например ConnectionError от Telethon) прилетало оператору сырым трейсбеком
+    # в alert'е и читалось как «не отчитался».
+    try:
+        asyncio.run(run(ids, args.limit, args.dry))
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"},
+                         ensure_ascii=False))
 
 
 if __name__ == "__main__":

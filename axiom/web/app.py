@@ -822,7 +822,21 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
             return JSONResponse({"error": "плохой статус"}, status_code=400)
         with database.get_conn() as conn:
             conn.execute(f"UPDATE accounts SET status=? WHERE id IN ({qm})", (status, *ids))
-        return JSONResponse({"ok": True, "updated": len(ids), "status": status})
+            # Ушёл в архив/бан — ОТДАЙ прокси. Мёртвому аккаунту выход в сеть не нужен,
+            # а heal() считает занятым любой назначенный адрес (иначе два аккаунта сядут
+            # на один IP и сожгут сессию). На живой базе 40 архивных держали 39 живых
+            # прокси: в пуле 28 alive, свободных для выдачи — 3, и шесть аккаунтов в
+            # прогреве стояли без прокси не потому, что прокси кончились, а потому что
+            # их разобрали мертвецы. Освобождаем только у архивных/забаненных: у paused
+            # аккаунт вернётся в строй, и отбирать адрес незачем.
+            freed = 0
+            if status in ("archived", "banned"):
+                cur = conn.execute(
+                    f"UPDATE accounts SET proxy='', proxy_alive=NULL, proxy_checked_at=NULL "
+                    f"WHERE id IN ({qm}) AND COALESCE(proxy,'')<>''", ids)
+                freed = cur.rowcount or 0
+        return JSONResponse({"ok": True, "updated": len(ids), "status": status,
+                             "proxies_freed": freed})
     if action == "protect":
         val = 1 if payload.get("protected") else 0
         with database.get_conn() as conn:
@@ -1887,6 +1901,77 @@ def logs_tail(name: str = "service", lines: int = 200) -> JSONResponse:
     return JSONResponse({"name": safe, "text": _mask_secrets(tail)})
 
 
+def _proxy_heal_scheduler() -> None:
+    """Быстрое лечение прокси: раз в PROXY_HEAL_MIN минут проверить и переставить отвалившиеся.
+
+    ЗАЧЕМ ОТДЕЛЬНЫМ ЦИКЛОМ. Лечение (proxy_pool.heal) висело прицепом к обновлению пула
+    (--refresh), а тот ходит раз в несколько часов (proxy_interval_min, по умолчанию 360).
+    Прокси же отваливается за минуты: аккаунт с мёртвым адресом выпадает из прогрева и из
+    рассылки — и стоит так до следующего планового прогона, то есть полдня. Пул и лечение
+    живут в РАЗНОМ ритме: искать новые прокси раз в 2-6 часов нормально, а замечать
+    отвалившийся нужно за минуты. Поэтому здесь свой таймер, не связанный с --refresh.
+
+    Безопасно гонять часто: heal НЕ трогает аккаунты, подключённые слушателем прямо
+    сейчас (смена прокси под живой сессией = второй IP на том же ключе = сожжённая
+    сессия, см. комментарий в proxy_pool.heal). Отвалившиеся не подключены по
+    определению, их и лечим. Плюс сам heal идемпотентен: живой прокси он оставляет как
+    есть, только помечает proxy_alive=1.
+
+    warming_only=False (флаг --all): чинить надо не только прогреваемых, но и боевых —
+    именно они шлют кампании, и именно их простой стоит денег.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    while True:
+        time.sleep(60)
+        try:
+            with database.get_conn() as conn:
+                if database.get_setting(conn, "proxy_heal_auto", "on") == "off":
+                    continue
+                every = int(database.get_setting(conn, "proxy_heal_min", "5"))
+                last = float(database.get_setting(conn, "proxy_heal_last_ts", "0") or 0)
+            if (time.time() - last) < max(1, every) * 60:
+                continue
+            with database.get_conn() as conn:
+                database.set_setting(conn, "proxy_heal_last_ts", str(time.time()))
+            res = subprocess.run(
+                [sys.executable, "-m", "channels.proxy_pool", "--heal", "--all"],
+                cwd=str(BASE_DIR.parent), timeout=600, env=env,
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            _log_run("proxy_heal", res)
+            # Сводку в колокольчик — только когда реально что-то переставили. Тик частый,
+            # и «проверил, всё живо» каждые 5 минут превратит ленту в шум.
+            # Считаем по итоговому JSON, который heal печатает последней строкой:
+            # разбор человекочитаемых print'ов ломается от любой правки формулировки.
+            healed = nopool = 0
+            for line in reversed((res.stdout or "").strip().splitlines()):
+                line = line.strip()
+                if line.startswith("{") and line.endswith("}"):
+                    try:
+                        import json as _json
+                        d = _json.loads(line)
+                        healed, nopool = int(d.get("healed", 0)), int(d.get("no_pool", 0))
+                    except Exception:  # noqa: BLE001 — не JSON, значит не наша строка
+                        pass
+                    break
+            if healed or nopool:
+                with database.get_conn() as conn:
+                    database.add_event(
+                        conn, "proxy_heal",
+                        f"🌐 Прокси: переставлено {healed}" + (f", без замены {nopool}" if nopool else ""),
+                        ("Отвалившиеся прокси заменены на живые из пула автоматически."
+                         if not nopool else
+                         f"Заменено {healed}, но {nopool} аккаунтам живого прокси не хватило — "
+                         f"пополни пул (Прокси → обновить), иначе они не выйдут в сеть."),
+                        level=("good" if not nopool else "warn"))
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[proxy heal scheduler] {e}")
+
+
 def _proxy_scheduler() -> None:
     """Фоновый планировщик: периодически обновляет пул прокси, если включено."""
     import os
@@ -2444,6 +2529,7 @@ def _start_scheduler() -> None:
     database.init_db()
     _startup_account_report()   # быстрая сводка готовности → колокольчик (до запуска прогрева)
     threading.Thread(target=_proxy_scheduler, daemon=True).start()
+    threading.Thread(target=_proxy_heal_scheduler, daemon=True).start()
     threading.Thread(target=_opener_queue_scheduler, daemon=True).start()
     threading.Thread(target=_night_reply_scheduler, daemon=True).start()
     threading.Thread(target=_daily_report_scheduler, daemon=True).start()

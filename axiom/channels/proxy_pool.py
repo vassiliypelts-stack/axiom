@@ -382,6 +382,21 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
     api_hash = config.TG_API_HASH
 
     with database.get_conn() as conn:
+        # СНАЧАЛА вернуть в оборот адреса, которые держат мертвецы. Занятым считается
+        # ЛЮБОЙ назначенный прокси (см. `taken` ниже) — иначе два аккаунта сядут на один
+        # IP и сожгут сессию. Но архивный и забаненный аккаунт в сеть уже не выйдет, а
+        # адрес за собой держит вечно: на живой базе 40 архивных удерживали 39 живых
+        # прокси, свободных для выдачи оставалось 3 из 28, и аккаунты в прогреве стояли
+        # без прокси не потому, что прокси кончились. Роут смены статуса теперь
+        # освобождает адрес сразу (web/app.accounts_bulk), но это чинит только будущие
+        # архивации — накопленное разбираем здесь, на каждом прогоне.
+        released = conn.execute(
+            "UPDATE accounts SET proxy='', proxy_alive=NULL, proxy_checked_at=NULL "
+            "WHERE COALESCE(status,'') IN ('archived','banned') AND COALESCE(proxy,'')<>''"
+        ).rowcount or 0
+        if released:
+            print(f"[heal] освободил {released} прокси у архивных/забаненных аккаунтов")
+
         # Пул Telethon-живых прокси для подстановки
         pool = conn.execute(
             "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"

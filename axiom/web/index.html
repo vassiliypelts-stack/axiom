@@ -7448,7 +7448,8 @@ async function refreshNotif(){
 }
 const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️",
   chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸",
-  listener_down:"🔇",listener_off:"🔇",listener_on:"🔊",sched_undelivered:"📵",stuck_reply:"⏳",campaign_blocked:"🛑"};
+  listener_down:"🔇",listener_off:"🔇",listener_on:"🔊",sched_undelivered:"📵",stuck_reply:"⏳",campaign_blocked:"🛑",
+  proxy_heal:"🌐",proxy_renew:"🌐",parse_schedule:"🛰️"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}

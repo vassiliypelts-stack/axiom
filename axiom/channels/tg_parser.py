@@ -251,6 +251,43 @@ async def search_chats(client, query: str, limit: int) -> None:
     print("\nПарсить выбранную: python -m channels.tg_parser --target @username --mode all --save")
 
 
+async def _resolve_target(client, target: str):
+    """Цель как её ждёт get_entity: @username/ссылка/телефон — как есть, но голый
+    числовой ID (для ЗАКРЫТЫХ чатов без публичной ссылки) так не резолвится —
+    Telethon трактует ЛЮБУЮ строку как username и не проверяет, что это число.
+
+    Для канала/супергруппы Telegram пускает только с парой «id + access_hash»,
+    выданной конкретному аккаунту — а строковая сессия между отдельными запусками
+    свой кэш сущностей не хранит, поэтому голый PeerChannel(id) сработает лишь
+    если сущность попадёт в кэш ЗА ЭТОТ ЖЕ прогон. Поэтому при числовой цели сразу
+    идём в iter_dialogs() этого аккаунта — он и так должен состоять в чате (это и
+    есть весь смысл парсинга закрытой группы без ссылки), и там лежит нужный
+    access_hash. Обычная (не супергруппа) group id-based, ключ ей не нужен вовсе."""
+    from telethon.tl.types import Chat, InputPeerChannel, InputPeerChat
+
+    t = target.strip()
+    if not t.lstrip("-").isdigit():
+        return await client.get_entity(target)
+    # «Голый» ID канала/супергруппы у Telethon хранится БЕЗ -100/минус-префикса,
+    # ровно как отдаёт chat_inventory (getattr(e,"id")) — принимаем оба варианта,
+    # чтобы цель можно было скопировать и из каталога чатов, и из полного tg://
+    # chat_id вида -100xxxxxxxxxx.
+    raw_id = int(t.replace("-100", "", 1)) if t.startswith("-100") else abs(int(t))
+    async for dialog in client.iter_dialogs():
+        e = dialog.entity
+        if getattr(e, "id", None) != raw_id:
+            continue
+        if isinstance(e, Chat):
+            return InputPeerChat(e.id)
+        ah = getattr(e, "access_hash", None)
+        if ah is not None:
+            return InputPeerChannel(e.id, ah)
+        return e
+    raise ValueError(f"аккаунт не состоит в чате с id={raw_id} (или он ещё не встретился "
+                     f"в его диалогах) — цель по числовому id работает только для чатов, "
+                     f"где выбранный аккаунт реально состоит")
+
+
 async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
               harvest: bool = False, days: int = HARVEST_DAYS,
               account_id: int | None = None, source: str = "tg_parse") -> None:
@@ -271,7 +308,7 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         await client.disconnect()
         return
 
-    entity = await client.get_entity(target)
+    entity = await _resolve_target(client, target)
 
     if mode in ("admins", "all"):
         admins = await collect_admins(client, entity)

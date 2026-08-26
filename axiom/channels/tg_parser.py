@@ -261,10 +261,10 @@ async def _resolve_target(client, target: str):
     свой кэш сущностей не хранит, поэтому голый PeerChannel(id) сработает лишь
     если сущность попадёт в кэш ЗА ЭТОТ ЖЕ прогон. Поэтому при числовой цели сразу
     идём в iter_dialogs() этого аккаунта — он и так должен состоять в чате (это и
-    есть весь смысл парсинга закрытой группы без ссылки), и там лежит нужный
-    access_hash. Обычная (не супергруппа) group id-based, ключ ей не нужен вовсе."""
-    from telethon.tl.types import Chat, InputPeerChannel, InputPeerChat
-
+    есть весь смысл парсинга закрытой группы без ссылки) — и возвращаем ПОЛНУЮ
+    сущность оттуда (не голый InputPeer): у неё уже есть access_hash для методов
+    вроде GetParticipantsRequest, и вдобавок title — для человекочитаемых тегов у
+    сохранённых лидов (см. run(): label = entity.title)."""
     t = target.strip()
     if not t.lstrip("-").isdigit():
         return await client.get_entity(target)
@@ -275,14 +275,8 @@ async def _resolve_target(client, target: str):
     raw_id = int(t.replace("-100", "", 1)) if t.startswith("-100") else abs(int(t))
     async for dialog in client.iter_dialogs():
         e = dialog.entity
-        if getattr(e, "id", None) != raw_id:
-            continue
-        if isinstance(e, Chat):
-            return InputPeerChat(e.id)
-        ah = getattr(e, "access_hash", None)
-        if ah is not None:
-            return InputPeerChannel(e.id, ah)
-        return e
+        if getattr(e, "id", None) == raw_id:
+            return e
     raise ValueError(f"аккаунт не состоит в чате с id={raw_id} (или он ещё не встретился "
                      f"в его диалогах) — цель по числовому id работает только для чатов, "
                      f"где выбранный аккаунт реально состоит")
@@ -309,19 +303,22 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         return
 
     entity = await _resolve_target(client, target)
+    # Числовой tg_chat_id в тегах/заметках контакта нечитаем оператору («TG-парсинг:
+    # 1156783003») — подменяем на название чата, когда цель была числом.
+    label = getattr(entity, "title", None) or target
 
     if mode in ("admins", "all"):
         admins = await collect_admins(client, entity)
         _report("Админы", admins)
         if save:
-            _persist(admins, target, "админ", source)
+            _persist(admins, label, "админ", source)
         await asyncio.sleep(random.uniform(*SCRAPE_PAUSE))
 
     if mode == "members":
         members = await collect_members(client, entity, limit)
         _report("Участники", members)
         if save:
-            _persist(members, target, "участник", source)
+            _persist(members, label, "участник", source)
 
     if mode in ("active", "all"):
         active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
@@ -329,7 +326,7 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
         if save:
-            _persist(users, target, "активный", source)
+            _persist(users, label, "активный", source)
             with database.get_conn() as conn:
                 if bios:  # bio пишем в уже созданные карточки лидов
                     for uid, bio in bios.items():

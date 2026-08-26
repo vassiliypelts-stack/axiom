@@ -3595,6 +3595,28 @@ def parse_invites(payload: dict = Body(...)) -> JSONResponse:
 
 
 # ---- Расписания парсинга: те же цели, что и ручной запуск, но по таймеру ---- #
+@app.post("/api/_tmp/fix_parse_tags")
+def _tmp_fix_parse_tags(payload: dict = Body(...)) -> JSONResponse:
+    """Разовая правка: заменить голый tg_chat_id старым текстом тега/заметки на
+    человекочитаемое название чата — только для контактов с указанным source.
+    Временный эндпоинт, удаляется сразу после использования."""
+    source = (payload.get("source") or "").strip()
+    old = (payload.get("old") or "").strip()
+    new = (payload.get("new") or "").strip()
+    if not (source and old and new):
+        return JSONResponse({"error": "нужны source, old, new"}, status_code=400)
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT id, tags, notes FROM contacts WHERE source=?", (source,)).fetchall()
+        n = 0
+        for r in rows:
+            tags = (r["tags"] or "").replace(old, new)
+            notes = (r["notes"] or "").replace(old, new)
+            if tags != (r["tags"] or "") or notes != (r["notes"] or ""):
+                conn.execute("UPDATE contacts SET tags=?, notes=? WHERE id=?", (tags, notes, r["id"]))
+                n += 1
+    return JSONResponse({"ok": True, "updated": n})
+
+
 @app.get("/api/parse/schedules")
 def parse_schedules_list() -> JSONResponse:
     database.init_db()

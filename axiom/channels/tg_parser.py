@@ -37,7 +37,10 @@ from telethon.errors import ChatAdminRequiredError, FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import Channel, ChannelParticipantsAdmins, User
+from telethon.tl.types import (
+    Channel, ChannelParticipantsAdmins, ChannelParticipantAdmin,
+    ChannelParticipantCreator, User,
+)
 
 import config
 from channels.ru_names import gender_of
@@ -77,6 +80,47 @@ def _is_lead_user(u) -> bool:
     return isinstance(u, User) and not u.bot and not u.deleted
 
 
+# Роль в чате. Владелец и админы — это ЛПР: им пишут иначе, чем рядовому участнику,
+# поэтому роль сохраняем отдельным полем карточки, а не только словом внутри тега.
+ROLE_CREATOR = "creator"
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
+ROLE_ACTIVE = "active"
+
+ROLE_RU = {
+    ROLE_CREATOR: "владелец чата",
+    ROLE_ADMIN: "админ",
+    ROLE_MEMBER: "участник",
+    ROLE_ACTIVE: "активный",
+}
+
+
+def _role_of(user: User, default: str = ROLE_MEMBER) -> str:
+    """Роль из .participant, который Telethon вешает на User при get_participants.
+
+    Иначе владелец чата был неотличим от рядового участника: режим admins валил всех
+    в одно слово «админ», а создателя группы — самого ценного адресата — не выделял."""
+    p = getattr(user, "participant", None)
+    if isinstance(p, ChannelParticipantCreator):
+        return ROLE_CREATOR
+    if isinstance(p, ChannelParticipantAdmin):
+        return ROLE_ADMIN
+    return default
+
+
+async def _visible_phone(client, user: User) -> str | None:
+    """Номер телефона, ЕСЛИ Telegram его отдал (человек не прячет его настройками).
+
+    Прятать номер — настройка по умолчанию, поэтому у большинства тут будет None, и
+    это нормально. Специально «вскрывать» номера (массовый ImportContacts, заходы в
+    ЛС) сознательно НЕ делаем: номеров это почти не даёт, а аккаунты за такое жгут.
+    Достаточно того, что уже лежит в отданном объекте — лишних запросов ноль."""
+    ph = (getattr(user, "phone", None) or "").strip()
+    if ph:
+        return ph if ph.startswith("+") else f"+{ph}"
+    return None
+
+
 async def _resolve_scan_chat(client, entity):
     """Куда смотреть на «активных»: сам чат (если группа) или связанное обсуждение канала."""
     if isinstance(entity, Channel) and entity.megagroup:
@@ -102,15 +146,18 @@ async def collect_admins(client, entity) -> list[User]:
     return [u for u in ppl if _is_lead_user(u)]
 
 
-async def collect_members(client, entity, limit: int) -> list[User]:
+async def collect_members(client, entity, limit: int, offset: int = 0) -> list[User]:
+    """offset — с какого места брать участников. Нужен, чтобы поделить большой чат
+    между несколькими аккаунтами: каждый тянет свой кусок, и нагрузка (а с ней и риск
+    флуд-лимита) делится на всех, вместо того чтобы весь чат выгребал один."""
     try:
-        ppl = await client.get_participants(entity, limit=limit)
+        ppl = await client.get_participants(entity, limit=limit, offset=offset)
     except ChatAdminRequiredError:
         print("[members] список участников скрыт (нужны права админа) — пропускаю.")
         return []
     except FloodWaitError as e:
         print(f"[floodwait] жду {e.seconds}с"); await asyncio.sleep(e.seconds + 5)
-        ppl = await client.get_participants(entity, limit=limit)
+        ppl = await client.get_participants(entity, limit=limit, offset=offset)
     return [u for u in ppl if _is_lead_user(u)]
 
 
@@ -146,17 +193,29 @@ async def collect_active(client, entity, scan: int, top: int,
         with database.get_conn() as conn:
             database.resolve_catalog_chat(conn, chat_id, chat_title, getattr(chat, "username", None))
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    # Окно «за период»: в авторы идут только писавшие за последние period_days.
+    # None/0 — с самого начала (насколько хватит глубины scan). Свежий автор ценнее:
+    # он в теме прямо сейчас, а не заходил в чат три года назад.
+    since = datetime.now(timezone.utc) - timedelta(days=period_days) if period_days else None
     counts: Counter[int] = Counter()
     texts: dict[int, list[tuple]] = defaultdict(list)  # uid -> [(msg_id, ts, text), ...]
     n = 0
+    hit_edge = False
     async for m in client.iter_messages(chat, limit=scan):
+        # Лента идёт от новых к старым: вышли за окно — дальше только старее,
+        # перебирать остаток незачем.
+        if since and m.date and m.date < since:
+            hit_edge = True
+            break
         if m.sender_id and m.sender_id > 0:  # >0 = пользователь (каналы/анонимы отсекаем)
             counts[m.sender_id] += 1
             if harvest and m.message and m.date and m.date >= cutoff \
                     and len(texts[m.sender_id]) < posts_per_user:
                 texts[m.sender_id].append((m.id, str(m.date), m.message.strip()[:1000]))
         n += 1
-    print(f"[active] просмотрено {n} сообщений, уникальных авторов: {len(counts)}")
+    win = f" за {period_days} дн." if period_days else " за всё время"
+    print(f"[active] просмотрено {n} сообщений{win}, уникальных авторов: {len(counts)}"
+          + (" (дошли до края окна)" if hit_edge else ""))
     out: list[tuple[User, int]] = []
     bios: dict[int, str] = {}
     photo_ids: set[int] = set()
@@ -185,7 +244,8 @@ async def collect_active(client, entity, scan: int, top: int,
     return out, bios, photo_ids
 
 
-def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse") -> str:
+def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse",
+               role_code: str | None = None, phone: str | None = None) -> str:
     """Кладёт пользователя в книжку. Дедуп по tg_user_id. Возвращает 'new'/'dup'.
 
     source — свой ярлык происхождения («210826точканетворк»). По умолчанию общий
@@ -200,6 +260,14 @@ def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse") 
         if tag not in old:
             new_tags = f"{old}, {tag}" if old else tag
             conn.execute("UPDATE contacts SET tags=?, updated_at=datetime('now') WHERE id=?", (new_tags, existing["id"]))
+        # Роль и номер могли открыться только сейчас (в прошлый заход человек был
+        # рядовым участником, теперь админ; или номер стал виден). COALESCE на
+        # СТАРОМ значении: заполняем пустое, но не затираем уже известное.
+        if role_code:
+            conn.execute("UPDATE contacts SET tg_chat_role=? WHERE id=?", (role_code, existing["id"]))
+        if phone:
+            conn.execute("UPDATE contacts SET phone=COALESCE(NULLIF(phone,''),?) WHERE id=?",
+                         (phone, existing["id"]))
         return "dup"
     name = _display_name(u)
     cid = database.upsert_contact(
@@ -212,9 +280,134 @@ def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse") 
         notes=f"Найден парсером TG в {target} ({role})",
         gender=gender_of(name),
         is_premium=1 if getattr(u, "premium", False) else 0,
+        phone=phone,
     )
     conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
+    if role_code:
+        conn.execute("UPDATE contacts SET tg_chat_role=? WHERE id=?", (role_code, cid))
     return "new"
+
+
+def _phones_of(users: list) -> dict[int, str]:
+    """{tg_user_id: телефон} по тем, у кого он реально виден. Без единого запроса:
+    номер уже лежит в объекте User, если человек его не спрятал."""
+    out: dict[int, str] = {}
+    for u in users:
+        ph = _visible_phone_sync(u)
+        if ph:
+            out[u.id] = ph
+    return out
+
+
+def _visible_phone_sync(user) -> str | None:
+    ph = (getattr(user, "phone", None) or "").strip()
+    if not ph:
+        return None
+    return ph if ph.startswith("+") else f"+{ph}"
+
+
+async def _collect_members_shared(accs: list, entity, target: str, limit: int, first_client):
+    """Участники чата, поделённые между несколькими аккаунтами.
+
+    Зачем: выгрести 300-тысячный чат одним аккаунтом — верный флуд-лимит, а то и бан.
+    Каждый аккаунт берёт свой диапазон (offset), поэтому на каждого приходится
+    limit/N запросов вместо limit. Аккаунты работают ПО ОЧЕРЕДИ, а не параллельно:
+    одновременные заходы с разных IP в один чат Telegram тоже не любит.
+
+    Аккаунт, который не смог (мёртвый прокси, не состоит в чате), просто пропускаем —
+    его кусок добирать не пытаемся: лучше меньше лидов, чем сожжённый аккаунт.
+    """
+    if len(accs) <= 1:
+        return await collect_members(first_client, entity, limit)
+
+    per = max(1, limit // len(accs))
+    seen: set[int] = set()
+    out: list = []
+    for i, acc_id in enumerate(accs):
+        offset = i * per
+        # Первый аккаунт уже подключён вызывающим — переиспользуем, не плодя сессий.
+        if i == 0:
+            client, own = first_client, False
+        else:
+            try:
+                client, _ = client_for_account(acc_id)
+                await client.connect()
+                own = True
+            except Exception as e:  # noqa: BLE001
+                print(f"[members] аккаунт #{acc_id} пропущен: {str(e)[:70]}")
+                continue
+        try:
+            # Своя сущность на каждый аккаунт: access_hash выдаётся конкретному
+            # аккаунту, чужой здесь не сработает.
+            ent = entity if i == 0 else await _resolve_target(client, target)
+            part = await collect_members(client, ent, per, offset=offset)
+            fresh = [u for u in part if u.id not in seen]
+            seen.update(u.id for u in fresh)
+            out.extend(fresh)
+            print(f"[members] аккаунт #{acc_id if acc_id else 'main'}: "
+                  f"взял {len(fresh)} (offset {offset})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[members] аккаунт #{acc_id} сорвался: {type(e).__name__}: {str(e)[:70]}")
+        finally:
+            if own:
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+        await asyncio.sleep(random.uniform(*SCRAPE_PAUSE))
+    return out
+
+
+def _acc_labels(accs: list) -> str:
+    """Ярлыки аккаунтов для показа в истории: «Вася SDR, Аня» вместо «12, 15»."""
+    ids = [a for a in accs if a]
+    if not ids:
+        return "главный из .env"
+    qm = ",".join("?" * len(ids))
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT id, label, username, phone FROM accounts WHERE id IN ({qm})", ids).fetchall()
+    by_id = {r["id"]: (r["label"] or r["username"] or r["phone"] or f"#{r['id']}") for r in rows}
+    return ", ".join(str(by_id.get(i, f"#{i}")) for i in ids)
+
+
+def _run_start(target: str, mode: str, source: str, accs: list,
+               period_days: int | None) -> int | None:
+    """Заводит строку в истории запусков. Ошибку глушим: история — вспомогательная
+    вещь, из-за неё парсинг падать не должен."""
+    try:
+        with database.get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO parse_runs (target, mode, source, account_ids, account_label, "
+                "period_days) VALUES (?,?,?,?,?,?)",
+                (target, mode, source, ",".join(str(a) for a in accs if a),
+                 _acc_labels(accs), period_days or 0))
+            return cur.lastrowid
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] не записалось: {str(e)[:70]}")
+        return None
+
+
+def _run_finish(run_id: int, chat_title: str, found: int, new: int, dup: int) -> None:
+    try:
+        with database.get_conn() as conn:
+            conn.execute(
+                "UPDATE parse_runs SET chat_title=?, found=?, saved_new=?, saved_dup=?, "
+                "ok=1, finished_at=datetime('now') WHERE id=?",
+                (chat_title, found, new, dup, run_id))
+    except Exception as e:  # noqa: BLE001
+        print(f"[history] не обновилось: {str(e)[:70]}")
+
+
+def _run_fail(run_id: int | None, err: str) -> None:
+    if not run_id:
+        return
+    try:
+        with database.get_conn() as conn:
+            conn.execute("UPDATE parse_runs SET ok=0, error=?, finished_at=datetime('now') "
+                         "WHERE id=?", (err[:300], run_id))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _report(title: str, users: list, counts: dict | None = None) -> None:
@@ -224,13 +417,23 @@ def _report(title: str, users: list, counts: dict | None = None) -> None:
         print(f"  {_display_name(u):30} @{u.username or '-':20}{extra}")
 
 
-def _persist(users: list, target: str, role: str, source: str = "tg_parse") -> None:
+def _persist(users: list, target: str, role: str, source: str = "tg_parse",
+             default_role_code: str | None = None,
+             phones: dict[int, str] | None = None) -> tuple[int, int]:
+    """Возвращает (новых, дублей) — цифры нужны для истории запусков.
+
+    Роль пишем ПОШТУЧНО (_role_of), а не одним словом на всю пачку: среди участников
+    попадаются владелец и админы, и терять это на записи в книжку нельзя."""
     new = dup = 0
+    phones = phones or {}
     with database.get_conn() as conn:
         for u in users:
-            r = _save_lead(conn, u, target, role, source)
+            code = _role_of(u, default_role_code or ROLE_MEMBER)
+            r = _save_lead(conn, u, target, ROLE_RU.get(code, role), source,
+                           role_code=code, phone=phones.get(u.id))
             new += r == "new"; dup += r == "dup"
     print(f"[save] {role}: добавлено {new}, уже было {dup}")
+    return new, dup
 
 
 async def search_chats(client, query: str, limit: int) -> None:
@@ -284,7 +487,8 @@ async def _resolve_target(client, target: str):
 
 async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
               harvest: bool = False, days: int = HARVEST_DAYS,
-              account_id: int | None = None, source: str = "tg_parse") -> None:
+              account_id: int | None = None, source: str = "tg_parse",
+              account_ids: list[int] | None = None, period_days: int | None = None) -> None:
     """account_id=None — главный аккаунт из .env; иначе рабочий аккаунт по id.
 
     ⚠️ Парсинг резолвит username'ы, а ResolveUsername — самый лимитируемый вызов TG.
@@ -292,10 +496,15 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
     @iivairf словил 22.6 ч). Для любых пачек передавай --account рабочего аккаунта.
     """
     database.init_db()
-    client, _ = client_for_account(account_id)
+    # Один аккаунт — частный случай списка: дальше по коду ветвление уже не нужно.
+    accs = list(account_ids) if account_ids else ([account_id] if account_id else [None])
+    run_id = _run_start(target, mode, source, accs, period_days) if save else None
+
+    client, _ = client_for_account(accs[0])
     await client.connect()
     me = await client.get_me()
-    print(f"Подключён как @{me.username or me.id}; цель: {target}")
+    print(f"Подключён как @{me.username or me.id}; цель: {target}"
+          + (f"; аккаунтов в работе: {len(accs)}" if len(accs) > 1 else ""))
 
     if mode == "search":
         await search_chats(client, target, limit)
@@ -307,26 +516,37 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
     # 1156783003») — подменяем на название чата, когда цель была числом.
     label = getattr(entity, "title", None) or target
 
+    found = new_total = dup_total = 0
+
     if mode in ("admins", "all"):
         admins = await collect_admins(client, entity)
         _report("Админы", admins)
+        found += len(admins)
         if save:
-            _persist(admins, label, "админ", source)
+            n, d = _persist(admins, label, "админ", source, ROLE_ADMIN,
+                            _phones_of(admins))
+            new_total += n; dup_total += d
         await asyncio.sleep(random.uniform(*SCRAPE_PAUSE))
 
     if mode == "members":
-        members = await collect_members(client, entity, limit)
+        members = await _collect_members_shared(accs, entity, target, limit, client)
         _report("Участники", members)
+        found += len(members)
         if save:
-            _persist(members, label, "участник", source)
+            n, d = _persist(members, label, "участник", source, ROLE_MEMBER,
+                            _phones_of(members))
+            new_total += n; dup_total += d
 
     if mode in ("active", "all"):
-        active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest, days=days)
+        active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest,
+                                                       days=days, period_days=period_days)
         users = [u for u, _ in active]
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
+        found += len(users)
         if save:
-            _persist(users, label, "активный", source)
+            n, d = _persist(users, label, "активный", source, ROLE_ACTIVE, _phones_of(users))
+            new_total += n; dup_total += d
             with database.get_conn() as conn:
                 if bios:  # bio пишем в уже созданные карточки лидов
                     for uid, bio in bios.items():
@@ -339,6 +559,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
             print("[harvest] сырьё для досье собрано в tg_user_posts — дальше agent/enrich_person.py")
 
     await client.disconnect()
+    if run_id:
+        _run_finish(run_id, label, found, new_total, dup_total)
     print("\nГотово." + ("" if save else "  (сухой прогон — добавь --save, чтобы записать в книжку)"))
 
 
@@ -356,15 +578,24 @@ def main() -> None:
                    help="ярлык происхождения для «Контактов» (напр. 210826точканетворк). "
                         "По умолчанию общий tg_parse — тогда разные чаты сваливаются в одну "
                         "кучу и в CRM их не отделить друг от друга фильтром по источнику")
+    p.add_argument("--accounts", default=None,
+                   help="НЕСКОЛЬКО аккаунтов через запятую (напр. 12,15,18) — работа по чату "
+                        "делится между ними: каждый берёт свой кусок участников, поэтому на "
+                        "каждый приходится в N раз меньше запросов и флуд-лимит не ловится. "
+                        "Заходят по очереди, а не одновременно")
+    p.add_argument("--period-days", type=int, default=None, dest="period_days",
+                   help="режим active: считать авторами только писавших за последние N дней "
+                        "(не задан/0 — с самого начала, насколько хватит --scan)")
     p.add_argument("--account", type=int, default=None, dest="account_id",
                    help="аккаунт из БД, которым парсить (по id) — обязателен для ЗАКРЫТЫХ чатов: "
                         "список участников видит только тот, кто реально в чате состоит. "
                         "Не задан — используется главный аккаунт из .env (годится только для "
                         "публичных @чатов, куда .env-аккаунт не обязан быть вступившим)")
     args = p.parse_args()
+    acc_ids = [int(x) for x in (args.accounts or "").split(",") if x.strip()] or None
     asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
                     harvest=args.harvest, days=args.days, account_id=args.account_id,
-                    source=args.source))
+                    source=args.source, account_ids=acc_ids, period_days=args.period_days))
 
 
 if __name__ == "__main__":

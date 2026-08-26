@@ -367,6 +367,30 @@ CREATE TABLE IF NOT EXISTS parse_schedules (
     created_at    TEXT DEFAULT (datetime('now'))
 );
 
+-- История запусков парсера: последние заходы с кликом на готовую выборку в «Контактах».
+-- Зачем отдельно от parse_schedules: там ЗАДАНИЯ (что парсить регулярно), а тут ФАКТЫ
+-- (что реально спарсили, каким аккаунтом, сколько взяли). Раньше после ручного запуска
+-- результат жил только в <pre> на странице и терялся при перезагрузке — вернуться к
+-- «той самой подборке» было нельзя.
+CREATE TABLE IF NOT EXISTS parse_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target        TEXT NOT NULL,             -- что парсили (как ввёл оператор)
+    chat_title    TEXT,                      -- человекочитаемое название чата
+    mode          TEXT NOT NULL,
+    source        TEXT,                      -- ярлык происхождения → фильтр в «Контактах»
+    account_ids   TEXT,                      -- каким(и) аккаунтом(ами): "12" или "12,15,18"
+    account_label TEXT,                      -- их ярлыки для показа: «Вася SDR, Аня»
+    period_from   TEXT,                      -- фильтр по дате сообщений (режим active)
+    period_days   INTEGER,                   -- 0/NULL = с самого начала
+    found         INTEGER DEFAULT 0,         -- сколько нашли
+    saved_new     INTEGER DEFAULT 0,         -- сколько НОВЫХ записали в книжку
+    saved_dup     INTEGER DEFAULT 0,         -- сколько уже было
+    ok            INTEGER DEFAULT 1,
+    error         TEXT,
+    started_at    TEXT DEFAULT (datetime('now')),
+    finished_at   TEXT
+);
+
 -- Лог отправки кампании: каждая запись = попытка отправить одному контакту.
 -- Позволяет увидеть, сколько ушло, сколько пропущено и почему.
 CREATE TABLE IF NOT EXISTS campaign_logs (

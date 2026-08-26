@@ -3562,8 +3562,17 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
     if not target:
         return JSONResponse({"error": "укажи @чат/ссылку или поисковый запрос"}, status_code=400)
     args = ["channels.tg_parser", "--target", target, "--mode", mode]
-    if payload.get("account_id"):
+    # Несколько аккаунтов: работа по чату делится между ними, чтобы не ловить
+    # флуд-лимит одним. Одиночный account_id оставлен для совместимости с
+    # расписаниями, заведёнными до этой правки.
+    acc_ids = payload.get("account_ids") or []
+    acc_ids = [int(a) for a in acc_ids if str(a).strip()]
+    if acc_ids:
+        args += ["--accounts", ",".join(str(a) for a in acc_ids)]
+    elif payload.get("account_id"):
         args += ["--account", str(int(payload["account_id"]))]
+    if payload.get("period_days"):
+        args += ["--period-days", str(int(payload["period_days"]))]
     if payload.get("save"):
         args.append("--save")
     # Свой ярлык происхождения, чтобы в «Контактах» можно было отделить участников
@@ -3592,6 +3601,58 @@ def parse_invites(payload: dict = Body(...)) -> JSONResponse:
     if dialogs:
         args += ["--dialogs", "--per", str(int(payload.get("per") or 800))]
     return JSONResponse(_run_capture(args, timeout=300))
+
+
+@app.get("/api/parse/runs")
+def parse_runs_list() -> JSONResponse:
+    """Последние заходы парсера — чтобы вернуться к конкретной подборке контактов.
+
+    Раньше результат ручного запуска жил только в <pre> на странице и пропадал при
+    перезагрузке: какой чат, каким аккаунтом и сколько дал — восстановить было нельзя.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM parse_runs ORDER BY id DESC LIMIT 10").fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/parse/accounts")
+def parse_accounts() -> JSONResponse:
+    """Аккаунты для выбора «кем парсить», с пометкой боевой/прогревочный и
+    списком чатов, в которых аккаунт состоит.
+
+    Зачем отдельно от /api/accounts: оператору тут важно НЕ перепутать боевой
+    аккаунт с прогревочным (боевым парсить нельзя — сожжёшь рабочий номер) и
+    сразу видеть, кто из них вообще состоит в нужном чате.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, username, phone, kind, status, warm_stage, protected, "
+            "session_alive, proxy_alive, spam_status FROM accounts "
+            "WHERE tg_session IS NOT NULL AND tg_session<>'' ORDER BY id").fetchall()
+        chats = conn.execute(
+            "SELECT ac.account_id, c.title FROM account_chats ac "
+            "JOIN chats c ON c.id=ac.chat_id").fetchall()
+    by_acc: dict[int, list[str]] = {}
+    for r in chats:
+        by_acc.setdefault(r["account_id"], []).append(r["title"] or "")
+    out = []
+    for r in rows:
+        d = dict(r)
+        warm = (d.get("warm_stage") or 0)
+        # «Боевой» — тот, кем реально работают: родной/личный номер или аккаунт,
+        # уже прошедший прогрев. Парсить надо расходными (bought), а не этими.
+        d["battle"] = bool(d.get("protected")) or (d.get("kind") == "own")
+        d["kind_ru"] = ("🔴 боевой (не парсить)" if d["battle"]
+                        else "🟢 расходный" if d.get("kind") == "bought"
+                        else "🟡 своя симка" if d.get("kind") == "sim"
+                        else "⚪ не помечен")
+        d["warming"] = bool(warm and warm < 14) or d.get("status") == "warming"
+        d["chats"] = sorted(set(x for x in by_acc.get(d["id"], []) if x))
+        out.append(d)
+    return JSONResponse(out)
 
 
 # ---- Расписания парсинга: те же цели, что и ручной запуск, но по таймеру ---- #
@@ -7043,6 +7104,36 @@ _KEV_REACHED = ("meeting_set", "met", "won")
 # refused добавлен к _ENGAGED отдельно: человек уже отказался, повторный опенер ему —
 # чистый спам, хотя «вовлечённым» он не считается.
 _TEST_KEEP_STATUS = _ENGAGED + ("refused",)
+
+
+@app.get("/api/campaign/{cid}/report")
+def campaign_report(cid: int) -> JSONResponse:
+    """Строка отчёта («работала ли сегодня/вчера, отправлено/ответили/КЭВ по периодам»)
+    для показа прямо на экране кампании — тот же расчёт, что уходит в личку
+    кнопкой «📤 Отчёт в ЛС» (см. notify.campaign_report_text)."""
+    from channels.notify import campaign_report_text
+    database.init_db()
+    with database.get_conn() as conn:
+        text = campaign_report_text(conn, cid)
+    if text is None:
+        return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+    return JSONResponse({"text": text})
+
+
+@app.post("/api/campaign/{cid}/report/send")
+def campaign_report_send(cid: int) -> JSONResponse:
+    """Отправить отчёт по кампании в личку — получателю из notify_target ЭТОЙ
+    кампании (то же поле, что и «уведомляет о встречах»; несколько получателей
+    через запятую уже поддержаны — см. channels.notify._targets).
+
+    Отдельным подпроцессом, а не asyncio.run() прямо в веб-воркере — тот же
+    паттерн, что и утренняя сводка (_daily_report_scheduler): свой Telethon-клиент
+    в процессе пульта нельзя заводить рядом со слушателем на той же сессии."""
+    res = _run_capture(["channels.notify", "--campaign-report", str(cid)], timeout=60)
+    if not res.get("ok"):
+        err = (res.get("output") or "").strip().splitlines()
+        return JSONResponse({"error": err[-1] if err else "не удалось отправить"}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/campaign/{cid}/econ")

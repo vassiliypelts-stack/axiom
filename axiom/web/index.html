@@ -5398,9 +5398,9 @@ async function viewCampaigns(v){
           <div class="field"><label>🔗 Ссылка на созвон</label>
             <input id="c-meeting-url" placeholder="https://telemost.yandex.ru/j/...">
             <div class="hint">Агент пришлёт её человеку сразу, как договорились о времени.</div></div>
-          <div class="field"><label>🔔 Кому сообщить о встрече</label>
-            <input id="c-notify-target" placeholder="+7900... или @username">
-            <div class="hint">Кто ведёт эту кампанию — тому и падает «договорились о встрече».</div></div>
+          <div class="field"><label>🔔 Кому сообщить о встрече / отчёт по кампании</label>
+            <input id="c-notify-target" placeholder="+7900..., @username — можно несколько через запятую">
+            <div class="hint">Кто ведёт эту кампанию — тому падает «договорились о встрече» и отчёт по кнопке «📤 Отчёт в ЛС». Несколько получателей — через запятую.</div></div>
         </div>
         <div class="field"><label>С какого аккаунта отправить это уведомление</label>
           <select id="c-notify-acc"></select>
@@ -5810,6 +5810,7 @@ function renderCampList(mount,camps){
           <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
+          <button class="cl-report" data-id="${c.id}" title="Работала ли сегодня/вчера, сколько отправлено за сегодня/неделю/всё время, ответы, КЭВ">📋 Отчёт</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <button class="cl-test-reset" data-id="${c.id}" title="удалить переписку, встречи и очередь у СВОИХ тестовых номеров этой кампании — начать тест с нуля, не путая со вчерашним диалогом. Живых лидов не трогает">🔄 Обнулить тест</button>
@@ -5822,6 +5823,7 @@ function renderCampList(mount,camps){
         <div class="cprog" id="pre-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="econ-${c.id}" style="margin-top:12px"></div>
+        <div class="cprog" id="report-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="warm-${c.id}" style="margin-top:12px"></div></div>`;
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
@@ -6050,6 +6052,33 @@ function renderCampList(mount,camps){
         renderEcon();};
     };
     renderEcon();
+  });
+  mount.querySelectorAll(".cl-report").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,box=document.getElementById("report-"+id);
+    if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
+    box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    const render=async()=>{
+      let d;try{d=await api(`/api/campaign/${id}/report`);}catch(e){box.innerHTML=`<div class="empty">ошибка: ${esc(e.message)}</div>`;return;}
+      if(d.error){box.innerHTML=`<div class="empty">${esc(d.error)}</div>`;return;}
+      box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
+        <pre style="white-space:pre-wrap;font:13px/1.5 inherit;margin:0">${esc(d.text)}</pre>
+        <div class="ttoolbar" style="margin:10px 0 0">
+          <button class="primary" id="report-send-${id}">📤 Отправить в ЛС</button>
+          <span class="hint" id="report-msg-${id}"></span>
+        </div>
+        <div class="hint" style="margin-top:6px">Получатель — поле «Кому сообщить о встрече / отчёт по кампании» в «⚙ Настроить» (можно несколько через запятую).</div>
+      </div>`;
+      box.querySelector(`#report-send-${id}`).onclick=async(ev)=>{
+        const sb=ev.target,msg=document.getElementById(`report-msg-${id}`);
+        sb.disabled=true;sb.textContent="отправляю…";
+        try{
+          const r=await api(`/api/campaign/${id}/report/send`,{method:"POST"});
+          msg.innerHTML=r.error?`<span style="color:#c0392b">${esc(r.error)}</span>`:'<span style="color:var(--green)">✅ отправлено</span>';
+        }catch(e){msg.innerHTML=`<span style="color:#c0392b">${esc(e.message)}</span>`;}
+        sb.disabled=false;sb.textContent="📤 Отправить в ЛС";
+      };
+    };
+    render();
   });
   mount.querySelectorAll(".cl-warm").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,box=document.getElementById("warm-"+id);
@@ -6435,20 +6464,31 @@ async function viewParser(v){
     <div class="sub" style="margin:6px 0 12px">Поиск публичных групп по теме → парсинг (админы / активные комментаторы / участники) → лиды в книжку.</div>
     <div class="row2">
       <div class="field"><label>Цель: @чат / ссылка / поисковый запрос</label><input id="p-target" placeholder="напр.: недвижимость сочи   или   @somechat   или   t.me/+инвайт"></div>
-      <div class="field"><label>Режим</label><select id="p-mode">
+      <div class="field"><label>Вид парсинга</label><select id="p-mode">
         <option value="search">🔍 поиск групп по теме</option>
-        <option value="admins">админы канала/чата</option>
-        <option value="active">активные комментаторы</option>
-        <option value="all">админы + активные</option>
-        <option value="members">участники группы</option>
+        <option value="members">👥 все участники чата</option>
+        <option value="active">💬 кто пишет в чат (за период)</option>
+        <option value="admins">👑 админы и владелец</option>
+        <option value="all">👑+💬 админы и пишущие</option>
       </select></div>
     </div>
-    <div class="field"><label>Каким аккаунтом парсить</label><select id="p-acc"><option value="">— главный из .env —</option></select>
-      <div class="hint" style="margin-top:4px">Для ЗАКРЫТЫХ/приватных чатов обязательно выбери аккаунт, который в нём реально состоит, — список участников видит только тот, кто внутри. Для чата без публичной ссылки (только по инвайту) в поле «Цель» вставь тот самый пригласительный t.me/+…, которым сам вступал.</div></div>
+    <div class="field"><label>Каким аккаунтом парсить <span class="sub" style="font-weight:400">— можно отметить несколько</span></label>
+      <div id="p-accs" style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">загружаю аккаунты…</div>
+      <div class="hint" style="margin-top:4px">Отметишь несколько — чат поделится между ними: каждый возьмёт свой кусок участников, поэтому на каждый ляжет в N раз меньше запросов и флуд-лимит не ловится. Заходят по очереди, а не разом.<br>🔴 боевыми парсить не стоит — это рабочие номера, которыми ведут переписку. 🟢 расходные для того и куплены.<br>Для ЗАКРЫТЫХ чатов отмечай тех, кто реально в нём состоит (у таких ниже написано «в этом чате»), — список участников видит только тот, кто внутри.</div></div>
     <div class="row2">
-      <div class="field"><label>Глубина scan (для «активных»)</label><input id="p-scan" type="number" value="2000"></div>
+      <div class="field"><label>Глубина scan (для «кто пишет»)</label><input id="p-scan" type="number" value="2000"></div>
       <div class="field"><label>Топ авторов / лимит выдачи</label><input id="p-top" type="number" value="50"></div>
     </div>
+    <div class="field" id="p-period-wrap" style="display:none"><label>За какой период писали</label>
+      <select id="p-period">
+        <option value="0">с самого начала (сколько хватит глубины)</option>
+        <option value="7">за последние 7 дней</option>
+        <option value="30" selected>за последние 30 дней</option>
+        <option value="90">за последние 3 месяца</option>
+        <option value="180">за последние полгода</option>
+        <option value="365">за последний год</option>
+      </select>
+      <div class="hint" style="margin-top:4px">Фильтр по дате есть только у сообщений, поэтому работает для «кто пишет в чат». У списка участников даты вступления Telegram не отдаёт — там парсятся все подряд.</div></div>
     <div class="field"><label>Источник (ярлык для «Контактов»)</label>
       <input id="p-source" placeholder="напр.: 210826точканетворк" autocomplete="off">
       <div class="hint" style="margin-top:4px">Под этим ярлыком найденные лягут в «Контакты» — там по нему можно отфильтровать и посмотреть, сколько дал именно этот чат. Оставишь пустым — попадут в общий «tg_parse» вперемешку со всеми прошлыми парсингами.</div></div>
@@ -6487,6 +6527,11 @@ async function viewParser(v){
         <input type="checkbox" id="chatscan-toggle"> сканировать чаты по ключам (лидген)</label>
       <div class="hint" style="margin-top:3px">Раньше один выключатель глушил и это, и ответы клиентам — выключаешь чаты, агент вместе с ними замолкал в личке. Теперь это разные тумблеры.</div>
     </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="dash-chh" style="cursor:pointer"><h3 style="margin:0;font-size:14px">🕘 История парсинга — последние 10 запусков</h3></div>
+    <div class="sub" style="margin:6px 0 12px">Что и когда парсили, каким аккаунтом и сколько дало. Клик по строке открывает готовую подборку в «Контактах» — тем же фильтром по источнику.</div>
+    <div id="p-runs" class="sub">загружаю…</div>
   </div>`;
   (async()=>{
     const cb=$("#chatscan-toggle");if(!cb)return;
@@ -6535,18 +6580,110 @@ async function viewParser(v){
     }catch(e){out.textContent="Ошибка сети: "+e.message;}
     btn.disabled=false;btn.textContent=t;
   };
-  api("/api/accounts").then(accs=>{
-    const sel=$("#p-acc");if(!sel)return;
-    sel.innerHTML='<option value="">— главный из .env —</option>'
-      +accs.filter(a=>a.tg_connected).map(a=>`<option value="${a.id}">${esc(a.label||a.username||a.phone||("#"+a.id))}</option>`).join("");
-  }).catch(()=>{});
-  $("#p-run").onclick=()=>run($("#p-run"),"#p-out","/api/parse/run",{
-    target:$("#p-target").value.trim(),mode:$("#p-mode").value,save:$("#p-save").checked,
-    account_id:$("#p-acc").value||null,
-    source:($("#p-source").value||"").trim()||null,
-    scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30});
+  // ---- Аккаунты: чекбоксы, боевые отделены от расходных, видно членство в чате ----
+  // Перепутать боевой с расходным = сжечь рабочий номер, поэтому вид аккаунта
+  // подписан прямо в строке, а не спрятан в другом разделе.
+  let PACCS=[];
+  const chatHint=(a)=>{
+    const t=($("#p-target").value||"").trim().toLowerCase().replace(/^@|^https?:\/\/t\.me\//,"");
+    if(!t||!a.chats||!a.chats.length)return "";
+    return a.chats.some(c=>(c||"").toLowerCase().includes(t))
+      ? ' <span class="badge b-active" style="font-size:10px">в этом чате</span>' : "";
+  };
+  const renderAccs=()=>{
+    const box=$("#p-accs");if(!box)return;
+    if(!PACCS.length){box.innerHTML='<span class="sub">нет подключённых аккаунтов — подключи их в разделе «Аккаунты»</span>';return;}
+    const chosen=new Set([...box.querySelectorAll("input:checked")].map(i=>i.value));
+    box.innerHTML=PACCS.map(a=>{
+      const nm=esc(a.label||a.username||a.phone||("#"+a.id));
+      const warn=a.battle?'style="color:#c0392b"':"";
+      const warm=a.warming?' <span class="badge b-nurture" style="font-size:10px">на прогреве</span>':"";
+      return `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer" ${warn}>
+        <input type="checkbox" value="${a.id}"${chosen.has(String(a.id))?" checked":""}>
+        <span>#${a.id} ${nm}</span>
+        <span class="sub" style="font-size:11px">${esc(a.kind_ru||"")}</span>${warm}${chatHint(a)}
+      </label>`;}).join("");
+  };
+  api("/api/parse/accounts").then(accs=>{
+    // Расходные сверху: ими и надо парсить, боевые уводим вниз, чтобы не кликнуть сгоряча.
+    PACCS=(accs||[]).sort((a,b)=>(a.battle?1:0)-(b.battle?1:0)||a.id-b.id);
+    renderAccs();
+  }).catch(()=>{const b=$("#p-accs");if(b)b.innerHTML='<span class="sub" style="color:#c0392b">не удалось загрузить аккаунты</span>';});
+
+  // ---- Источник: подставляем сам, курсор в поле не нужен ----
+  // Формат «260826названиечата»: дата + чат, чтобы в «Контактах» подборка находилась
+  // по одному фильтру и было видно, когда она собрана.
+  const autoSource=()=>{
+    const el=$("#p-source");if(!el||el.dataset.touched)return;
+    const t=($("#p-target").value||"").trim();
+    if(!t){el.value="";return;}
+    const d=new Date(),p2=n=>String(n).padStart(2,"0");
+    const stamp=p2(d.getDate())+p2(d.getMonth()+1)+String(d.getFullYear()).slice(2);
+    // из «https://t.me/citrus_chat» или «@citrus_chat» берём citrus_chat
+    let name=t.replace(/^https?:\/\/(t\.me|telegram\.me)\//i,"").replace(/^@/,"")
+              .split(/[/?#]/)[0].replace(/[^\wа-яё]/gi,"").toLowerCase();
+    if(!name)name="chat";
+    el.value=stamp+name;
+  };
+  $("#p-target").addEventListener("input",()=>{autoSource();renderAccs();});
+  $("#p-source").addEventListener("input",e=>{e.target.dataset.touched="1";});
+
+  // ---- Период показываем только там, где он работает ----
+  const syncMode=()=>{
+    const m=$("#p-mode").value,w=$("#p-period-wrap");
+    if(w)w.style.display=(m==="active"||m==="all")?"":"none";
+  };
+  $("#p-mode").addEventListener("change",syncMode);syncMode();
+
+  $("#p-run").onclick=()=>{
+    const ids=[...$("#p-accs").querySelectorAll("input:checked")].map(i=>+i.value);
+    const battle=PACCS.filter(a=>ids.includes(a.id)&&a.battle);
+    if(battle.length&&!confirm("Отмечены БОЕВЫЕ аккаунты: "
+        +battle.map(a=>a.label||("#"+a.id)).join(", ")
+        +".\nИми ведут переписку — парсинг может стоить рабочего номера.\n\nВсё равно запустить?"))return;
+    const mode=$("#p-mode").value;
+    run($("#p-run"),"#p-out","/api/parse/run",{
+      target:$("#p-target").value.trim(),mode,save:$("#p-save").checked,
+      account_ids:ids,
+      period_days:(mode==="active"||mode==="all")?(+$("#p-period").value||0):0,
+      source:($("#p-source").value||"").trim()||null,
+      scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30})
+      .then(()=>loadRuns());
+  };
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});
+
+  // ---- История запусков: последние 10, клик ведёт в готовую подборку «Контактов» ----
+  const MODE_ICON={search:"🔍 поиск групп",admins:"👑 админы",active:"💬 кто пишет",
+                   all:"👑+💬 админы и пишущие",members:"👥 все участники"};
+  const loadRuns=async()=>{
+    const box=$("#p-runs");if(!box)return;
+    let rows;try{rows=await api("/api/parse/runs");}
+    catch(e){box.innerHTML='<span style="color:#c0392b">не загрузилось: '+esc(e.message)+'</span>';return;}
+    if(!rows.length){box.innerHTML="Пока пусто — запусти парсинг с галочкой «записать в книжку».";return;}
+    box.innerHTML=`<table class="tbl"><thead><tr>
+        <th>Когда</th><th>Чат</th><th>Вид</th><th>Аккаунт(ы)</th><th>Период</th>
+        <th style="text-align:right">Найдено</th><th style="text-align:right">Новых</th><th>Подборка</th>
+      </tr></thead><tbody>`+rows.map(r=>{
+      // Ярлык источника — тот же ключ, которым «Контакты» фильтруются через #contacts/source:…
+      const src=r.source||"";
+      const link=src
+        ? `<a href="#contacts/source:${encodeURIComponent(src)}" title="открыть контакты этой подборки">${esc(src)} →</a>`
+        : '<span class="sub">без ярлыка</span>';
+      const per=r.period_days?`за ${r.period_days} дн.`:'<span class="sub">с начала</span>';
+      const err=r.ok===0?` <span style="color:#c0392b" title="${esc(r.error||"")}">✗ сбой</span>`:"";
+      return `<tr>
+        <td class="sub">${esc(fmt(r.started_at))}</td>
+        <td>${esc(r.chat_title||r.target||"—")}${err}</td>
+        <td class="sub">${esc(MODE_ICON[r.mode]||r.mode||"")}</td>
+        <td class="sub">${esc(r.account_label||"—")}</td>
+        <td class="sub">${per}</td>
+        <td style="text-align:right">${r.found||0}</td>
+        <td style="text-align:right"><b>${r.saved_new||0}</b></td>
+        <td>${link}</td></tr>`;}).join("")+"</tbody></table>";
+  };
+  loadRuns();
+  wireCollapse(v);
 
   // ---- Постоянные задачи парсинга: та же форма выше, но по таймеру на сервере ----
   const MODE_RU={search:"поиск групп",admins:"админы",active:"активные комментаторы",all:"админы+активные",members:"участники"};

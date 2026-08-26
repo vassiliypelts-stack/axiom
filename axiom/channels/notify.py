@@ -252,6 +252,73 @@ async def send_daily_report() -> None:
         print(f"[daily report] сбой: {e}")
 
 
+def campaign_report_text(conn, cid: int) -> str | None:
+    """Строка отчёта по ОДНОЙ кампании: работала ли сегодня/вчера, сколько отправлено
+    за сегодня/неделю/всё время, ответы, КЭВ. Общая для показа на экране кампании
+    (см. web/app.py: /api/campaign/{cid}/report) и для отправки в личку (см.
+    send_campaign_report) — один расчёт, а не два похожих."""
+    camp = conn.execute("SELECT id, name FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        return None
+
+    def sent_since(period_sql: str | None) -> int:
+        where = "campaign_id=?" + (f" AND sent_at >= {period_sql}" if period_sql else "")
+        return conn.execute(f"SELECT COUNT(*) c FROM campaign_contacts WHERE {where}", (cid,)).fetchone()["c"]
+
+    total = sent_since(None)
+    today = sent_since("date('now')")
+    yesterday_only = conn.execute(
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+        "AND sent_at >= date('now','-1 day') AND sent_at < date('now')", (cid,)
+    ).fetchone()["c"]
+    week = sent_since("date('now','-7 day')")
+
+    replied = conn.execute(
+        "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
+        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+        "WHERE m.direction='in'", (cid,)
+    ).fetchone()["c"]
+    replied_today = conn.execute(
+        "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
+        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+        "WHERE m.direction='in' AND m.ts >= date('now')", (cid,)
+    ).fetchone()["c"]
+    kev = conn.execute(
+        "SELECT COUNT(DISTINCT d.contact_id) c FROM deals d "
+        "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
+        "WHERE d.meeting_at IS NOT NULL", (cid,)
+    ).fetchone()["c"]
+
+    # «Работала ли сегодня/вчера» — по факту событий, а не по campaigns.status:
+    # кампания может быть в 'running', но упереться в дневные лимиты/паузу и не
+    # прислать ни строчки — оператору важно именно «было движение», а не ярлык.
+    worked_today = "да" if (today or replied_today) else "нет"
+    worked_yesterday = "да" if yesterday_only else "нет"
+
+    return (f"📊 «{camp['name']}»\n"
+           f"работала сегодня: {worked_today} · вчера: {worked_yesterday}\n"
+           f"отправлено — сегодня: {today} · за 7 дней: {week} · всего: {total}\n"
+           f"ответили: {replied} (сегодня: {replied_today}) · на КЭВ: {kev}")
+
+
+async def send_campaign_report(cid: int) -> dict:
+    """Отчёт по ОДНОЙ кампании в личку — та же строка, что видна на экране кампании
+    (кнопка «📤 Отчёт в ЛС»). Получатель — notify_target ЭТОЙ кампании (то же поле,
+    что и уведомления о встречах, см. _owner_route): один смысл — «кому в личку
+    падают события этой кампании», заводить второе поле-дубликат незачем.
+    Возвращает {ok, error} — вызывающий (веб-ручка) сам решает, как показать статус."""
+    with database.get_conn() as conn:
+        text = campaign_report_text(conn, cid)
+        if text is None:
+            return {"ok": False, "error": "кампания не найдена"}
+        sender_id, target = _owner_route(conn, cid)
+    if not sender_id or not target:
+        return {"ok": False, "error": "не настроен получатель — задай «уведомляет о встречах» "
+                                      "и получателя в настройках этой кампании или в «Аккаунтах»"}
+    await _send_to_owner(sender_id, target, text, "отчёт по кампании", 0)
+    return {"ok": True}
+
+
 def _audience_where_for_report(tag: str | None, channel: str | None) -> tuple[str, list]:
     """Урезанная копия web/app.py:_audience_where — своя, чтобы не тянуть web.app сюда
     (channels/ не должен зависеть от web/, это отдельный слой)."""
@@ -305,6 +372,12 @@ if __name__ == "__main__":
 
     p = argparse.ArgumentParser(description="Уведомления владельцу AXIOM")
     p.add_argument("--daily-report", action="store_true", help="утренняя сводка по кампаниям")
+    p.add_argument("--campaign-report", type=int, metavar="CID",
+                   help="отчёт по ОДНОЙ кампании в личку (кнопка «📤 Отчёт в ЛС»)")
     args = p.parse_args()
     if args.daily_report:
         asyncio.run(send_daily_report())
+    elif args.campaign_report:
+        result = asyncio.run(send_campaign_report(args.campaign_report))
+        if not result.get("ok"):
+            print(f"[campaign report] {result.get('error')}")

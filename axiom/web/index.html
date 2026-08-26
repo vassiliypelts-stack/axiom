@@ -6591,6 +6591,7 @@ async function viewParser(v){
   $("#p-schedule").onclick=async()=>{
     const target=$("#p-target").value.trim();
     if(!target){alert("сначала заполни цель выше");return;}
+    if(!$("#p-acc").value){alert("для постоянной задачи обязательно выбери рабочий аккаунт в «Каким аккаунтом парсить» — на главном номере из .env автоматический цикл гонять нельзя (риск флуд-лимита + он часто не авторизован)");return;}
     const btn=$("#p-schedule");btn.disabled=true;btn.textContent="сохраняю…";
     try{
       await api("/api/parse/schedules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({

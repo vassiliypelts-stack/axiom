@@ -3608,6 +3608,16 @@ def parse_schedules_create(payload: dict = Body(...)) -> JSONResponse:
     target = (payload.get("target") or "").strip()
     if not target:
         return JSONResponse({"error": "укажи @чат/ссылку или поисковый запрос"}, status_code=400)
+    # Без выбранного рабочего аккаунта расписание уйдёт на главный номер из .env —
+    # его массово гонять нельзя (см. channels/tg_parser.run: ResolveUsername ловит
+    # FloodWait на сутки), а сам номер часто и не авторизован вовсе, что рушит заход
+    # на первой строке (get_me() -> None -> AttributeError). Разовый ручной запуск
+    # («Запустить» без сохранения в расписание) может себе это позволить — там
+    # оператор рядом и видит результат сразу; постоянная задача — нет.
+    if not payload.get("account_id"):
+        return JSONResponse({"error": "для постоянной задачи обязательно выбери рабочий аккаунт "
+                                      "(«Каким аккаунтом парсить») — на главном номере из .env "
+                                      "автоматический цикл гонять нельзя"}, status_code=400)
     mode = payload.get("mode") or "search"
     interval_min = max(15, int(payload.get("interval_min") or 1440))
     with database.get_conn() as conn:

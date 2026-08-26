@@ -265,8 +265,21 @@ def stats() -> JSONResponse:
         ai_agents = _count("SELECT COUNT(*) c FROM ai_agents WHERE active=1")
         upcoming = _count("SELECT COUNT(*) c FROM deals WHERE meeting_at >= datetime('now')")
     funnel = [{"key": k, "label": lbl, "count": by_status.get(k, 0)} for k, lbl in FUNNEL]
+    # Состояние ПРИЁМА — на главный экран. Тумблер слушателя живёт в «Парсере», в
+    # блоке «Слушатель по ключам», и читается как настройка лидгена — а гасит он
+    # заодно приём ответов, авто-ответ агента и весь дожим (планировщик шлёт только
+    # через соединения слушателя). Именно поэтому 26.08 его выключили и не заметили:
+    # три с половиной часа система была глухой, а на дашборде всё выглядело исправно.
+    try:
+        from channels import listener as _lst
+        with database.get_conn() as c2:      # соединение выше уже закрыто (вышли из with)
+            listen_enabled = database.get_setting(c2, "listener_enabled", "on") != "off"
+        listening = sum(1 for v in _lst.STATUS.get("accounts", {}).values() if v.get("ok"))
+    except Exception:  # noqa: BLE001 — слушатель мог не подняться, дашборд не роняем
+        listen_enabled, listening = False, 0
     return JSONResponse({
         "total": total, "funnel": funnel,
+        "listener": {"enabled": listen_enabled, "listening": listening},
         "messages": {"in": msg_in, "out": msg_out, "total": msg_in + msg_out},
         "meetings": meetings, "agents": acc,
         "accounts": {"active": acc_by.get("active", 0), "warming": acc_by.get("warming", 0),

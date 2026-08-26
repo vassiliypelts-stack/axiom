@@ -1204,6 +1204,22 @@ async function viewDashboard(v){
     return `<div class="st ${cls}"><span class="arr">→</span>
       <div class="node" data-go="${st.go}"><span class="pulse"></span><b data-cv="${st.n}">0</b></div><div class="lbl">${esc(st.l)}</div></div>`;}).join("");
   const accReady=(a.active||0), accTotal=(a.total||0), pct=accTotal?Math.round(accReady/accTotal*100):0;
+  // ПРИЁМ ОТВЕТОВ. Тумблер слушателя лежит в «Парсере» под вывеской «Слушатель по
+  // ключам» и читается как настройка лидгена — а выключает он заодно приём ответов,
+  // авто-ответ агента и весь дожим. 26.08 его так и выключили: 3.5 часа система была
+  // глухой, а дашборд показывал полный порядок. Поэтому баннер здесь, на главной, и
+  // только когда что-то не так — исправное состояние места не занимает.
+  const ls=s.listener||{};
+  const lsnBanner=(ls.enabled&&ls.listening>0)?"":`
+    <div class="dash-glass" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+         padding:12px 16px;margin-bottom:14px;border-left:4px solid #c0392b">
+      <b style="color:#c0392b">🔇 Ответы клиентов сейчас не принимаются</b>
+      <span class="sub" style="flex:1;min-width:240px">${ls.enabled
+        ? `слушатель включён, но не подключил ни одного аккаунта (${ls.listening||0}) — проверь прокси и сессии`
+        : "слушатель остановлен: входящие не попадают ни в «Диалоги», ни агенту, дожим и напоминания не отправляются"}</span>
+      ${ls.enabled?"":'<button id="dash-lsn-on">▶ Включить приём</button>'}
+      <button class="ghost" data-go="parser">Открыть настройки</button>
+    </div>`;
   // продажи: плитки из реальной воронки
   const saleCls={new:"lime",messaged:"accent",in_dialog:"accent",won:"accent"};
   const sales=(s.funnel||[]).map(f=>tile(f.count,f.label,saleCls[f.key]||"",f.key==="new"?"contacts":"deals")).join("");
@@ -1222,6 +1238,7 @@ async function viewDashboard(v){
       <div class="dclock">обновлено<b id="dash-clock">—</b></div>
     </header>
     <div class="dstrip"><span class="dpill">⚡ LeadMachine</span><span class="dslogan">«Конвейер работает — <b>клиенты приходят</b>»</span></div>
+    ${lsnBanner}
     <section class="dash-glass dash-hero">
       <div class="dash-hh"><div class="t">⚙ Конвейер лидов · <span>сырьё → сделка</span></div>
         <button class="dash-run" id="conv-run"><span class="d"></span>Запустить конвейер</button></div>
@@ -1286,6 +1303,18 @@ async function viewDashboard(v){
     setTimeout(()=>b.style.width=Math.min(100,(val/Math.max(290,1))*300+(val?8:0))+"%",450);});
   // переходы
   v.querySelectorAll("[data-go]").forEach(c=>c.onclick=()=>{location.hash=c.dataset.go;});
+  // включить приём прямо с главной — чтобы починка была в один клик там же, где
+  // человек увидел проблему, а не «сходи в Парсер и найди нужный тумблер»
+  const lsnBtn=$("#dash-lsn-on");
+  if(lsnBtn)lsnBtn.onclick=async()=>{
+    lsnBtn.disabled=true;lsnBtn.textContent="включаю…";
+    try{
+      await api("/api/listener/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true})});
+      // аккаунты поднимаются до полминуты — не показываем «слушаю 0», это читается как сбой
+      lsnBtn.textContent="⏳ поднимаю аккаунты…";
+      setTimeout(()=>{if(location.hash.replace("#","")==="dashboard"||!location.hash)route();},26000);
+    }catch(e){lsnBtn.disabled=false;lsnBtn.textContent="▶ Включить приём";alert("не удалось включить: "+e.message);}
+  };
   const cr=$("#conv-run");if(cr)cr.onclick=()=>{const el=$("#conv");const on=el.classList.toggle("run");
     cr.classList.toggle("on",on);cr.lastChild.textContent=on?"Конвейер работает":"Запустить конвейер";
     const sys=$("#dash-sys");if(sys)sys.textContent=on?"система в норме · конвейер работает":"система в норме · конвейер на холостом ходу";};
@@ -6522,8 +6551,8 @@ async function viewParser(v){
     <pre id="i-out" style="${POUT}display:none"></pre>
   </div>
   <div class="card" style="background:var(--panel2)">
-    <b style="font-size:13px">👂 Слушатель по ключам</b>
-    <div class="sub" style="margin:6px 0">Работает сам, фоном, с момента старта пульта. Ключи берутся из активных ниш, находки падают в «🔎 Запросы». Кнопкой ниже можно остановить его, не трогая сервер — например, пока переставляешь прокси или перелогиниваешь аккаунты.</div>
+    <b style="font-size:13px">👂 Слушатель входящих — приём ответов и лидген</b>
+    <div class="sub" style="margin:6px 0"><b style="color:#c0392b">Это главный тумблер связи, а не только лидген.</b> Пока он включён: ответы клиентов попадают в «Диалоги» и к агенту, работает авто-ответ, уходят дожим и напоминания о созвоне (планировщик шлёт только через соединения слушателя). Выключишь — система оглохнет целиком: входящие не сохранятся нигде, а дожим встанет. Останавливай только на время работ с сессиями (перелогин, 2FA) и сразу включай обратно. Поиск ключей по чатам — отдельный тумблер ниже.</div>
     <div class="ttoolbar" style="margin:0 0 8px"><button type="button" id="lst-toggle" disabled>…</button></div>
     <div id="lst-status" class="sub">загружаю статус…</div>
     <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">

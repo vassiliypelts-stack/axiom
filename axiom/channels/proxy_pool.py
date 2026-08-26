@@ -35,7 +35,11 @@ from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
 from db import database
 
 # Каналы-источники (можно дополнять).
-PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "MTProxy"]
+# Каналы-доноры MTProto-прокси. @MTProxy убран: юзернейма не существует, каждый
+# прогон тратил на него запрос и получал ResolveUsernameRequest-ошибку в лог.
+# Список можно дополнять — несуществующий канал не ломает сбор, но и пользы не даёт.
+PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "mtproto_proxy_free",
+                  "proxy_mtproto_telegram", "MTProtoProxies"]
 TARGET_ALIVE = 10          # запасной ориентир, если парк аккаунтов посчитать не удалось
 
 

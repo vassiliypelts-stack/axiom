@@ -3573,6 +3573,8 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
         args += ["--account", str(int(payload["account_id"]))]
     if payload.get("period_days"):
         args += ["--period-days", str(int(payload["period_days"]))]
+    if payload.get("incremental"):
+        args.append("--incremental")
     if payload.get("save"):
         args.append("--save")
     # Свой ярлык происхождения, чтобы в «Контактах» можно было отделить участников
@@ -3737,6 +3739,12 @@ def _run_one_schedule(row: dict) -> dict:
         args += ["--limit", str(int(row.get("top") or 500))]
     elif mode in ("active", "all"):
         args += ["--scan", str(int(row.get("scan") or 2000)), "--top", str(int(row.get("top") or 50))]
+        # Расписание по определению повторяется на ОДНОМ и том же чате — второй и
+        # каждый следующий заход должен смотреть только новое, а не пересканировать
+        # --scan сообщений с начала ленты заново. Ручной разовый /api/parse/run
+        # инкрементальность не включает сам — там оператор чаще ищет один раз и
+        # смотрит результат, а не гоняет постоянный процесс.
+        args.append("--incremental")
     elif mode == "search":
         args += ["--limit", str(int(row.get("top") or 30))]
     res = _run_capture(args, timeout=600)

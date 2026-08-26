@@ -176,12 +176,20 @@ async def _fetch_bio(client, user: User) -> str | None:
 async def collect_active(client, entity, scan: int, top: int,
                          harvest: bool = False, days: int = HARVEST_DAYS,
                          posts_per_user: int = POSTS_PER_USER,
-                         period_days: int | None = None) -> tuple[list[tuple[User, int]], dict[int, str], set[int]]:
+                         period_days: int | None = None,
+                         incremental: bool = False) -> tuple[list[tuple[User, int]], dict[int, str], set[int]]:
     """Топ авторов по числу сообщений в чате/обсуждении за последние `scan` сообщений.
 
     harvest=True (H1): дополнительно собирает ТЕКСТЫ сообщений каждого автора (до
     `posts_per_user` за `days` дней) в tg_user_posts + тянет bio — сырьё для досье.
     Аватар качаем всегда (это активные лиды, их немного — top) — для карточки/vision.
+
+    incremental=True: повторный заход по ЭТОМУ ЖЕ чату сканирует только сообщения
+    НОВЕЕ прошлого раза (chats.parse_last_msg_id), а не весь `scan` заново с начала
+    ленты. На чате, где парсинг уже гонялся, это отличие между «перечитать 2000
+    сообщений опять» и «прочитать десяток новых с прошлого захода» — то, ради чего
+    вообще заводился --scan большого размера. Первый заход по чату (watermark ещё
+    нет) всегда полный — дельту не с чем сравнивать.
     Возвращает (топ-авторы, {tg_user_id: bio}, {tg_user_id с фото})."""
     chat = await _resolve_scan_chat(client, entity)
     if chat is None:
@@ -189,10 +197,16 @@ async def collect_active(client, entity, scan: int, top: int,
         return [], {}, set()
     chat_id = getattr(chat, "id", None)         # сырой telegram-id → в tg_user_posts.chat_id
     chat_title = getattr(chat, "title", None)
-    # заводим/находим этот чат в каталоге, чтобы «сырьё досье» связывалось с карточкой чата
-    if chat_id and harvest:
+    # Каталожную запись резолвим не только для harvest, а и для инкремента — watermark
+    # хранится в chats, без записи в каталоге её негде читать/писать.
+    catalog_id = None
+    last_msg_id = None
+    if chat_id and (harvest or incremental):
         with database.get_conn() as conn:
-            database.resolve_catalog_chat(conn, chat_id, chat_title, getattr(chat, "username", None))
+            catalog_id = database.resolve_catalog_chat(conn, chat_id, chat_title, getattr(chat, "username", None))
+            if incremental and catalog_id:
+                row = conn.execute("SELECT parse_last_msg_id FROM chats WHERE id=?", (catalog_id,)).fetchone()
+                last_msg_id = row["parse_last_msg_id"] if row else None
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     # Окно «за период»: в авторы идут только писавшие за последние period_days.
     # None/0 — с самого начала (насколько хватит глубины scan). Свежий автор ценнее:
@@ -202,7 +216,16 @@ async def collect_active(client, entity, scan: int, top: int,
     texts: dict[int, list[tuple]] = defaultdict(list)  # uid -> [(msg_id, ts, text), ...]
     n = 0
     hit_edge = False
-    async for m in client.iter_messages(chat, limit=scan):
+    newest_seen: int | None = None
+    iter_kwargs = {"limit": scan}
+    if incremental and last_msg_id:
+        # min_id — Telethon отдаёт СТРОГО НОВЕЕ этого id: то, чего ещё не видели в
+        # прошлый заход. limit тут уже подстраховка на случай нереалистично длинной
+        # дельты (тысячи сообщений с прошлого раза), а не основной ограничитель.
+        iter_kwargs["min_id"] = last_msg_id
+    async for m in client.iter_messages(chat, **iter_kwargs):
+        if newest_seen is None:
+            newest_seen = m.id     # лента идёт от новых к старым — первое сообщение и есть максимум
         # Лента идёт от новых к старым: вышли за окно — дальше только старее,
         # перебирать остаток незачем.
         if since and m.date and m.date < since:
@@ -214,7 +237,14 @@ async def collect_active(client, entity, scan: int, top: int,
                     and len(texts[m.sender_id]) < posts_per_user:
                 texts[m.sender_id].append((m.id, str(m.date), m.message.strip()[:1000]))
         n += 1
-    win = f" за {period_days} дн." if period_days else " за всё время"
+    if incremental and catalog_id and newest_seen:
+        with database.get_conn() as conn:
+            conn.execute(
+                "UPDATE chats SET parse_last_msg_id=?, parse_last_at=datetime('now') WHERE id=?",
+                (newest_seen, catalog_id),
+            )
+    win = (f" — новых с прошлого раза (min_id={last_msg_id})" if (incremental and last_msg_id)
+          else f" за {period_days} дн." if period_days else " за всё время")
     print(f"[active] просмотрено {n} сообщений{win}, уникальных авторов: {len(counts)}"
           + (" (дошли до края окна)" if hit_edge else ""))
     out: list[tuple[User, int]] = []
@@ -489,7 +519,8 @@ async def _resolve_target(client, target: str):
 async def run(target: str, mode: str, limit: int, scan: int, top: int, save: bool,
               harvest: bool = False, days: int = HARVEST_DAYS,
               account_id: int | None = None, source: str = "tg_parse",
-              account_ids: list[int] | None = None, period_days: int | None = None) -> None:
+              account_ids: list[int] | None = None, period_days: int | None = None,
+              incremental: bool = False) -> None:
     """account_id=None — главный аккаунт из .env; иначе рабочий аккаунт по id.
 
     ⚠️ Парсинг резолвит username'ы, а ResolveUsername — самый лимитируемый вызов TG.
@@ -540,7 +571,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
 
     if mode in ("active", "all"):
         active, bios, photo_ids = await collect_active(client, entity, scan, top, harvest=harvest,
-                                                       days=days, period_days=period_days)
+                                                       days=days, period_days=period_days,
+                                                       incremental=incremental)
         users = [u for u, _ in active]
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
@@ -587,6 +619,11 @@ def main() -> None:
     p.add_argument("--period-days", type=int, default=None, dest="period_days",
                    help="режим active: считать авторами только писавших за последние N дней "
                         "(не задан/0 — с самого начала, насколько хватит --scan)")
+    p.add_argument("--incremental", action="store_true",
+                   help="режим active: повторный заход по этому же чату сканирует ТОЛЬКО "
+                        "сообщения новее прошлого раза (watermark в chats.parse_last_msg_id), "
+                        "а не весь --scan заново с начала ленты. Первый заход по чату всегда "
+                        "полный — дельту не с чем сравнивать")
     p.add_argument("--account", type=int, default=None, dest="account_id",
                    help="аккаунт из БД, которым парсить (по id) — обязателен для ЗАКРЫТЫХ чатов: "
                         "список участников видит только тот, кто реально в чате состоит. "
@@ -596,7 +633,8 @@ def main() -> None:
     acc_ids = [int(x) for x in (args.accounts or "").split(",") if x.strip()] or None
     asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
                     harvest=args.harvest, days=args.days, account_id=args.account_id,
-                    source=args.source, account_ids=acc_ids, period_days=args.period_days))
+                    source=args.source, account_ids=acc_ids, period_days=args.period_days,
+                    incremental=args.incremental))
 
 
 if __name__ == "__main__":

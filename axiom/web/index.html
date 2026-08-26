@@ -6493,6 +6493,10 @@ async function viewParser(v){
       <input id="p-source" placeholder="напр.: 210826точканетворк" autocomplete="off">
       <div class="hint" style="margin-top:4px">Под этим ярлыком найденные лягут в «Контакты» — там по нему можно отфильтровать и посмотреть, сколько дал именно этот чат. Оставишь пустым — попадут в общий «tg_parse» вперемешку со всеми прошлыми парсингами.</div></div>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="p-save"> записать найденных в книжку (без галочки — только показать)</label>
+    <label id="p-incr-wrap" style="display:none;gap:8px;align-items:center;margin:8px 0">
+      <input type="checkbox" id="p-incremental" checked>
+      только новое с прошлого раза
+      <span class="hint" style="font-weight:400">— повторный заход по этому же чату сканирует сообщения новее предыдущего, а не весь «scan» заново. На первом заходе по чату разницы нет.</span></label>
     <div class="ttoolbar" style="margin:0">
       <button id="p-run">Запустить</button>
       <span style="width:1px;height:18px;background:var(--border);margin:0 4px"></span>
@@ -6632,10 +6636,11 @@ async function viewParser(v){
   $("#p-target").addEventListener("input",()=>{autoSource();renderAccs();});
   $("#p-source").addEventListener("input",e=>{e.target.dataset.touched="1";});
 
-  // ---- Период показываем только там, где он работает ----
+  // ---- Период и «только новое» показываем только там, где они работают ----
   const syncMode=()=>{
-    const m=$("#p-mode").value,w=$("#p-period-wrap");
-    if(w)w.style.display=(m==="active"||m==="all")?"":"none";
+    const m=$("#p-mode").value,onActive=(m==="active"||m==="all");
+    const w=$("#p-period-wrap");if(w)w.style.display=onActive?"":"none";
+    const iw=$("#p-incr-wrap");if(iw)iw.style.display=onActive?"flex":"none";
   };
   $("#p-mode").addEventListener("change",syncMode);syncMode();
 
@@ -6650,6 +6655,7 @@ async function viewParser(v){
       target:$("#p-target").value.trim(),mode,save:$("#p-save").checked,
       account_ids:ids,
       period_days:(mode==="active"||mode==="all")?(+$("#p-period").value||0):0,
+      incremental:(mode==="active"||mode==="all")?$("#p-incremental").checked:false,
       source:($("#p-source").value||"").trim()||null,
       scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30})
       .then(()=>loadRuns());

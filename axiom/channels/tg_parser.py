@@ -175,7 +175,8 @@ async def _fetch_bio(client, user: User) -> str | None:
 
 async def collect_active(client, entity, scan: int, top: int,
                          harvest: bool = False, days: int = HARVEST_DAYS,
-                         posts_per_user: int = POSTS_PER_USER) -> tuple[list[tuple[User, int]], dict[int, str], set[int]]:
+                         posts_per_user: int = POSTS_PER_USER,
+                         period_days: int | None = None) -> tuple[list[tuple[User, int]], dict[int, str], set[int]]:
     """Топ авторов по числу сообщений в чате/обсуждении за последние `scan` сообщений.
 
     harvest=True (H1): дополнительно собирает ТЕКСТЫ сообщений каждого автора (до

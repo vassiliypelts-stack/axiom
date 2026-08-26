@@ -6619,9 +6619,13 @@ async function viewParser(v){
     if(!t){el.value="";return;}
     const d=new Date(),p2=n=>String(n).padStart(2,"0");
     const stamp=p2(d.getDate())+p2(d.getMonth()+1)+String(d.getFullYear()).slice(2);
-    // из «https://t.me/citrus_chat» или «@citrus_chat» берём citrus_chat
-    let name=t.replace(/^https?:\/\/(t\.me|telegram\.me)\//i,"").replace(/^@/,"")
-              .split(/[/?#]/)[0].replace(/[^\wа-яё]/gi,"").toLowerCase();
+    // из «https://t.me/citrus_chat», «t.me/+AbCd», «@citrus_chat» берём саму часть
+    // с именем. Схему и домен срезаем в т.ч. без https:// — иначе из «t.me/+Ab»
+    // получался бессмысленный ярлык «tme», одинаковый для всех инвайтов.
+    let name=t.replace(/^https?:\/\//i,"").replace(/^(t\.me|telegram\.me)\//i,"")
+              .replace(/^joinchat\//i,"").replace(/^@/,"")
+              .split(/[?#]/)[0].split("/").filter(Boolean).pop()||"";
+    name=name.replace(/[^\wа-яё]/gi,"").toLowerCase();
     if(!name)name="chat";
     el.value=stamp+name;
   };

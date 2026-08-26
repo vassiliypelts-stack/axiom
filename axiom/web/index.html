@@ -7447,14 +7447,15 @@ async function refreshNotif(){
   if(unseen>0){b.textContent=unseen>99?"99+":unseen;b.style.display="";}else b.style.display="none";
 }
 const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️",
-  chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸"};
+  chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸",
+  listener_down:"🔇",listener_off:"🔇",listener_on:"🔊",sched_undelivered:"📵",stuck_reply:"⏳",campaign_blocked:"🛑"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}
   box.innerHTML=NOTIF.map(n=>{
     if(n.type==="event"){
       const ic=EVENT_IC[n.event_type]||"•";
-      const col=n.level==="warn"?"#c0392b":(n.level==="good"?"var(--green)":"var(--muted)");
+      const col=(n.level==="bad"||n.level==="warn")?"#c0392b":(n.level==="good"?"var(--green)":"var(--muted)");
       const nav=n.contact_id?`data-cid="${n.contact_id}"`:(n.campaign_id?`data-camp="${n.campaign_id}"`:"");
       // глазок открывает подробности, не уводя со страницы: в строке текст обрезан,
       // а понять «кто именно и что написал» без полной карточки нельзя

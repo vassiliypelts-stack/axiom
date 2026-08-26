@@ -420,6 +420,61 @@ def check_stuck_replies(conn, now: datetime | None = None) -> int:
     return fired
 
 
+# Сколько слушатель может быть выключен, прежде чем это станет тревогой. Короткая пауза
+# — норма: операции с сессией (2FA, запаска, перелогин) сами гасят слушателя на минуты
+# и поднимают обратно (см. web/app._listener_released, channels/session_spare).
+LISTENER_DOWN_MIN = 20
+_LISTENER_ALERT_KEY = "listener_down_alert_ts"
+
+
+def check_listener_down(conn, listening: int, enabled: bool, now: datetime | None = None) -> bool:
+    """Сторож: слушатель входящих не держит НИ ОДНОГО аккаунта дольше LISTENER_DOWN_MIN.
+
+    ЗАЧЕМ. 26.08.2026 слушателя выключили тумблером в пульте в 17:01 и не включили
+    обратно. Три с половиной часа система была глухой: входящие ответы не попадали
+    никуда (ни в «Диалоги», ни агенту), а дожим не уходил вовсе — планировщик шлёт
+    ТОЛЬКО через соединения слушателя (listener.send_via_listener), и за это время
+    накопилось 340 отказов «аккаунт не подключён слушателем». Все 340 ушли в лог
+    systemd, которого никто не читает, а в колокольчике не было ни строчки.
+
+    Выключенный слушатель — не отдельная поломка, а состояние, в котором ломается
+    ВСЁ остальное: приём ответов, авто-ответ агента, дожим, напоминания о созвоне.
+    Поэтому тревога отдельная и уровня bad, а не сообщение в лог.
+
+    Молчит про короткие паузы: операции с сессией аккаунта гасят слушателя намеренно
+    на секунды-минуты, и бить тревогу на каждую — значит приучить не смотреть в
+    колокольчик. Отметку «когда впервые увидели тишину» держим в settings, а не в
+    памяти процесса: тик переживает рестарт сервиса, а состояние в памяти — нет.
+
+    Возвращает True, если тревога записана.
+    """
+    now = now or _utcnow()
+    if listening > 0 and enabled:
+        database.set_setting(conn, _LISTENER_ALERT_KEY, "")   # ожил — забываем
+        return False
+    since_raw = (database.get_setting(conn, _LISTENER_ALERT_KEY, "") or "").strip()
+    if not since_raw:
+        # первый тик тишины: запоминаем момент и ждём — вдруг это пауза на 2FA
+        database.set_setting(conn, _LISTENER_ALERT_KEY, now.isoformat())
+        return False
+    if since_raw.startswith("fired:"):
+        return False                          # уже сообщили, не повторяем каждые 15 мин
+    since = _parse_dt(since_raw)
+    if not since or (now - since).total_seconds() / 60 < LISTENER_DOWN_MIN:
+        return False
+    mins = int((now - since).total_seconds() // 60)
+    why = ("выключен тумблером в пульте" if not enabled
+           else "включён, но не подключил ни одного аккаунта")
+    database.add_event(
+        conn, "listener_down", "🔇 Слушатель входящих молчит",
+        f"Уже {mins} мин: {why}. Пока так — входящие ответы не попадают ни в «Диалоги», "
+        f"ни агенту, а дожим и напоминания о созвоне НЕ отправляются (планировщик шлёт "
+        f"только через слушателя). Проверь тумблер «Слушатель» и статус аккаунтов.",
+        level="bad")
+    database.set_setting(conn, _LISTENER_ALERT_KEY, f"fired:{now.isoformat()}")
+    return True
+
+
 async def tick(send=None) -> int:
     """Один проход: собрать due, отправить (если есть send), отметить. Возвращает число действий.
     send: async callable(Action) -> None. Если None — сухой прогон (печать)."""

@@ -2229,7 +2229,21 @@ def _meetings_scheduler() -> None:
         time.sleep(900)
         try:
             from channels import antiban, listener
-            from scheduler import apply as sched_apply, check_stuck_replies, collect_due
+            from scheduler import (apply as sched_apply, check_listener_down,
+                                   check_stuck_replies, collect_due)
+            # Сторож слушателя — ДО проверки рабочих часов и до всего остального.
+            # Выключенный слушатель ломает не отправку, а приём: входящие не попадают
+            # никуда. Ночью это так же верно, как днём, и ждать утра нельзя — иначе
+            # выключенный вечером слушатель обнаружится только через 12 часов (26.08
+            # он молчал 3.5 часа, и никто не узнал). Тревога в колокольчик человеку
+            # ничего не шлёт, поэтому ночное правило «живым людям не пишем» её не
+            # касается.
+            with database.get_conn() as conn:
+                enabled = database.get_setting(conn, "listener_enabled", "on") != "off"
+                listening = sum(1 for v in listener.STATUS.get("accounts", {}).values()
+                                if v.get("ok"))
+                if check_listener_down(conn, listening, enabled):
+                    print(f"[сторож] слушатель молчит: enabled={enabled} listening={listening}")
             if not antiban.within_work_hours():
                 continue                      # ночью не пишем даже напоминания
             with database.get_conn() as conn:
@@ -2244,6 +2258,7 @@ def _meetings_scheduler() -> None:
             # единицы, они привязаны к конкретному времени и ждать не могут.
             FOLLOWUP_PER_TICK = 3             # тик раз в 15 минут → до ~12 дожимов в час
             sent_by_acc: dict = {}
+            failed: list[str] = []            # что не ушло на этом тике — сводкой в колокольчик
             for a in actions:
                 if not a.tg_user_id:
                     continue
@@ -2277,6 +2292,10 @@ def _meetings_scheduler() -> None:
                     sent_by_acc[acc] = sent_by_acc.get(acc, 0) + 1
                 parts = [p for p in a.text.split("\n\n") if p.strip()] or [a.text]
                 if not listener.send_via_listener(row["account_id"], int(a.tg_user_id), parts):
+                    # Отказ копим, а не логируем поштучно: причина у всех одна (нет
+                    # подключения слушателя), и 340 одинаковых строк в systemd — это
+                    # ровно то, что 26.08 никто не увидел. Сводка уходит ниже.
+                    failed.append(f"{a.kind}→{a.name or a.contact_id}")
                     continue                  # не ушло — пробуем на следующем тике
                 with database.get_conn() as conn:
                     sched_apply(conn, a)
@@ -2285,6 +2304,26 @@ def _meetings_scheduler() -> None:
                         a.text[:200], level="good", contact_id=a.contact_id,
                         account_id=row["account_id"])
                 print(f"[sched] {a.kind} -> contact {a.contact_id}")
+            # Не ушло ничего из запланированного — это видно только здесь. Отдельный
+            # сторож (check_listener_down) ловит саму причину, но он молчит первые
+            # LISTENER_DOWN_MIN минут; эта сводка показывает ЦЕНУ простоя — сколько
+            # именно дожимов и напоминаний не доехало до людей.
+            if failed:
+                with database.get_conn() as conn:
+                    # Не чаще раза в час: причина держится часами, а тревога каждые
+                    # 15 минут превращает ленту в шум и отучает в неё смотреть.
+                    recent = conn.execute(
+                        "SELECT 1 FROM events WHERE type='sched_undelivered' "
+                        "AND ts >= datetime('now','-1 hour') LIMIT 1").fetchone()
+                    if not recent:
+                        database.add_event(
+                            conn, "sched_undelivered",
+                            f"📵 Не отправлено по расписанию: {len(failed)}",
+                            "Не ушли (нет подключения слушателя к аккаунту): "
+                            + ", ".join(failed[:10])
+                            + (f" и ещё {len(failed) - 10}" if len(failed) > 10 else "")
+                            + ". Попробую снова на следующем тике; если слушатель "
+                              "выключен — включи его, иначе дожим стоит.", level="warn")
         except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
             print(f"[meetings scheduler] {e}")
 
@@ -2469,10 +2508,31 @@ def listener_status() -> JSONResponse:
 @app.post("/api/listener/toggle")
 def listener_toggle(payload: dict = Body(...)) -> JSONResponse:
     """Стоп/Пуск слушателя. Слушатель сам подхватит флаг в течение POLL_SEC и либо
-    отключит все аккаунты, либо подключит их заново — процесс перезапускать не нужно."""
+    отключит все аккаунты, либо подключит их заново — процесс перезапускать не нужно.
+
+    Выключение пишем в колокольчик СРАЗУ. Раньше тумблер молча писал флаг, и 26.08.2026
+    слушателя выключили в 17:01, а обратно не включили: три с половиной часа входящие
+    ответы не попадали никуда, дожим не уходил (планировщик шлёт только через слушателя),
+    и единственным следом были 340 строк в логе systemd. Событие в ленте даёт шанс
+    заметить это в тот же вечер, а сторож (scheduler.check_listener_down) добьёт, если
+    состояние затянется."""
     on = "on" if payload.get("enabled") else "off"
     with database.get_conn() as conn:
+        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
         database.set_setting(conn, "listener_enabled", on)
+        if was_on and on == "off":
+            database.add_event(
+                conn, "listener_off", "🔇 Слушатель входящих выключен",
+                "Выключен вручную из пульта. Пока он выключен: входящие ответы не "
+                "попадают ни в «Диалоги», ни агенту, а дожим и напоминания о созвоне "
+                "не отправляются. Не забудь включить обратно.", level="warn")
+        elif not was_on and on == "on":
+            # Снимаем «залипшую» отметку сторожа, иначе первая же тревога после
+            # включения посчитается уже сообщённой и следующее падение промолчит.
+            database.set_setting(conn, "listener_down_alert_ts", "")
+            database.add_event(
+                conn, "listener_on", "🔊 Слушатель входящих включён",
+                "Приём ответов и дожим снова работают.", level="good")
     return JSONResponse({"ok": True, "enabled": on == "on"})
 
 

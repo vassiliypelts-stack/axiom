@@ -6552,11 +6552,19 @@ async function viewParser(v){
   const MODE_RU={search:"поиск групп",admins:"админы",active:"активные комментаторы",all:"админы+активные",members:"участники"};
   const schedList=$("#p-sched-list");
   const loadSchedules=async()=>{
-    let rows;try{rows=await api("/api/parse/schedules");}catch(e){schedList.innerHTML='<span style="color:#c0392b">не загрузилось: '+esc(e.message)+'</span>';return;}
-    if(!rows.length){schedList.innerHTML="Пока ни одной — заполни цель выше и нажми «⏱ В расписание».";return;}
+    let all;try{all=await api("/api/parse/schedules");}catch(e){schedList.innerHTML='<span style="color:#c0392b">не загрузилось: '+esc(e.message)+'</span>';return;}
+    if(!all.length){schedList.innerHTML="Пока ни одной — заполни цель выше и нажми «⏱ В расписание».";return;}
+    // Список читается как «последние результаты»: кто запускался позже — выше,
+    // задачи, которые ни разу не сработали (last_run_ts пуст), — в конце списка,
+    // без сортировки между собой (порядок создания).
+    const rows=[...all].sort((a,b)=>(b.last_run_ts||0)-(a.last_run_ts||0)).slice(0,10);
     schedList.innerHTML=rows.map(s=>{
       const next=s.last_run_ts?new Date((s.last_run_ts+s.interval_min*60)*1000):null;
       const lastTxt=s.last_run_ts?fmt(new Date(s.last_run_ts*1000).toISOString()):"ещё не запускалась";
+      // Источник, под которым найденные реально легли в «Контакты» — тот же, что
+      // подставляет tg_parser.run(), если оператор оставил поле пустым (см. _persist).
+      const src=s.source||"tg_parse";
+      const crmLink=s.last_run_ts?` · <a href="javascript:void(0)" class="ps-crm" data-src="${esc(src)}" style="text-decoration:underline dotted">→ выборка в CRM</a>`:"";
       return `<div class="card" style="margin-bottom:8px;padding:10px 12px;background:var(--panel)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
           <div><b>${esc(s.label||s.target)}</b> <span class="hint">· ${MODE_RU[s.mode]||s.mode} · каждые ${Math.round(s.interval_min/60*10)/10} ч</span>
@@ -6567,9 +6575,12 @@ async function viewParser(v){
             <button class="ps-del" data-id="${s.id}">✕</button>
           </div>
         </div>
-        <div class="sub" style="margin-top:6px">последний заход: ${lastTxt}${s.last_result?" — "+esc(s.last_result):""}</div>
+        <div class="sub" style="margin-top:6px">последний заход: ${lastTxt}${s.last_result?" — "+esc(s.last_result):""}${crmLink}</div>
       </div>`;
     }).join("");
+    schedList.querySelectorAll(".ps-crm").forEach(a=>a.onclick=()=>{
+      location.hash="contacts/source:"+encodeURIComponent(a.dataset.src);
+    });
     schedList.querySelectorAll(".ps-toggle").forEach(b=>b.onclick=async()=>{
       b.disabled=true;
       await api(`/api/parse/schedules/${b.dataset.id}/toggle`,{method:"POST",headers:{"Content-Type":"application/json"},
@@ -7415,11 +7426,27 @@ function _syncTopbarH(){
   if(tb)document.documentElement.style.setProperty("--topbar-h",tb.offsetHeight+"px");
 }
 window.addEventListener("resize",_syncTopbarH);
+// Deep-link «открыть раздел уже отфильтрованным по колонке» — напр.
+// #contacts/source:цитрус_общая со страницы «Парсер» (см. блок «Последние результаты
+// парсинга»): применяем фильтр колонки в ТОМ ЖЕ localStorage, что читает smartTable
+// при построении (persist()/KEY), поэтому таблица открывается уже суженной, без
+// доп. API и без потери прочих настроек вида (порядок/ширина/скрытые колонки —
+// мержим поверх сохранённого, а не затираем).
+function _applyTableFilter(tableKey,col,val){
+  const KEY="axiom_tbl_"+tableKey;
+  let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){}
+  saved.colFilters={...(saved.colFilters||{}),[col]:val};
+  localStorage.setItem(KEY,JSON.stringify(saved));
+}
 async function route(){
   const raw=(location.hash||"#dashboard").slice(1);
   const slash=raw.indexOf("/");
   const section=slash>=0?raw.slice(0,slash):raw;
-  const entityId=slash>=0?raw.slice(slash+1):null;
+  let entityId=slash>=0?raw.slice(slash+1):null;
+  if(entityId&&entityId.startsWith("source:")){
+    _applyTableFilter(section==="contacts"?"contacts":section,"source",decodeURIComponent(entityId.slice(7)));
+    entityId=null;   // не карточка сущности — фильтр уже применён выше
+  }
   const nav=NAV.find(n=>n.id===section)||NAV[0];
   renderNav(nav.id);$("#title").textContent=nav.label;
   const v=$("#view");v.innerHTML=SKELS[nav.id]||SKELS.default;

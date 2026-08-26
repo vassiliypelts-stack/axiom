@@ -398,6 +398,10 @@
   .bubble .t{font-size:10px;color:var(--muted);margin-top:5px;}
   .bubble-del{cursor:pointer;opacity:.55;padding:0 2px;}
   .bubble-del:hover{opacity:1;color:#c0392b;}
+  .bubble-edit{cursor:pointer;opacity:.55;padding:0 2px;}
+  .bubble-edit:hover{opacity:1;color:var(--accent);}
+  .bubble-edit-box textarea{font:inherit;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 8px;color:inherit;}
+  .bubble-edit-box button{font-size:11px;padding:3px 8px;}
 
   /* ---- Detail drawer (досье) ---- */
   .drawer{position:fixed;top:0;right:0;width:430px;max-width:92vw;height:100vh;background:var(--panel);
@@ -1767,6 +1771,7 @@ async function viewAgents(v){
   };
   smartTable($("#acc-tbl"),{
     tableKey:"agents",
+    numbered:true,
     rows:aShown,searchKeys:["label","phone","username","role"],
     onDraw:rows=>{accFiltered=rows;},
     // Зелёная подсветка «рабочих» — с кем можно работать прямо сейчас: подключён,
@@ -6222,7 +6227,15 @@ async function openThread(id){
       <span class="ttoolbar" style="margin:0">
         ${c.campaign_id?`<button id="th-pause" title="${c.bot_paused?"Вернуть агенту — он подхватит диалог с полной историей":"Взять диалог на себя — агент перестанет писать этому человеку"}">${c.bot_paused?"✋ Ручное":"🤖 Авто"}</button>`:""}
         <button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
-    <div class="th-body">${(c.history||[]).map(m=>`<div class="bubble ${m.direction}" ${m.id?`data-msgid="${m.id}"`:""}>${esc(m.text)}<div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}${m.direction==="out"&&m.tg_msg_id?` · <span class="bubble-del" data-msgid="${m.id}" title="Удалить у обеих сторон в Telegram">✕</span>`:""}</div></div>`).join("")||'<div class="empty">Сообщений нет</div>'}</div>
+    <div class="th-body">${(c.history||[]).map(m=>{
+        // Правка доступна только для одной строки в Telegram (tg_msg_id без запятой) —
+        // опенер, ушедший залпом из нескольких сообщений, правится по одному тем же
+        // способом, что и удаление (см. contact_message_edit в app.py).
+        const canEdit=m.direction==="out"&&m.tg_msg_id&&!String(m.tg_msg_id).includes(",");
+        return `<div class="bubble ${m.direction}" ${m.id?`data-msgid="${m.id}"`:""}>
+          <span class="bubble-text">${esc(m.text)}</span>
+          <div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}${canEdit?` · <span class="bubble-edit" data-msgid="${m.id}" title="Редактировать у обеих сторон в Telegram">✎</span>`:""}${m.direction==="out"&&m.tg_msg_id?` · <span class="bubble-del" data-msgid="${m.id}" title="Удалить у обеих сторон в Telegram">✕</span>`:""}</div></div>`;
+      }).join("")||'<div class="empty">Сообщений нет</div>'}</div>
     <div class="th-send" style="border-top:1px solid var(--border);padding:10px 12px">
       <div style="display:flex;gap:8px;align-items:flex-end">
         <textarea id="th-text" rows="2" placeholder="Написать самому — уйдёт с того же аккаунта, что вёл диалог. Enter — отправить, Shift+Enter — новая строка" style="flex:1;resize:vertical"></textarea>
@@ -6264,6 +6277,45 @@ async function openThread(id){
     const r=await api(`/api/contact/${id}/message/${el.dataset.msgid}/delete`,{method:"POST"});
     if(r.error){alert(r.error);el.textContent="✕";return;}
     openThread(id);
+  });
+  // Правка «как в Telegram»: клик по ✎ превращает пузырь в textarea с исходным
+  // текстом, Enter/кнопка — сохранить и переслать правку в сам Telegram, Esc/Отмена —
+  // вернуть как было без похода на сервер.
+  th.querySelectorAll(".bubble-edit").forEach(el=>el.onclick=(e)=>{
+    e.stopPropagation();
+    const bubble=el.closest(".bubble"),msgid=el.dataset.msgid;
+    const textEl=bubble.querySelector(".bubble-text");
+    const original=textEl.textContent;
+    if(bubble.querySelector(".bubble-edit-box"))return;   // уже редактируется
+    textEl.style.display="none";
+    const box=document.createElement("div");
+    box.className="bubble-edit-box";
+    box.innerHTML=`<textarea rows="2" style="width:100%;resize:vertical">${esc(original)}</textarea>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <button class="be-save">✅ Сохранить</button>
+        <button class="be-cancel">Отмена</button>
+        <span class="hint be-msg"></span>
+      </div>`;
+    textEl.insertAdjacentElement("afterend",box);
+    const ta=box.querySelector("textarea");
+    ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);
+    const cancel=()=>{box.remove();textEl.style.display="";};
+    box.querySelector(".be-cancel").onclick=cancel;
+    ta.onkeydown=ev=>{
+      if(ev.key==="Escape"){cancel();}
+      else if(ev.key==="Enter"&&!ev.shiftKey){ev.preventDefault();save();}
+    };
+    const save=async()=>{
+      const text=ta.value.trim();
+      if(!text||text===original){cancel();return;}
+      const saveBtn=box.querySelector(".be-save"),msg=box.querySelector(".be-msg");
+      saveBtn.disabled=true;saveBtn.textContent="…";
+      const r=await api(`/api/contact/${id}/message/${msgid}/edit`,{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+      if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';saveBtn.disabled=false;saveBtn.textContent="✅ Сохранить";return;}
+      openThread(id);
+    };
+    box.querySelector(".be-save").onclick=save;
   });
 }
 
@@ -6401,8 +6453,19 @@ async function viewParser(v){
       <input id="p-source" placeholder="напр.: 210826точканетворк" autocomplete="off">
       <div class="hint" style="margin-top:4px">Под этим ярлыком найденные лягут в «Контакты» — там по нему можно отфильтровать и посмотреть, сколько дал именно этот чат. Оставишь пустым — попадут в общий «tg_parse» вперемешку со всеми прошлыми парсингами.</div></div>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="p-save"> записать найденных в книжку (без галочки — только показать)</label>
-    <button id="p-run">Запустить</button>
+    <div class="ttoolbar" style="margin:0">
+      <button id="p-run">Запустить</button>
+      <span style="width:1px;height:18px;background:var(--border);margin:0 4px"></span>
+      <label class="hint" style="display:inline-flex;align-items:center;gap:6px">повторять каждые
+        <input id="p-interval" type="number" min="1" value="24" style="max-width:64px"> ч</label>
+      <button id="p-schedule" title="Сохранить эту же цель/режим как постоянную задачу — сервер будет запускать её сам по таймеру">⏱ В расписание</button>
+    </div>
     <pre id="p-out" style="${POUT}display:none"></pre>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">⏱ Постоянные задачи</b>
+    <div class="sub" style="margin:6px 0 12px">Заведённые здесь цели сервер парсит сам, по расписанию, без похода оператора на эту страницу. Результат каждого захода — событие в колокольчике.</div>
+    <div id="p-sched-list" class="sub">загружаю…</div>
   </div>
   <div class="card" style="margin-bottom:16px">
     <b style="font-size:14px">🔗 Инвайты закрытых групп</b>
@@ -6484,6 +6547,62 @@ async function viewParser(v){
     scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30});
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});
+
+  // ---- Постоянные задачи парсинга: та же форма выше, но по таймеру на сервере ----
+  const MODE_RU={search:"поиск групп",admins:"админы",active:"активные комментаторы",all:"админы+активные",members:"участники"};
+  const schedList=$("#p-sched-list");
+  const loadSchedules=async()=>{
+    let rows;try{rows=await api("/api/parse/schedules");}catch(e){schedList.innerHTML='<span style="color:#c0392b">не загрузилось: '+esc(e.message)+'</span>';return;}
+    if(!rows.length){schedList.innerHTML="Пока ни одной — заполни цель выше и нажми «⏱ В расписание».";return;}
+    schedList.innerHTML=rows.map(s=>{
+      const next=s.last_run_ts?new Date((s.last_run_ts+s.interval_min*60)*1000):null;
+      const lastTxt=s.last_run_ts?fmt(new Date(s.last_run_ts*1000).toISOString()):"ещё не запускалась";
+      return `<div class="card" style="margin-bottom:8px;padding:10px 12px;background:var(--panel)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <div><b>${esc(s.label||s.target)}</b> <span class="hint">· ${MODE_RU[s.mode]||s.mode} · каждые ${Math.round(s.interval_min/60*10)/10} ч</span>
+            ${s.enabled?'<span class="badge b-active">включена</span>':'<span class="badge b-nurture">на паузе</span>'}</div>
+          <div class="ttoolbar" style="margin:0">
+            <button class="ps-run" data-id="${s.id}" title="Запустить сейчас, не дожидаясь таймера">▶ Сейчас</button>
+            <button class="ps-toggle" data-id="${s.id}" data-on="${s.enabled?1:0}">${s.enabled?"⏸ Пауза":"▶ Включить"}</button>
+            <button class="ps-del" data-id="${s.id}">✕</button>
+          </div>
+        </div>
+        <div class="sub" style="margin-top:6px">последний заход: ${lastTxt}${s.last_result?" — "+esc(s.last_result):""}</div>
+      </div>`;
+    }).join("");
+    schedList.querySelectorAll(".ps-toggle").forEach(b=>b.onclick=async()=>{
+      b.disabled=true;
+      await api(`/api/parse/schedules/${b.dataset.id}/toggle`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({enabled:b.dataset.on!=="1"})});
+      loadSchedules();
+    });
+    schedList.querySelectorAll(".ps-run").forEach(b=>b.onclick=async()=>{
+      b.disabled=true;b.textContent="…";
+      try{await api(`/api/parse/schedules/${b.dataset.id}/run_now`,{method:"POST"});}catch(e){}
+      b.disabled=false;b.textContent="▶ Сейчас";
+      loadSchedules();
+    });
+    schedList.querySelectorAll(".ps-del").forEach(b=>b.onclick=async()=>{
+      if(!confirm("Удалить эту постоянную задачу?"))return;
+      await api(`/api/parse/schedules/${b.dataset.id}`,{method:"DELETE"});
+      loadSchedules();
+    });
+  };
+  $("#p-schedule").onclick=async()=>{
+    const target=$("#p-target").value.trim();
+    if(!target){alert("сначала заполни цель выше");return;}
+    const btn=$("#p-schedule");btn.disabled=true;btn.textContent="сохраняю…";
+    try{
+      await api("/api/parse/schedules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        label:target,target,mode:$("#p-mode").value,save:$("#p-save").checked,
+        account_id:$("#p-acc").value||null,source:($("#p-source").value||"").trim()||null,
+        scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,
+        interval_min:Math.round((+$("#p-interval").value||24)*60)})});
+      loadSchedules();
+    }catch(e){alert("не сохранилось: "+e.message);}
+    btn.disabled=false;btn.textContent="⏱ В расписание";
+  };
+  loadSchedules();
 }
 
 // ----------------------------------------------------------------- projects

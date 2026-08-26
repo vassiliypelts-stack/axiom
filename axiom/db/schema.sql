@@ -347,6 +347,26 @@ CREATE TABLE IF NOT EXISTS opener_queue (
     created_at   TEXT DEFAULT (datetime('now'))
 );
 
+-- Расписания парсинга: та же цель/режим, что и ручной запуск на странице «Парсер»,
+-- но сервер сам гоняет их по таймеру (interval_min), не дожидаясь оператора.
+-- Результат каждого захода — событие в колокольчик (см. _parser_scheduler в app.py).
+CREATE TABLE IF NOT EXISTS parse_schedules (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    label         TEXT,                      -- ярлык для оператора, необязателен
+    target        TEXT NOT NULL,
+    mode          TEXT NOT NULL DEFAULT 'search',
+    account_id    INTEGER,
+    source        TEXT,
+    scan          INTEGER DEFAULT 2000,
+    top           INTEGER DEFAULT 50,
+    save          INTEGER DEFAULT 1,
+    interval_min  INTEGER NOT NULL DEFAULT 1440,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    last_run_ts   REAL,
+    last_result   TEXT,                      -- короткая сводка последнего захода
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
 -- Лог отправки кампании: каждая запись = попытка отправить одному контакту.
 -- Позволяет увидеть, сколько ушло, сколько пропущено и почему.
 CREATE TABLE IF NOT EXISTS campaign_logs (

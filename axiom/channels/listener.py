@@ -598,6 +598,30 @@ def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: f
         return None
 
 
+def edit_via_listener(acc_id: int, tg_user_id: int, msg_id: int, text: str,
+                      timeout: float = 30.0) -> bool:
+    """Отредактировать «для всех» сообщение, отправленное этим аккаунтом — тем же
+    подключением слушателя (см. send_via_listener про запрет второго клиента
+    на ту же сессию). Telegram позволяет редактировать не только текст, а не
+    только удалять его целиком."""
+    loop = _LOOP
+    client = CLIENTS.get(acc_id)
+    if loop is None or client is None:
+        _log(f"[edit] аккаунт #{acc_id} не подключён слушателем — правку пропускаю")
+        return False
+
+    async def _do():
+        await client.edit_message(tg_user_id, msg_id, text)
+
+    fut = asyncio.run_coroutine_threadsafe(_do(), loop)
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"[edit] не отредактировалось аккаунтом #{acc_id}: {e}")
+        return False
+
+
 def delete_via_listener(acc_id: int, tg_user_id: int, msg_ids: list[int],
                         timeout: float = 30.0) -> bool:
     """Удалить «для всех» сообщения, отправленные этим аккаунтом — тем же

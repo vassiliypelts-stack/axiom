@@ -2046,6 +2046,23 @@ def _proxy_scheduler() -> None:
                     _log_run("tgenrich_scheduler", res2)
         except Exception as e:  # noqa: BLE001
             print(f"[tgcheck scheduler] {e}")
+        # --- расписания парсинга (страница «Парсер» → «⏱ Постоянные задачи») ---
+        # Несколько независимых задач, каждая со своим интервалом — не общий тумблер,
+        # а таблица parse_schedules: заводится/чистится оператором, планировщик только
+        # проверяет срок и гоняет _run_one_schedule. Один заход — одна задача за круг,
+        # чтобы Telegram не увидел с разных «целей» пачку запросов от одних аккаунтов
+        # одновременно.
+        try:
+            with database.get_conn() as conn:
+                due = conn.execute(
+                    "SELECT * FROM parse_schedules WHERE enabled=1 "
+                    "AND (last_run_ts IS NULL OR ? - last_run_ts >= interval_min * 60) "
+                    "ORDER BY COALESCE(last_run_ts, 0) LIMIT 1", (time.time(),)
+                ).fetchone()
+            if due:
+                _run_one_schedule(dict(due))
+        except Exception as e:  # noqa: BLE001
+            print(f"[parse scheduler] {e}")
         time.sleep(60)
 
 
@@ -3575,6 +3592,99 @@ def parse_invites(payload: dict = Body(...)) -> JSONResponse:
     if dialogs:
         args += ["--dialogs", "--per", str(int(payload.get("per") or 800))]
     return JSONResponse(_run_capture(args, timeout=300))
+
+
+# ---- Расписания парсинга: те же цели, что и ручной запуск, но по таймеру ---- #
+@app.get("/api/parse/schedules")
+def parse_schedules_list() -> JSONResponse:
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM parse_schedules ORDER BY id DESC").fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/parse/schedules")
+def parse_schedules_create(payload: dict = Body(...)) -> JSONResponse:
+    target = (payload.get("target") or "").strip()
+    if not target:
+        return JSONResponse({"error": "укажи @чат/ссылку или поисковый запрос"}, status_code=400)
+    mode = payload.get("mode") or "search"
+    interval_min = max(15, int(payload.get("interval_min") or 1440))
+    with database.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO parse_schedules (label, target, mode, account_id, source, scan, top, "
+            "save, interval_min, enabled) VALUES (?,?,?,?,?,?,?,?,?,1)",
+            ((payload.get("label") or "").strip() or None, target, mode,
+             int(payload["account_id"]) if payload.get("account_id") else None,
+             (payload.get("source") or "").strip() or None,
+             int(payload.get("scan") or 2000), int(payload.get("top") or 50),
+             1 if payload.get("save", True) else 0, interval_min),
+        )
+    return JSONResponse({"ok": True, "id": cur.lastrowid})
+
+
+@app.post("/api/parse/schedules/{sid}/toggle")
+def parse_schedules_toggle(sid: int, payload: dict = Body(...)) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("UPDATE parse_schedules SET enabled=? WHERE id=?",
+                     (1 if payload.get("enabled") else 0, sid))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/parse/schedules/{sid}/run_now")
+def parse_schedules_run_now(sid: int) -> JSONResponse:
+    """Запустить эту задачу немедленно, вне очереди таймера — тот же путь, что и
+    фоновый планировщик (_run_one_schedule), чтобы поведение не расходилось."""
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT * FROM parse_schedules WHERE id=?", (sid,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "расписание не найдено"}, status_code=404)
+    result = _run_one_schedule(dict(row))
+    return JSONResponse(result)
+
+
+@app.delete("/api/parse/schedules/{sid}")
+def parse_schedules_delete(sid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM parse_schedules WHERE id=?", (sid,))
+    return JSONResponse({"ok": True})
+
+
+def _run_one_schedule(row: dict) -> dict:
+    """Один заход расписания парсинга: те же аргументы, что у ручного /api/parse/run,
+    результат — короткая сводка в parse_schedules.last_result и событие в колокольчик."""
+    import time
+    args = ["channels.tg_parser", "--target", row["target"], "--mode", row["mode"]]
+    if row.get("account_id"):
+        args += ["--account", str(int(row["account_id"]))]
+    if row.get("save"):
+        args.append("--save")
+    if row.get("source"):
+        args += ["--source", row["source"]]
+    mode = row["mode"]
+    if mode == "members":
+        args += ["--limit", str(int(row.get("top") or 500))]
+    elif mode in ("active", "all"):
+        args += ["--scan", str(int(row.get("scan") or 2000)), "--top", str(int(row.get("top") or 50))]
+    elif mode == "search":
+        args += ["--limit", str(int(row.get("top") or 30))]
+    res = _run_capture(args, timeout=600)
+    js = _last_json(res.get("output"))
+    who = row.get("label") or row["target"]
+    if res.get("ok") and js:
+        summary = ", ".join(f"{k}: {v}" for k, v in js.items() if isinstance(v, (int, float, str)))
+        level = "good"
+    else:
+        summary = (res.get("output") or "")[-300:]
+        level = "warn"
+    with database.get_conn() as conn:
+        conn.execute(
+            "UPDATE parse_schedules SET last_run_ts=?, last_result=? WHERE id=?",
+            (time.time(), summary[:500], row["id"]),
+        )
+        database.add_event(conn, "parse_schedule", f"🛰️ Расписание парсинга: «{who}»",
+                           summary[:500] or "(пусто)", level=level)
+    return {"ok": res.get("ok", False), "summary": summary}
 
 
 # ---- Каталог чатов (Волна C, фаза 1: анализ + админы) --------------------- #
@@ -5475,6 +5585,49 @@ def contact_send(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
         database.add_message(conn, contact_id, "out", text, intent=None, account_id=int(acc_id),
                              tg_msg_ids=sent)
     return JSONResponse({"ok": True, "account_id": int(acc_id)})
+
+
+@app.post("/api/contact/{contact_id}/message/{msg_id}/edit")
+def contact_message_edit(contact_id: int, msg_id: int, payload: dict = Body(...)) -> JSONResponse:
+    """Отредактировать «для всех» уже отправленную реплику — и у нас, и в Telegram
+    у собеседника. Только для direction='out' с известным tg_msg_id — как и
+    contact_message_delete, но правит текст, а не сносит сообщение целиком.
+
+    Правка возможна только для сообщений с ОДНИМ tg_msg_id: опенер, ушедший
+    залпом (несколько строк → несколько сообщений), редактируется по одному —
+    Telegram не даёт объединить несколько сообщений в одно правкой."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "пустой текст"}, status_code=400)
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT m.id, m.direction, m.account_id, m.tg_msg_id, c.tg_user_id "
+            "FROM messages m JOIN contacts c ON c.id = m.contact_id "
+            "WHERE m.id=? AND m.contact_id=?", (msg_id, contact_id)).fetchone()
+    if not row:
+        return JSONResponse({"error": "сообщение не найдено"}, status_code=404)
+    if row["direction"] != "out":
+        return JSONResponse({"error": "нельзя редактировать чужое сообщение — Telegram это не позволяет"},
+                            status_code=400)
+    if not row["tg_msg_id"] or not row["account_id"] or not row["tg_user_id"]:
+        return JSONResponse({"error": "у этого сообщения нет id в Telegram (старая запись, "
+                                      "до появления правки) — исправить можно только вручную в самом Telegram"},
+                            status_code=400)
+    ids = [int(x) for x in str(row["tg_msg_id"]).split(",") if x.strip()]
+    if len(ids) != 1:
+        return JSONResponse({"error": "это сообщение состоит из нескольких строк опенера — "
+                                      "редактирование по одной строке пока не поддержано"},
+                            status_code=400)
+
+    from channels import listener
+    ok = listener.edit_via_listener(int(row["account_id"]), int(row["tg_user_id"]), ids[0], text)
+    if not ok:
+        return JSONResponse({"error": "слушатель не держит этот аккаунт — не отредактировалось. "
+                                      "Проверь его сессию в «Аккаунтах»."}, status_code=502)
+
+    with database.get_conn() as conn:
+        conn.execute("UPDATE messages SET text=? WHERE id=?", (text, msg_id))
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/contact/{contact_id}/message/{msg_id}/delete")

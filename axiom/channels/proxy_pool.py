@@ -173,16 +173,99 @@ def _mt_link(server: str, port: int, secret: str) -> str:
     return f"tg://proxy?server={server}&port={port}&secret={secret}"
 
 
+async def _harvest_client():
+    """Клиент для СБОРА прокси из публичных каналов. Возвращает (client, как_подписан).
+
+    Читает открытые каналы — годится любой авторизованный аккаунт. Раньше брали только
+    сессию из .env (_build_client), и когда она умерла, refresh() падал так: Telethon
+    на client.start() уходил в интерактивный ввод, натыкался на закрытый stdin и валился
+    с EOFError («Please enter your phone»). Трейсбек уходил в файловый лог, автосбор
+    молча не работал неделями — а следствие вылезало совсем в другом месте: пул не
+    пополнялся, живых прокси стало меньше, чем аккаунтов, и те вставали без выхода в сеть.
+
+    Поэтому: сначала .env, а если сессия не авторизована — любой живой аккаунт из базы.
+    НЕ берём подключённых слушателем: вторая сессия тем же ключом = AuthKeyDuplicated и
+    сожжённый аккаунт. И никакого интерактива — is_user_authorized() вместо start().
+    """
+    import config
+    from channels.telegram import _build_client, build_client
+
+    if config.TG_STRING_SESSION:
+        client = _build_client()
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                return client, "сессия из .env"
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        from channels.listener import CLIENTS
+        busy = {aid for aid, cl in list(CLIENTS.items())
+                if getattr(cl, "is_connected", None) and cl.is_connected()}
+    except Exception:  # noqa: BLE001
+        busy = set()
+
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, tg_session, proxy, api_id, api_hash FROM accounts "
+            "WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND COALESCE(status,'') IN ('active','warming') "
+            "AND COALESCE(session_alive,1)=1 ORDER BY id"
+        ).fetchall()
+    for r in rows:
+        if r["id"] in busy:
+            continue
+        try:
+            client = build_client(StringSession(r["tg_session"]), r["proxy"],
+                                  r["api_id"], r["api_hash"])
+            await client.connect()
+            if await client.is_user_authorized():
+                return client, f"аккаунт {r['label'] or r['id']}"
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    return None, ""
+
+
 async def refresh(target_alive: int = TARGET_ALIVE, ids: list[int] | None = None) -> dict:
     import config
-    from channels.telegram import _build_client
     database.init_db()
-    client = _build_client()
-    await client.start()
+    client, who = await _harvest_client()
 
     # 1) собрать свежие (уже отфильтрованы от faketls на этапе parse)
-    fresh = await harvest(client)
-    await client.disconnect()
+    if client is None:
+        # Сбор невозможен — но проверку УЖЕ НАКОПЛЕННЫХ прокси это не отменяет: среди
+        # них могли ожить старые, и аккаунтам они нужны прямо сейчас. Раньше здесь был
+        # трейсбек и выход, то есть переставали работать обе половины.
+        fresh = []
+        print("[refresh] СБОР ПРОПУЩЕН: нет авторизованной сессии для чтения каналов "
+              "(ни .env, ни свободный аккаунт). Проверю только уже накопленные прокси.")
+        with database.get_conn() as conn:
+            # Не чаще раза в сутки: чинится это перелогином вручную, а тревога каждые
+            # два часа приучает пролистывать ленту не читая.
+            dup = conn.execute(
+                "SELECT 1 FROM events WHERE type='proxy_harvest_down' "
+                "AND ts >= datetime('now','-1 day') LIMIT 1").fetchone()
+            if not dup:
+                database.add_event(
+                    conn, "proxy_harvest_down", "🌐 Сбор прокси не работает",
+                    "Нечем читать каналы с прокси: сессия в .env не авторизована, а "
+                    "свободного живого аккаунта не нашлось. Пул не пополняется — когда "
+                    "живых прокси станет меньше, чем аккаунтов, часть из них останется "
+                    "без выхода в сеть. Перелогинь основную сессию (TG_STRING_SESSION).",
+                    level="warn")
+    else:
+        print(f"[refresh] читаю каналы: {who}")
+        fresh = await harvest(client)
+        await client.disconnect()
     with database.get_conn() as conn:
         _store_harvested(conn, fresh, "+".join("@" + c for c in PROXY_CHANNELS))
         # Тестируем ВСЕ прокси в БД (и новые, и старые — вдруг ожили)

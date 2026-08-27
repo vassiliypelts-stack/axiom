@@ -722,7 +722,6 @@ const NAV_GROUPS=[
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
-    {id:"dossier",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="2"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="10" x2="14" y2="10"/><line x1="6" y1="14" x2="10" y2="14"/></svg>',label:"Досье"},
     {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
     {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
@@ -3642,9 +3641,20 @@ async function viewContacts(v){
       <button id="ct-resolve-tg" title="пробить номера в Telegram — узнать tg_user_id, username, аватар, bio">📡 Пробив TG</button>
       <button id="ct-enrich" title="обогатить пачку контактов: DaData (ИНН/директор) + AI-досье">🧠 Обогатить пачку</button>
       <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать</button>
+      <button id="ct-dossier" title="зайти в TG-профиль живым аккаунтом и собрать AI-портрет: боли, страхи, желания, психотип и первый крючок">🔎 Собрать досье</button>
       <button id="ct-trash" title="удалённые отсюда не пропадают сразу — лежат тут, пока не восстановишь или не почистишь навсегда">🗑 Корзина<span id="ct-trash-n"></span></button>
       <span class="grow"></span>
       <span class="hint" id="ct-seg-msg">Физлица. Клик — карточка с историей и досье.</span>
+    </div>
+    <div id="ct-dossier-panel" class="card" style="display:none;margin-bottom:12px">
+      <b style="font-size:14px">🔎 Досье по телефону или @username</b>
+      <div class="sub" style="margin:4px 0 10px">Заходим в TG-профиль живым аккаунтом → био, аватар, личный канал → AI-портрет: боли, страхи, желания, психотип и готовый первый крючок. Если человека ещё нет в базе — карточка создастся.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="dl-q" placeholder="+79161234567  или  @username" style="flex:1;min-width:220px">
+        <button class="primary" id="dl-go">Собрать досье</button>
+      </div>
+      <div id="dl-msg" class="hint" style="margin-top:8px"></div>
+      <div id="dl-result"></div>
     </div>
     <div id="ct-trash-panel" class="card" style="display:none;margin-bottom:12px">
       <div class="ttoolbar" style="margin:0">
@@ -3681,6 +3691,44 @@ async function viewContacts(v){
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
   wireSourcePicker($("#ct-imp-source"));
   $("#ct-imp").onclick=()=>{const p=$("#ct-imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
+  // «Собрать досье» — переехало сюда из отдельного раздела «Досье». Раздел показывал
+  // ТУ ЖЕ таблицу контактов и открывал ТУ ЖЕ карточку (openDossier), отличаясь только
+  // колонками и этой формой поиска, — то есть был не отдельным модулем, а вторым
+  // входом в контакты. Форма живёт там же, где люди, а само досье и раньше было
+  // внутри карточки контакта (dossierBlock в openDossier).
+  $("#ct-dossier").onclick=()=>{
+    const p=$("#ct-dossier-panel");const show=p.style.display==="none";
+    p.style.display=show?"block":"none";
+    if(show)setTimeout(()=>{const q=$("#dl-q");if(q)q.focus();},30);
+  };
+  const dlRun=async()=>{
+    const q=$("#dl-q").value.trim();
+    if(!q){$("#dl-msg").textContent="введите телефон или @username";return;}
+    const b=$("#dl-go");b.disabled=true;b.textContent="собираю… (10-40с)";
+    $("#dl-msg").innerHTML='<span style="color:var(--muted)">захожу в профиль, читаю канал, строю портрет…</span>';
+    $("#dl-result").innerHTML="";
+    try{
+      const r=await api("/api/dossier/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:q})});
+      b.disabled=false;b.textContent="Собрать досье";
+      if(r.error){$("#dl-msg").innerHTML='<span style="color:#c0392b">⚠ '+esc(r.error)+'</span>';return;}
+      $("#dl-msg").innerHTML='<span style="color:var(--green)">✓ готово'+(r.channel_posts?` · собрано постов канала: ${r.channel_posts}`:'')+(r.warning?` · <span style="color:#c0392b">${esc(r.warning)}</span>`:'')+'</span>';
+      $("#dl-result").innerHTML=dossierCard(r.dossier||{},r.contact_id);
+      // Лукап может СОЗДАТЬ карточку человека, которого в базе не было. Полный route()
+      // тут не годится — он перерисует вид и сотрёт только что показанный портрет,
+      // ради которого всё и затевалось. Поэтому даём ссылку «открыть карточку»: она
+      // ведёт в ту же шторку, где досье уже встроено, а список подтянется при
+      // следующем обновлении страницы.
+      if(r.contact_id){
+        const go=document.createElement("button");
+        go.className="primary";go.style.marginTop="10px";
+        go.textContent="📂 Открыть карточку в контактах";
+        go.onclick=()=>openDossier(r.contact_id);
+        $("#dl-result").appendChild(go);
+      }
+    }catch(e){b.disabled=false;b.textContent="Собрать досье";$("#dl-msg").innerHTML='<span style="color:#c0392b">ошибка сети</span>';}
+  };
+  $("#dl-go").onclick=dlRun;
+  $("#dl-q").addEventListener("keydown",e=>{if(e.key==="Enter")dlRun();});
   // Корзина: те, у кого contacts.deleted_at выставлен. Их не видно в основной таблице
   // (loadContacts фильтрует на бэкенде), рассылка и пробив TG их тоже не трогают —
   // см. фильтр deleted_at в channels/campaign_send._audience и
@@ -3808,8 +3856,19 @@ async function viewContacts(v){
       {key:"hook",label:"Зацепка",cls:"sub",render:r=>esc(r.hook)||'<span class="no">—</span>'},
       {key:"msg_count",label:"Сообщений",cls:"mono",render:r=>r.msg_count||0},
       {key:"created_at",label:"Заведён",cls:"sub mono",render:r=>fmt(r.created_at)||"—"},
+      // Скоринг парсинга по правилам (ТЗ): 1=owner/admin чата, 2=активный в 2+ чатах,
+      // 3=активный в 1, 4=silent (состоит, но молчит — holding, руки доходят в последнюю
+      // очередь). Сортировка по числу работает из коробки — им и пользуемся, чтобы
+      // «кого писать первым» не выяснять глазами по тегам.
+      {key:"parse_priority",label:"Приоритет (парсинг)",cls:"mono",render:r=>{
+        const p=r.parse_priority;
+        if(!p)return '<span class="no" title="не из парсера чатов">—</span>';
+        const map={1:["🥇 1 — owner/admin","var(--green)"],2:["🥈 2 — активен, 2+ чата",""],
+                   3:["🥉 3 — активен, 1 чат",""],4:["😴 4 — молчит (holding)","var(--muted)"]};
+        const [label,color]=map[p]||[p,""];
+        return `<span${color?` style="color:${color}"`:""}>${label}</span>`;}},
     ],
-    hiddenByDefault:["specialization","person_role","city","email","msgr","hook","msg_count","created_at"],
+    hiddenByDefault:["specialization","person_role","city","email","msgr","hook","msg_count","created_at","parse_priority"],
     emptyText:"Контактов нет.",
   });
 }
@@ -5170,8 +5229,8 @@ function dossierCard(d,cid){
         </div>
         <div style="font-size:16px;line-height:1.55;color:var(--text);font-weight:500">${esc(d.rec_message)}</div></div>`:''}
       ${cid?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
-        <button class="primary" onclick="location.hash='#dossier/${cid}'">открыть полную карточку →</button>
-        <button class="sec" title="прямая ссылка на это досье" onclick="navigator.clipboard.writeText(location.origin+'/#dossier/${cid}');this.textContent='✓ ссылка скопирована';setTimeout(()=>this.textContent='🔗 ссылка',1500)">🔗 ссылка</button>
+        <button class="primary" onclick="location.hash='#contacts/${cid}'">открыть полную карточку →</button>
+        <button class="sec" title="прямая ссылка на этого человека" onclick="navigator.clipboard.writeText(location.origin+'/#contacts/${cid}');this.textContent='✓ ссылка скопирована';setTimeout(()=>this.textContent='🔗 ссылка',1500)">🔗 ссылка</button>
       </div>`:''}
     </div>
   </div>`;
@@ -7619,8 +7678,14 @@ function _applyTableFilter(tableKey,col,val){
 async function route(){
   const raw=(location.hash||"#dashboard").slice(1);
   const slash=raw.indexOf("/");
-  const section=slash>=0?raw.slice(0,slash):raw;
+  let section=slash>=0?raw.slice(0,slash):raw;
   let entityId=slash>=0?raw.slice(slash+1):null;
+  // «Досье» было вторым входом в те же контакты: та же таблица, та же карточка
+  // (openDossier), отличались лишь колонки и форма поиска — её перенесли в
+  // «Контакты» кнопкой «🔎 Собрать досье». Пункт убран, но ссылки #dossier/<id>
+  // уже разосланы (кнопка «🔗 ссылка» в карточке) и в закладках — уводим их в
+  // контакты, а не в «страницу не найдена».
+  if(section==="dossier")section="contacts";
   if(entityId&&entityId.startsWith("source:")){
     _applyTableFilter(section==="contacts"?"contacts":section,"source",decodeURIComponent(entityId.slice(7)));
     entityId=null;   // не карточка сущности — фильтр уже применён выше

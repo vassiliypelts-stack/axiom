@@ -275,6 +275,53 @@ async def collect_active(client, entity, scan: int, top: int,
     return out, bios, photo_ids
 
 
+def _count_sources(tags: str | None) -> int:
+    """Сколько РАЗНЫХ чатов дали этого человека — считаем по тегам «TG-парсинг: X»,
+    без отдельной m2m-таблицы (её сознательно не заводили: при 10-50 источниках
+    текстового тега достаточно, а лишняя таблица — лишняя точка расхождения)."""
+    if not tags:
+        return 0
+    seen = set()
+    for part in tags.split(","):
+        part = part.strip()
+        if part.startswith("TG-парсинг:"):
+            # «TG-парсинг: ЦИТРУС | Общая / участник» → чат без роли-суффикса —
+            # роль у одного чата может смениться между заходами (участник → админ),
+            # это не должно считаться вторым источником.
+            chat = part.split("/")[0].strip()
+            seen.add(chat)
+    return len(seen)
+
+
+def _compute_priority(role_code: str | None, source_count: int) -> int:
+    """Скоринг по правилам (ТЗ «расширение парсинга», без ML):
+    1 = owner/admin источника, 2 = active в 2+ источниках, 3 = active в 1,
+    4 = silent (holding, дальше не передаётся сразу). Меньше число — выше приоритет,
+    как в самом ТЗ. role_code=None (участник без активности, не holding-статус
+    active) — это и есть 'silent': не писал, просто состоит."""
+    if role_code in (ROLE_CREATOR, ROLE_ADMIN):
+        return 1
+    if role_code == ROLE_ACTIVE:
+        return 2 if source_count >= 2 else 3
+    return 4
+
+
+# Ранг роли для СРАВНЕНИЯ (не для хранения): выше — важнее. Нужен, чтобы повторный
+# заход по чату B, где человек рядовой участник, не понижал уже известную роль
+# creator/admin, добытую раньше в чате A — раньше _save_lead писал role_code
+# «последним увиденным», и админ мог откатиться до простого участника только
+# потому, что второй парсинг случился по другому чату.
+_ROLE_RANK = {ROLE_CREATOR: 3, ROLE_ADMIN: 2, ROLE_ACTIVE: 1, ROLE_MEMBER: 0}
+
+
+def _better_role(old: str | None, new: str | None) -> str | None:
+    if not old:
+        return new
+    if not new:
+        return old
+    return new if _ROLE_RANK.get(new, 0) > _ROLE_RANK.get(old, 0) else old
+
+
 def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse",
                role_code: str | None = None, phone: str | None = None) -> str:
     """Кладёт пользователя в книжку. Дедуп по tg_user_id. Возвращает 'new'/'dup'.
@@ -287,18 +334,22 @@ def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse",
     existing = database.find_contact_by_tg(conn, tg_user_id=u.id, username=u.username)
     tag = f"TG-парсинг: {target}" + (f" / {role}" if role else "")
     if existing:
-        old = existing["tags"] or ""
-        if tag not in old:
-            new_tags = f"{old}, {tag}" if old else tag
+        old_tags = existing["tags"] or ""
+        new_tags = old_tags
+        if tag not in old_tags:
+            new_tags = f"{old_tags}, {tag}" if old_tags else tag
             conn.execute("UPDATE contacts SET tags=?, updated_at=datetime('now') WHERE id=?", (new_tags, existing["id"]))
-        # Роль и номер могли открыться только сейчас (в прошлый заход человек был
-        # рядовым участником, теперь админ; или номер стал виден). COALESCE на
-        # СТАРОМ значении: заполняем пустое, но не затираем уже известное.
-        if role_code:
-            conn.execute("UPDATE contacts SET tg_chat_role=? WHERE id=?", (role_code, existing["id"]))
+        # Роль — ЛУЧШАЯ из старой и новой, не «последняя увиденная»: без этого повторный
+        # заход по чату B, где человек рядовой участник, откатывал бы уже известного
+        # admin/creator из чата A обратно до простого member (см. _better_role).
+        final_role = _better_role(existing["tg_chat_role"], role_code)
+        if final_role != existing["tg_chat_role"]:
+            conn.execute("UPDATE contacts SET tg_chat_role=? WHERE id=?", (final_role, existing["id"]))
         if phone:
             conn.execute("UPDATE contacts SET phone=COALESCE(NULLIF(phone,''),?) WHERE id=?",
                          (phone, existing["id"]))
+        priority = _compute_priority(final_role, _count_sources(new_tags))
+        conn.execute("UPDATE contacts SET parse_priority=? WHERE id=?", (priority, existing["id"]))
         return "dup"
     name = _display_name(u)
     cid = database.upsert_contact(
@@ -316,6 +367,8 @@ def _save_lead(conn, u: User, target: str, role: str, source: str = "tg_parse",
     conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
     if role_code:
         conn.execute("UPDATE contacts SET tg_chat_role=? WHERE id=?", (role_code, cid))
+    conn.execute("UPDATE contacts SET parse_priority=? WHERE id=?",
+                 (_compute_priority(role_code, 1), cid))
     return "new"
 
 

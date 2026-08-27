@@ -2825,7 +2825,7 @@ def contacts(trash: int = 0) -> JSONResponse:
                    c.city, c.agency, c.tags, c.notes, c.status, c.has_tg, c.has_wa,
                    c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
                    c.specialization, c.hook, c.enriched_at, c.source, c.created_at, c.email,
-                   c.deleted_at, c.site,
+                   c.deleted_at, c.site, c.parse_priority, c.tg_chat_role,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts

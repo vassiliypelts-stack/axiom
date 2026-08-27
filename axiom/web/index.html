@@ -3825,8 +3825,8 @@ async function viewContacts(v){
   smartTable($("#ct-body"),{
     tableKey:"contacts",
     selectable:true,numbered:true,selWord:"контактов",softDelete:true,onDelete:bulkDelete("/api/contacts/bulk-delete"),
-    rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","company_name","status"],
-    groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
+    rows:STATE.contacts,searchKeys:["name","person_name","username","phone","city","agency","company_name","status"],
+    groupOptions:[{key:"company_name",label:"компания"},{key:"city",label:"город"},{key:"agency",label:"агентство"},{key:"status",label:"статус"},{key:"source",label:"источник"}],
     groupFmt:(k,val)=>k==="status"?(STATUS_RU[val]||val):val,
     onRowClick:openDossier,
     columns:[
@@ -3847,6 +3847,9 @@ async function viewContacts(v){
         :'<span class="no" title="пусто — строка «вы тоже по теме…» этому контакту не уйдёт">—</span>'},
       {key:"person_role",label:"Должность",cls:"sub",render:r=>esc(r.person_role)||'<span class="no">—</span>'},
       {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||'<span class="no">—</span>'},
+      // Была только в разделе «Досье» — переехала сюда вместе с ним, иначе срез
+      // «кто из какого агентства» потерялся бы при удалении того раздела.
+      {key:"agency",label:"Агентство",cls:"sub",render:r=>esc(r.agency)||'<span class="no">—</span>'},
       {key:"email",label:"Email",cls:"sub",render:r=>r.email?`<a class="ext" href="mailto:${esc(r.email)}" onclick="event.stopPropagation()">${esc(r.email)}</a>`:'<span class="no">—</span>'},
       {key:"msgr",label:"TG / WA",render:r=>{
         const m=v=>v==='yes'?'<span class="badge b-active">✓</span>'
@@ -3868,7 +3871,7 @@ async function viewContacts(v){
         const [label,color]=map[p]||[p,""];
         return `<span${color?` style="color:${color}"`:""}>${label}</span>`;}},
     ],
-    hiddenByDefault:["specialization","person_role","city","email","msgr","hook","msg_count","created_at","parse_priority"],
+    hiddenByDefault:["specialization","person_role","city","agency","email","msgr","hook","msg_count","created_at","parse_priority"],
     emptyText:"Контактов нет.",
   });
 }

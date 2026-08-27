@@ -5878,8 +5878,20 @@ function renderCampList(mount,camps){
     // иначе кампания может неделями висеть в status='running' с пустой очередью
     // (всё уже отправлено, новых контактов нет), и мигание врало бы, что работа кипит.
     const isRunning=c.status==='running';
-    const isActive=isRunning&&left>0;
+    // «Идёт» пульсирует ТОЛЬКО если сегодня реально что-то ушло. Статус running сам по
+    // себе этого не значит: его ставит запуск, а снимает лишь 'done' или ручная пауза,
+    // поэтому отработавшая кампания висит «running» сутками при нуле отправок — и
+    // пульт бодро мигал «Идёт», пока рассылка стояла третий день.
+    const sentToday=c.sent_today||0;
+    const isActive=isRunning&&left>0&&sentToday>0;
     const stCls=(isRunning?('b-active'+(isActive?' b-live':'')):c.status==='done'?'b-won':'b-nurture');
+    // Что было на самом деле: сколько ушло сегодня и когда слали в последний раз.
+    const todayTxt=isRunning
+      ? (sentToday
+          ? `<span style="color:var(--green)">сегодня отправлено ${sentToday}</span>`
+          : `<span style="color:#c0392b" title="кампания активна, но заходов сегодня не было — холодная рассылка стартует только кнопкой «▶ Запустить»">сегодня 0 — заход не запускали</span>`)
+      : "";
+    const lastTxt=c.last_sent_at?` · последняя отправка ${rel(c.last_sent_at)}`:" · ещё ни одной отправки";
     const hasPrompt=c.agent_prompt?'<span class="badge b-active">🤖 промпт задан</span>':'<span class="badge b-nurture">промпт не задан</span>';
     const hasKp=c.kp_file?'<span class="badge b-active">📎 КП-файл</span>':'';
     return `<div class="card" id="camp-card-${c.id}" style="margin-bottom:12px">
@@ -5887,6 +5899,7 @@ function renderCampList(mount,camps){
         <div style="flex:1;min-width:240px">
           <b>${esc(c.name)}</b> <span class="badge ${stCls}">${CST[c.status]||c.status}</span> ${hasPrompt} ${hasKp}
           <div class="sub" style="margin:4px 0 8px">${esc(c.product||"")} · ${(c.channel||"").split(",").map(x=>CH_RU[x.trim()]||x.trim()).filter(Boolean).join(" + ")||"—"} · создана ${c.created_at?fmt(c.created_at):"—"}</div>
+          ${isRunning?`<div class="sub" style="margin-bottom:4px">${todayTxt}${lastTxt}</div>`:""}
           <div class="sub mono">отправлено ${done} · в очереди ${left}${c.paused?` · <span style="color:#c0392b" title="кнопка «снять все» в окне «Кто в рассылке» отключила эти контакты именно у этой кампании — вернуть галочкой там или пачкой ниже">снято вручную: ${c.paused}</span>
             <input type="number" value="3" min="1" max="${c.paused}" id="cl-batch-${c.id}" style="max-width:56px;margin-left:8px" title="сколько контактов открыть из паузы за раз">
             <button class="cl-openbatch" data-id="${c.id}" title="Снять паузу ровно с N контактов — остальные останутся в паузе. Посмотри, как проходят эти диалоги, поправь промпт если нужно, и открой следующую пачку">▶ Открыть пачку</button>`:""}</div>
@@ -6606,6 +6619,11 @@ async function viewParser(v){
     </div>
     <div class="field"><label>Каким аккаунтом парсить <span class="sub" style="font-weight:400">— можно отметить несколько</span></label>
       <div id="p-accs" style="max-height:190px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">загружаю аккаунты…</div>
+      <div id="p-member" class="sub" style="margin-top:6px"></div>
+      <div id="p-join-wrap" style="display:none;margin-top:6px">
+        <button id="p-join" title="Вступить отмеченными аккаунтами в этот чат — паузы и суточные лимиты соблюдаются модулем вступления">➕ Вступить отмеченными в этот чат</button>
+        <span id="p-join-msg" class="sub" style="margin-left:8px"></span>
+      </div>
       <div class="hint" style="margin-top:4px">Отметишь несколько — чат поделится между ними: каждый возьмёт свой кусок участников, поэтому на каждый ляжет в N раз меньше запросов и флуд-лимит не ловится. Заходят по очереди, а не разом.<br>🔴 боевые (защищённые) парсить не дадут — это рабочие номера, которыми ведут переписку; снять защиту можно только вручную в «Аккаунтах». 🏠 родной — просто личный номер, парсить им можно, если не включена защита. 🟢 расходные для того и куплены.<br>Для ЗАКРЫТЫХ чатов отмечай тех, кто реально в нём состоит (у таких ниже написано «в этом чате»), — список участников видит только тот, кто внутри.</div></div>
     <div class="row2">
       <div class="field"><label>Глубина scan (для «кто пишет»)</label><input id="p-scan" type="number" value="2000"></div>
@@ -6765,7 +6783,55 @@ async function viewParser(v){
     if(!name)name="chat";
     el.value=stamp+name;
   };
+  // Членство в ЦЕЛЕВОМ чате: список участников закрытой группы видит только тот, кто
+  // внутри. Раньше «не тот» аккаунт срывался уже в процессе, а его кусок работы молча
+  // терялся — оператор получал часть выборки и думал, что чат маленький.
+  let MEMBER=null;
+  const checkMembership=async()=>{
+    const box=$("#p-member"),wrap=$("#p-join-wrap");if(!box)return;
+    const target=($("#p-target").value||"").trim();
+    const ids=[...$("#p-accs").querySelectorAll("input:checked")].map(i=>+i.value);
+    if(!target){box.textContent="";wrap.style.display="none";return;}
+    let r;try{r=await api("/api/parse/membership",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({target,account_ids:ids})});}catch(e){box.textContent="";return;}
+    MEMBER=r;
+    if(!r||r.ok===false){box.textContent="";wrap.style.display="none";return;}
+    if(!r.known){box.innerHTML='<span class="sub">'+esc(r.hint||"")+'</span>';wrap.style.display="none";return;}
+    const inside=(r.inside||[]).length;
+    const out=(r.chosen_outside||[]).length;
+    let html=`<b>${esc(r.chat_title||"чат")}</b> · в чате состоят: ${inside||"никто"}`;
+    if(r.closed)html+=' <span class="badge b-nurture">закрытый</span>';
+    if(out){
+      const names=(r.chosen_outside||[]).map(i=>{const a=PACCS.find(x=>x.id===i);return a?(a.label||("#"+i)):("#"+i);});
+      html+=`<div style="color:#c0392b;margin-top:4px">⚠ отмечены, но в чате НЕ состоят: ${esc(names.join(", "))}`
+           +`${r.closed?" — в закрытом чате они ничего не увидят, их часть работы будет потеряна":""}</div>`;
+    }
+    box.innerHTML=html;
+    // вступать предлагаем только если есть кем и это осмысленно
+    wrap.style.display=(out&&(r.joinable||[]).length)?"":"none";
+  };
   $("#p-target").addEventListener("input",()=>{autoSource();renderAccs();});
+  // Проверка ходит на сервер — не на каждый символ, а когда оператор закончил ввод.
+  let _mt=null;
+  const scheduleCheck=()=>{clearTimeout(_mt);_mt=setTimeout(checkMembership,600);};
+  $("#p-target").addEventListener("input",scheduleCheck);
+  $("#p-accs").addEventListener("change",scheduleCheck);
+
+  $("#p-join").onclick=async()=>{
+    const b=$("#p-join"),m=$("#p-join-msg");
+    const ids=(MEMBER&&MEMBER.chosen_outside||[]).filter(i=>{const a=PACCS.find(x=>x.id===i);return a&&!a.battle;});
+    if(!ids.length){m.textContent="некем вступать";return;}
+    b.disabled=true;b.textContent="вступаю… (паузы 35-90с на аккаунт)";m.textContent="";
+    let r;try{r=await api("/api/parse/join",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({target:($("#p-target").value||"").trim(),account_ids:ids})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent="➕ Вступить отмеченными в этот чат";
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.innerHTML=`<span style="color:var(--green)">вступили: ${r.joined||0}</span>`
+      +((r.pending||0)?` · по заявке: ${r.pending}`:"")
+      +((r.failed||0)?` · <span style="color:#c0392b">не смогли: ${r.failed}</span>`:"");
+    checkMembership();   // членство изменилось — обновляем строку
+  };
   $("#p-source").addEventListener("input",e=>{e.target.dataset.touched="1";});
 
   // ---- Период и «только новое» показываем только там, где они работают ----
@@ -6887,12 +6953,17 @@ async function viewParser(v){
   $("#p-schedule").onclick=async()=>{
     const target=$("#p-target").value.trim();
     if(!target){alert("сначала заполни цель выше");return;}
-    if(!$("#p-acc").value){alert("для постоянной задачи обязательно выбери рабочий аккаунт в «Каким аккаунтом парсить» — на главном номере из .env автоматический цикл гонять нельзя (риск флуд-лимита + он часто не авторизован)");return;}
+    // Аккаунт берём из чекбоксов: одиночный <select id="p-acc"> убран, когда появился
+    // выбор нескольких аккаунтов, и обращение к нему роняло обработчик (null.value) —
+    // кнопка «В расписание» молча переставала работать.
+    const schedIds=[...$("#p-accs").querySelectorAll("input:checked")].map(i=>+i.value);
+    if(!schedIds.length){alert("для постоянной задачи обязательно отметь рабочий аккаунт в «Каким аккаунтом парсить» — на главном номере из .env автоматический цикл гонять нельзя (риск флуд-лимита + он часто не авторизован)");return;}
+    if(schedIds.length>1)alert("В расписание пойдёт только первый отмеченный аккаунт: постоянная задача работает одним. Остальные отметки — для ручного запуска.");
     const btn=$("#p-schedule");btn.disabled=true;btn.textContent="сохраняю…";
     try{
       await api("/api/parse/schedules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
         label:target,target,mode:$("#p-mode").value,save:$("#p-save").checked,
-        account_id:$("#p-acc").value||null,source:($("#p-source").value||"").trim()||null,
+        account_id:schedIds[0],source:($("#p-source").value||"").trim()||null,
         scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,
         interval_min:Math.round((+$("#p-interval").value||24)*60)})});
       loadSchedules();

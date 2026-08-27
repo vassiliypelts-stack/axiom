@@ -148,11 +148,29 @@ def _peer(ch: dict):
     return ("@" + ch["username"]) if ch.get("username") else None
 
 
+async def _resolve_user(client, c) -> object:
+    """Пользователь как его поймёт Telethon: сначала @username, потом числовой id.
+
+    Голый tg_user_id рабочий только там, где у аккаунта уже есть access_hash этого
+    человека (видел его в общем чате в ЭТОЙ сессии). У свежего аккаунта его нет, и
+    get_entity(id) падает «Cannot find any entity corresponding to ...» — именно на
+    этом спотыкались 4 аккаунта подряд. @username резолвится всегда.
+    """
+    uname = (c["username"] or "").strip().lstrip("@")
+    if uname:
+        try:
+            return await client.get_entity(uname)
+        except Exception:  # noqa: BLE001 — ник сменили/занят: пробуем по id
+            pass
+    return await client.get_entity(int(c["tg_user_id"]))
+
+
 async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TOTAL_CAP) -> dict:
     """Собрать сообщения человека по его чатам. Возвращает сводку для веб-ручки."""
     database.init_db()
     with database.get_conn() as conn:
-        c = conn.execute("SELECT id, tg_user_id, name FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        c = conn.execute("SELECT id, tg_user_id, username, name FROM contacts WHERE id=?",
+                         (contact_id,)).fetchone()
     if not c:
         return {"ok": False, "error": "контакт не найден"}
     if not c["tg_user_id"]:
@@ -181,7 +199,7 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
             await cl.connect()
             if not await cl.is_user_authorized():
                 raise RuntimeError("сессия не авторизована")
-            user = await cl.get_entity(int(c["tg_user_id"]))
+            user = await _resolve_user(cl, c)
             a, client = cand, cl
             break
         except Exception as e:  # noqa: BLE001

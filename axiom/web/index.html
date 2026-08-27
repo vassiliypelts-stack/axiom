@@ -6480,6 +6480,16 @@ async function openDossier(id){
         <div class="sub">прочитано: ${esc(c.tg_enrich_note)||"—"} · ${fmt(c.tg_enriched_at)}</div>`
       :`<div class="sub">Ещё не читали. Кнопка откроет описание профиля и, если в нём есть ссылка на его канал, — закреп и последние посты. Оттуда достаём: кто он по жизни (предприниматель / эксперт / наёмный), что продаёт и о чём пишет. Идёт после пробива номера, поэтому нужен найденный в Telegram контакт.</div>`}
     </div>`;
+  // 💬 Реплики человека в ЧАТАХ — другой источник, чем профиль/канал выше: у обычного
+  // участника группы в профиле обычно пусто, и единственное, что он о себе сказал, —
+  // его собственные сообщения в чатах. Кнопка идёт в чаты, где мы его видели, забирает
+  // его реплики (Telegram фильтрует по автору) и сразу строит по ним досье.
+  const chatsBlock=`<div class="card" style="margin-bottom:14px;background:var(--panel2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <b style="font-size:13px">💬 Что писал в чатах</b>
+        <button id="dr-read-chats" data-id="${c.id}">Почитать в чатах</button></div>
+      <div class="sub" id="dr-read-chats-msg">Зайдёт в чаты, где он состоит (из парсинга), заберёт его сообщения и соберёт по ним боли / страхи / желания. Работает и когда в профиле пусто — источник здесь его собственные реплики, а не описание.</div>
+    </div>`;
   // 🧠 H1: AI-досье физлица по его сообщениям из чатов (enrich_person.py).
   const hasDossier=(c.score!=null)||c.pains||c.rec_message;
   const pct=v=>v==null?"—":Math.round(v*100)+"%";
@@ -6500,6 +6510,7 @@ async function openDossier(id){
     ${sourceBlock}
     ${enrichBlock}
     ${tgBlock}
+    ${chatsBlock}
     <div class="row2"><div class="field"><label>Город</label><div class="v">${esc(c.city)||"—"}</div></div>
       <div class="field"><label>🏢 Компания</label><div class="v">${c.company_id?`<span class="lnk" data-coid="${c.company_id}" style="cursor:pointer;color:var(--accent)">${esc(c.company_name||c.agency||"компания")} ↗</span>`:(esc(c.agency)||"—")}</div></div></div>
     <div class="field"><label>🗂 Воронка / продукт</label>
@@ -6530,6 +6541,22 @@ async function openDossier(id){
   if(eb)eb.onclick=async()=>{eb.textContent="обогащаю…";eb.disabled=true;
     await api(`/api/contact/${id}/enrich`,{method:"POST"});
     setTimeout(()=>openDossier(id),9000);};
+  // Чтение чатов дольше (несколько чатов + модель на портрет) — держим оператора в
+  // курсе прямо в блоке, а не молчим полминуты с зависшей кнопкой.
+  const rcb=$("#dr-read-chats");
+  if(rcb)rcb.onclick=async()=>{
+    const was=rcb.textContent,msg=$("#dr-read-chats-msg");
+    rcb.textContent="читаю чаты…";rcb.disabled=true;
+    if(msg)msg.textContent="захожу в чаты, где он состоит, забираю его сообщения и строю портрет — до минуты…";
+    let r;try{r=await api(`/api/contact/${id}/read_chats`,{method:"POST"});}
+    catch(e){r={error:e.message};}
+    rcb.disabled=false;rcb.textContent=was;
+    if(r&&(r.error||r.ok===false)){
+      if(msg)msg.innerHTML='<span style="color:#c0392b">'+esc(r.error||"нет ответа")+'</span>'
+        +(r.detail?'<div class="sub" style="margin-top:4px">'+esc(r.detail)+'</div>':"");
+      return;}
+    openDossier(id);
+  };
   // Чтение Telegram ЖДЁМ ответа, а не уходим в фон по таймеру: тут надо сходить в
   // канал и разобрать посты — по одному лиду это секунды, и результат хочется увидеть
   // сразу, а не гадать, обновилась ли карточка.

@@ -68,29 +68,37 @@ async def run(limit: int, only_id: int | None = None) -> None:
         link = f"https://t.me/{username}" if username else None
         cw = can_write(e)
         tg_id = getattr(e, "id", None)
-        rows.append((title, username, link, kind, members, cw, tg_id))
+        # access_hash — пропуск к ПРИВАТНОМУ чату: без @username обратиться к нему
+        # иначе нельзя, а строковая сессия свой кэш сущностей между запусками не
+        # хранит. Здесь он уже под рукой (диалог свой), а без сохранения каждый
+        # модуль потом упирался в «нечем адресовать чат» — так чтение реплик в
+        # «ЦИТРУС | Общая» молча пропускало группу целиком.
+        ah = getattr(e, "access_hash", None)
+        rows.append((title, username, link, kind, members, cw, tg_id, ah))
 
     with database.get_conn() as conn:
-        for title, username, link, kind, members, cw, tg_id in rows:
+        for title, username, link, kind, members, cw, tg_id, ah in rows:
             ex = None
             if tg_id:
                 ex = conn.execute("SELECT id FROM chats WHERE tg_chat_id=?", (tg_id,)).fetchone()
             if not ex and username:
                 ex = conn.execute("SELECT id FROM chats WHERE username=?", (username,)).fetchone()
+            ah_s = str(ah) if ah is not None else None   # храним строкой: не влезает в INTEGER
             if ex:
                 conn.execute(
                     "UPDATE chats SET title=?, kind=?, members_count=COALESCE(?,members_count), "
                     "can_write=?, in_account='yes', link=COALESCE(link,?), "
-                    "tg_chat_id=COALESCE(?,tg_chat_id), joined_by=COALESCE(?,joined_by) WHERE id=?",
-                    (title, kind, members, cw, link, tg_id, acc_id, ex["id"]),
+                    "tg_chat_id=COALESCE(?,tg_chat_id), joined_by=COALESCE(?,joined_by), "
+                    "tg_access_hash=COALESCE(?,tg_access_hash) WHERE id=?",
+                    (title, kind, members, cw, link, tg_id, acc_id, ah_s, ex["id"]),
                 )
                 updated += 1
             else:
                 conn.execute(
                     "INSERT INTO chats (title, username, link, kind, members_count, can_write, "
-                    "tg_chat_id, in_account, status, joined_by) "
-                    "VALUES (?,?,?,?,?,?,?, 'yes', 'joined', ?)",
-                    (title, username, link, kind, members, cw, tg_id, acc_id),
+                    "tg_chat_id, in_account, status, joined_by, tg_access_hash) "
+                    "VALUES (?,?,?,?,?,?,?, 'yes', 'joined', ?, ?)",
+                    (title, username, link, kind, members, cw, tg_id, acc_id, ah_s),
                 )
                 added += 1
 

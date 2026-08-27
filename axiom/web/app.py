@@ -3763,6 +3763,22 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
     # расписаниями, заведёнными до этой правки.
     acc_ids = payload.get("account_ids") or []
     acc_ids = [int(a) for a in acc_ids if str(a).strip()]
+    # ЗАЩИЩЁННЫМИ (protected=1) не парсим — отказ на сервере, а не только confirm в
+    # браузере: подтверждение в UI обходится перезапросом, а цена ошибки — рабочий
+    # номер, которым ведут переписку. Снять защиту можно только руками в «Аккаунтах»
+    # (/api/accounts protect) — намеренное действие человека, и никакой автоматики.
+    if acc_ids:
+        qm = ",".join("?" * len(acc_ids))
+        with database.get_conn() as conn:
+            guarded = conn.execute(
+                f"SELECT id, label FROM accounts WHERE id IN ({qm}) AND COALESCE(protected,0)=1",
+                acc_ids).fetchall()
+        if guarded:
+            who = ", ".join(f"#{r['id']} {r['label'] or ''}".strip() for r in guarded)
+            return JSONResponse(
+                {"error": f"защищённые аккаунты не парсят: {who}. Это рабочие номера — "
+                          f"сними защиту в «Аккаунтах», если действительно нужно ими"},
+                status_code=400)
     if acc_ids:
         args += ["--accounts", ",".join(str(a) for a in acc_ids)]
     elif payload.get("account_id"):
@@ -3840,10 +3856,21 @@ def parse_accounts() -> JSONResponse:
     for r in rows:
         d = dict(r)
         warm = (d.get("warm_stage") or 0)
-        # «Боевой» — тот, кем реально работают: родной/личный номер или аккаунт,
-        # уже прошедший прогрев. Парсить надо расходными (bought), а не этими.
-        d["battle"] = bool(d.get("protected")) or (d.get("kind") == "own")
+        # РОДНОЙ и БОЕВОЙ — разные вещи, и путать их нельзя.
+        #
+        # Родной (kind own/personal) — чей это номер: личный номер владельца. Это
+        # факт происхождения, он не меняется сам по себе никогда.
+        # Боевой (protected=1) — РЕЖИМ: «не трогать автоматикой». Его ставит и
+        # снимает только человек, руками, в разделе «Аккаунты» (/api/accounts/protect).
+        #
+        # Раньше здесь стояло `protected OR kind=='own'`, из-за чего родной номер
+        # автоматически считался боевым и парсинг им требовал подтверждения, даже
+        # когда владелец режим не включал. Признак происхождения не должен сам
+        # включать режим защиты — иначе снять его из пульта нельзя в принципе.
+        d["battle"] = bool(d.get("protected"))
+        d["native"] = d.get("kind") in ("own", "personal")
         d["kind_ru"] = ("🔴 боевой (не парсить)" if d["battle"]
+                        else "🏠 родной (не защищён)" if d["native"]
                         else "🟢 расходный" if d.get("kind") == "bought"
                         else "🟡 своя симка" if d.get("kind") == "sim"
                         else "⚪ не помечен")

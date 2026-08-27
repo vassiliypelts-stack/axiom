@@ -58,7 +58,7 @@ async def _alive(proxy_url: str, timeout: int = 9) -> bool:
     """Живой ли прокси для Telegram. Мало TCP-коннекта — делаем РЕАЛЬНЫЙ запрос
     (help.GetConfig, без авторизации): он реально гоняет MTProto через прокси.
     Так отсеиваем «открывается, но трафик не тянет» — частую беду free-прокси."""
-    client = build_client(StringSession(), proxy_url)
+    client = build_client(StringSession(), proxy_url, allow_shared_ip=True)
     try:
         await asyncio.wait_for(client.connect(), timeout=timeout)
         await asyncio.wait_for(client(functions.help.GetConfigRequest()), timeout=timeout)

@@ -38,7 +38,7 @@ async def start_login(acc_id: int) -> dict:
     phone = (acc["phone"] or "").strip()
     if not phone:
         return {"error": "у аккаунта не указан телефон"}
-    client = build_client(StringSession(), acc["proxy"])
+    client = build_client(StringSession(), acc["proxy"], allow_shared_ip=True)
     try:
         await client.connect()
         sent = await client.send_code_request(phone)
@@ -63,7 +63,7 @@ async def submit_code(acc_id: int, code: str, password: str = "") -> dict:
     code = (code or "").strip()
     if not code:
         return {"error": "введи код из Telegram"}
-    client = build_client(StringSession(st["session"]), st["proxy"])
+    client = build_client(StringSession(st["session"]), st["proxy"], allow_shared_ip=True)
     try:
         await client.connect()
         try:

@@ -126,7 +126,8 @@ async def _mint(acc: dict, kick_others: bool) -> tuple[bool, str]:
                                api_id, api_hash)
         # Запаску собираем на ТОМ ЖЕ прокси и тех же api-кредах: второе «устройство» из
         # другой страны или с чужим app_id выглядит для антифрода как угон.
-        spare = build_client(StringSession(), acc.get("proxy"), api_id, api_hash)
+        spare = build_client(StringSession(), acc.get("proxy"), api_id, api_hash,
+                              allow_shared_ip=True)
     except Exception as e:  # noqa: BLE001
         return False, f"клиент не собрался: {str(e)[:60]}"
 

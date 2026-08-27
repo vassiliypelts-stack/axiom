@@ -113,7 +113,13 @@ async def _probe(acc: dict, proxy: str | None) -> tuple[str, str]:
     except Exception as e:  # noqa: BLE001 — битая строка сессии: это точно про сессию
         return "revoked", f"строка сессии не читается: {e}"
     try:
-        client = build_client(session, proxy, acc.get("api_id"), acc.get("api_hash"))
+        # allow_shared_ip: build_client по умолчанию запрещает готовой сессии идти без
+        # своего прокси (это сжигает ключ — см. его docstring). Здесь прямая проба
+        # НУЖНА и безопасна, но только в одном случае — когда сессию сейчас никто не
+        # держит; за этим следит _check_one через _listener_may_hold_sessions() и сюда
+        # с proxy=None приходит уже только при выключенном слушателе.
+        client = build_client(session, proxy, acc.get("api_id"), acc.get("api_hash"),
+                              allow_shared_ip=True)
     except Exception as e:  # noqa: BLE001
         # Развалилась сборка клиента (обычно кривая строка прокси) — это НЕ приговор
         # сессии: отдаём noconn, и _check_one перепроверит напрямую, без прокси.

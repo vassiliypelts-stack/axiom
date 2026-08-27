@@ -521,10 +521,18 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
             team = sorted(team, key=lambda a: 0 if str(a["id"]) == str(main_id) else 1)
         for acc in team:
             label = acc["label"] or acc["username"] or acc["phone"] or f"#{acc['id']}"
+            try:
+                client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
+                                      acc.get("api_id"), acc.get("api_hash"))
+            except Exception as e:  # noqa: BLE001
+                # Чаще всего это «нет своего прокси» (build_client запрещает общий IP:
+                # он сжигает ключ). Один такой аккаунт не должен ронять ВЕСЬ заход
+                # кампании — остальная команда работает, а этот пропускаем с причиной.
+                print(f"[{label}] ⏭ пропуск: {e}")
+                continue
             senders.append({
                 "id": acc["id"], "acc": acc, "label": label,
-                "client": build_client(StringSession(acc["tg_session"]), acc["proxy"],
-                                       acc.get("api_id"), acc.get("api_hash")),
+                "client": client,
                 "remaining": max(0, int(acc["cap"] or cap)),
             })
     else:

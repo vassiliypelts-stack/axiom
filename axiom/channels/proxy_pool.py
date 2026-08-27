@@ -199,6 +199,36 @@ def _mt_link(server: str, port: int, secret: str) -> str:
     return f"tg://proxy?server={server}&port={port}&secret={secret}"
 
 
+def _link(row) -> str:
+    """Ссылка на прокси из строки таблицы — MTProto ИЛИ socks5/http.
+
+    Раздача (assign/heal) раньше звала только _mt_link и всё превращала в tg://proxy.
+    Свой socks5-сервер (или купленный у провайдера) лёг бы в пул и молча не раздался:
+    склеенный tg://proxy из его host/port не проходит parse_mtproxy и отсеивается как
+    «не telethon-совместимый». Формат хранится в kind, его и уважаем: secret у socks5
+    держит 'user:pass' (или пусто, если прокси без авторизации).
+
+    build_client (channels/telegram) понимает оба вида, так что дальше по коду разницы
+    нет — она есть только здесь, при сборке строки.
+    """
+    kind = (row["kind"] if "kind" in row.keys() else None) or "mtproto"
+    server, port = row["server"], row["port"]
+    secret = row["secret"] or ""
+    if kind == "mtproto":
+        return _mt_link(server, port, secret)
+    auth = f"{secret}@" if secret else ""
+    scheme = kind if kind in ("socks5", "socks4", "http", "https") else "socks5"
+    return f"{scheme}://{auth}{server}:{port}"
+
+
+def _usable_link(link: str) -> bool:
+    """Годится ли ссылка для Telethon: MTProto — не faketls, socks — парсится."""
+    from channels.telegram import parse_proxy_str
+    if link.startswith("tg://"):
+        return bool(parse_mtproxy(link))
+    return bool(parse_proxy_str(link))
+
+
 async def _harvest_client():
     """Клиент для СБОРА прокси из публичных каналов. Возвращает (client, как_подписан).
 
@@ -652,7 +682,7 @@ async def _test_account_proxy(aid: int, label: str, proxy_raw: str,
                       # увёл бы такой аккаунт на TG_PROXY из .env или на прямой IP
     from channels.telegram import build_client
     try:
-        client = build_client(StringSession(), proxy_raw, api_id, api_hash)
+        client = build_client(StringSession(), proxy_raw, api_id, api_hash, allow_shared_ip=True)
     except Exception:  # noqa: BLE001
         return False
     try:

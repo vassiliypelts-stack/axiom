@@ -37,7 +37,7 @@ async def _login(acc_id: int) -> None:
         return
     print(f"Логиню #{acc_id} «{acc['label'] or ''}» {phone}.")
     print("Telegram пришлёт код — введи его здесь (и пароль 2FA, если включён).")
-    client = build_client(StringSession(), acc["proxy"])
+    client = build_client(StringSession(), acc["proxy"], allow_shared_ip=True)
     await client.start(phone=phone)
     me = await client.get_me()
     with database.get_conn() as conn:

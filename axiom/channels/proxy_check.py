@@ -46,7 +46,8 @@ async def _check_one(acc: dict) -> bool:
     """Живость прокси через собственные api_id/api_hash аккаунта (если есть) —
     ближе к реальным условиям, под которыми он потом будет коннектиться в бою."""
     try:
-        client = build_client(StringSession(), acc["proxy"], acc.get("api_id"), acc.get("api_hash"))
+        client = build_client(StringSession(), acc["proxy"], acc.get("api_id"), acc.get("api_hash"),
+                              allow_shared_ip=True)
     except Exception:  # noqa: BLE001
         return False
     ok = False

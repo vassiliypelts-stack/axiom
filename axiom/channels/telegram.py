@@ -172,11 +172,24 @@ def parse_mtproxy(raw: str | None):
 
 
 def build_client(session, proxy_raw: str | None = None,
-                 api_id: int | None = None, api_hash: str | None = None) -> TelegramClient:
-    """Единая сборка клиента: MTProto-прокси (tg://proxy) или SOCKS5. proxy_raw
-    пуст → прокси основного аккаунта из .env. Используется аккаунтами команды.
+                 api_id: int | None = None, api_hash: str | None = None,
+                 allow_shared_ip: bool = False) -> TelegramClient:
+    """Единая сборка клиента: MTProto-прокси (tg://proxy) или SOCKS5.
     api_id/api_hash — собственные креды аккаунта (для купленных сессий обязательно
-    использовать те, под которыми сессия создана); иначе берём глобальные из .env."""
+    использовать те, под которыми сессия создана); иначе берём глобальные из .env.
+
+    ПРО ПУСТОЙ proxy_raw. Раньше он молча падал на прокси главного .env-аккаунта, и
+    это стоило 8 купленных аккаунтов 13.08.2026: сессия уходила в Telegram с чужого
+    IP, а стоило поднять её штатным путём — Telegram видел один ключ с двух адресов
+    и жёг его навсегда («authorization key was used under two different IP addresses
+    simultaneously»). Плюс несколько таких аккаунтов светили один и тот же IP — почерк
+    фермы. Поэтому для ГОТОВОЙ сессии аккаунта отсутствие прокси теперь ошибка, а не
+    «подставим общий».
+
+    allow_shared_ip=True — осознанное разрешение общего IP. Ставится ТОЛЬКО там, где
+    своей сессии ещё нет и жечь нечего: первый вход по номеру, авторегистрация,
+    проверка живости самого прокси (StringSession() пустая). Никогда — для работы
+    живым аккаунтом."""
     mt = parse_mtproxy(proxy_raw)
     kwargs: dict = {}
     if mt:
@@ -184,7 +197,13 @@ def build_client(session, proxy_raw: str | None = None,
         kwargs["connection"] = ConnectionTcpMTProxyRandomizedIntermediate
         kwargs["proxy"] = mt
     else:
-        kwargs["proxy"] = parse_proxy_str(proxy_raw) or _parse_proxy()
+        own = parse_proxy_str(proxy_raw)
+        if own is None and not allow_shared_ip:
+            raise RuntimeError(
+                "у аккаунта нет своего прокси — подключение через общий IP из .env "
+                "сжигает сессию (два IP на один ключ, так потеряно 8 аккаунтов 13.08). "
+                "Раздай прокси в «Аккаунтах» (кнопка «🆓 Бесплатный прокси»)")
+        kwargs["proxy"] = own or _parse_proxy()
     aid = int(api_id) if api_id else int(config.TG_API_ID)
     ahash = api_hash or config.TG_API_HASH
     return TelegramClient(session, aid, ahash, **kwargs)

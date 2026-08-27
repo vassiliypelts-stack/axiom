@@ -89,7 +89,7 @@ async def _register_number(country: int, proxy_period: int = 7,
 
     # --- Шаг 3: Отправить запрос кода Telegram — через прокси, если он есть ---
     _log("code_request", "Запрашиваю код у Telegram...")
-    client = build_client(StringSession(), proxy_url)
+    client = build_client(StringSession(), proxy_url, allow_shared_ip=True)
     try:
         await client.connect()
         sent = await client.send_code_request(phone_full)
@@ -171,7 +171,7 @@ async def _register_number(country: int, proxy_period: int = 7,
 
     # --- Шаг 7: Приватность (номер спрятан + рекомендованный набор) — тем же прокси ---
     try:
-        client2 = build_client(StringSession(session_str), proxy_url)
+        client2 = build_client(StringSession(session_str), proxy_url, allow_shared_ip=True)
         await client2.connect()
         done = await apply_privacy(client2)
         await client2.disconnect()

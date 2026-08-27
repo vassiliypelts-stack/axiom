@@ -112,7 +112,7 @@ def _chats_of(contact_id: int) -> list[dict]:
         if seen:
             qm = ",".join("?" * len(seen))
             rows = list(conn.execute(
-                f"SELECT id, title, username, tg_chat_id, tg_access_hash FROM chats "
+                f"SELECT id, title, username, tg_chat_id, tg_access_hash, joined_by FROM chats "
                 f"WHERE id IN ({qm}) AND (tg_chat_id IS NOT NULL OR (username IS NOT NULL AND username<>''))",
                 seen).fetchall())
         # 3) ГЛАВНЫЙ случай для участников: у них нет ни постов, ни chat_hits — их
@@ -128,7 +128,7 @@ def _chats_of(contact_id: int) -> list[dict]:
             if not title:
                 continue
             found = conn.execute(
-                "SELECT id, title, username, tg_chat_id, tg_access_hash FROM chats "
+                "SELECT id, title, username, tg_chat_id, tg_access_hash, joined_by FROM chats "
                 "WHERE title=? AND (tg_chat_id IS NOT NULL OR (username IS NOT NULL AND username<>'')) "
                 "LIMIT 1", (title,)).fetchone()
             if found and found["id"] not in have:
@@ -180,50 +180,60 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
         return {"ok": False, "error": "не знаем ни одного чата этого человека: карточка пришла "
                                       "не из парсинга чатов, либо у чата не сохранён его id"}
 
-    cands = _live_accounts()
-    if not cands:
-        return {"ok": False, "error": ("нет подходящего аккаунта: нужна живая сессия И свой живой "
-                                       "прокси (общий IP из .env сжигает сессию). Раздай прокси "
-                                       "в «Аккаунтах»")}
+    # КАЖДЫЙ чат читаем ТЕМ аккаунтом, который в нём состоит (chats.joined_by).
+    # access_hash Telegram выдаёт индивидуально каждому аккаунту: чужой ключ к тому же
+    # чату не подходит и даёт ChannelInvalidError. Плюс в приватную группу посторонний
+    # аккаунт всё равно не попадёт — читать может только участник.
+    by_id = {x["id"]: x for x in _live_accounts(exclude_protected=False)}
+    saved_total = 0
+    looked: list[str] = []
+    used: list[str] = []
+    clients: dict = {}          # acc_id -> (client, user) — переиспользуем на все его чаты
 
-    # Берём первого, кто реально поднимется. Мёртвую сессию (ключ уже отозван Telegram,
-    # а карточка об этом ещё не знает) помечаем и идём к следующему — иначе один такой
-    # аккаунт в начале списка обрывал бы операцию для всех.
-    a = client = user = None
-    tried: list[str] = []
-    for cand in cands:
-        cl = None
+    async def _client_for(acc_id: int):
+        """Поднять аккаунт и резолвить им человека. Кэшируем: у одного аккаунта может
+        быть несколько чатов из списка, второй раз подключаться незачем."""
+        if acc_id in clients:
+            return clients[acc_id]
+        cand = by_id.get(acc_id)
+        if cand is None:
+            raise RuntimeError("аккаунт чата недоступен (мёртвая сессия или нет прокси)")
+        cl = build_client(StringSession(cand["tg_session"]), cand["proxy"],
+                          cand["api_id"], cand["api_hash"])
         try:
-            cl = build_client(StringSession(cand["tg_session"]), cand["proxy"],
-                              cand["api_id"], cand["api_hash"])
             await cl.connect()
             if not await cl.is_user_authorized():
                 raise RuntimeError("сессия не авторизована")
-            user = await _resolve_user(cl, c)
-            a, client = cand, cl
-            break
-        except Exception as e:  # noqa: BLE001
-            name = type(e).__name__
-            if name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
-                        "SessionRevokedError", "SessionExpiredError", "AuthKeyInvalidError"):
-                _mark_revoked(cand["id"], e)
-            tried.append(f"{cand['label']}: {name}")
-            if cl is not None:
-                try:
-                    await cl.disconnect()
-                except Exception:  # noqa: BLE001
-                    pass
-    if client is None:
-        return {"ok": False, "error": "ни один аккаунт не поднялся: " + "; ".join(tried[:5])}
+            u = await _resolve_user(cl, c)
+        except Exception:
+            try:
+                await cl.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        clients[acc_id] = (cl, u)
+        used.append(cand["label"])
+        return clients[acc_id]
 
-    saved_total = 0
-    looked: list[str] = []
     try:
         for ch in chats:
             if saved_total >= total_cap:
                 break
             peer = _peer(ch)
             if peer is None:
+                looked.append(f"{ch['title']}: нечем адресовать (нет @username и ключа доступа)")
+                continue
+            if not ch.get("joined_by"):
+                looked.append(f"{ch['title']}: не знаем, кто из наших в нём состоит")
+                continue
+            try:
+                client, user = await _client_for(int(ch["joined_by"]))
+            except Exception as e:  # noqa: BLE001
+                name = type(e).__name__
+                if name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
+                            "SessionRevokedError", "SessionExpiredError", "AuthKeyInvalidError"):
+                    _mark_revoked(int(ch["joined_by"]), e)
+                looked.append(f"{ch['title']}: аккаунт не поднялся ({name})")
                 continue
             posts: list[tuple] = []
             try:
@@ -235,7 +245,7 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
             except FloodWaitError as e:
                 looked.append(f"{ch['title']}: флуд-лимит {e.seconds}с — остановился")
                 break
-            except Exception as e:  # noqa: BLE001 — не состоим в чате/нет доступа: идём дальше
+            except Exception as e:  # noqa: BLE001 — нет доступа к чату: идём дальше
                 looked.append(f"{ch['title']}: {type(e).__name__}")
                 continue
             if posts:
@@ -248,16 +258,18 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
                 looked.append(f"{ch['title']}: не писал")
             await asyncio.sleep(random.uniform(*PAUSE))
     finally:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        for cl, _u in clients.values():
+            try:
+                await cl.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
 
     with database.get_conn() as conn:
         have = conn.execute("SELECT COUNT(*) c FROM tg_user_posts WHERE tg_user_id=?",
                             (c["tg_user_id"],)).fetchone()["c"]
     return {"ok": True, "saved": saved_total, "total_posts": have,
-            "chats": len(chats), "detail": "; ".join(looked), "account": a["label"]}
+            "chats": len(chats), "detail": "; ".join(looked),
+            "account": ", ".join(dict.fromkeys(used)) or "—"}
 
 
 def main() -> None:

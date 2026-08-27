@@ -556,6 +556,24 @@ async def _supervise() -> None:
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": False,
                                                "err": str(e)[:120]}
                 _log(f"[#{a['id']}] не подключился: {str(e)[:120]}")
+                # Telegram прямо сказал, что ключа больше нет (AuthKeyDuplicated и
+                # родня) — ЗАПИСЫВАЕМ это в карточку. Раньше слушатель знал о смерти
+                # сессии только у себя в STATUS, а в БД аккаунт оставался session_state
+                # 'alive': на него продолжали натыкаться другие модули (парсер, чтение
+                # чатов, рассылка), каждый раз выясняя это заново собственным падением.
+                # Живьём: Василий189 висел «живым» в базе, хотя слушатель уже сутки
+                # писал по нему ровно эту ошибку.
+                name = type(e).__name__
+                if name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
+                            "SessionRevokedError", "SessionExpiredError", "AuthKeyInvalidError"):
+                    try:
+                        with database.get_conn() as conn:
+                            conn.execute(
+                                "UPDATE accounts SET session_alive=0, session_state='revoked', "
+                                "session_reason=?, session_checked_at=datetime('now') WHERE id=?",
+                                (f"{name}: {str(e)[:150]}", a["id"]))
+                    except Exception:  # noqa: BLE001 — пометка не должна ронять слушатель
+                        pass
                 # быстрый фейловер (как автосвитч прокси в TG-клиенте): не ждём
                 # отдельного планировщика — сразу тестируем ТЕКУЩИЙ прокси аккаунта
                 # и, если сдох, подставляем живой с мин. пингом из пула. Если дело

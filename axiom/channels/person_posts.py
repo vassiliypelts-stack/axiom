@@ -49,12 +49,17 @@ PAUSE = (1.5, 4.0)
 MAX_CHATS = 6
 
 
-def _pick_live_account(exclude_protected: bool = True) -> tuple[int | None, str | None]:
-    """Аккаунт для захода: живая сессия + СВОЙ прокси.
+def _live_accounts(exclude_protected: bool = True) -> list[dict]:
+    """Кандидаты на заход: живая сессия + СВОЙ прокси. Список, а не один.
 
     Прокси обязателен: без него build_client (справедливо) откажется собирать клиент —
     подключение живой сессии через общий IP сжигает ключ. Родные (protected) номера
     для чтения чужих чатов не берём: это работа для расходных.
+
+    Почему список. session_state в БД отстаёт от реальности: аккаунт может быть
+    помечен 'alive', а Telegram уже отозвал ключ (слушатель это видит, но узнать об
+    этом карточка могла и не успеть). Один такой в начале списка не должен обрывать
+    всю операцию — берём следующего.
     """
     where = ("WHERE tg_session IS NOT NULL AND tg_session<>'' "
              "AND (session_state='alive' OR session_alive=1) "
@@ -63,11 +68,23 @@ def _pick_live_account(exclude_protected: bool = True) -> tuple[int | None, str 
     if exclude_protected:
         where += " AND COALESCE(protected,0)=0"
     with database.get_conn() as conn:
-        a = conn.execute(f"SELECT id, label FROM accounts {where} ORDER BY id LIMIT 1").fetchone()
-    if not a:
-        return None, ("нет подходящего аккаунта: нужна живая сессия И свой живой прокси "
-                      "(общий IP из .env сжигает сессию). Раздай прокси в «Аккаунтах»")
-    return a["id"], None
+        rows = conn.execute(
+            f"SELECT id, label, tg_session, proxy, api_id, api_hash FROM accounts {where} "
+            f"ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def _mark_revoked(acc_id: int, err: Exception) -> None:
+    """Ключ отозван Telegram — записать в карточку, чтобы следующий модуль не
+    выяснял это заново собственным падением."""
+    try:
+        with database.get_conn() as conn:
+            conn.execute(
+                "UPDATE accounts SET session_alive=0, session_state='revoked', "
+                "session_reason=?, session_checked_at=datetime('now') WHERE id=?",
+                (f"{type(err).__name__}: {str(err)[:150]}", acc_id))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _chats_of(contact_id: int) -> list[dict]:
@@ -145,21 +162,45 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
         return {"ok": False, "error": "не знаем ни одного чата этого человека: карточка пришла "
                                       "не из парсинга чатов, либо у чата не сохранён его id"}
 
-    acc_id, err = _pick_live_account()
-    if err:
-        return {"ok": False, "error": err}
-    with database.get_conn() as conn:
-        a = conn.execute("SELECT tg_session, proxy, api_id, api_hash, label FROM accounts WHERE id=?",
-                         (acc_id,)).fetchone()
-    client = build_client(StringSession(a["tg_session"]), a["proxy"], a["api_id"], a["api_hash"])
+    cands = _live_accounts()
+    if not cands:
+        return {"ok": False, "error": ("нет подходящего аккаунта: нужна живая сессия И свой живой "
+                                       "прокси (общий IP из .env сжигает сессию). Раздай прокси "
+                                       "в «Аккаунтах»")}
+
+    # Берём первого, кто реально поднимется. Мёртвую сессию (ключ уже отозван Telegram,
+    # а карточка об этом ещё не знает) помечаем и идём к следующему — иначе один такой
+    # аккаунт в начале списка обрывал бы операцию для всех.
+    a = client = user = None
+    tried: list[str] = []
+    for cand in cands:
+        cl = None
+        try:
+            cl = build_client(StringSession(cand["tg_session"]), cand["proxy"],
+                              cand["api_id"], cand["api_hash"])
+            await cl.connect()
+            if not await cl.is_user_authorized():
+                raise RuntimeError("сессия не авторизована")
+            user = await cl.get_entity(int(c["tg_user_id"]))
+            a, client = cand, cl
+            break
+        except Exception as e:  # noqa: BLE001
+            name = type(e).__name__
+            if name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
+                        "SessionRevokedError", "SessionExpiredError", "AuthKeyInvalidError"):
+                _mark_revoked(cand["id"], e)
+            tried.append(f"{cand['label']}: {name}")
+            if cl is not None:
+                try:
+                    await cl.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+    if client is None:
+        return {"ok": False, "error": "ни один аккаунт не поднялся: " + "; ".join(tried[:5])}
 
     saved_total = 0
     looked: list[str] = []
     try:
-        await client.connect()
-        if not await client.is_user_authorized():
-            return {"ok": False, "error": f"сессия аккаунта «{a['label']}» не авторизована"}
-        user = await client.get_entity(int(c["tg_user_id"]))
         for ch in chats:
             if saved_total >= total_cap:
                 break

@@ -7024,13 +7024,27 @@ async function viewProxy(v){
   const a=await api("/api/accounts");
   v.innerHTML=`
   <div class="card" style="margin-bottom:16px">
-    <b style="font-size:14px">📡 Бесплатный пул MTProto-прокси (времянка)</b>
-    <div class="sub" style="margin:6px 0 10px">Собирает свежие прокси из каналов @TProxyRU и @ProxyMTProto, пингует и раздаёт аккаунтам с минимальным пингом. Дохлые выкидываются, при <2 живых добираются свежие. <b>Только Telegram</b> (WhatsApp нужен SOCKS5). Бесплатные нестабильны — на боевую лучше платные.</div>
+    <b style="font-size:14px">📡 Пул прокси — свои купленные + бесплатные MTProto</b>
+    <div class="sub" style="margin:6px 0 10px">Пул раздаёт адреса аккаунтам по правилу <b>1 прокси = 1 аккаунт</b> и каждые 5 минут переставляет отвалившиеся. Бесплатные MTProto подбираются сами из каналов (нестабильны, только Telegram); купленные у провайдера <b>socks5</b> загружаются списком ниже и работают и в TG, и в WhatsApp. Купленные из пула не удаляются, даже если временно недоступны.</div>
     <div class="ttoolbar" style="margin:0"><button class="primary" id="pool-refresh">🔄 Обновить пул и раздать</button>
+      <button id="pool-import-t">⬆ Загрузить свой список</button>
       <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="pool-auto"> авто каждые</label>
       <input id="pool-int" type="number" min="1" value="6" style="max-width:64px"> ч
       <button id="pool-auto-save">сохранить</button>
       <span class="hint" id="pool-msg"></span></div>
+    <div id="pool-import" class="card" style="display:none;margin-top:10px;background:var(--panel2)">
+      <b style="font-size:13px">⬆ Загрузить купленные прокси в пул</b>
+      <div class="sub" style="margin:6px 0 8px">Вставь список из панели провайдера — по одному в строке. Понимаю форматы:
+        <span class="mono">socks5://user:pass@host:port</span>, <span class="mono">http://host:port</span>,
+        <span class="mono">host:port:user:pass</span>, <span class="mono">host:port</span>, а также <span class="mono">tg://proxy?…</span>.
+        Дубли отсеиваются сами. После загрузки адреса сразу проверяются живым подключением и раздаются аккаунтам без прокси.</div>
+      <textarea id="pool-import-txt" rows="7" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder="socks5://user:pass@1.2.3.4:1080&#10;socks5://user:pass@1.2.3.5:1080&#10;5.5.5.5:1080:me:secret"></textarea>
+      <div class="ttoolbar" style="margin:8px 0 0">
+        <input id="pool-import-src" placeholder="источник (напр. proxy.family) — для памяти" style="max-width:260px">
+        <button class="primary" id="pool-import-go">Загрузить в пул</button>
+        <span class="hint" id="pool-import-msg"></span>
+      </div>
+    </div>
     <div id="pool-tbl" style="margin-top:10px"></div>
   </div>
   <div class="card" style="margin-bottom:16px">
@@ -7049,12 +7063,23 @@ async function viewProxy(v){
     if(!d.items||!d.items.length){pt.innerHTML='<div class="sub">Пул пуст — нажми «Обновить пул».</div>';return;}
     pt.innerHTML=`<div class="sub" style="margin-bottom:6px">Живых: <b>${d.alive}</b> из ${d.items.length}</div>
       <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:300px">
-      <table style="width:100%;border-collapse:collapse"><tr><th>Сервер:порт</th><th>Пинг</th><th>Статус</th><th>Источник</th><th>Выдан</th></tr>
-      ${d.items.map(p=>`<tr><td class="mono">${esc(p.server)}:${p.port}</td>
+      <table style="width:100%;border-collapse:collapse"><tr><th>Тип</th><th>Сервер:порт</th><th>Пинг</th><th>Статус</th><th>Источник</th><th>Выдан</th><th></th></tr>
+      ${d.items.map(p=>`<tr><td>${(p.kind||"mtproto")==="mtproto"
+          ?'<span class="badge b-nurture" title="бесплатный из каналов, только Telegram">MTProto</span>'
+          :`<span class="badge b-active" title="купленный, работает и в TG, и в WhatsApp">${esc(p.kind)}</span>`}</td>
+        <td class="mono">${esc(p.server)}:${p.port}</td>
         <td class="mono">${p.ping_ms!=null?p.ping_ms+" мс":"—"}</td>
         <td><span class="badge b-${p.status==='alive'?'active':p.status==='dead'?'stop':'nurture'}">${p.status==='alive'?'жив':p.status==='dead'?'мёртв':'новый'}</span></td>
         <td class="sub">${esc(p.source||"—")}</td>
-        <td class="sub">${esc(p.acc_label||"")}</td></tr>`).join("")}</table></div>`;
+        <td class="sub">${esc(p.acc_label||"")}</td>
+        <td><button class="pool-del" data-id="${p.id}" title="убрать из пула (аккаунт, которому он выдан, не трогаем)">✕</button></td></tr>`).join("")}</table></div>`;
+    pt.querySelectorAll(".pool-del").forEach(b=>b.onclick=async()=>{
+      if(!confirm("Убрать этот прокси из пула? Аккаунт, которому он уже выдан, "
+                  +"продолжит по нему ходить, пока авто-лечение не подставит новый."))return;
+      b.disabled=true;
+      try{await api(`/api/proxies/${b.dataset.id}/delete`,{method:"POST"});drawPool();}
+      catch(e){b.disabled=false;alert("не удалилось: "+e.message);}
+    });
   };
   drawPool();
   api("/api/proxies/auto").then(au=>{$("#pool-auto").checked=!!au.auto;$("#pool-int").value=au.interval_h||6;
@@ -7067,6 +7092,35 @@ async function viewProxy(v){
     b.disabled=false;b.textContent="🔄 Обновить пул и раздать";
     if(!r.ok){m.innerHTML='<span style="color:#c0392b">ошибка — лог: '+esc((r.output||"").slice(-300))+'</span>';}
     else{m.textContent="готово";drawPool();route();}
+  };
+  $("#pool-import-t").onclick=()=>{
+    const el=$("#pool-import");const show=el.style.display==="none";
+    el.style.display=show?"block":"none";
+    if(show)setTimeout(()=>{const t=$("#pool-import-txt");if(t)t.focus();},30);
+  };
+  $("#pool-import-go").onclick=async()=>{
+    const txt=$("#pool-import-txt").value.trim(),m=$("#pool-import-msg"),b=$("#pool-import-go");
+    if(!txt){m.innerHTML='<span style="color:#c0392b">вставь список прокси</span>';return;}
+    b.disabled=true;b.textContent="загружаю…";m.textContent="";
+    try{
+      const r=await api("/api/proxies/import",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text:txt,source:$("#pool-import-src").value.trim()||"manual"})});
+      if(r.error){m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';}
+      else{
+        let t=`✓ добавлено ${r.added}`;
+        if(r.duplicates)t+=`, дублей ${r.duplicates}`;
+        if(r.skipped)t+=`, не распознано ${r.skipped}`;
+        if(r.checking)t+=" · проверяю живым подключением и раздаю (до ~2 мин)";
+        m.innerHTML='<span style="color:var(--green)">'+esc(t)+'</span>';
+        // строки, которые не разобрались — показываем как есть: чаще это опечатка,
+        // и увидеть её глазами быстрее, чем гадать по счётчику
+        if(r.bad&&r.bad.length)m.innerHTML+='<div class="sub" style="color:#c0392b;margin-top:4px">не разобрал: '
+          +r.bad.slice(0,5).map(esc).join("; ")+(r.bad.length>5?` и ещё ${r.bad.length-5}`:"")+'</div>';
+        if(r.added)$("#pool-import-txt").value="";
+        drawPool();
+      }
+    }catch(e){m.innerHTML='<span style="color:#c0392b">ошибка сети</span>';}
+    b.disabled=false;b.textContent="Загрузить в пул";
   };
   $("#px-all-btn").onclick=async()=>{
     const val=$("#px-all").value.trim();

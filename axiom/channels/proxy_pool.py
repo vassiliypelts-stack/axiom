@@ -186,13 +186,78 @@ async def telethon_test(server: str, port: int, secret: str,
             pass
 
 
-def _store_harvested(conn, proxies: list[tuple[str, int, str]], source: str) -> None:
+def _store_harvested(conn, proxies: list[tuple[str, int, str]], source: str,
+                     kind: str = "mtproto") -> int:
+    """Положить прокси в пул. kind по умолчанию mtproto — харвест из каналов не меняется.
+    Возвращает, сколько записей реально добавилось (дубли отсекает UNIQUE)."""
+    added = 0
     for server, port, secret in proxies:
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO proxies (kind, server, port, secret, source, status) "
-            "VALUES ('mtproto', ?, ?, ?, ?, 'new')",
-            (server, port, secret, source),
+            "VALUES (?, ?, ?, ?, ?, 'new')",
+            (kind, server, port, secret, source),
         )
+        added += cur.rowcount or 0
+    return added
+
+
+def import_list(lines, source: str = "manual") -> dict:
+    """Загрузить СВОЙ список прокси в пул (купленные у провайдера socks5/http).
+
+    ЗАЧЕМ. Пул наполнялся единственным способом — харвестом MTProto из публичных
+    Telegram-каналов. Купленные адреса приходят списком в текстовом виде, и положить
+    их было некуда: ни роута, ни функции. Из-за этого платный прокси попадал в
+    систему только напрямую в accounts.proxy (как делает proxy6_bulk) — мимо пула,
+    а значит мимо учёта, авто-раздачи и лечения.
+
+    Понимает форматы, которые отдают панели провайдеров (разбор — parse_proxy_str,
+    он же используется при подключении, так что «принято здесь» = «подключится там»):
+        socks5://user:pass@host:port     socks5://host:port
+        http://user:pass@host:port       host:port:user:pass       host:port
+
+    Кладём kind по фактической схеме, а secret держит 'user:pass' (или пусто) —
+    ровно так его читает _link() при раздаче.
+
+    Возвращает {added, duplicates, skipped, bad} — bad это строки, которые не удалось
+    разобрать (их показываем оператору, чтобы он увидел опечатку, а не гадал).
+    """
+    from channels.telegram import parse_mtproxy, parse_proxy_str
+    if isinstance(lines, str):
+        lines = lines.replace(",", "\n").splitlines()
+    added = duplicates = 0
+    bad: list[str] = []
+    seen: set[tuple] = set()
+    database.init_db()
+    with database.get_conn() as conn:
+        for raw in lines:
+            raw = (raw or "").strip()
+            if not raw or raw.startswith("#"):
+                continue
+            if raw.startswith("tg://") or "proxy?" in raw:
+                # MTProto-ссылку кладём как mtproto — свой список может быть смешанным
+                mt = parse_mtproxy(raw)
+                if not mt:
+                    bad.append(raw)
+                    continue
+                server, port, secret, kind = mt[0], mt[1], mt[2], "mtproto"
+            else:
+                p = parse_proxy_str(raw)
+                if not p:
+                    bad.append(raw)
+                    continue
+                server, port = p["addr"], p["port"]
+                kind = p.get("proxy_type") or "socks5"
+                user, pw = p.get("username") or "", p.get("password") or ""
+                secret = f"{user}:{pw}" if (user or pw) else ""
+            key = (server, port, secret)
+            if key in seen:                      # дубль внутри самого списка
+                duplicates += 1
+                continue
+            seen.add(key)
+            n = _store_harvested(conn, [(server, port, secret)], source, kind=kind)
+            added += n
+            duplicates += 0 if n else 1          # 0 строк = запись уже была в пуле
+    return {"added": added, "duplicates": duplicates, "bad": bad, "skipped": len(bad)}
 
 
 def _mt_link(server: str, port: int, secret: str) -> str:
@@ -223,7 +288,7 @@ def _link(row) -> str:
 
 def _usable_link(link: str) -> bool:
     """Годится ли ссылка для Telethon: MTProto — не faketls, socks — парсится."""
-    from channels.telegram import parse_proxy_str
+    from channels.telegram import parse_mtproxy, parse_proxy_str
     if link.startswith("tg://"):
         return bool(parse_mtproxy(link))
     return bool(parse_proxy_str(link))
@@ -329,7 +394,7 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
     with database.get_conn() as conn:
         _store_harvested(conn, fresh, "+".join("@" + c for c in PROXY_CHANNELS))
         # Тестируем ВСЕ прокси в БД (и новые, и старые — вдруг ожили)
-        rows = conn.execute("SELECT id, server, port, secret FROM proxies").fetchall()
+        rows = conn.execute("SELECT id, kind, server, port, secret FROM proxies").fetchall()
 
     if not rows:
         print("[refresh] в БД нет прокси — нечего проверять")
@@ -338,25 +403,47 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
     # 2) БЫСТРЫЙ TCP-пинг всех прокси — отсеять мёртвые сервера (дёшево)
     tcp_results = await asyncio.gather(*[ping_tcp(r["server"], r["port"]) for r in rows])
 
-    # 3) TELEITHON-ТЕСТ: только те, кто прошёл TCP-пинг И совместим с Telethon
-    telethon_candidates = []
-    telethon_indices = []
-    for i, r in enumerate(rows):
-        if tcp_results[i] is not None and _is_telethon_compatible(r["secret"]):
-            telethon_candidates.append(r)
-            telethon_indices.append(i)
-
     api_id = int(config.TG_API_ID)
     api_hash = config.TG_API_HASH
 
+    # 3) ПРОВЕРКА ЖИВЫМ ПОДКЛЮЧЕНИЕМ — способ зависит от ТИПА прокси.
+    # MTProto проверяется профильным telethon_test (он умеет только tg://proxy), а
+    # socks5 — общим _test_account_proxy, который строит клиента через build_client и
+    # понимает оба формата. Раньше кандидаты отбирались по _is_telethon_compatible —
+    # это проверка MTProto-СЕКРЕТА (32 hex или dd+32), у socks5 там лежит 'user:pass',
+    # поэтому платный прокси до проверки не доходил вовсе и ниже помечался мёртвым.
+    telethon_candidates, telethon_indices = [], []
+    socks_candidates, socks_indices = [], []
+    for i, r in enumerate(rows):
+        if tcp_results[i] is None:
+            continue                       # сервер не отвечает — проверять нечего
+        if (r["kind"] or "mtproto") == "mtproto":
+            if _is_telethon_compatible(r["secret"]):
+                telethon_candidates.append(r)
+                telethon_indices.append(i)
+        else:
+            socks_candidates.append(r)
+            socks_indices.append(i)
+
     if telethon_candidates:
-        print(f"[refresh] Telethon-тест: {len(telethon_candidates)} кандидатов...")
+        print(f"[refresh] Telethon-тест (MTProto): {len(telethon_candidates)} кандидатов...")
         tl_results = await asyncio.gather(*[
             telethon_test(r["server"], r["port"], r["secret"], api_id, api_hash)
             for r in telethon_candidates
         ])
     else:
         tl_results = []
+
+    if socks_candidates:
+        print(f"[refresh] проверка socks/http: {len(socks_candidates)} кандидатов...")
+        sk_results = await asyncio.gather(*[
+            _test_account_proxy(r["id"], f"{r['server']}:{r['port']}", _link(r), api_id, api_hash)
+            for r in socks_candidates
+        ])
+    else:
+        sk_results = []
+    # индекс строки -> прошла ли socks-проверка (True/False)
+    socks_ok = {idx: ok for idx, ok in zip(socks_indices, sk_results)}
 
     # 4) Записать статусы в БД
     tl_idx = 0
@@ -377,8 +464,22 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
                         "UPDATE proxies SET status='dead', ping_ms=NULL, checked_at=datetime('now') WHERE id=?",
                         (r["id"],),
                     )
+            elif i in socks_ok:
+                # socks/http: живым считаем тот, что реально принял подключение к TG
+                if socks_ok[i]:
+                    conn.execute(
+                        "UPDATE proxies SET status='alive', ping_ms=?, checked_at=datetime('now') WHERE id=?",
+                        (tcp_results[i], r["id"]),
+                    )
+                    alive += 1
+                else:
+                    conn.execute(
+                        "UPDATE proxies SET status='dead', ping_ms=?, checked_at=datetime('now') WHERE id=?",
+                        (tcp_results[i], r["id"]),
+                    )
             elif tcp_results[i] is not None:
-                # TCP жив, но faketls — не совместим, помечаем dead
+                # TCP жив, но faketls — не совместим, помечаем dead.
+                # Сюда попадают ТОЛЬКО mtproto-записи: socks/http разобраны веткой выше.
                 conn.execute(
                     "UPDATE proxies SET status='dead', ping_ms=?, checked_at=datetime('now') WHERE id=?",
                     (tcp_results[i], r["id"]),
@@ -388,10 +489,15 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
                     "UPDATE proxies SET status='dead', ping_ms=NULL, checked_at=datetime('now') WHERE id=?",
                     (r["id"],),
                 )
-        # подчистить дохлых сверх запаса
+        # Подчистить дохлых сверх запаса — ТОЛЬКО бесплатный мусор из каналов.
+        # Платные адреса (source='manual'/провайдер) не удаляем никогда: за них плачено,
+        # они лежат в панели провайдера, и «мёртв» у них чаще значит временную
+        # недоступность. Удалив, мы потеряли бы их из базы навсегда и потребовали бы
+        # заново загружать список руками.
         conn.execute(
-            "DELETE FROM proxies WHERE status='dead' AND id NOT IN "
-            "(SELECT id FROM proxies WHERE status='dead' ORDER BY added_at DESC LIMIT 20)"
+            "DELETE FROM proxies WHERE status='dead' AND COALESCE(source,'') LIKE '@%' "
+            "AND id NOT IN (SELECT id FROM proxies WHERE status='dead' "
+            "AND COALESCE(source,'') LIKE '@%' ORDER BY added_at DESC LIMIT 20)"
         )
 
     print(f"[refresh] Telethon-совместимых живых: {alive} из {len(rows)}")
@@ -422,21 +528,23 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
 
 
 def pick_free_mt(exclude: set[str] | None = None) -> str | None:
-    """Вернуть ОДИН живой telethon-совместимый MTProto-прокси из пула (мин. пинг).
+    """Вернуть ОДИН живой telethon-совместимый прокси из пула (мин. пинг).
     Для авто-раздачи при покупке аккаунтов — бесплатная альтернатива Proxy6.
     exclude — набор ссылок, которые уже отданы (чтобы не дублировать в одной пачке).
-    None — в пуле нет живых совместимых прокси."""
-    from channels.telegram import parse_mtproxy
+    None — в пуле нет живых совместимых прокси.
+
+    Имя историческое (mt = MTProto), но с появлением платных socks5 в пуле функция
+    отдаёт ЛЮБОЙ пригодный формат — какой лежит в kind, такой и вернём."""
     exclude = exclude or set()
     with database.get_conn() as conn:
         live = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
+            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
         ).fetchall()
     for p in live:
-        link = _mt_link(p["server"], p["port"], p["secret"])
+        link = _link(p)
         if link in exclude:
             continue
-        if parse_mtproxy(link):
+        if _usable_link(link):
             return link
     return None
 
@@ -447,18 +555,22 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
     (proxy_alive=0, см. кнопку «🔎 Проверить прокси»). НЕ трогает прокси, который
     ещё не проверялся или жив, и пропускает «родные» (protected). ids — сузить
     только на выбранные аккаунты (пусто = все подходящие)."""
-    from channels.telegram import parse_mtproxy
     with database.get_conn() as conn:
         # Берём ВЕСЬ живой пул, а не первые 20. Лимит ставился, когда аккаунтов была
         # горстка, и с ростом парка превратился в потолок: при 34 аккаунтах раздать
         # можно было максимум 20 адресов, остальные оставались без прокси независимо
         # от того, сколько живых прокси реально лежит в пуле. Антибан от этого не
         # страдает — «1 прокси = 1 аккаунт» держится ниже, на проверке занятости.
+        #
+        # kind в выборке обязателен: без него _link() считает любую запись MTProto и
+        # склеивает socks5-адрес в tg://proxy — купленный прокси молча не раздался бы.
         live = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
+            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
         ).fetchall()
-        # только telethon-совместимые (не faketls ee…): иначе аккаунт молча уйдёт «напрямую»
-        live = [p for p in live if parse_mtproxy(_mt_link(p["server"], p["port"], p["secret"]))]
+        # только telethon-совместимые (не faketls ee…): иначе аккаунт молча уйдёт «напрямую».
+        # _usable_link понимает оба формата, а parse_mtproxy(_mt_link(...)) резал socks5.
+        live = [(p, _link(p)) for p in live]
+        live = [(p, lk) for p, lk in live if _usable_link(lk)]
         if not live:
             print("[assign] в пуле нет telethon-совместимых прокси (все faketls/битые) — не раздаю")
             return 0
@@ -480,7 +592,7 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
         taken = {r["proxy"] for r in conn.execute(
             "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
-        free = [p for p in live if _mt_link(p["server"], p["port"], p["secret"]) not in taken]
+        free = [lk for _p, lk in live if lk not in taken]
         n = 0
         for a in accs:
             if not free:
@@ -488,10 +600,10 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
                 print(f"[assign] прокси кончились: назначено {n}, ещё {left} аккаунт(ов) "
                       f"БЕЗ прокси — докупи прокси, дублировать один на несколько аккаунтов не буду (антибан)")
                 break
-            p = free.pop(0)
+            link = free.pop(0)
             conn.execute(
                 "UPDATE accounts SET proxy=?, proxy_alive=NULL, proxy_checked_at=NULL WHERE id=?",
-                (_mt_link(p["server"], p["port"], p["secret"]), a["id"]),
+                (link, a["id"]),
             )
             n += 1
     print(f"[assign] прокси выдан аккаунтам: {n}")
@@ -570,10 +682,12 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         # Пул Telethon-живых прокси для подстановки
         # Тот же потолок, что и в assign(): LIMIT отсекал хвост пула, и лечение
         # упиралось в него раньше, чем в реальный запас адресов.
-        pool = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
-        ).fetchall()
-        pool = [(p["server"], p["port"], p["secret"]) for p in pool]
+        # Держим уже ГОТОВЫЕ ссылки, а не (server,port,secret): формат зависит от kind,
+        # и склейка на месте превращала бы платный socks5 в нерабочий tg://proxy.
+        pool = [_link(p) for p in conn.execute(
+            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
+        ).fetchall()]
+        pool = [lk for lk in pool if _usable_link(lk)]
 
         where = "tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0"
         if warming_only:
@@ -634,7 +748,7 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         taken = {r["proxy"] for r in conn.execute(
             "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
-        free = [(s, p, sec) for (s, p, sec) in pool if _mt_link(s, p, sec) not in taken]
+        free = [lk for lk in pool if lk not in taken]
         for (aid, label, px), ok in zip(accs, results):
             if ok:
                 conn.execute(
@@ -644,14 +758,14 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
                 alive_kept += 1
                 print(f"  [{label}] прокси жив")
             elif free:
-                s, p, sec = free.pop(0)
+                link = free.pop(0)
                 conn.execute(
                     "UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
-                    (_mt_link(s, p, sec), aid),
+                    (link, aid),
                 )
-                taken.add(_mt_link(s, p, sec))
+                taken.add(link)
                 healed += 1
-                print(f"  [{label}] прокси мёртв → заменён на {s}:{p}")
+                print(f"  [{label}] прокси мёртв → заменён на {_hostport(link) or link}")
             else:
                 # НЕ обнуляем прокси: пустой proxy у build_client означает не «без прокси»,
                 # а «прокси главного аккаунта из .env», а если его нет — прямой коннект

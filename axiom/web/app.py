@@ -257,7 +257,19 @@ def stats() -> JSONResponse:
             except Exception:  # noqa: BLE001
                 return 0
 
-        proxies_alive = _count("SELECT COUNT(*) c FROM proxies WHERE status='alive'")
+        # Живые прокси = пул + те, что выданы аккаунтам напрямую. Считать только пул
+        # было неверно: купленные через Proxy6 пишутся сразу в accounts.proxy, минуя
+        # таблицу proxies, поэтому на дашборде они не отображались вовсе — «живых
+        # прокси 0» при оплаченном парке. Уникальность по строке адреса, чтобы один
+        # прокси, лежащий и в пуле, и в карточке, не посчитался дважды.
+        proxies_alive = _count(
+            "SELECT COUNT(*) c FROM ("
+            "  SELECT DISTINCT proxy AS p FROM accounts"
+            "   WHERE proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+            "  UNION"
+            "  SELECT DISTINCT 'pool:'||id FROM proxies"
+            "   WHERE status='alive' AND COALESCE(assigned_to,0)=0"
+            ")")
         chats_cat = _count("SELECT COUNT(*) c FROM chats")
         campaigns_running = _count("SELECT COUNT(*) c FROM campaigns WHERE status='running'")
         campaigns_total = _count("SELECT COUNT(*) c FROM campaigns")
@@ -982,10 +994,31 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         proxies = [p.strip() for p in (payload.get("proxies") or []) if p and p.strip()]
         if not proxies:
             return JSONResponse({"error": "нет прокси в списке"}, status_code=400)
+        # БЕЗ ПОВТОРОВ. Раньше здесь стояло proxies[i % len(proxies)]: при списке
+        # короче выделения один адрес молча уходил нескольким аккаунтам — прямое
+        # нарушение «1 прокси = 1 аккаунт», то самое, от чего сессия, увиденная с
+        # двух IP, сгорает навсегда. Уж лучше часть аккаунтов останется без прокси
+        # (безопасный отказ, так же ведёт себя proxy_pool.assign) и оператор увидит,
+        # сколько именно адресов не хватило.
         with database.get_conn() as conn:
-            for i, aid in enumerate(ids):
-                conn.execute("UPDATE accounts SET proxy=? WHERE id=?", (proxies[i % len(proxies)], aid))
-        return JSONResponse({"ok": True, "updated": len(ids), "proxies": len(proxies)})
+            taken = {r["proxy"] for r in conn.execute(
+                "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' "
+                f"AND id NOT IN ({qm})", ids).fetchall()}
+            free = [p for p in dict.fromkeys(proxies) if p not in taken]
+            n = 0
+            for aid in ids:
+                if not free:
+                    break
+                conn.execute("UPDATE accounts SET proxy=?, proxy_alive=NULL, "
+                             "proxy_checked_at=NULL WHERE id=?", (free.pop(0), aid))
+                n += 1
+        left = len(ids) - n
+        out = {"ok": True, "updated": n, "proxies": len(proxies), "without_proxy": left}
+        if left:
+            out["warn"] = (f"Адресов не хватило: назначено {n}, ещё {left} аккаунт(ов) "
+                           f"остались без прокси. Один прокси на несколько аккаунтов не "
+                           f"выдаю — это сжигает сессии. Загрузи ещё адресов.")
+        return JSONResponse(out)
     return JSONResponse({"error": "неизвестное действие"}, status_code=400)
 
 
@@ -1438,18 +1471,36 @@ async def account_avatar_upload(acc_id: int, file: UploadFile = File(...)) -> JS
 
 @app.post("/api/account/{acc_id}/proxy_auto")
 def account_proxy_auto(acc_id: int) -> JSONResponse:
-    """Выдать аккаунту бесплатный MTProto-прокси из пула (альтернатива платному)."""
+    """Выдать аккаунту СВОБОДНЫЙ прокси из пула (бесплатный MTProto или купленный socks5).
+
+    Две правки против прежней версии:
+    • ссылка строится через proxy_pool._link() — раньше tg://proxy склеивался руками из
+      server/port/secret, и купленный socks5 превращался в нерабочую MTProto-строку;
+    • берём только НЕ занятый адрес. Раньше брался первый живой по сортировке, и
+      аккаунт мог получить прокси, на котором уже сидит другой: две сессии с одного
+      IP — это и есть тот сценарий, что жжёт аккаунты."""
+    from channels.proxy_pool import _link, _usable_link
     with database.get_conn() as conn:
         acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
         if not acc:
             return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
-        p = conn.execute(
-            "SELECT server, port, secret FROM proxies WHERE status='alive' "
-            "ORDER BY (assigned_to IS NOT NULL), ping_ms LIMIT 1"
-        ).fetchone()
-        if not p:
-            return JSONResponse({"error": "в пуле нет живых прокси — обнови пул в разделе «Прокси»"}, status_code=400)
-        link = f"tg://proxy?server={p['server']}&port={p['port']}&secret={p['secret']}"
+        taken = {r["proxy"] for r in conn.execute(
+            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND id<>?",
+            (acc_id,)).fetchall()}
+        chosen = None
+        for row in conn.execute(
+            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' "
+            "ORDER BY (assigned_to IS NOT NULL), ping_ms"
+        ).fetchall():
+            link = _link(row)
+            if link not in taken and _usable_link(link):
+                chosen = (row, link)
+                break
+        if not chosen:
+            return JSONResponse({"error": "в пуле нет СВОБОДНЫХ живых прокси — обнови пул "
+                                          "или загрузи свой список в разделе «Прокси»"},
+                                status_code=400)
+        p, link = chosen
         conn.execute("UPDATE accounts SET proxy=? WHERE id=?", (link, acc_id))
         conn.execute("UPDATE proxies SET assigned_to=? WHERE server=? AND port=? AND secret=?",
                      (acc_id, p["server"], p["port"], p["secret"]))
@@ -1780,6 +1831,61 @@ def proxies_refresh() -> JSONResponse:
     """Собрать свежие прокси из каналов, проверить пингом, раздать аккаунтам."""
     res = _run_capture(["channels.proxy_pool", "--refresh"], timeout=240)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
+
+
+@app.post("/api/proxies/import")
+def proxies_import(payload: dict = Body(...)) -> JSONResponse:
+    """Загрузить СВОЙ список прокси (купленных у провайдера) в пул.
+
+    Пул наполнялся единственным способом — харвестом бесплатных MTProto из публичных
+    каналов, и положить купленные адреса было некуда: платный прокси попадал в систему
+    только напрямую в accounts.proxy (как делает proxy6_bulk), минуя учёт, авто-раздачу
+    и лечение. Этот роут — вход в пул для любого провайдера.
+
+    Принимает text (многострочный) или list. Форматы: socks5://user:pass@host:port,
+    http://…, host:port:user:pass, host:port, а также tg://proxy (смешанный список).
+    """
+    from channels import proxy_pool
+    raw = payload.get("text")
+    if raw is None:
+        raw = payload.get("proxies") or payload.get("list") or []
+    source = (payload.get("source") or "manual").strip()[:64] or "manual"
+    try:
+        res = proxy_pool.import_list(raw, source=source)
+    except Exception as e:  # noqa: BLE001 — кривой ввод не должен ронять пульт
+        return JSONResponse({"error": f"не смог разобрать список: {e}"}, status_code=400)
+    if not res["added"]:
+        return JSONResponse({"ok": True, **res, "checking": False})
+    # Импорт кладёт записи со статусом 'new' — раздача берёт только 'alive'. Без
+    # проверки оператор увидел бы «загружено 100», а в раздаче ноль и никакого
+    # объяснения. Запускаем refresh в фоне: он прогонит новые адреса живым
+    # подключением и сразу раздаст их аккаунтам без прокси.
+    import subprocess
+    import sys
+    try:
+        subprocess.Popen([sys.executable, "-m", "channels.proxy_pool", "--refresh"],
+                         cwd=str(BASE_DIR.parent))
+        checking = True
+    except Exception as e:  # noqa: BLE001
+        print(f"[proxies import] не смог запустить проверку: {e}")
+        checking = False
+    return JSONResponse({"ok": True, **res, "checking": checking})
+
+
+@app.post("/api/proxies/{pid}/delete")
+def proxies_delete(pid: int) -> JSONResponse:
+    """Убрать запись из пула вручную (истёк срок аренды, сменил провайдера).
+
+    Аккаунт, которому этот адрес уже выдан, НЕ трогаем: обнулять accounts.proxy
+    опасно — пустой proxy у build_client означает не «без прокси», а выход с общего
+    IP сервера. Аккаунт продолжит ходить по старому адресу, пока heal не подставит
+    новый; здесь мы лишь убираем адрес из выдачи."""
+    database.init_db()
+    with database.get_conn() as conn:
+        cur = conn.execute("DELETE FROM proxies WHERE id=?", (pid,))
+    if not (cur.rowcount or 0):
+        return JSONResponse({"error": "прокси не найден"}, status_code=404)
+    return JSONResponse({"ok": True, "deleted": pid})
 
 
 @app.get("/api/proxies/auto")

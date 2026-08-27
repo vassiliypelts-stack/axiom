@@ -3613,6 +3613,43 @@ def enrich_tg_one(contact_id: int) -> JSONResponse:
     return JSONResponse(data)
 
 
+@app.post("/api/contact/{contact_id}/read_chats")
+def contact_read_chats(contact_id: int) -> JSONResponse:
+    """Прочитать человека В ЧАТАХ, где он состоит, и сразу собрать досье.
+
+    Зачем отдельно от enrich_tg: тот читает bio и ЛИЧНЫЙ канал человека, и на
+    участнике группы без описания и канала (типичный случай — их большинство)
+    упирается в «в профиле пусто». Здесь источник другой: его собственные реплики
+    в чатах, которые Telegram отдаёт фильтром по автору (from_user), без вычитывания
+    всей истории.
+
+    Две стадии одной кнопкой: person_posts складывает сырьё в tg_user_posts →
+    enrich_person сводит его в боли/страхи/желания. Разрывать их незачем: сырьё без
+    портрета оператору ничего не даёт, а портрет строится тем же модулем, что и
+    раньше — второй логики не заводим."""
+    res = _run_capture(["channels.person_posts", "--contact", str(contact_id)], timeout=420)
+    data = _last_json(res.get("output")) or {}
+    if not data.get("ok"):
+        tail = (res.get("output") or "").strip()[-300:]
+        return JSONResponse({"ok": False,
+                             "error": data.get("error") or ("не отчитался. Лог: " + (tail or "(пусто)"))})
+    # Сырья не прибавилось и раньше ничего не было — портрет строить не из чего,
+    # честно говорим об этом, а не гоняем модель впустую.
+    if not data.get("total_posts"):
+        return JSONResponse({"ok": True, "saved": 0, "no_data": True, "detail": data.get("detail"),
+                             "error": "человек не писал в известных нам чатах — досье строить не из чего"})
+    dossier = _run_capture(["agent.enrich_person", "--id", str(contact_id)], timeout=420)
+    # enrich_person печатает человекочитаемый лог, а не JSON-сводку: об успехе судим
+    # по его же маркеру «[ok #<id>]» (а не по коду возврата — он нулевой и когда
+    # человек пропущен из-за отсутствия сообщений).
+    out = dossier.get("output") or ""
+    data["dossier_ok"] = f"[ok #{contact_id}]" in out
+    if not data["dossier_ok"]:
+        data["dossier_error"] = out.strip().splitlines()[-1][:200] if out.strip() else "нет ответа"
+    data["log"] = (res.get("output") or "").splitlines()[-6:]
+    return JSONResponse(data)
+
+
 @app.post("/api/enrich_tg")
 def enrich_tg_batch(payload: dict = Body(default={})) -> JSONResponse:
     """Пачкой — по тем, кого ещё не читали из Telegram. В фон: это десятки минут."""

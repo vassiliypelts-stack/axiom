@@ -112,7 +112,7 @@ def _chats_of(contact_id: int) -> list[dict]:
         if seen:
             qm = ",".join("?" * len(seen))
             rows = list(conn.execute(
-                f"SELECT id, title, username, tg_chat_id, tg_access_hash, joined_by FROM chats "
+                f"SELECT id, title, username, link, tg_chat_id, tg_access_hash, joined_by FROM chats "
                 f"WHERE id IN ({qm}) AND (tg_chat_id IS NOT NULL OR (username IS NOT NULL AND username<>''))",
                 seen).fetchall())
         # 3) ГЛАВНЫЙ случай для участников: у них нет ни постов, ни chat_hits — их
@@ -128,7 +128,7 @@ def _chats_of(contact_id: int) -> list[dict]:
             if not title:
                 continue
             found = conn.execute(
-                "SELECT id, title, username, tg_chat_id, tg_access_hash, joined_by FROM chats "
+                "SELECT id, title, username, link, tg_chat_id, tg_access_hash, joined_by FROM chats "
                 "WHERE title=? AND (tg_chat_id IS NOT NULL OR (username IS NOT NULL AND username<>'')) "
                 "LIMIT 1", (title,)).fetchone()
             if found and found["id"] not in have:
@@ -188,6 +188,7 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
     saved_total = 0
     looked: list[str] = []
     used: list[str] = []
+    joinable: list[dict] = []
     clients: dict = {}          # acc_id -> (client, user) — переиспользуем на все его чаты
 
     async def _client_for(acc_id: int):
@@ -224,7 +225,13 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
                 looked.append(f"{ch['title']}: нечем адресовать (нет @username и ключа доступа)")
                 continue
             if not ch.get("joined_by"):
-                looked.append(f"{ch['title']}: не знаем, кто из наших в нём состоит")
+                # В чате нет ни одного нашего аккаунта — читать физически некому.
+                # Не вступаем молча: вступление видно в списке участников чата и при
+                # частых входах ведёт к бану, поэтому решение оставляем оператору —
+                # отдаём чат наверх как «можно войти» (см. joinable в ответе).
+                looked.append(f"{ch['title']}: никто из наших не состоит")
+                if (ch.get("username") or "").strip() or (ch.get("link") or "").strip():
+                    joinable.append({"id": ch["id"], "title": ch["title"]})
                 continue
             try:
                 client, user = await _client_for(int(ch["joined_by"]))
@@ -268,7 +275,7 @@ async def collect(contact_id: int, per_chat: int = PER_CHAT, total_cap: int = TO
         have = conn.execute("SELECT COUNT(*) c FROM tg_user_posts WHERE tg_user_id=?",
                             (c["tg_user_id"],)).fetchone()["c"]
     return {"ok": True, "saved": saved_total, "total_posts": have,
-            "chats": len(chats), "detail": "; ".join(looked),
+            "chats": len(chats), "detail": "; ".join(looked), "joinable": joinable,
             "account": ", ".join(dict.fromkeys(used)) or "—"}
 
 

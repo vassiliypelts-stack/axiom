@@ -3720,7 +3720,7 @@ def enrich_tg_one(contact_id: int) -> JSONResponse:
 
 
 @app.post("/api/contact/{contact_id}/read_chats")
-def contact_read_chats(contact_id: int) -> JSONResponse:
+def contact_read_chats(contact_id: int, payload: dict = Body(default={})) -> JSONResponse:
     """Прочитать человека В ЧАТАХ, где он состоит, и сразу собрать досье.
 
     Зачем отдельно от enrich_tg: тот читает bio и ЛИЧНЫЙ канал человека, и на
@@ -3732,9 +3732,26 @@ def contact_read_chats(contact_id: int) -> JSONResponse:
     Две стадии одной кнопкой: person_posts складывает сырьё в tg_user_posts →
     enrich_person сводит его в боли/страхи/желания. Разрывать их незачем: сырьё без
     портрета оператору ничего не даёт, а портрет строится тем же модулем, что и
-    раньше — второй логики не заводим."""
+    раньше — второй логики не заводим.
+
+    join=[id чатов] — вступить в эти чаты и перечитать. Отдельным шагом и только по
+    явному согласию оператора: вступление видно в списке участников, а частые входы
+    ведут к бану, поэтому сама кнопка чтения в чужие чаты не заходит — она лишь
+    возвращает список «сюда можно войти» (joinable), а решение принимает человек."""
+    join_ids = [int(x) for x in (payload or {}).get("join") or [] if str(x).strip()]
+    joined_info = None
+    if join_ids:
+        jr = _run_capture(["channels.chat_join", "--per", "1",
+                           "--chats", ",".join(str(i) for i in join_ids)], timeout=900)
+        joined_info = _last_json(jr.get("output")) or {}
+        # Членство пишется в account_chats/chats.joined_by — дальше обычное чтение
+        # уже найдёт, кем заходить.
+
     res = _run_capture(["channels.person_posts", "--contact", str(contact_id)], timeout=420)
     data = _last_json(res.get("output")) or {}
+    if joined_info is not None:
+        data["joined"] = joined_info.get("joined")
+        data["join_report"] = joined_info.get("report")
     if not data.get("ok"):
         tail = (res.get("output") or "").strip()[-300:]
         return JSONResponse({"ok": False,
@@ -3742,8 +3759,9 @@ def contact_read_chats(contact_id: int) -> JSONResponse:
     # Сырья не прибавилось и раньше ничего не было — портрет строить не из чего,
     # честно говорим об этом, а не гоняем модель впустую.
     if not data.get("total_posts"):
-        return JSONResponse({"ok": True, "saved": 0, "no_data": True, "detail": data.get("detail"),
-                             "error": "человек не писал в известных нам чатах — досье строить не из чего"})
+        data.update({"ok": True, "saved": 0, "no_data": True,
+                     "error": "человек не писал в известных нам чатах — досье строить не из чего"})
+        return JSONResponse(data)
     dossier = _run_capture(["agent.enrich_person", "--id", str(contact_id)], timeout=420)
     # enrich_person печатает человекочитаемый лог, а не JSON-сводку: об успехе судим
     # по его же маркеру «[ok #<id>]» (а не по коду возврата — он нулевой и когда
@@ -3984,6 +4002,123 @@ def parse_accounts() -> JSONResponse:
         d["chats"] = sorted(set(x for x in by_acc.get(d["id"], []) if x))
         out.append(d)
     return JSONResponse(out)
+
+
+def _catalog_chat_by_target(conn, target: str) -> dict | None:
+    """Каталожный чат по строке из «Парсера»: @username, t.me/…, инвайт или числовой id.
+
+    Нужен, чтобы до запуска сказать, КТО из аккаунтов в этом чате уже состоит: членство
+    лежит в account_chats и привязано к chats.id, а оператор вводит ссылку.
+    """
+    t = (target or "").strip()
+    if not t:
+        return None
+    # числовой id (закрытый чат без публичной ссылки)
+    digits = t.lstrip("-")
+    if digits.isdigit():
+        raw = int(digits.replace("100", "", 1)) if t.startswith("-100") else int(digits)
+        row = conn.execute("SELECT * FROM chats WHERE tg_chat_id IN (?,?)",
+                           (raw, -raw)).fetchone()
+        return dict(row) if row else None
+    # инвайт t.me/+hash или /joinchat/hash — ищем по самой ссылке
+    low = t.lower()
+    if "t.me/+" in low or "joinchat" in low:
+        tail = low.rsplit("/", 1)[-1].lstrip("+")
+        row = conn.execute("SELECT * FROM chats WHERE link LIKE ?", (f"%{tail}%",)).fetchone()
+        return dict(row) if row else None
+    # @username или https://t.me/username
+    uname = (low.replace("https://", "").replace("http://", "")
+             .replace("t.me/", "").replace("telegram.me/", "").lstrip("@").split("/")[0].split("?")[0])
+    if not uname:
+        return None
+    row = conn.execute("SELECT * FROM chats WHERE lower(username) IN (?,?)",
+                       (uname, "@" + uname)).fetchone()
+    return dict(row) if row else None
+
+
+@app.post("/api/parse/membership")
+def parse_membership(payload: dict = Body(...)) -> JSONResponse:
+    """Кто из аккаунтов состоит в целевом чате — ДО запуска парсинга.
+
+    Зачем: список участников закрытой группы видит только тот, кто внутри. Раньше
+    выбранный «не тот» аккаунт молча срывался уже в процессе, а его кусок работы
+    (offset) терялся — оператор получал часть выборки и считал, что чат маленький.
+    Теперь это видно заранее, вместе с ответом «кем можно вступить».
+    """
+    target = (payload.get("target") or "").strip()
+    acc_ids = [int(a) for a in (payload.get("account_ids") or []) if str(a).strip()]
+    if not target:
+        return JSONResponse({"error": "укажи цель"}, status_code=400)
+    database.init_db()
+    with database.get_conn() as conn:
+        chat = _catalog_chat_by_target(conn, target)
+        if not chat:
+            # Чата нет в каталоге — членство неизвестно. Это не ошибка: публичный чат
+            # можно парсить и не состоя в нём, поэтому просто говорим «не знаем».
+            return JSONResponse({"ok": True, "known": False,
+                                 "hint": "чата нет в каталоге — членство неизвестно. "
+                                         "Для публичного @чата это не помеха"})
+        rows = conn.execute(
+            "SELECT ac.account_id, a.label, a.protected FROM account_chats ac "
+            "JOIN accounts a ON a.id=ac.account_id WHERE ac.chat_id=?", (chat["id"],)).fetchall()
+    inside = {r["account_id"]: dict(r) for r in rows}
+    chosen_in = [i for i in acc_ids if i in inside]
+    chosen_out = [i for i in acc_ids if i not in inside]
+    # Кем можно вступить: те, кто ещё не внутри и не защищён (protected никогда не
+    # вступает — это рабочие номера, см. chat_join._joinable_accounts).
+    with database.get_conn() as conn:
+        free = conn.execute(
+            "SELECT id, label FROM accounts WHERE COALESCE(protected,0)=0 "
+            "AND tg_session IS NOT NULL AND tg_session<>'' "
+            "AND status IN ('active','warming') AND COALESCE(session_alive,1)=1 "
+            "ORDER BY id").fetchall()
+    return JSONResponse({
+        "ok": True, "known": True, "chat_id": chat["id"],
+        "chat_title": chat.get("title"), "closed": not (chat.get("username") or ""),
+        "inside": [{"id": k, "label": v.get("label"), "protected": bool(v.get("protected"))}
+                   for k, v in inside.items()],
+        "chosen_inside": chosen_in, "chosen_outside": chosen_out,
+        "joinable": [{"id": r["id"], "label": r["label"]} for r in free
+                     if r["id"] not in inside],
+    })
+
+
+@app.post("/api/parse/join")
+def parse_join(payload: dict = Body(...)) -> JSONResponse:
+    """Вступить выбранными аккаунтами в целевой чат — поверх готового channels.chat_join.
+
+    Он сам держит антибан: паузы 35-90с между вступлениями одного аккаунта, потолок
+    вступлений в сутки и пропуск защищённых. Здесь только сужаем его до ОДНОГО чата
+    и заданных аккаунтов, чтобы вступление было адресным, а не веерным по каталогу.
+    """
+    target = (payload.get("target") or "").strip()
+    acc_ids = [int(a) for a in (payload.get("account_ids") or []) if str(a).strip()]
+    if not target:
+        return JSONResponse({"error": "укажи цель"}, status_code=400)
+    if not acc_ids:
+        return JSONResponse({"error": "отметь аккаунты, которыми вступать"}, status_code=400)
+    database.init_db()
+    with database.get_conn() as conn:
+        chat = _catalog_chat_by_target(conn, target)
+        if not chat:
+            return JSONResponse(
+                {"error": "чата нет в каталоге — вступать вслепую нельзя. Добавь его в "
+                          "«Чаты» (или вступи вручную), потом возвращайся"}, status_code=400)
+        guarded = conn.execute(
+            f"SELECT id, label FROM accounts WHERE id IN ({','.join('?' * len(acc_ids))}) "
+            f"AND COALESCE(protected,0)=1", acc_ids).fetchall()
+    if guarded:
+        who = ", ".join(f"#{r['id']} {r['label'] or ''}".strip() for r in guarded)
+        return JSONResponse({"error": f"защищённые аккаунты не вступают: {who}"}, status_code=400)
+    args = ["channels.chat_join", "--per", "1", "--chats", str(chat["id"]),
+            "--ids", ",".join(str(a) for a in acc_ids)]
+    res = _run_capture(args, timeout=900)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-300:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    data["chat_title"] = chat.get("title")
+    return JSONResponse(data)
 
 
 # ---- Расписания парсинга: те же цели, что и ручной запуск, но по таймеру ---- #

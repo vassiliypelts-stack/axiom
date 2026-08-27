@@ -58,7 +58,10 @@ def _joinable_accounts(only_id: int | None):
         ).fetchall()
     accs = [dict(r) for r in rows]
     if only_id is not None:
-        accs = [a for a in accs if a["id"] == only_id]
+        # int или список int: из пульта вступают ВЫБРАННЫМИ аккаунтами (их может быть
+        # несколько), из CLI — по-прежнему одним «--id».
+        want = {only_id} if isinstance(only_id, int) else set(only_id)
+        accs = [a for a in accs if a["id"] in want]
     return accs
 
 
@@ -263,7 +266,7 @@ async def _join_one(acc: dict, chats: list[dict], report: dict) -> None:
             pass
 
 
-async def run(per: int, favorites: bool, only_id: int | None,
+async def run(per: int, favorites: bool, only_id: int | list[int] | None,
               chat_ids: list[int] | None = None) -> dict:
     """Возвращает сводку (не печатает) — чтобы модули-искатели могли вызвать вступление
     у себя внутри и вложить этот отчёт в свою сводку. Печать — в main()."""
@@ -298,10 +301,13 @@ def main() -> None:
     p.add_argument("--per", type=int, default=3, help="макс новых чатов на один аккаунт за заход")
     p.add_argument("--favorites", action="store_true", help="только ⭐ избранные чаты")
     p.add_argument("--id", type=int, default=None, dest="acc_id", help="только один аккаунт по id")
+    p.add_argument("--ids", default=None,
+                   help="несколько аккаунтов через запятую (12,15,18) — вступают именно они")
     p.add_argument("--chats", default=None, help="только эти каталожные чаты (id через запятую)")
     args = p.parse_args()
     ids = [int(x) for x in args.chats.split(",") if x.strip()] if args.chats else None
-    res = asyncio.run(run(args.per, args.favorites, args.acc_id, ids))
+    who = [int(x) for x in args.ids.split(",") if x.strip()] if args.ids else args.acc_id
+    res = asyncio.run(run(args.per, args.favorites, who, ids))
     print(json.dumps(res, ensure_ascii=False))
 
 

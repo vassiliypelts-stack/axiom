@@ -404,6 +404,35 @@ async def _collect_members_shared(accs: list, entity, target: str, limit: int, f
     if len(accs) <= 1:
         return await collect_members(first_client, entity, limit)
 
+    # СНАЧАЛА выясняем, кто реально может работать по этому чату, и только потом делим.
+    # Иначе выходило нечестное деление: limit резался на всех отмеченных, а те, кто в
+    # закрытом чате не состоит, срывались на _resolve_target — и их куски (offset)
+    # просто выпадали. Оператор получал часть выборки и решал, что чат маленький.
+    usable: list = [accs[0]]                      # первый уже подключён и прошёл resolve
+    probes: dict = {}
+    for acc_id in accs[1:]:
+        try:
+            client, _ = client_for_account(acc_id)
+            await client.connect()
+            ent = await _resolve_target(client, target)
+            usable.append(acc_id)
+            probes[acc_id] = (client, ent)
+        except Exception as e:  # noqa: BLE001 — не в чате / мёртвый прокси / нет сессии
+            print(f"[members] аккаунт #{acc_id} не берём: {type(e).__name__}: {str(e)[:60]}")
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    if len(usable) < len(accs):
+        print(f"[members] делим на {len(usable)} из {len(accs)} — остальные в чат не попали")
+    accs = usable
+
+    if len(accs) <= 1:
+        # Остались одни: честнее выгрести чат целиком одним аккаунтом, чем отдать ему
+        # 1/N лимита и молча потерять остальное.
+        print("[members] работоспособен только один аккаунт — беру им весь лимит")
+        return await collect_members(first_client, entity, limit)
+
     per = max(1, limit // len(accs))
     seen: set[int] = set()
     out: list = []
@@ -411,19 +440,13 @@ async def _collect_members_shared(accs: list, entity, target: str, limit: int, f
         offset = i * per
         # Первый аккаунт уже подключён вызывающим — переиспользуем, не плодя сессий.
         if i == 0:
-            client, own = first_client, False
+            client, own, ent = first_client, False, entity
         else:
-            try:
-                client, _ = client_for_account(acc_id)
-                await client.connect()
-                own = True
-            except Exception as e:  # noqa: BLE001
-                print(f"[members] аккаунт #{acc_id} пропущен: {str(e)[:70]}")
-                continue
+            # Клиент и сущность уже получены на этапе проверки выше — второй раз
+            # подключаться и резолвить не нужно (лишние запросы к Telegram).
+            client, ent = probes[acc_id]
+            own = True
         try:
-            # Своя сущность на каждый аккаунт: access_hash выдаётся конкретному
-            # аккаунту, чужой здесь не сработает.
-            ent = entity if i == 0 else await _resolve_target(client, target)
             part = await collect_members(client, ent, per, offset=offset)
             fresh = [u for u in part if u.id not in seen]
             seen.update(u.id for u in fresh)

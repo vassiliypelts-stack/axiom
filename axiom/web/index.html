@@ -6546,11 +6546,25 @@ async function openDossier(id){
   const rcb=$("#dr-read-chats");
   if(rcb)rcb.onclick=async()=>{
     const was=rcb.textContent,msg=$("#dr-read-chats-msg");
-    rcb.textContent="читаю чаты…";rcb.disabled=true;
-    if(msg)msg.textContent="захожу в чаты, где он состоит, забираю его сообщения и строю портрет — до минуты…";
-    let r;try{r=await api(`/api/contact/${id}/read_chats`,{method:"POST"});}
-    catch(e){r={error:e.message};}
-    rcb.disabled=false;rcb.textContent=was;
+    const call=async(join)=>{
+      rcb.textContent=join?"вступаю и читаю…":"читаю чаты…";rcb.disabled=true;
+      if(msg)msg.textContent=join
+        ?"завожу аккаунт в чат и сразу читаю — это дольше обычного, до пары минут…"
+        :"захожу в чаты, где он состоит, забираю его сообщения и строю портрет — до минуты…";
+      try{return await api(`/api/contact/${id}/read_chats`,{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify(join?{join}:{})});}
+      catch(e){return {error:e.message};}
+      finally{rcb.disabled=false;rcb.textContent=was;}
+    };
+    let r=await call(null);
+    // В чате никого из наших — читать физически некому. Не заходим молча: вступление
+    // видно в списке участников чата, поэтому спрашиваем и вступаем только по «ОК».
+    if(r&&r.joinable&&r.joinable.length&&!r.total_posts){
+      const names=r.joinable.map(x=>"• "+x.title).join("\n");
+      if(confirm(`В этих чатах нет ни одного нашего аккаунта, поэтому читать некому:\n\n${names}\n\nЗавести туда аккаунт и прочитать? Вступление видно другим участникам чата.`)){
+        r=await call(r.joinable.map(x=>x.id));
+      }
+    }
     if(r&&(r.error||r.ok===false)){
       if(msg)msg.innerHTML='<span style="color:#c0392b">'+esc(r.error||"нет ответа")+'</span>'
         +(r.detail?'<div class="sub" style="margin-top:4px">'+esc(r.detail)+'</div>':"");

@@ -3851,6 +3851,15 @@ async function viewContacts(v){
       // Была только в разделе «Досье» — переехала сюда вместе с ним, иначе срез
       // «кто из какого агентства» потерялся бы при удалении того раздела.
       {key:"agency",label:"Агентство",cls:"sub",render:r=>esc(r.agency)||'<span class="no">—</span>'},
+      // Сверка «тот ли человек за ником»: ники приходят из импорта и разъезжаются с
+      // именем («Дмитрий Норка» → @Anna_...). Отправка резолвит по нику, поэтому без
+      // этой колонки письмо не тому видно только в переписке, постфактум.
+      {key:"name_match",label:"Личность",render:r=>{
+        const v=r.name_match, tg=r.tg_name?` — в TG «${esc(r.tg_name)}»`:"";
+        if(v==="mismatch")return `<span class="badge b-stop" title="Ник ведёт к другому человеку${tg}. Сообщения этому контакту не отправляются, пока не поправишь ник или не удалишь карточку.">🙅 не тот</span>`;
+        if(v==="ok")return `<span class="badge b-active" title="имя в карточке сошлось с профилем${tg}">✓ сверен</span>`;
+        if(v==="unknown")return `<span class="badge b-nurture" title="сверить не вышло — в TG подписан иначе${tg}">? неясно</span>`;
+        return '<span class="no" title="ещё не писали — сверка идёт в момент отправки">—</span>';}},
       {key:"email",label:"Email",cls:"sub",render:r=>r.email?`<a class="ext" href="mailto:${esc(r.email)}" onclick="event.stopPropagation()">${esc(r.email)}</a>`:'<span class="no">—</span>'},
       {key:"msgr",label:"TG / WA",render:r=>{
         const m=v=>v==='yes'?'<span class="badge b-active">✓</span>'
@@ -6655,7 +6664,14 @@ async function viewInviting(v){
     const sel=$("#iv-chat");
     sel.innerHTML=(OV.chats||[]).length
       ? (OV.chats||[]).map(c=>`<option value="${c.id}">${esc(c.title||("#"+c.id))} · аккаунтов внутри: ${c.accs}</option>`).join("")
-      : '<option value="">— нет групп, где состоят наши аккаунты —</option>';
+      : '<option value="">— некуда приглашать —</option>';
+    // Пустой список сам по себе ничего не объясняет: показываем, ЧТО чинить.
+    if(OV.blocker){
+      const w=document.createElement("div");
+      w.className="hint";w.style.cssText="margin-top:6px;color:#c0392b";
+      w.textContent="⚠ "+OV.blocker;
+      sel.parentElement.appendChild(w);
+    }
     $("#iv-quota").textContent=`сегодня уже позвано: ${OV.used_today||0} · потолок ${OV.daily_cap} на аккаунт в сутки`;
     const st=OV.stats||{};
     const log=(OV.recent||[]);
@@ -7846,7 +7862,7 @@ async function refreshNotif(){
 const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️",
   chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸",
   listener_down:"🔇",listener_off:"🔇",listener_on:"🔊",sched_undelivered:"📵",stuck_reply:"⏳",campaign_blocked:"🛑",
-  proxy_heal:"🌐",proxy_renew:"🌐",proxy_harvest_down:"🌐",parse_schedule:"🛰️"};
+  proxy_heal:"🌐",proxy_renew:"🌐",proxy_harvest_down:"🌐",parse_schedule:"🛰️",name_mismatch:"🙅"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}

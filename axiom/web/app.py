@@ -556,6 +556,16 @@ def accounts_list() -> JSONResponse:
         # умолчанию личный номер из .env, назначить аккаунты можно тут же в таблице
         # галочками; их может быть несколько, включая «родные» (чтение чатов им можно)
         d["is_listener"] = str(d["id"]) in listen_ids
+        # Назначение аккаунта. Хранимое acc_role в приоритете; если не проставлено
+        # (все аккаунты, заведённые до появления поля) — выводим из того, что уже
+        # известно: родной по protected, служебный — если он уведомитель или слушатель
+        # чатов, остальные боевые. Так список сразу разделён на три вида, без ручной
+        # разметки полусотни карточек.
+        if not (d.get("acc_role") or "").strip():
+            d["acc_role"] = ("own" if d.get("protected")
+                             else "service" if (d["is_notifier"] or d["is_listener"])
+                             else "combat")
+            d["acc_role_auto"] = True
         # страна: сохранённый ISO2 или определяем по номеру на лету (+ готовая надпись с флагом)
         code = d.get("country") or phone_geo.detect(d.get("phone"))
         d["country_label"] = phone_geo.label(code) if code else ""
@@ -4154,12 +4164,42 @@ def invite_overview() -> JSONResponse:
             "LEFT JOIN contacts ct ON ct.id=il.contact_id "
             "ORDER BY il.id DESC LIMIT 20").fetchall()
     from channels.invite_users import DAILY_CAP
+    blocker = None
+    if not chats:
+        # Пустой список читается как «раздел сломан». Объясняем настоящую причину:
+        # чаще всего аккаунты в группах есть, но их сессии мертвы (приглашать нечем),
+        # либо живые аккаунты просто никуда не вступили.
+        with database.get_conn() as conn:
+            dead_in_chats = conn.execute(
+                "SELECT COUNT(DISTINCT a.id) n FROM accounts a "
+                "JOIN account_chats ac ON ac.account_id=a.id "
+                "WHERE COALESCE(a.protected,0)=0 AND COALESCE(a.session_alive,1)<>1").fetchone()["n"]
+            live_no_chats = conn.execute(
+                "SELECT COUNT(*) n FROM accounts a WHERE COALESCE(a.protected,0)=0 "
+                "AND COALESCE(a.session_alive,1)=1 AND a.tg_session IS NOT NULL AND a.tg_session<>'' "
+                "AND a.id NOT IN (SELECT account_id FROM account_chats)").fetchone()["n"]
+            prot_in_chats = conn.execute(
+                "SELECT COUNT(DISTINCT a.id) n FROM accounts a "
+                "JOIN account_chats ac ON ac.account_id=a.id "
+                "WHERE COALESCE(a.protected,0)=1").fetchone()["n"]
+        parts = []
+        if dead_in_chats:
+            parts.append(f"{dead_in_chats} аккаунт(ов) состоят в группах, но их сессии мертвы "
+                         f"— перелогиньте их в «Аккаунтах» (🔌 Подключить)")
+        if live_no_chats:
+            parts.append(f"{live_no_chats} живых аккаунтов пока никуда не вступили "
+                         f"— вступите ими выше или в «Парсинге»")
+        if prot_in_chats:
+            parts.append(f"{prot_in_chats} защищённых в группах не в счёт: рабочими номерами "
+                         f"не приглашаем")
+        blocker = "; ".join(parts) or "нет групп, где состоит хоть один наш незащищённый аккаунт"
     return JSONResponse({
         "daily_cap": DAILY_CAP,
         "chats": [dict(r) for r in chats],
         "used_today": sum(today.values()),
         "stats": {r["result"]: r["n"] for r in stats},
         "recent": [dict(r) for r in recent],
+        "blocker": blocker,
     })
 
 

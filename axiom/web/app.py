@@ -2786,12 +2786,7 @@ def _campaign_scheduler() -> None:
       • дневные лимиты аккаунтов и гейт прогрева остаются на campaign_send —
         планировщик их не обходит, он только нажимает ту же кнопку.
     """
-    import os
-    import subprocess
-    import sys
     import time
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
     while True:
         time.sleep(60)
         try:
@@ -2829,11 +2824,10 @@ def _campaign_scheduler() -> None:
                     # будет по расписанию, а не мгновенным повтором по кругу.
                     conn.execute("UPDATE campaigns SET auto_last_run_ts=? WHERE id=?",
                                  (now, camp["id"]))
-                subprocess.Popen(
-                    [sys.executable, "-m", "channels.campaign_send", str(camp["id"]),
-                     "--limit", str(batch)],
-                    cwd=str(BASE_DIR.parent), env=env,
-                )
+                # Слушатель отпускаем на время захода: иначе он держит те же сессии,
+                # что поднимает campaign_send, и Telegram жжёт ключ как «один аккаунт
+                # с двух IP» (28.08 так сгорело 5 аккаунтов за один автозаход).
+                _spawn_campaign_send(camp["id"], batch)
                 print(f"[campaign scheduler] авто-заход по «{camp['name']}» (до {batch})")
                 break                 # одна кампания за круг
         except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
@@ -7539,6 +7533,64 @@ def _listener_released(active: bool = True):
                 database.set_setting(conn, "listener_paused_by_op_ts", "")
 
 
+def _spawn_campaign_send(cid: int, limit: int, test: bool = False) -> None:
+    """Запустить заход рассылки, ОТПУСТИВ слушатель на время его работы.
+
+    ЗАЧЕМ. campaign_send поднимает свои Telethon-клиенты по сессиям аккаунтов, а
+    слушатель в этот момент держит те же сессии подключёнными. Telegram видит один
+    ключ с двух IP и жжёт его НАВСЕГДА (AuthKeyDuplicatedError) — купленный аккаунт
+    после этого мёртв, номер остался у продавца. 28.08.2026 за один автозаход так
+    сгорело 5 аккаунтов, в парке набралось 10 слетевших сессий.
+
+    Обычный _listener_released тут не годится: это контекстный менеджер, а Popen
+    возвращается сразу — слушатель поднялся бы через секунду, пока рассылка ещё идёт.
+    Поэтому гасим слушатель, ждём отключения клиентов и поднимаем его в отдельном
+    потоке, когда процесс РЕАЛЬНО завершился.
+
+    Метку listener_paused_by_op_ts ставим ту же, что и _listener_released: если
+    процесс убьют вместе с пультом, сторож (_listener_watchdog) поднимет слушатель
+    сам — глухой система не останется.
+    """
+    import subprocess
+    import sys
+    import threading
+    import time as _t
+
+    import os
+    args = [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", str(limit)]
+    if test:
+        args.append("--test")
+    # Без PYTHONIOENCODING дочерний процесс падает на первом же эмодзи в print()
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    with database.get_conn() as conn:
+        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        if was_on:
+            database.set_setting(conn, "listener_enabled", "off")
+            database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+    if was_on:
+        _t.sleep(7)          # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+
+    proc = subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env)
+
+    def _restore() -> None:
+        try:
+            proc.wait(timeout=3600)
+        except Exception:  # noqa: BLE001 — заход завис: слушатель важнее, поднимаем
+            pass
+        if was_on:
+            try:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "listener_enabled", "on")
+                    database.set_setting(conn, "listener_paused_by_op_ts", "")
+                print(f"[campaign #{cid}] заход завершён — слушатель возвращён")
+            except Exception as e:  # noqa: BLE001
+                print(f"[campaign #{cid}] не смог вернуть слушатель: {e}")
+
+    threading.Thread(target=_restore, daemon=True).start()
+
+
 @app.get("/api/accounts/spare")
 def accounts_spare_status() -> JSONResponse:
     """Сколько аккаунтов застраховано запасной сессией, а сколько ходит без страховки."""
@@ -8430,11 +8482,9 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
         # переписки скопилось без единого ответа с боевых аккаунтов. Тумблер в
         # интерфейсе убран: авто-ответ теперь просто часть «кампания запущена».
         database.set_setting(conn, "tg_auto_reply", "on")
-    # Шлём в отдельном процессе, чтобы не блокировать веб и не конфликтовать с event loop FastAPI.
-    subprocess.Popen(
-        [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", str(limit)],
-        cwd=str(BASE_DIR.parent),
-    )
+    # Шлём в отдельном процессе, чтобы не блокировать веб и не конфликтовать с event
+    # loop FastAPI. Слушатель на это время отпускаем — см. _spawn_campaign_send.
+    _spawn_campaign_send(cid, limit)
     checking = _kick_tgcheck(cid)
     return JSONResponse({"ok": True, "launched": limit, "tgcheck_started": checking})
 
@@ -8616,10 +8666,9 @@ def campaign_test(cid: int) -> JSONResponse:
             note += f"; пропущено {len(skipped)} — уже в диалоге, опенер не дублируем"
         database.add_event(conn, "campaign_test", f"🧪 Тест кампании «{row['name']}»",
                            note, level="good", campaign_id=cid)
-    subprocess.Popen(
-        [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", "10", "--test"],
-        cwd=str(BASE_DIR.parent),
-    )
+    # Тест идёт на свои номера, но подключается теми же сессиями — слушателя
+    # отпускаем так же, как на боевом заходе.
+    _spawn_campaign_send(cid, 10, test=True)
     return JSONResponse({"ok": True, "test_targets": n_test, "skipped_in_dialog": len(skipped)})
 
 

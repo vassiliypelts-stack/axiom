@@ -5049,9 +5049,31 @@ async function viewLeadHits(v){
     <button class="hi-f" data-i="unknown">❔ не разобрано</button>
     <span class="hint" id="ht-intent-cnt"></span></div>
   <div id="ht-body"></div>`;
-  api("/api/keywords/status").then(s=>{const el=$("#ni-status");if(!el||s.error)return;
+  // Живость слушателя показываем ЗДЕСЬ, а не только в «Парсинге». Раньше эта строка
+  // говорила лишь, ЧТО настроено (аккаунт, чаты, ниши) — и при выключенном слушателе
+  // экран выглядел рабочим, хотя находок не появлялось и появиться не могло: 28.08
+  // слушатель простоял выключенным после служебной паузы, и заметить это на экране
+  // с находками было нечем.
+  Promise.all([api("/api/keywords/status").catch(()=>null),
+               api("/api/listener/status").catch(()=>null),
+               api("/api/chatscan/status").catch(()=>null)]).then(([s,ls,cs])=>{
+    const el=$("#ni-status");if(!el)return;
+    if(!s||s.error){el.innerHTML='<span style="color:#c0392b">статус недоступен</span>';return;}
     const chats=(s.sample||[]).map(c=>c.username?("@"+esc(c.username)):esc(c.title||"чат")).slice(0,10).join(", ");
-    el.innerHTML=`👂 <b>Слушает:</b> ${esc(s.account)} · <b>чатов доступно:</b> ${s.chats} (⭐ ${s.favorite}) · <b>активных ниш:</b> ${s.niches}`
+    // Приём работает, только когда включён и слушатель, и тумблер сканирования чатов:
+    // это РАЗНЫЕ выключатели (их развели намеренно), и мёртв любой из них — находок
+    // не будет. Живость слушателя показываем числом подключённых аккаунтов: сам
+    // тумблер может стоять «вкл», а не подняться ни одна сессия.
+    const on=ls&&ls.enabled, scan=cs?!!cs.enabled:true, hold=ls?(ls.listening||0):0;
+    const head=!ls?""
+      :on&&scan&&hold?`<span class="badge b-active"><span class="sdot g"></span>приём идёт · ${hold} акк.</span> `
+      :on&&scan&&!hold?`<span class="badge b-stop">⛔ ни один аккаунт не подключён</span> `
+      :on&&!scan?`<span class="badge b-nurture">поиск по ключам выключен</span> `
+      :`<span class="badge b-stop">⛔ слушатель выключен — находок не будет</span> `;
+    el.innerHTML=head+`👂 <b>Слушает:</b> ${esc(s.account)} · <b>чатов доступно:</b> ${s.chats} (⭐ ${s.favorite}) · <b>активных ниш:</b> ${s.niches}`
+      +(!ls?"":on&&!scan
+          ?'<div class="hint" style="margin-top:4px;color:#c0392b">включить: «Парсинг» → галочка «сканировать чаты по ключам (лидген)»</div>'
+          :on?"":'<div class="hint" style="margin-top:4px;color:#c0392b">включить: «Парсинг» → «Слушатель входящих» → «▶ Запустить слушатель»</div>')
       +(chats?`<div class="hint" style="margin-top:4px">по чатам: ${chats}${s.chats>10?" …":""}</div>`:'<div class="hint" style="margin-top:4px;color:#c0392b">нет доступных чатов — добавь в «📡 Чаты» (с @username) и отметь ⭐</div>');
   }).catch(()=>{});
   const nl=$("#ni-list");

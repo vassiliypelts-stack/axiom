@@ -16,6 +16,7 @@ import contextlib
 import csv
 import io
 import json
+import time as _t
 from pathlib import Path
 
 from fastapi import FastAPI, Body, UploadFile, File, Form, Request
@@ -2725,6 +2726,48 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
     return min(take, 3), f"план {due_by_now}, отправлено {sent_today}/{daily}"
 
 
+LISTENER_STUCK_MIN = 20   # дольше этого «служебная» пауза слушателя не бывает
+
+
+def _listener_watchdog() -> None:
+    """Поднять слушатель, если служебная пауза не снялась сама.
+
+    _listener_released гасит слушатель на время операции и возвращает его в finally.
+    Но finally не отработает, если процесс убит или соединение с пультом оборвалось
+    на длинной операции (проверка живости идёт до 15 минут) — и система остаётся
+    ГЛУХОЙ молча: входящие от клиентов не сохраняются нигде, дожим встаёт, а в
+    интерфейсе написано «остановлен из пульта», то есть выглядит как осознанное
+    решение оператора. Ровно так и случилось 28.08 после проверки сессий.
+
+    Ручную остановку не трогаем: сторож смотрит только на метку
+    listener_paused_by_op_ts, которую ставит именно служебная пауза.
+    """
+    while True:
+        _t.sleep(120)
+        try:
+            with database.get_conn() as conn:
+                ts = database.get_setting(conn, "listener_paused_by_op_ts", "") or ""
+                if not ts.strip():
+                    continue
+                off = database.get_setting(conn, "listener_enabled", "on") == "off"
+                if not off:
+                    database.set_setting(conn, "listener_paused_by_op_ts", "")
+                    continue
+                if (_t.time() - float(ts)) < LISTENER_STUCK_MIN * 60:
+                    continue
+                database.set_setting(conn, "listener_enabled", "on")
+                database.set_setting(conn, "listener_paused_by_op_ts", "")
+                database.add_event(
+                    conn, "warn", "🔊 Слушатель поднят сторожем",
+                    f"служебная пауза висела дольше {LISTENER_STUCK_MIN} мин — операция, "
+                    f"которая его гасила, не завершилась штатно (обрыв связи с пультом "
+                    f"или убитый процесс). Пока он был выключен, входящие не сохранялись.",
+                    level="warn")
+            print("[listener watchdog] слушатель поднят после зависшей служебной паузы")
+        except Exception as e:  # noqa: BLE001 — сторож не должен ронять пульт
+            print(f"[listener watchdog] {e}")
+
+
 def _campaign_scheduler() -> None:
     """Автозапуск кампаний: сервер сам гоняет заходы рассылки по таймеру.
 
@@ -2856,6 +2899,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_meetings_scheduler, daemon=True).start()
     threading.Thread(target=_hot_lead_scheduler, daemon=True).start()
     threading.Thread(target=_campaign_scheduler, daemon=True).start()
+    threading.Thread(target=_listener_watchdog, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:
@@ -7478,15 +7522,21 @@ def _listener_released(active: bool = True):
         if was_on:
             with database.get_conn() as conn:
                 database.set_setting(conn, "listener_enabled", "off")
+                # Метка «кто и когда погасил» — по ней сторож (_listener_watchdog)
+                # поднимет слушатель, если finally ниже не отработает вовсе: при
+                # обрыве соединения/убийстве процесса система иначе остаётся глухой
+                # молча и навсегда (входящие не сохраняются НИГДЕ), а причина —
+                # «выключен из пульта» — выглядит как осознанное действие оператора.
+                database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
             paused = True
-            import time as _time
-            _time.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+            _t.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
     try:
         yield
     finally:
         if paused:
             with database.get_conn() as conn:
                 database.set_setting(conn, "listener_enabled", "on")
+                database.set_setting(conn, "listener_paused_by_op_ts", "")
 
 
 @app.get("/api/accounts/spare")

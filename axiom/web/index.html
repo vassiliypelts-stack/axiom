@@ -723,6 +723,7 @@ const NAV_GROUPS=[
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
     {id:"proxy",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 1l8 3v6c0 4-3.5 7.5-8 9-4.5-1.5-8-5-8-9V4l8-3z"/><path d="M7 10l2 2 4-4"/></svg>',label:"Прокси"},
+    {id:"inviting",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="7" r="3.2"/><path d="M2 17c0-3.3 2.7-5 6-5s6 1.7 6 5"/><line x1="16" y1="6" x2="16" y2="12"/><line x1="13" y1="9" x2="19" y2="9"/></svg>',label:"Инвайтинг"},
     {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
     {id:"connectors",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="10" r="2.5"/><circle cx="16" cy="4" r="2.5"/><circle cx="16" cy="16" r="2.5"/><line x1="6.2" y1="9" x2="13.8" y2="5"/><line x1="6.2" y1="11" x2="13.8" y2="15"/></svg>',label:"Коннекторы"},
@@ -6600,6 +6601,139 @@ async function openDossier(id){
 }
 $("#dr-close").onclick=()=>$("#drawer").classList.remove("open");
 
+// --------------------------------------------------------------- inviting (TG)
+// Раздел про ДВА разных действия, которые легко перепутать:
+//   1) наши аккаунты ВСТУПАЮТ в чужие чаты (безопасно, нужно для парсинга);
+//   2) мы ДОБАВЛЯЕМ людей в свою группу (самый банимый сценарий в Telegram).
+// Поэтому они разведены визуально, и у второго на виду лимиты и последствия.
+async function viewInviting(v){
+  v.innerHTML=`
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">➕ Вступление наших аккаунтов в чаты</b>
+    <div class="sub" style="margin:6px 0 12px">Чтобы спарсить закрытую группу, наш аккаунт должен быть внутри: список участников виден только своим. Раздаём чаты каталога по аккаунтам — паузы 35-90 сек, не больше 25 вступлений в сутки на аккаунт, защищённые номера не участвуют.</div>
+    <div class="row2">
+      <div class="field"><label>Чатов на аккаунт за заход</label><input id="iv-per" type="number" value="2" min="1" max="15"></div>
+      <div class="field"><label>&nbsp;</label><label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="iv-fav"> только ⭐ избранные чаты</label></div>
+    </div>
+    <button id="iv-join">➕ Разослать армию по чатам</button>
+    <span id="iv-join-msg" class="sub" style="margin-left:8px"></span>
+    <div class="hint" style="margin-top:8px">Точечное вступление в ОДИН чат удобнее делать в «Парсинге»: там сразу видно, кто из аккаунтов в нём уже состоит.</div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;border:1px solid #c0392b">
+    <b style="font-size:14px">👥 Добавление людей в нашу группу</b>
+    <div class="sub" style="margin:6px 0 10px;color:#c0392b">⚠️ Самый банимый сценарий в Telegram. Каждый добавленный видит, кто его затащил, и может пожаловаться — жалобы бьют по аккаунту сильнее лимитов. Сначала прогоните «проверку» (никого не позовёт), посмотрите на список и только потом запускайте вживую, малыми порциями.</div>
+    <div class="row2">
+      <div class="field"><label>В какую нашу группу</label><select id="iv-chat"><option value="">— загружаю —</option></select>
+        <div class="hint" style="margin-top:4px">Показаны группы, где состоит хотя бы один незащищённый аккаунт: только из-под такого можно приглашать.</div></div>
+      <div class="field"><label>Кого звать — источник (подборка парсинга)</label><select id="iv-source"><option value="">— все, у кого есть Telegram —</option></select></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Сколько за этот заход</label><input id="iv-limit" type="number" value="10" min="1" max="30">
+        <div class="hint" style="margin-top:4px">Пауза между приглашениями 45-110 сек: заход на 10 человек идёт до 20 минут. Это не медлительность, а то, что отличает работу от спам-рассылки.</div></div>
+      <div class="field"><label>Доступно позвать</label><div class="v" id="iv-aud" style="font-size:18px">—</div>
+        <div class="hint" id="iv-quota" style="margin-top:4px"></div></div>
+    </div>
+    <div class="ttoolbar" style="margin:8px 0 0">
+      <button id="iv-dry">🔍 Проверка (никого не позовёт)</button>
+      <button id="iv-go" style="border-color:#c0392b;color:#c0392b">Пригласить вживую</button>
+      <span id="iv-msg" class="sub"></span>
+    </div>
+    <pre id="iv-out" style="white-space:pre-wrap;background:#1C1B17;color:#E7E2D6;padding:12px;border-radius:8px;margin-top:12px;max-height:320px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;display:none"></pre>
+  </div>
+
+  <div class="card">
+    <div class="dash-chh" style="cursor:pointer"><h3 style="margin:0;font-size:14px">🕘 Журнал приглашений</h3></div>
+    <div class="sub" style="margin:6px 0 12px">Кого, куда и кем звали. «Приватность» — человек запретил добавлять себя в группы: это норма, таких больше не переспрашиваем.</div>
+    <div id="iv-log" class="sub">загружаю…</div>
+  </div>`;
+
+  const RES_RU={ok:"добавлен",privacy:"закрыл приватность",flood:"флуд-лимит",spam:"PeerFlood",error:"ошибка"};
+  let OV=null;
+  const loadOverview=async()=>{
+    try{OV=await api("/api/invite/overview");}catch(e){$("#iv-log").innerHTML='<span style="color:#c0392b">не загрузилось</span>';return;}
+    const sel=$("#iv-chat");
+    sel.innerHTML=(OV.chats||[]).length
+      ? (OV.chats||[]).map(c=>`<option value="${c.id}">${esc(c.title||("#"+c.id))} · аккаунтов внутри: ${c.accs}</option>`).join("")
+      : '<option value="">— нет групп, где состоят наши аккаунты —</option>';
+    $("#iv-quota").textContent=`сегодня уже позвано: ${OV.used_today||0} · потолок ${OV.daily_cap} на аккаунт в сутки`;
+    const st=OV.stats||{};
+    const log=(OV.recent||[]);
+    $("#iv-log").innerHTML=(Object.keys(st).length
+        ? `<div style="margin-bottom:8px">${Object.entries(st).map(([k,n])=>`<span class="badge b-nurture">${esc(RES_RU[k]||k)}: ${n}</span>`).join(" ")}</div>` : "")
+      +(log.length?`<table class="tbl"><thead><tr><th>Когда</th><th>Кого</th><th>Куда</th><th>Кем</th><th>Итог</th></tr></thead><tbody>`
+        +log.map(r=>`<tr><td class="sub">${esc(fmt(r.created_at))}</td><td>${esc(r.person||"—")}</td>
+          <td class="sub">${esc(r.chat||"—")}</td><td class="sub">${esc(r.acc||"—")}</td>
+          <td>${r.result==="ok"?'<span style="color:var(--green)">добавлен</span>'
+              :`<span class="sub" title="${esc(r.detail||"")}">${esc(RES_RU[r.result]||r.result||"")}</span>`}</td></tr>`).join("")
+        +"</tbody></table>":"Пока никого не звали.");
+    loadAudience();
+  };
+  const loadAudience=async()=>{
+    const cid=$("#iv-chat").value;if(!cid){$("#iv-aud").textContent="—";return;}
+    try{
+      const r=await api(`/api/invite/audience?chat_id=${cid}&source=${encodeURIComponent($("#iv-source").value||"")}`);
+      $("#iv-aud").textContent=r.count||0;
+      const cur=$("#iv-source").value;
+      if(!$("#iv-source").dataset.filled){
+        $("#iv-source").innerHTML='<option value="">— все, у кого есть Telegram —</option>'
+          +(r.sources||[]).map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");
+        $("#iv-source").dataset.filled="1";
+        if(cur)$("#iv-source").value=cur;
+      }
+    }catch(e){$("#iv-aud").textContent="—";}
+  };
+  $("#iv-chat").addEventListener("change",loadAudience);
+  $("#iv-source").addEventListener("change",loadAudience);
+
+  $("#iv-join").onclick=async()=>{
+    const b=$("#iv-join"),m=$("#iv-join-msg");
+    b.disabled=true;b.textContent="вступаю… (это долго)";m.textContent="";
+    let r;try{r=await api("/api/chats/join",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({per:+$("#iv-per").value||2,favorites:$("#iv-fav").checked})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent="➕ Разослать армию по чатам";
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.innerHTML=`<span style="color:var(--green)">вступили: ${r.joined||0}</span>`
+      +((r.pending||0)?` · по заявке: ${r.pending}`:"")+((r.failed||0)?` · не смогли: ${r.failed}`:"");
+  };
+
+  const invite=async(dry)=>{
+    const cid=$("#iv-chat").value;
+    if(!cid){$("#iv-msg").textContent="выбери группу";return;}
+    const n=+$("#iv-limit").value||10;
+    // Живой запуск подтверждаем: действие видно людям и необратимо.
+    if(!dry&&!confirm(`Пригласить ${n} человек в «${$("#iv-chat").selectedOptions[0].textContent.split(" · ")[0]}»?\n\n`
+        +`Каждый увидит, что его добавил именно наш аккаунт. Пауза между приглашениями 45-110 сек — заход займёт до ${Math.ceil(n*1.5)} мин.\n\n`
+        +`При первом же PeerFlood аккаунт снимается с захода.`))return;
+    const b=dry?$("#iv-dry"):$("#iv-go"),was=b.textContent,out=$("#iv-out");
+    b.disabled=true;b.textContent=dry?"проверяю…":"приглашаю… (не закрывай)";
+    out.style.display="block";out.textContent=dry?"считаю, кого можно позвать…":"⏳ иду по списку с паузами…";
+    let r;try{r=await api("/api/invite/run",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({chat_id:+cid,limit:n,source:$("#iv-source").value||null,dry})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){out.textContent="Ошибка: "+((r&&r.error)||"нет ответа");return;}
+    if(r.dry){
+      out.textContent=`Проверка: позвать можно ${r.would_invite} чел. в «${r.chat}».\n`
+        +`Аккаунтов, которые внутри: ${r.accounts} · остаток на сегодня: ${r.quota_left} (потолок ${r.daily_cap}/аккаунт)\n\n`
+        +`Первые в очереди:\n  `+(r.sample||[]).join("\n  ");
+      return;}
+    out.textContent=`Готово по «${r.chat}»:\n`
+      +`  добавлено: ${r.invited}\n`
+      +`  закрыли приватность: ${r.privacy} (это норма, повторно звать не будем)\n`
+      +`  прочие ошибки: ${r.failed}\n`
+      +(Object.keys(r.stopped||{}).length?`\nАккаунты, снятые с захода:\n  `
+        +Object.entries(r.stopped).map(([k,v])=>`#${k}: ${v}`).join("\n  "):"")
+      +`\n\nОстаток на сегодня: ${r.quota_left}`;
+    loadOverview();
+  };
+  $("#iv-dry").onclick=()=>invite(true);
+  $("#iv-go").onclick=()=>invite(false);
+  loadOverview();
+  wireCollapse(v);
+}
+
 // ----------------------------------------------------------------- parser (TG)
 async function viewParser(v){
   const POUT="white-space:pre-wrap;background:#1C1B17;color:#E7E2D6;padding:12px;border-radius:8px;margin-top:12px;max-height:440px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;";
@@ -7377,7 +7511,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors};
+const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 

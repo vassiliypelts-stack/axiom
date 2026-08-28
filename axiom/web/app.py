@@ -4121,6 +4121,102 @@ def parse_join(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse(data)
 
 
+# --------------------------- Инвайтинг (раздел «Ресурсы») ------------------------ #
+@app.get("/api/invite/overview")
+def invite_overview() -> JSONResponse:
+    """Сводка раздела: наши группы (куда можно звать) и остаток суточных лимитов.
+
+    «Наша группа» здесь — та, где состоит хотя бы один НЕзащищённый аккаунт: только
+    из-под такого можно кого-то пригласить.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS invite_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
+                contact_id INTEGER, tg_user_id INTEGER, account_id INTEGER,
+                result TEXT, detail TEXT, created_at TEXT DEFAULT (datetime('now')))""")
+        chats = conn.execute(
+            "SELECT c.id, c.title, c.username, COUNT(DISTINCT ac.account_id) accs "
+            "FROM chats c JOIN account_chats ac ON ac.chat_id=c.id "
+            "JOIN accounts a ON a.id=ac.account_id "
+            "WHERE COALESCE(a.protected,0)=0 AND COALESCE(a.session_alive,1)=1 "
+            "GROUP BY c.id ORDER BY accs DESC, c.title LIMIT 100").fetchall()
+        today = {r["account_id"]: r["n"] for r in conn.execute(
+            "SELECT account_id, COUNT(*) n FROM invite_log "
+            "WHERE date(created_at)=date('now') AND result='ok' GROUP BY account_id")}
+        stats = conn.execute(
+            "SELECT result, COUNT(*) n FROM invite_log GROUP BY result").fetchall()
+        recent = conn.execute(
+            "SELECT il.created_at, il.result, il.detail, c.title chat, a.label acc, "
+            "       ct.name person FROM invite_log il "
+            "LEFT JOIN chats c ON c.id=il.chat_id "
+            "LEFT JOIN accounts a ON a.id=il.account_id "
+            "LEFT JOIN contacts ct ON ct.id=il.contact_id "
+            "ORDER BY il.id DESC LIMIT 20").fetchall()
+    from channels.invite_users import DAILY_CAP
+    return JSONResponse({
+        "daily_cap": DAILY_CAP,
+        "chats": [dict(r) for r in chats],
+        "used_today": sum(today.values()),
+        "stats": {r["result"]: r["n"] for r in stats},
+        "recent": [dict(r) for r in recent],
+    })
+
+
+@app.get("/api/invite/audience")
+def invite_audience(chat_id: int, source: str = "", tag: str = "") -> JSONResponse:
+    """Сколько людей можно позвать в эту группу (ещё не звали, есть Telegram-id)."""
+    database.init_db()
+    with database.get_conn() as conn:
+        sql = ("SELECT COUNT(*) n FROM contacts WHERE tg_user_id IS NOT NULL "
+               "AND deleted_at IS NULL AND id NOT IN "
+               "(SELECT contact_id FROM invite_log WHERE chat_id=? AND contact_id IS NOT NULL)")
+        params: list = [chat_id]
+        if source:
+            sql += " AND source=?"
+            params.append(source)
+        if tag:
+            sql += " AND COALESCE(tags,'') LIKE ?"
+            params.append(f"%{tag}%")
+        try:
+            n = conn.execute(sql, params).fetchone()["n"]
+        except Exception:  # noqa: BLE001 — журнала ещё нет
+            n = 0
+        srcs = [r["source"] for r in conn.execute(
+            "SELECT source, COUNT(*) n FROM contacts WHERE source IS NOT NULL "
+            "AND tg_user_id IS NOT NULL AND deleted_at IS NULL "
+            "GROUP BY source ORDER BY n DESC LIMIT 30").fetchall()]
+    return JSONResponse({"count": n, "sources": srcs})
+
+
+@app.post("/api/invite/run")
+def invite_run(payload: dict = Body(...)) -> JSONResponse:
+    """Пригласить пачку. Лимиты и паузы держит channels.invite_users — здесь только
+    передаём параметры и ждём его JSON-сводку."""
+    chat_id = int(payload.get("chat_id") or 0)
+    if not chat_id:
+        return JSONResponse({"error": "выбери группу"}, status_code=400)
+    args = ["channels.invite_users", "--chat", str(chat_id),
+            "--limit", str(max(1, min(int(payload.get("limit") or 10), 30)))]
+    if payload.get("source"):
+        args += ["--source", str(payload["source"])]
+    if payload.get("tag"):
+        args += ["--tag", str(payload["tag"])]
+    if payload.get("account_ids"):
+        ids = [str(int(a)) for a in payload["account_ids"]]
+        if ids:
+            args += ["--accounts", ",".join(ids)]
+    if payload.get("dry"):
+        args.append("--dry")
+    # Приглашения идут с паузами 45-110с — заход из 10 человек это до 20 минут.
+    res = _run_capture(args, timeout=2400)
+    data = _last_json(res.get("output"))
+    if data is None:
+        tail = (res.get("output") or "").strip()[-300:]
+        return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
+    return JSONResponse(data)
+
+
 # ---- Расписания парсинга: те же цели, что и ручной запуск, но по таймеру ---- #
 @app.get("/api/parse/schedules")
 def parse_schedules_list() -> JSONResponse:

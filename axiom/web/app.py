@@ -3151,6 +3151,10 @@ def contacts(trash: int = 0) -> JSONResponse:
                    -- name_match/tg_name нужны колонке «Личность» (сверка «тот ли
                    -- человек за ником», channels/name_check).
                    c.tg_user_id, c.tg_checked_at, c.tg_name, c.name_match,
+                   -- Свой тест-номер: по нему кнопка «🧪 Тест» шлёт вместо клиентов, и
+                   -- для него же сняты ночные ограничения. Без флага в списке отличить
+                   -- свой номер от лида можно было только в карточке.
+                   c.is_test,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts

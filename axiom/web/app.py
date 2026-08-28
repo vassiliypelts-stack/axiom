@@ -2627,6 +2627,63 @@ def _daily_report_scheduler() -> None:
             print(f"[daily report scheduler] {e}")
 
 
+def _campaign_scheduler() -> None:
+    """Автозапуск кампаний: сервер сам гоняет заходы рассылки по таймеру.
+
+    ЗАЧЕМ. Статус 'running' сам по себе ничего не запускал — он лишь разрешал жать
+    «▶ Запустить», и каждый заход был ручным нажатием. Прогрев, прокси, пробив
+    номеров и парсинг давно ходят по расписанию сами, а рассылка оставалась
+    единственным, что требовало человека: по кампании 9406 за месяц ушло 22
+    сообщения при очереди в 119 — ровно столько раз вспомнили нажать кнопку.
+
+    ЧТО СОБЛЮДАЕМ (то же, что и ручной запуск, ничего не ослабляем):
+      • только кампании с auto_send=1, status='running' и не в архиве;
+      • рабочие часы кампании (database.in_work_hours) — ночью живым людям не пишем;
+      • свой интервал у каждой кампании (auto_interval_min);
+      • одна кампания за круг: параллельные заходы с одних аккаунтов — это почерк
+        рассылки, за который Telegram и наказывает;
+      • дневные лимиты аккаунтов и гейт прогрева остаются на campaign_send —
+        планировщик их не обходит, он только нажимает ту же кнопку.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    while True:
+        time.sleep(60)
+        try:
+            now = time.time()
+            with database.get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM campaigns WHERE COALESCE(auto_send,0)=1 "
+                    "AND status='running' AND COALESCE(archived,0)=0 "
+                    "ORDER BY COALESCE(auto_last_run_ts,0)"
+                ).fetchall()
+            for camp in rows:
+                interval = max(5, int(camp["auto_interval_min"] or 60)) * 60
+                if now - float(camp["auto_last_run_ts"] or 0) < interval:
+                    continue
+                if not database.in_work_hours(camp):
+                    continue          # вне окна кампании — молча ждём, это не сбой
+                batch = max(1, min(int(camp["auto_batch"] or 3), 50))
+                with database.get_conn() as conn:
+                    # Метку ставим ДО запуска: если процесс упадёт, следующий заход
+                    # будет по расписанию, а не мгновенным повтором по кругу.
+                    conn.execute("UPDATE campaigns SET auto_last_run_ts=? WHERE id=?",
+                                 (now, camp["id"]))
+                subprocess.Popen(
+                    [sys.executable, "-m", "channels.campaign_send", str(camp["id"]),
+                     "--limit", str(batch)],
+                    cwd=str(BASE_DIR.parent), env=env,
+                )
+                print(f"[campaign scheduler] авто-заход по «{camp['name']}» (до {batch})")
+                break                 # одна кампания за круг
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[campaign scheduler] {e}")
+
+
 HOT_LEAD_TIMEOUT_MIN = 10  # см. channels/telegram._agent_reply — сколько молчания терпим
 
 
@@ -2685,6 +2742,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_daily_report_scheduler, daemon=True).start()
     threading.Thread(target=_meetings_scheduler, daemon=True).start()
     threading.Thread(target=_hot_lead_scheduler, daemon=True).start()
+    threading.Thread(target=_campaign_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:
@@ -7966,6 +8024,30 @@ def warmup_settings_set(payload: dict = Body(...)) -> JSONResponse:
         if "ca_mix" in payload:
             database.set_setting(conn, "warm_ca_mix", "on" if payload.get("ca_mix") else "off")
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/campaign/{cid}/autosend")
+def campaign_autosend(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Автозапуск кампании: сервер сам гоняет заходы (см. _campaign_scheduler).
+
+    Кампания при этом должна быть «идёт» (status='running') — тумблер лишь разрешает
+    планировщику нажимать ту же кнопку, что и оператор, и не обходит ни рабочие часы,
+    ни дневные лимиты аккаунтов, ни гейт прогрева."""
+    on = 1 if payload.get("enabled") else 0
+    interval = max(5, min(int(payload.get("interval_min") or 60), 1440))
+    batch = max(1, min(int(payload.get("batch") or 3), 50))
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        conn.execute("UPDATE campaigns SET auto_send=?, auto_interval_min=?, auto_batch=? "
+                     "WHERE id=?", (on, interval, batch, cid))
+    warn = None
+    if on and row["status"] != "running":
+        warn = ("автозапуск включён, но кампания не в статусе «идёт» — нажми «▶ Запустить» "
+                "один раз, дальше заходы пойдут сами")
+    return JSONResponse({"ok": True, "auto_send": bool(on), "interval_min": interval,
+                         "batch": batch, "warn": warn})
 
 
 @app.post("/api/campaign/{cid}/launch")

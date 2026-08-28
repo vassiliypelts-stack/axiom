@@ -5958,6 +5958,17 @@ function renderCampList(mount,camps){
           ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца. После стопа «Запустить» снова станет активной">⏸ Стоп</button>`:""}
           <button class="cl-arch" data-id="${c.id}" data-archived="${c.archived?1:0}" title="${c.archived?'Вернуть кампанию из архива в основной список':'Убрать в архив — не мешает в списке, данные и статистика сохранятся, достать можно в любой момент'}">${c.archived?"↩ Из архива":"📦 В архив"}</button>
           <button class="cl-del" data-id="${c.id}">✕</button>
+        </div>
+        <div class="ttoolbar" style="margin:6px 0 0;padding-top:8px;border-top:1px solid var(--border)">
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="Сервер сам будет запускать заходы этой кампании — без ручного нажатия «Запустить». Рабочие часы, дневные лимиты аккаунтов и гейт прогрева соблюдаются те же">
+            <input type="checkbox" class="cl-auto" data-id="${c.id}" ${c.auto_send?"checked":""}>
+            <b style="font-size:12px">🔁 Автозапуск</b></label>
+          <span class="hint">каждые</span>
+          <input type="number" class="cl-auto-int" data-id="${c.id}" value="${c.auto_interval_min||60}" min="5" max="1440" style="max-width:66px">
+          <span class="hint">мин · по</span>
+          <input type="number" class="cl-auto-batch" data-id="${c.id}" value="${c.auto_batch||3}" min="1" max="50" style="max-width:60px">
+          <span class="hint">контактов за заход</span>
+          <span class="hint cl-auto-msg" data-id="${c.id}"></span>
         </div></div>
         <div class="cprog" id="pre-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div>
@@ -6297,6 +6308,26 @@ function renderCampList(mount,camps){
     }catch(e){alert("ошибка открытия пачки");}
     b.textContent=t;route();
   });
+  // Автозапуск: сервер сам гоняет заходы этой кампании. Сохраняем и по галочке, и по
+  // правке чисел — отдельной кнопки «сохранить» тут не нужно, полей всего три.
+  const saveAuto=async(id)=>{
+    const box=mount.querySelector(`.cl-auto[data-id="${id}"]`);
+    const int_=mount.querySelector(`.cl-auto-int[data-id="${id}"]`);
+    const bat=mount.querySelector(`.cl-auto-batch[data-id="${id}"]`);
+    const msg=mount.querySelector(`.cl-auto-msg[data-id="${id}"]`);
+    if(msg)msg.textContent="сохраняю…";
+    let r;try{
+      r=await api(`/api/campaign/${id}/autosend`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({enabled:box.checked,interval_min:+int_.value||60,batch:+bat.value||3})});
+    }catch(e){r={error:e.message};}
+    if(!msg)return;
+    if(r&&r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    msg.innerHTML=r.warn?'<span style="color:#c0392b">'+esc(r.warn)+'</span>'
+      :(box.checked?`✅ включён — заход каждые ${r.interval_min} мин по ${r.batch}`:"выключен");
+  };
+  mount.querySelectorAll(".cl-auto").forEach(el=>el.onchange=()=>saveAuto(el.dataset.id));
+  mount.querySelectorAll(".cl-auto-int,.cl-auto-batch").forEach(el=>el.onchange=()=>saveAuto(el.dataset.id));
+
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;
     if(!confirm(`Отправить первое сообщение ${n} контактам?\nЭто РЕАЛЬНАЯ отправка живым людям с аккаунта.`))return;

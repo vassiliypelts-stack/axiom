@@ -2849,15 +2849,26 @@ def accounts_health() -> JSONResponse:
 
 @app.post("/api/accounts/session_check_all")
 def accounts_session_check_all() -> JSONResponse:
-    """Живость TG-сессий всех подключённых аккаунтов (фоном) → колонка «Живость»."""
+    """Живость TG-сессий всех подключённых аккаунтов → колонка «Живость».
+
+    Ждём завершения под _listener_released, а не уходим в фон. Причина: пока слушатель
+    держит сессии, session_check не имеет права проверять напрямую (вторая проба с
+    другого IP сжигает ключ — так потеряли 8 аккаунтов 13.08) и честно отвечает
+    «noconn» по всем. Фоновый запуск поэтому давал не проверку, а строку «не знаю» —
+    ради которой и заводить нечего. Отпустив слушатель, получаем настоящий ответ.
+    """
     database.init_db()
     with database.get_conn() as conn:
         n = conn.execute("SELECT COUNT(*) c FROM accounts "
                          "WHERE tg_session IS NOT NULL AND tg_session<>''").fetchone()["c"]
     if not n:
         return JSONResponse({"error": "нет ни одного подключённого аккаунта"}, status_code=400)
-    _spawn("channels.session_check")
-    return JSONResponse({"ok": True, "queued": n})
+    with _listener_released():
+        res = _run_capture(["channels.session_check"], timeout=900)
+    data = _last_json(res.get("output")) or {}
+    data.setdefault("ok", bool(res.get("ok")))
+    data["queued"] = n
+    return JSONResponse(data)
 
 
 # ---- Календарь (встречи / КЭВ) -------------------------------------------- #

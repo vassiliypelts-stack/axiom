@@ -5963,11 +5963,9 @@ function renderCampList(mount,camps){
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="Сервер сам будет запускать заходы этой кампании — без ручного нажатия «Запустить». Рабочие часы, дневные лимиты аккаунтов и гейт прогрева соблюдаются те же">
             <input type="checkbox" class="cl-auto" data-id="${c.id}" ${c.auto_send?"checked":""}>
             <b style="font-size:12px">🔁 Автозапуск</b></label>
-          <span class="hint">каждые</span>
-          <input type="number" class="cl-auto-int" data-id="${c.id}" value="${c.auto_interval_min||60}" min="5" max="1440" style="max-width:66px">
-          <span class="hint">мин · по</span>
-          <input type="number" class="cl-auto-batch" data-id="${c.id}" value="${c.auto_batch||3}" min="1" max="50" style="max-width:60px">
-          <span class="hint">контактов за заход</span>
+          <input type="number" class="cl-auto-daily" data-id="${c.id}" value="${c.auto_daily||c.daily_limit||3}" min="1" max="500" style="max-width:66px"
+                 title="Сколько НОВЫХ контактов брать за сутки. Система сама растянет их по рабочим часам — интервал и размер захода считать не нужно.">
+          <span class="hint">новых контактов в день${c.sent_today?` · сегодня ушло ${c.sent_today}`:""}</span>
           <span class="hint cl-auto-msg" data-id="${c.id}"></span>
         </div></div>
         <div class="cprog" id="pre-${c.id}" style="margin-top:12px"></div>
@@ -6312,21 +6310,20 @@ function renderCampList(mount,camps){
   // правке чисел — отдельной кнопки «сохранить» тут не нужно, полей всего три.
   const saveAuto=async(id)=>{
     const box=mount.querySelector(`.cl-auto[data-id="${id}"]`);
-    const int_=mount.querySelector(`.cl-auto-int[data-id="${id}"]`);
-    const bat=mount.querySelector(`.cl-auto-batch[data-id="${id}"]`);
+    const day=mount.querySelector(`.cl-auto-daily[data-id="${id}"]`);
     const msg=mount.querySelector(`.cl-auto-msg[data-id="${id}"]`);
     if(msg)msg.textContent="сохраняю…";
     let r;try{
       r=await api(`/api/campaign/${id}/autosend`,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({enabled:box.checked,interval_min:+int_.value||60,batch:+bat.value||3})});
+        body:JSON.stringify({enabled:box.checked,daily:+day.value||3})});
     }catch(e){r={error:e.message};}
     if(!msg)return;
     if(r&&r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     msg.innerHTML=r.warn?'<span style="color:#c0392b">'+esc(r.warn)+'</span>'
-      :(box.checked?`✅ включён — заход каждые ${r.interval_min} мин по ${r.batch}`:"выключен");
+      :(box.checked?`✅ включён — ${r.daily} новых в день, растянуто по рабочим часам`:"выключен");
   };
   mount.querySelectorAll(".cl-auto").forEach(el=>el.onchange=()=>saveAuto(el.dataset.id));
-  mount.querySelectorAll(".cl-auto-int,.cl-auto-batch").forEach(el=>el.onchange=()=>saveAuto(el.dataset.id));
+  mount.querySelectorAll(".cl-auto-daily").forEach(el=>el.onchange=()=>saveAuto(el.dataset.id));
 
   mount.querySelectorAll(".cl-go").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=document.getElementById("cl-"+id).value||3;

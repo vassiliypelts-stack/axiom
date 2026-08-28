@@ -466,7 +466,32 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     if "whatsapp" in chans:
         print("режим мультиканала: TG-достижимым шлём сейчас; WhatsApp-only контакты "
               "дождутся подключения WA-моста.")
-    cap = min(limit, camp["daily_limit"] or limit)
+    # ДНЕВНОЙ потолок кампании — именно дневной, а не «на заход».
+    # Раньше здесь стояло min(limit, daily_limit), то есть daily_limit резал КАЖДЫЙ
+    # заход по отдельности: при автозапуске «каждый час по 3» выходило до 45 сообщений
+    # в сутки при написанном лимите 3, а вручную кнопку можно было нажать десять раз
+    # подряд с тем же результатом. Название обещало одно, поведение давало другое.
+    # Теперь вычитаем уже отправленное за сегодня: выбрали объём — заход не идёт.
+    # Тест (свои номера) под дневной лимит не попадает: он ничего не рассылает.
+    cap = limit
+    day_cap = int(camp["daily_limit"] or 0)
+    if day_cap > 0 and not test:
+        with database.get_conn() as conn:
+            sent_today = conn.execute(
+                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+                "AND date(sent_at)=date('now')", (cid,)).fetchone()["c"]
+        left_today = day_cap - sent_today
+        if left_today <= 0:
+            print(f"кампания #{cid}: дневной лимит выбран ({sent_today}/{day_cap}) — "
+                  f"заход не идёт, продолжу завтра")
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "info", f"⏸ Кампания «{camp['name']}»: дневной объём выбран",
+                    f"Сегодня уже отправлено {sent_today} из {day_cap}. Следующие "
+                    f"контакты уйдут завтра — так задан темп в настройках кампании.",
+                    level="info", campaign_id=cid)
+            return
+        cap = min(cap, left_today)
     rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test)
     if not rows:
         msg = ("тест: нет тест-контактов (is_test=1) в аудитории" if test

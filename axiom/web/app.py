@@ -1850,8 +1850,13 @@ def proxies_list() -> JSONResponse:
 
 @app.post("/api/proxies/refresh")
 def proxies_refresh() -> JSONResponse:
-    """Собрать свежие прокси из каналов, проверить пингом, раздать аккаунтам."""
-    res = _run_capture(["channels.proxy_pool", "--refresh"], timeout=240)
+    """Собрать свежие прокси из каналов и веб-списков, проверить, раздать аккаунтам.
+
+    Таймаут 900с, а не 240: заход читает десяток каналов-доноров плюс веб-списки и
+    проверяет полторы сотни адресов РЕАЛЬНЫМ подключением к Telegram — после
+    расширения донорской базы в 240с он перестал укладываться и обрывался на
+    середине, так и не раздав собранное."""
+    res = _run_capture(["channels.proxy_pool", "--refresh"], timeout=900)
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
@@ -2641,6 +2646,72 @@ def _daily_report_scheduler() -> None:
             print(f"[daily report scheduler] {e}")
 
 
+def _auto_send_plan(conn, camp) -> tuple[int, str]:
+    """Сколько контактов взять ПРЯМО СЕЙЧАС по кампании с дневным объёмом.
+
+    Возвращает (сколько_взять, почему). 0 — сейчас не шлём, причина для лога.
+
+    ЗАЧЕМ ТАК. Оператор задаёт одно понятное число — «сколько новых контактов в
+    день». Раньше объём складывался из трёх параметров (интервал × размер захода,
+    сверху daily_limit), и ни один не означал «за сутки»: daily_limit, вопреки
+    названию, резал каждый заход по отдельности. «Каждый час по 3» давало до 45
+    сообщений в день при написанном лимите 3.
+
+    Темп РАЗМАЗЫВАЕМ по рабочим часам, а не выпускаем пачкой на старте окна: 30
+    сообщений подряд в 07:30 — это почерк рассылки, за который Telegram и наказывает.
+    Остаток дня делим на оставшееся время и берём ровно столько, сколько «назрело» к
+    текущему часу.
+    """
+    import datetime as _dt
+
+    daily = int(camp["auto_daily"] or 0)
+    if daily <= 0:
+        return 0, "дневной объём не задан"
+
+    # Уже отправленное за СУТКИ (UTC — в том же виде, что пишет campaign_contacts).
+    sent_today = conn.execute(
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+        "AND date(sent_at)=date('now')", (camp["id"],)).fetchone()["c"]
+    left_today = daily - sent_today
+    if left_today <= 0:
+        return 0, f"дневной объём выбран: {sent_today}/{daily}"
+
+    # Сколько рабочего времени осталось. Часы кампании заданы в её поясе, поэтому
+    # «сейчас» берём там же — иначе на границе суток план съезжает.
+    tz = camp["work_hours_tz"] or "Europe/Moscow"
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = _dt.datetime.now(ZoneInfo(tz))
+    except Exception:  # noqa: BLE001 — нет tzdata: считаем по МСК, как раньше
+        now_local = _dt.datetime.utcnow() + _dt.timedelta(hours=3)
+
+    def _hm(raw, default):
+        try:
+            h, m = str(raw or default).split(":")
+            return int(h) * 60 + int(m)
+        except Exception:  # noqa: BLE001
+            h, m = default.split(":")
+            return int(h) * 60 + int(m)
+
+    start = _hm(camp["work_hours_start"], "09:00")
+    end = _hm(camp["work_hours_end"], "21:00")
+    cur = now_local.hour * 60 + now_local.minute
+    if not (start <= cur <= end):
+        return 0, "вне рабочих часов"
+
+    # Доля окна, которая уже прошла → сколько сообщений «должно было» уйти к этому
+    # моменту. Берём разницу с фактом: отстали — досылаем, идём по плану — ждём.
+    window = max(1, end - start)
+    passed = max(0, min(window, cur - start))
+    due_by_now = int(daily * (passed / window)) + 1      # +1 — первый уходит сразу
+    take = min(left_today, max(0, due_by_now - sent_today))
+    if take <= 0:
+        return 0, f"по плану пока хватит: {sent_today}/{daily}, окно пройдено на {passed * 100 // window}%"
+    # За раз не больше 3 — даже если сильно отстали. Догонять пачкой в 20 штук
+    # опаснее, чем не догнать вовсе.
+    return min(take, 3), f"план {due_by_now}, отправлено {sent_today}/{daily}"
+
+
 def _campaign_scheduler() -> None:
     """Автозапуск кампаний: сервер сам гоняет заходы рассылки по таймеру.
 
@@ -2676,12 +2747,27 @@ def _campaign_scheduler() -> None:
                     "ORDER BY COALESCE(auto_last_run_ts,0)"
                 ).fetchall()
             for camp in rows:
-                interval = max(5, int(camp["auto_interval_min"] or 60)) * 60
-                if now - float(camp["auto_last_run_ts"] or 0) < interval:
-                    continue
                 if not database.in_work_hours(camp):
                     continue          # вне окна кампании — молча ждём, это не сбой
-                batch = max(1, min(int(camp["auto_batch"] or 3), 50))
+                if camp["auto_daily"]:
+                    # НОВЫЙ режим: одно число «сколько в день», темп считает планировщик.
+                    # Свой антидубль не нужен — план сам смотрит на факт отправок за
+                    # сутки, поэтому лишний заход возьмёт 0 и ничего не сделает.
+                    # Минимальная пауза всё же есть: без неё тик раз в минуту дробил бы
+                    # дневной объём на 15 отдельных подключений к Telegram.
+                    if now - float(camp["auto_last_run_ts"] or 0) < 15 * 60:
+                        continue
+                    with database.get_conn() as conn:
+                        batch, why = _auto_send_plan(conn, camp)
+                    if batch <= 0:
+                        continue      # объём выбран или ещё рано — это не сбой
+                    print(f"[campaign scheduler] «{camp['name']}»: беру {batch} ({why})")
+                else:
+                    # СТАРЫЙ режим для кампаний без auto_daily: интервал × размер захода.
+                    interval = max(5, int(camp["auto_interval_min"] or 60)) * 60
+                    if now - float(camp["auto_last_run_ts"] or 0) < interval:
+                        continue
+                    batch = max(1, min(int(camp["auto_batch"] or 3), 50))
                 with database.get_conn() as conn:
                     # Метку ставим ДО запуска: если процесс упадёт, следующий заход
                     # будет по расписанию, а не мгновенным повтором по кругу.
@@ -4239,6 +4325,113 @@ def parse_join(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "не отчитался. Лог: " + (tail or "(пусто)")})
     data["chat_title"] = chat.get("title")
     return JSONResponse(data)
+
+
+# --------------------------- Здоровье парка аккаунтов ---------------------------- #
+@app.get("/api/park/health")
+def park_health() -> JSONResponse:
+    """Одним взглядом: кто реально может работать, а кто только числится.
+
+    Зачем отдельный экран. Раньше состояние было размазано: живость сессии в одной
+    колонке, прокси в другой, спам-статус в третьей — и «не проверялось» выглядело
+    так же, как «в порядке». На живом парке это выливалось в «инвайтить некем» и
+    рассылки, которые молча никуда не уходят: из 41 аккаунта годными оказались 10.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, phone, username, kind, protected, status, warm_stage, "
+            "       session_alive, session_state, session_reason, session_checked_at, "
+            "       proxy, proxy_alive, proxy_checked_at, spam_status, spam_checked_at, "
+            "       tg_session FROM accounts ORDER BY id").fetchall()
+        chats = {r["account_id"]: r["n"] for r in conn.execute(
+            "SELECT account_id, COUNT(*) n FROM account_chats GROUP BY account_id")}
+    park, buckets = [], {
+        "ready": [], "no_session": [], "dead_session": [], "unchecked_session": [],
+        "dead_proxy": [], "no_proxy": [], "protected": [], "banned": [], "unchecked_spam": [],
+    }
+    for r in rows:
+        d = dict(r)
+        d["has_session"] = bool(d.pop("tg_session", None))
+        d["chats"] = chats.get(d["id"], 0)
+        prot = bool(d.get("protected"))
+        alive = d.get("session_alive")
+        pxa = d.get("proxy_alive")
+        has_px = bool((d.get("proxy") or "").strip())
+        # Годен = может прямо сейчас работать: жива сессия, есть живой прокси,
+        # не защищён и не забанен. Всё остальное — с причиной, что чинить.
+        d["ready"] = (alive == 1 and has_px and pxa != 0 and not prot
+                      and d.get("status") != "banned")
+        problems = []
+        if d.get("status") == "banned":
+            problems.append("забанен"); buckets["banned"].append(d["id"])
+        if not d["has_session"]:
+            problems.append("нет сессии"); buckets["no_session"].append(d["id"])
+        elif alive == 0:
+            problems.append("сессия отозвана"); buckets["dead_session"].append(d["id"])
+        elif alive is None:
+            problems.append("сессия не проверялась"); buckets["unchecked_session"].append(d["id"])
+        if not has_px:
+            problems.append("нет прокси"); buckets["no_proxy"].append(d["id"])
+        elif pxa == 0:
+            problems.append("прокси мёртв"); buckets["dead_proxy"].append(d["id"])
+        if prot:
+            buckets["protected"].append(d["id"])
+        if not d.get("spam_status"):
+            buckets["unchecked_spam"].append(d["id"])
+        d["problems"] = problems
+        if d["ready"]:
+            buckets["ready"].append(d["id"])
+        # секреты наружу не отдаём — только факт наличия
+        d.pop("proxy", None)
+        park.append(d)
+    return JSONResponse({
+        "total": len(park),
+        "counts": {k: len(v) for k, v in buckets.items()},
+        "ids": buckets,
+        "accounts": park,
+    })
+
+
+@app.post("/api/park/check")
+def park_check(payload: dict = Body(default={})) -> JSONResponse:
+    """Прогнать проверки по всему парку разом: прокси → сессии → спам-статус.
+
+    Раньше это было три отдельных действия, каждое со своим выделением строк в
+    таблице, поэтому у 36 из 41 аккаунта спам-статус не проверялся ни разу.
+    Порядок важен: сперва прокси (через мёртвый канал сессия не ответит и будет
+    ложно похоронена), потом сессии, и только у живых — @SpamBot.
+    """
+    what = payload.get("what") or "all"
+    database.init_db()
+    with database.get_conn() as conn:
+        with_px = [r["id"] for r in conn.execute(
+            "SELECT id FROM accounts WHERE proxy IS NOT NULL AND proxy<>''").fetchall()]
+        with_sess = [r["id"] for r in conn.execute(
+            "SELECT id FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>''").fetchall()]
+        # @SpamBot спрашиваем только у тех, кто отвечает: у мёртвой сессии это пустой
+        # заход, а у защищённых лишний повод дёргать рабочий номер.
+        for_spam = [r["id"] for r in conn.execute(
+            "SELECT id FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND COALESCE(session_alive,1)=1 AND COALESCE(protected,0)=0 "
+            "AND COALESCE(status,'')<>'banned'").fetchall()]
+    started = {}
+    if what in ("all", "proxy") and with_px:
+        _spawn("channels.proxy_check", "--ids", ",".join(str(i) for i in with_px))
+        started["proxy"] = len(with_px)
+    if what in ("all", "session") and with_sess:
+        _spawn("channels.session_check", "--ids", ",".join(str(i) for i in with_sess))
+        started["session"] = len(with_sess)
+    if what in ("all", "spam") and for_spam:
+        # Одним процессом: health.py без --id сам идёт по всем аккаунтам с паузами.
+        # Плодить по процессу на аккаунт нельзя — это 20+ одновременных диалогов с
+        # @SpamBot с разных сессий, то есть ровно тот почерк, за который и наказывают.
+        _spawn("channels.health")
+        started["spam"] = len(for_spam)
+    if not started:
+        return JSONResponse({"ok": False, "error": "нечего проверять"})
+    return JSONResponse({"ok": True, "started": started,
+                         "note": "идёт в фоне, результат подтянется в таблицу по мере готовности"})
 
 
 # --------------------------- Инвайтинг (раздел «Ресурсы») ------------------------ #

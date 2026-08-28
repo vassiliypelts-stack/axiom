@@ -1321,6 +1321,14 @@ async function viewDashboard(v){
 }
 
 const ROLE_RU={sdr:"SDR — первый контакт",qualifier:"Квалификатор",closer:"Переговорщик",scheduler:"Ассистент встреч","":"—"};
+// НАЗНАЧЕНИЕ аккаунта (acc_role) — чем он занят. Отличается от kind («откуда взялся»)
+// и от role («роль в продажах»). Служебный держим отдельно от боевого намеренно: если
+// уведомитель уйдёт в рассылку и сгорит, владелец перестанет узнавать о встречах —
+// так 24.08 пропущен живой созвон.
+const ACC_ROLE_RU={own:"🏠 Родной (личный, автоматика не трогает)",
+                   service:"🛠 Служебный (уведомления, отчёты, пробив)",
+                   combat:"🪖 Боевой (рассылка, парсинг, прогрев)","":"—"};
+const ACC_ROLE_SHORT={own:"🏠 родной",service:"🛠 служебный",combat:"🪖 боевой"};
 const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
 const ACC_KIND_IC={own:"house",sim:"sim",bought:"cart"};
 const ACC_KIND_LBL={own:"Родной",sim:"Своя симка",bought:"Купленный"};
@@ -1635,8 +1643,14 @@ async function viewAgents(v){
         <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
         <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
         <button id="ab-spare" title="Выпустить запасную сессию: вторую НЕЗАВИСИМУЮ авторизацию Telegram (свой ключ, без SMS). Если основную сожгут — аккаунт поднимается запаской. Это не копия сессии: копия — тот же ключ, ей застраховаться нельзя">🧯 Выпустить запаску</button>
-        <button id="ab-native" title="Личные номера — автоматика их не трогает">Пометить «родной»</button>
-        <button id="ab-unprotect">Снять «родной»</button>
+        <span style="display:inline-flex;align-items:center;gap:6px" title="Чем занят аккаунт. Родной — личный, автоматика не трогает. Служебный — уведомления/отчёты/пробив, в рассылку не идёт (иначе сгорит отправитель уведомлений). Боевой — рассылка, парсинг, прогрев.">назначение
+          <select id="ab-role" style="max-width:150px">
+            <option value="">— выбери —</option>
+            <option value="own">🏠 родной</option>
+            <option value="service">🛠 служебный</option>
+            <option value="combat">🪖 боевой</option>
+          </select>
+          <button id="ab-role-go">применить</button></span>
         <span style="display:inline-flex;align-items:center;gap:6px">лимит <input id="ab-limit" type="number" min="1" placeholder="15" style="max-width:80px"> <button id="ab-limit-go">применить</button></span>
         <span style="display:inline-flex;align-items:center;gap:6px">статус
           <select id="ab-status"><option value="">—</option><option value="warming">прогрев</option><option value="active">активен</option><option value="paused">пауза</option><option value="banned">бан</option></select>
@@ -1806,13 +1820,19 @@ async function viewAgents(v){
     // Зелёная подсветка «рабочих» — с кем можно работать прямо сейчас: подключён,
     // сессия жива, прокси жив, не забанен. Видно на глаз, кого пускать в бой.
     rowClass:r=>(r.tg_connected&&r.session_state==='alive'&&r.proxy_alive===1&&r.status!=='banned')?"row-ready":"",
-    groupOptions:[{key:"protected",label:"родной/боевой"},{key:"role",label:"роль"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
-    groupFmt:(k,val)=>k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
+    groupOptions:[{key:"acc_role",label:"назначение"},{key:"protected",label:"родной/боевой"},{key:"role",label:"роль в продажах"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
+    groupFmt:(k,val)=>k==="acc_role"?(ACC_ROLE_RU[val]||val):k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
       {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}`},
+      // Назначение: родной / служебный / боевой. Пустое acc_role сервер выводит сам
+      // (по protected и флагам уведомителя), такие помечаем «авто» — видно, что
+      // назначение угадано, а не проставлено руками.
+      {key:"acc_role",label:"Назначение",render:r=>{
+        const v=r.acc_role||"combat", cls=v==="own"?"b-active":v==="service"?"b-nurture":"b-won";
+        return `<span class="badge ${cls}" title="${esc(ACC_ROLE_RU[v]||v)}${r.acc_role_auto?" · определено автоматически, можно уточнить кнопкой «Назначение»":""}">${ACC_ROLE_SHORT[v]||v}${r.acc_role_auto?'<span style="opacity:.6"> авто</span>':''}</span>`;}},
       {key:"country_label",label:"Страна",cls:"sub",render:r=>r.country_label?esc(r.country_label):'<span class="no" title="страна не определена по коду номера">—</span>'},
       {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
       {key:"conn",label:"Подключение",render:r=>{
@@ -1980,8 +2000,13 @@ async function viewAgents(v){
     if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
     showIdentityDialog([...selAcc],bulk);
   };
-  $("#ab-native").onclick=()=>bulk({action:"protect",protected:1},r=>`помечено родными: ${r.updated} (автоматика их не трогает)`);
-  $("#ab-unprotect").onclick=()=>bulk({action:"protect",protected:0},r=>`снят «родной» у ${r.updated}`);
+  $("#ab-role-go").onclick=()=>{
+    const v=$("#ab-role").value;
+    if(!v){alert("выбери назначение");return;}
+    // «родной» ставит protected=1 на сервере — одно обещание «автоматика не трогает»,
+    // два поля держим согласованными там же, а не двумя кнопками здесь.
+    bulk({action:"acc_role",acc_role:v},r=>`назначение «${ACC_ROLE_SHORT[r.acc_role]||r.acc_role}» у ${r.updated} акк.`);
+  };
   $("#ab-more").onclick=()=>{
     const panel=$("#ab-more-panel"),btn=$("#ab-more");
     const open=panel.style.display==="none";

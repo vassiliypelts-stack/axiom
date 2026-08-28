@@ -223,29 +223,21 @@ async def send_daily_report() -> None:
             ).fetchall()
             if not camps:
                 return
-            lines = ["📊 Сводка по кампаниям на утро"]
+            # Заголовок по времени суток: утром сводка отвечает на «что делать
+            # сегодня», вечером — на «сработало ли». Один и тот же текст «на утро»
+            # в 21:00 читался бы как вчерашний и сбивал бы с толку.
+            from channels.antiban import msk_now
+            hour = msk_now().hour
+            head = ("📊 Сводка по кампаниям на утро" if hour < 15
+                    else "📊 Итоги дня по кампаниям")
+            lines = [head]
             for camp in camps:
-                cid = camp["id"]
-                sent = conn.execute(
-                    "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (cid,)
-                ).fetchone()["c"]
-                where, params = _audience_where_for_report(camp["audience_tag"], camp["channel"])
-                total_left = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where}",
-                                          params).fetchone()["c"]
-                replied = conn.execute(
-                    "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
-                    "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
-                    "WHERE m.direction='in'", (cid,)
-                ).fetchone()["c"]
-                meetings = conn.execute(
-                    "SELECT COUNT(DISTINCT d.contact_id) c FROM deals d "
-                    "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
-                    "WHERE d.meeting_at IS NOT NULL", (cid,)
-                ).fetchone()["c"]
-                lines.append(
-                    f"\n🎯 {camp['name']}\nвсего в кампании: {sent + total_left} · "
-                    f"отправлено: {sent} · ответило: {replied} · на КЭВ: {meetings}"
-                )
+                # Тот же расчёт, что у отчёта по одной кампании (кнопка «📤 Отчёт в ЛС»
+                # и экран кампании) — не заводим второй, похожий, который потом
+                # разъедется с первым.
+                block = campaign_report_text(conn, camp["id"])
+                if block:
+                    lines.append("\n" + block.replace("📊 «", "🎯 «", 1))
             text = "\n".join(lines)
         await _send_to_owner(sender_id, target, text, "утренняя сводка", 0)
     except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
@@ -257,9 +249,11 @@ def campaign_report_text(conn, cid: int) -> str | None:
     за сегодня/неделю/всё время, ответы, КЭВ. Общая для показа на экране кампании
     (см. web/app.py: /api/campaign/{cid}/report) и для отправки в личку (см.
     send_campaign_report) — один расчёт, а не два похожих."""
-    camp = conn.execute("SELECT id, name FROM campaigns WHERE id=?", (cid,)).fetchone()
+    camp = conn.execute("SELECT id, name, audience_tag, channel FROM campaigns WHERE id=?",
+                        (cid,)).fetchone()
     if not camp:
         return None
+    camp_tag, camp_channel = camp["audience_tag"], camp["channel"]
 
     def sent_since(period_sql: str | None) -> int:
         where = "campaign_id=?" + (f" AND sent_at >= {period_sql}" if period_sql else "")
@@ -289,16 +283,47 @@ def campaign_report_text(conn, cid: int) -> str | None:
         "WHERE d.meeting_at IS NOT NULL", (cid,)
     ).fetchone()["c"]
 
-    # «Работала ли сегодня/вчера» — по факту событий, а не по campaigns.status:
-    # кампания может быть в 'running', но упереться в дневные лимиты/паузу и не
-    # прислать ни строчки — оператору важно именно «было движение», а не ярлык.
-    worked_today = "да" if (today or replied_today) else "нет"
-    worked_yesterday = "да" if yesterday_only else "нет"
+    # Дата старта — по ПЕРВОЙ фактической отправке, а не по campaigns.created_at:
+    # кампанию заводят заранее, и «создана 17.07» при первой отправке 07.08 давало бы
+    # неверный знаменатель в «сколько дней работаем». События campaign_start для этого
+    # не годятся — лента чистится, а отправки в campaign_contacts лежат всегда.
+    first_at = conn.execute(
+        "SELECT MIN(sent_at) t FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchone()["t"]
+    last_at = conn.execute(
+        "SELECT MAX(sent_at) t FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchone()["t"]
+    days = 0
+    if first_at:
+        d = conn.execute("SELECT CAST(julianday('now') - julianday(?) AS INT) d",
+                         (first_at,)).fetchone()["d"]
+        days = max(1, int(d or 0) + 1)          # день старта тоже считаем рабочим
 
-    return (f"📊 «{camp['name']}»\n"
-           f"работала сегодня: {worked_today} · вчера: {worked_yesterday}\n"
-           f"отправлено — сегодня: {today} · за 7 дней: {week} · всего: {total}\n"
-           f"ответили: {replied} (сегодня: {replied_today}) · на КЭВ: {kev}")
+    # Остаток базы — на сколько ещё хватит при текущем темпе.
+    where_left, params_left = _audience_where_for_report(camp_tag, camp_channel)
+    left = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where_left}",
+                        params_left).fetchone()["c"]
+
+    # «Работала сегодня» — СТРОГО про отправку. Раньше сюда приплюсовывались ответы,
+    # и отчёт писал «работала: да» при нуле отправленных: входящее письмо от
+    # вчерашнего контакта — это не работа рассылки, а её последствие.
+    worked_today = "да" if today else "нет"
+    worked_yesterday = "да" if yesterday_only else "нет"
+    conv = f" ({replied * 100 // total}%)" if total else ""
+    kev_conv = f" ({kev * 100 // replied}%)" if replied else ""
+
+    def _d(ts):
+        return (ts or "")[:10] or "—"
+
+    head = f"📊 «{camp['name']}»\n"
+    line_start = f"запущена: {_d(first_at)} · в работе дней: {days}\n"
+    line_work = f"работала сегодня: {worked_today} · вчера: {worked_yesterday}"
+    if not today and last_at:
+        line_work += f" · последняя отправка: {_d(last_at)}"
+    line_work += "\n"
+    line_base = f"обработано контактов: {total} · осталось в базе: {left}\n"
+    line_sent = f"отправлено — сегодня: {today} · за 7 дней: {week} · всего: {total}\n"
+    line_rep = f"ответили: {replied}{conv} (сегодня: {replied_today})\n"
+    line_kev = f"на КЭВ: {kev}{kev_conv}"
+    return head + line_start + line_work + line_base + line_sent + line_rep + line_kev
 
 
 async def send_campaign_report(cid: int) -> dict:

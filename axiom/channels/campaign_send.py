@@ -24,7 +24,7 @@ from telethon.tl.types import InputPhoneContact
 
 import config
 from db import database
-from channels import fio, opener_lint
+from channels import fio, name_check, opener_lint
 from channels.telegram import (
     _build_client, build_client, _send_parts, _resolve_entity, OUTREACH_PAUSE,
 )
@@ -424,6 +424,11 @@ def _team(cid: int) -> list[dict]:
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
             "AND a.tg_session IS NOT NULL AND a.tg_session <> '' "
+            # Служебный аккаунт (уведомления/отчёты/пробив) в холодную рассылку не идёт,
+            # даже если его по ошибке добавили в команду кампании: сгорит отправитель
+            # уведомлений — и владелец перестанет узнавать о встречах (так 24.08 был
+            # пропущен живой созвон). Родной (own) сюда и так не попадал по protected.
+            "AND COALESCE(a.acc_role,'') <> 'service' "
             "ORDER BY a.id",
             (cid,),
         ).fetchall()
@@ -638,6 +643,36 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                        spec=_spec_of(row))
         try:
             entity = await _resolve_entity(s["client"], row)
+            # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а
+            # ники приходят выгрузкой со стороннего сайта, где имя с ником разъезжаются:
+            # карточка «Дмитрий Иванович Норка», ник @Anna_Dobrokhodskaya. Без сверки
+            # письмо уходит ДРУГОМУ человеку с обращением «Дмитрий Иванович, добрый
+            # день!» — и это не видно ни в статистике, ни в отчёте. 26.08 так ушло 20
+            # из 22 сообщений (ни один контакт не был пробит).
+            #
+            # При явном расхождении НЕ ШЛЁМ: написать не тому хуже, чем пропустить.
+            # Контакт не удаляем и не хороним — метим и оставляем оператору.
+            tg_name = " ".join(x for x in (getattr(entity, "first_name", "") or "",
+                                           getattr(entity, "last_name", "") or "") if x).strip()
+            crm_name = (row["name"] or "") or (row["person_name"] if "person_name" in row.keys() else "")
+            verdict, why = name_check.compare(crm_name, tg_name)
+            with database.get_conn() as conn:
+                conn.execute(
+                    "UPDATE contacts SET tg_name=?, name_match=?, name_checked_at=datetime('now') "
+                    "WHERE id=?", (tg_name or None, verdict, row["id"]))
+            if verdict == "mismatch":
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE contacts SET status='new' WHERE id=?", (row["id"],))
+                    database.add_event(
+                        conn, "name_mismatch",
+                        f"🙅 Не тот человек за ником: {row['name'] or row['id']}",
+                        f"В карточке «{row['name'] or '—'}», а @{row['username']} в Telegram "
+                        f"подписан «{tg_name or '—'}» ({why}). Сообщение НЕ отправлено. "
+                        f"Ник взят из импорта и, похоже, чужой — проверь карточку: "
+                        f"поправь ник или удали контакт.",
+                        level="warn", contact_id=row["id"], campaign_id=cid)
+                print(f"[{s['label']}] ⛔ {row['name']} → @{row['username']} это «{tg_name}» ({why}) — не шлю")
+                continue
             # антибан: добавить контакт в книжку перед первым сообщением
             try:
                 await s["client"](AddContactRequest(

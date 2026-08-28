@@ -872,6 +872,18 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
                 freed = cur.rowcount or 0
         return JSONResponse({"ok": True, "updated": len(ids), "status": status,
                              "proxies_freed": freed})
+    if action == "acc_role":
+        role = (payload.get("acc_role") or "").strip()
+        if role not in ("own", "service", "combat"):
+            return JSONResponse({"error": "роль: own | service | combat"}, status_code=400)
+        with database.get_conn() as conn:
+            conn.execute(f"UPDATE accounts SET acc_role=? WHERE id IN ({qm})", (role, *ids))
+            # «Родной» и protected — одно обещание «автоматика не трогает», держим их
+            # согласованными: иначе аккаунт с ролью own продолжал бы уходить в прогрев
+            # и рассылку, а оператор считал бы его защищённым.
+            conn.execute(f"UPDATE accounts SET protected=? WHERE id IN ({qm})",
+                         (1 if role == "own" else 0, *ids))
+        return JSONResponse({"ok": True, "updated": len(ids), "acc_role": role})
     if action == "protect":
         val = 1 if payload.get("protected") else 0
         with database.get_conn() as conn:
@@ -2589,14 +2601,23 @@ def _daily_report_scheduler() -> None:
         try:
             from channels.antiban import msk_now
             now = msk_now()
-            if now.hour != 9 or now.minute >= 10:   # окно 09:00-09:10 МСК
+            # Два окна: утро (план на день) и вечер (итог дня). Вечерний отчёт нужен
+            # затем же, зачем утренний, но с другим вопросом: утром — «что делать»,
+            # вечером — «сработало ли». Ключ даты у каждого свой, иначе один отчёт
+            # съедал бы окно другого.
+            if now.hour == 9 and now.minute < 10:
+                slot, key = "утро", "daily_report_sent_date"
+            elif now.hour == 21 and now.minute < 10:
+                slot, key = "вечер", "evening_report_sent_date"
+            else:
                 continue
             today = now.strftime("%Y-%m-%d")
             with database.get_conn() as conn:
-                last = database.get_setting(conn, "daily_report_sent_date")
+                last = database.get_setting(conn, key)
                 if last == today:
                     continue
-                database.set_setting(conn, "daily_report_sent_date", today)
+                database.set_setting(conn, key, today)
+            print(f"[daily report] окно {slot} {today}")
             res = subprocess.run([sys.executable, "-m", "channels.notify", "--daily-report"],
                                  cwd=str(BASE_DIR.parent), timeout=300, env=env,
                                  capture_output=True, text=True, encoding="utf-8",

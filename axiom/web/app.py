@@ -3021,6 +3021,12 @@ def contacts(trash: int = 0) -> JSONResponse:
                    c.preferred_channel, c.pipeline_id, c.company_id, c.updated_at,
                    c.specialization, c.hook, c.enriched_at, c.source, c.created_at, c.email,
                    c.deleted_at, c.site, c.parse_priority, c.tg_chat_role,
+                   -- Пробив и сверка личности. Без этих полей список врал: has_tg
+                   -- отдавался, а tg_user_id/tg_checked_at нет, и «пробито 0» на
+                   -- экране означало лишь «колонку не выбрали», а не пустую базу.
+                   -- name_match/tg_name нужны колонке «Личность» (сверка «тот ли
+                   -- человек за ником», channels/name_check).
+                   c.tg_user_id, c.tg_checked_at, c.tg_name, c.name_match,
                    co.name AS company_name,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT MAX(ts) FROM messages m WHERE m.contact_id = c.id) AS last_ts

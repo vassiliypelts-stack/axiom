@@ -3749,6 +3749,7 @@ def today_tasks() -> JSONResponse:
 
     Только чтение: ничего не отправляет и не помечает. Отправкой занимается
     планировщик в channels/telegram.run_loop()."""
+    from channels import listener
     from scheduler import collect_due
     database.init_db()
     with database.get_conn() as conn:
@@ -3791,6 +3792,13 @@ def today_tasks() -> JSONResponse:
         # Сколько задач планировщик не тронет: человек не в кампании. Это не поломка,
         # а следствие защиты — но оператор должен видеть, что тут нужен он сам.
         "manual_only": sum(1 for x in out if x["sendable"] and not x["in_campaign"]),
+        # ГЛАВНАЯ причина «задачи висят месяцами»: планировщик пишет ЧЕРЕЗ слушателя
+        # (send_via_listener переиспользует его подключения — своего клиента заводить
+        # нельзя, одна сессия в двух процессах даёт AuthKeyDuplicated). Слушатель
+        # выключен → CLIENTS пуст → не уходит НИЧЕГО, и список молча копится.
+        # Живьём: 24 задачи с июля при enabled=false.
+        "blocked_by_listener": (not listener.STATUS.get("enabled")) and bool(out),
+        "listener_on": bool(listener.STATUS.get("enabled")),
     })
 
 

@@ -1024,6 +1024,11 @@ async function loadTodayTasks(){
       <span class="tag">${items.length}</span></div>
     <div class="hint" style="margin:-4px 0 8px">Задачи из кампаний планировщик отправит сам. Смотри заранее — если что-то не то, открой карточку и вмешайся.
       ${c.reminder?` · ⏰ напомнить: ${c.reminder}`:""}${c.noshow?` · 🔁 вернуть: ${c.noshow}`:""}${c.followup?` · 👋 дожать: ${c.followup}`:""}</div>
+    ${d.blocked_by_listener?`<div class="card" style="margin:-4px 0 10px;padding:10px 12px;border:1px solid #c0392b;background:#c0392b11">
+        <b style="color:#c0392b">⛔ Слушатель выключен — эти задачи НЕ уходят</b>
+        <div class="hint" style="margin-top:4px">Планировщик пишет людям через подключения слушателя (своего клиента ему заводить нельзя — одна сессия в двух процессах сжигает аккаунт). Пока слушатель остановлен, дожимы и напоминания просто копятся: часть списка ниже ждёт с июля.
+          <br>Включить: раздел «Парсинг» → «👂 Слушатель по ключам» → «▶ Запустить слушатель».</div>
+      </div>`:""}
     ${d.manual_only?`<div class="hint" style="margin:-4px 0 8px;color:#b08800">✋ ${d.manual_only} задач(и) планировщик НЕ отправит: эти люди не в кампании, а сам он пишет только участникам рассылок (защита, чтобы бот не написал личным знакомым). Их нужно дожать руками — открой карточку, текст уже готов.</div>`:""}
     ${items.slice(0,12).map(t=>{const k=TASK_KIND[t.kind]||{ic:"•",label:t.kind,cls:""};
       return `<div class="card tt-row" data-cid="${t.contact_id}" style="margin-bottom:6px;padding:8px 10px;cursor:pointer;background:var(--panel2)">

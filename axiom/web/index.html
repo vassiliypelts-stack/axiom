@@ -1022,8 +1022,9 @@ async function loadTodayTasks(){
   const c=d.counts||{};
   box.innerHTML=`<div class="dash-chh"><span class="ic">📋</span><h3>Задачи на сегодня</h3>
       <span class="tag">${items.length}</span></div>
-    <div class="hint" style="margin:-4px 0 8px">Это сделает планировщик сам. Смотри заранее — если что-то не то, открой карточку и вмешайся.
+    <div class="hint" style="margin:-4px 0 8px">Задачи из кампаний планировщик отправит сам. Смотри заранее — если что-то не то, открой карточку и вмешайся.
       ${c.reminder?` · ⏰ напомнить: ${c.reminder}`:""}${c.noshow?` · 🔁 вернуть: ${c.noshow}`:""}${c.followup?` · 👋 дожать: ${c.followup}`:""}</div>
+    ${d.manual_only?`<div class="hint" style="margin:-4px 0 8px;color:#b08800">✋ ${d.manual_only} задач(и) планировщик НЕ отправит: эти люди не в кампании, а сам он пишет только участникам рассылок (защита, чтобы бот не написал личным знакомым). Их нужно дожать руками — открой карточку, текст уже готов.</div>`:""}
     ${items.slice(0,12).map(t=>{const k=TASK_KIND[t.kind]||{ic:"•",label:t.kind,cls:""};
       return `<div class="card tt-row" data-cid="${t.contact_id}" style="margin-bottom:6px;padding:8px 10px;cursor:pointer;background:var(--panel2)">
         <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
@@ -1031,6 +1032,7 @@ async function loadTodayTasks(){
           ${t.username?`<span class="tg">@${esc(t.username)}</span>`:""}
           <span class="badge ${k.cls}">${k.label}${t.followup_n?` #${t.followup_n}`:""}</span>
           ${t.sendable?"":'<span class="badge b-stop" title="нет telegram-id — планировщик не сможет отправить, задача повиснет">не отправится</span>'}
+          ${(t.sendable&&!t.in_campaign)?'<span class="badge b-nurture" title="человек не в кампании: планировщик таким не пишет. Открой карточку и отправь сам — текст готов">✋ вручную</span>':""}
           <span style="flex:1"></span><span class="hint">${t.last_ts?"последнее: "+fmt(t.last_ts):""}</span>
         </div>
         <div class="hint" style="margin-top:4px;font-style:italic">«${esc(t.text)}»</div>

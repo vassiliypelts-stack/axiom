@@ -3772,6 +3772,14 @@ def today_tasks() -> JSONResponse:
                 # Без tg_user_id планировщик отправить не сможет — честно помечаем,
                 # иначе задача вечно висит в списке и выглядит как зависшая.
                 "sendable": bool(a.tg_user_id),
+                # ...и вторая, менее очевидная причина «висит с июля»: планировщик
+                # пишет ТОЛЬКО участникам кампаний (`if not in_campaign: continue` в
+                # tick_scheduler — защита после инцидента 08.2026, когда бот написал
+                # личным знакомым). Для остальных задача корректна, но не уйдёт
+                # никогда, а список обещал «планировщик сделает сам».
+                "in_campaign": bool(conn.execute(
+                    "SELECT 1 FROM campaign_contacts WHERE contact_id=? LIMIT 1",
+                    (a.contact_id,)).fetchone()),
             })
     order = {"reminder": 0, "noshow": 1, "followup": 2}   # срочное выше
     out.sort(key=lambda x: (order.get(x["kind"], 9), x["who"] or ""))
@@ -3780,6 +3788,9 @@ def today_tasks() -> JSONResponse:
         "counts": {k: sum(1 for x in out if x["kind"] == k)
                    for k in ("reminder", "noshow", "followup")},
         "unsendable": sum(1 for x in out if not x["sendable"]),
+        # Сколько задач планировщик не тронет: человек не в кампании. Это не поломка,
+        # а следствие защиты — но оператор должен видеть, что тут нужен он сам.
+        "manual_only": sum(1 for x in out if x["sendable"] and not x["in_campaign"]),
     })
 
 

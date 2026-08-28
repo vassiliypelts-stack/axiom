@@ -8258,20 +8258,25 @@ def campaign_autosend(cid: int, payload: dict = Body(...)) -> JSONResponse:
     планировщику нажимать ту же кнопку, что и оператор, и не обходит ни рабочие часы,
     ни дневные лимиты аккаунтов, ни гейт прогрева."""
     on = 1 if payload.get("enabled") else 0
-    interval = max(5, min(int(payload.get("interval_min") or 60), 1440))
-    batch = max(1, min(int(payload.get("batch") or 3), 50))
+    # Одно число вместо трёх. Раньше темп задавался интервалом × размером захода, а
+    # сверху резал daily_limit — и ни один параметр не означал «сколько за день»:
+    # «каждый час по 3» давало до 45 сообщений в сутки при написанном лимите 3.
+    # Теперь оператор задаёт объём, а раскладку по часам считает планировщик.
+    daily = max(1, min(int(payload.get("daily") or 3), 500))
     with database.get_conn() as conn:
         row = conn.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
-        conn.execute("UPDATE campaigns SET auto_send=?, auto_interval_min=?, auto_batch=? "
-                     "WHERE id=?", (on, interval, batch, cid))
+        # daily_limit держим равным объёму: это тот же самый предел, только он
+        # действует и на ручной запуск. Иначе два числа разъезжались бы, и «Запустить»
+        # руками обходило бы темп, заданный для автозапуска.
+        conn.execute("UPDATE campaigns SET auto_send=?, auto_daily=?, daily_limit=? "
+                     "WHERE id=?", (on, daily, daily, cid))
     warn = None
     if on and row["status"] != "running":
         warn = ("автозапуск включён, но кампания не в статусе «идёт» — нажми «▶ Запустить» "
                 "один раз, дальше заходы пойдут сами")
-    return JSONResponse({"ok": True, "auto_send": bool(on), "interval_min": interval,
-                         "batch": batch, "warn": warn})
+    return JSONResponse({"ok": True, "auto_send": bool(on), "daily": daily, "warn": warn})
 
 
 @app.post("/api/campaign/{cid}/launch")

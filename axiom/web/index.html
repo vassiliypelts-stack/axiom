@@ -1520,12 +1520,62 @@ async function loadProxyCheck(){
     <div class="hint" style="margin-top:8px">Свободных адресов не хватает — раздача из пула специально не сажает двоих на один. Нужно докупить ${(d.shared||[]).reduce((s,g)=>s+g.accounts.length-1,0)+(d.no_proxy||[]).length} шт., до этого лучше не запускать такие аккаунты в рассылке одновременно.</div>
   </div>`;
 }
+// ЗДОРОВЬЕ ПАРКА. Состояние аккаунта раньше было размазано по трём колонкам, и
+// «не проверялось» выглядело так же, как «в порядке» — из-за этого на живом парке
+// годными оказались 10 из 41, а спам-статус не спрашивали у 36. Здесь одна строка
+// отвечает на вопрос «сколько аккаунтов реально могут работать прямо сейчас».
+async function renderParkHealth(){
+  const box=$("#acc-health");if(!box)return;
+  let h;try{h=await api("/api/park/health");}catch(e){box.innerHTML="";return;}
+  const c=h.counts||{},ids=h.ids||{};
+  const chip=(n,label,color,title)=>!n?"":
+    `<span class="badge" style="background:${color}22;color:${color};border-color:${color}55" title="${esc(title||"")}">${label}: ${n}</span>`;
+  const pct=h.total?Math.round((c.ready||0)*100/h.total):0;
+  box.innerHTML=`<div class="card" style="padding:12px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div>
+        <b style="font-size:14px">🩺 Здоровье парка</b>
+        <span class="sub" style="margin-left:8px">готовы к работе <b style="color:${pct>50?"var(--green)":"#c0392b"}">${c.ready||0}</b> из ${h.total}</span>
+      </div>
+      <div class="ttoolbar" style="margin:0">
+        <button id="ph-check" title="Прокси → сессии → @SpamBot. Идёт в фоне, результаты подтягиваются по мере готовности">🔄 Проверить весь парк</button>
+        <span id="ph-msg" class="sub"></span>
+      </div>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+      ${chip(c.ready,"готовы","#2e9e5b","жива сессия, есть живой прокси, не защищён")}
+      ${chip(c.dead_session,"сессия отозвана","#c0392b","нужен перелогин: 🔌 Подключить")}
+      ${chip(c.unchecked_session,"сессия не проверялась","#b08800","неизвестно, рабочая ли — прогоните проверку")}
+      ${chip(c.dead_proxy,"прокси мёртв","#c0392b","через него аккаунт не выйдет в Telegram")}
+      ${chip(c.no_proxy,"без прокси","#b08800","подключать живую сессию без своего прокси нельзя — сожжёт ключ")}
+      ${chip(c.no_session,"нет сессии","#8a8a8a","аккаунт заведён, но не подключён")}
+      ${chip(c.banned,"забанены","#c0392b","")}
+      ${chip(c.unchecked_spam,"спам-статус неизвестен","#b08800","не спрашивали @SpamBot — не знаем, есть ли ограничения")}
+      ${chip(c.protected,"защищены","#6b5bd6","рабочие номера: не парсят, не инвайтят, автоматика их не трогает")}
+    </div>
+    ${(c.dead_session||c.dead_proxy)?`<div class="hint" style="margin-top:8px">Чинить по порядку: сперва прокси (через мёртвый канал сессия не ответит и будет ложно похоронена), потом перелогин сессий.</div>`:""}
+  </div>`;
+  $("#ph-check").onclick=async()=>{
+    const b=$("#ph-check"),m=$("#ph-msg");
+    b.disabled=true;b.textContent="запускаю…";
+    let r;try{r=await api("/api/park/check",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({what:"all"})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent="🔄 Проверить весь парк";
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    const st=r.started||{};
+    m.textContent=`идёт в фоне: прокси ${st.proxy||0}, сессии ${st.session||0}, @SpamBot ${st.spam||0} — займёт несколько минут`;
+    // Проверки фоновые: обновляем панель через паузу, чтобы показать первые результаты.
+    setTimeout(renderParkHealth,45000);
+  };
+}
+
 async function viewAgents(v){
   const a=await api("/api/accounts");
   const accPreset=localStorage.getItem("acc_preset")||"all";
   const accTest=(ACC_PRESETS[accPreset]||ACC_PRESETS.all).test;
   const aShown=a.filter(accTest);
   v.innerHTML=`<p class="sub" style="margin-top:0">Твои рабочие аккаунты (пул отправителей) — «кто есть кто». С каждого бот пишет в рамках дневного лимита.</p>
+    <div id="acc-health" style="margin-bottom:12px"></div>
     <div id="acc-identity" style="margin-bottom:12px"></div>
     <div id="acc-twofa" style="margin-bottom:12px"></div>
     <div id="acc-spare" style="margin-bottom:12px"></div>
@@ -1664,6 +1714,7 @@ async function viewAgents(v){
     </div>
     <div id="acc-tbl"></div>`;
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
+  renderParkHealth();
   loadIdentityCheck();
   loadTwofa();
   loadSpare();

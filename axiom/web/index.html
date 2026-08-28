@@ -1698,7 +1698,7 @@ async function viewAgents(v){
         <button id="ab-proxy6-check" title="Проверить, что PROXY6_API_KEY в .env рабочий — покажет баланс">Проверить ключ Proxy6</button>
         <button id="ab-proxy-check" title="Реальный коннект к Telegram через прокси КАЖДОГО выбранного аккаунта — покажет живой / мёртвый в колонке «Прокси»">Проверить прокси (живость)</button>
         <button id="ab-sms-reg" title="Саморегистрация нового TG-номера через hero-sms: выбор страны, свежий номер и 2FA под нашим контролем. Тратит деньги с баланса hero-sms">Зарегистрировать номер (hero-sms)</button>
-        <button id="ab-protect" title="Защита купленных аккаунтов от реклейма продавцом: 2FA-пароль сразу + (опционально) смена номера на свой через hero-sms, когда аккаунту 24+ часа">Защитить (2FA+номер)</button>
+        <button id="ab-protect" title="Защита купленных аккаунтов ОТ ПРОДАВЦА: ставит 2FA-пароль и (опционально) меняет номер на свой через hero-sms, когда аккаунту 24+ часа. Не путать с «Назначением»: запрет на парсинг/рассылку включается там, ролью «🏠 Родной»">🔐 2FA + свой номер</button>
         <button id="ab-spare" title="Выпустить запасную сессию: вторую НЕЗАВИСИМУЮ авторизацию Telegram (свой ключ, без SMS). Если основную сожгут — аккаунт поднимается запаской. Это не копия сессии: копия — тот же ключ, ей застраховаться нельзя">🧯 Выпустить запаску</button>
         <span style="display:inline-flex;align-items:center;gap:6px" title="Чем занят аккаунт. Родной — личный, автоматика не трогает. Служебный — уведомления/отчёты/пробив, в рассылку не идёт (иначе сгорит отправитель уведомлений). Боевой — рассылка, парсинг, прогрев.">назначение
           <select id="ab-role" style="max-width:150px">
@@ -1878,8 +1878,8 @@ async function viewAgents(v){
     // Зелёная подсветка «рабочих» — с кем можно работать прямо сейчас: подключён,
     // сессия жива, прокси жив, не забанен. Видно на глаз, кого пускать в бой.
     rowClass:r=>(r.tg_connected&&r.session_state==='alive'&&r.proxy_alive===1&&r.status!=='banned')?"row-ready":"",
-    groupOptions:[{key:"acc_role",label:"назначение"},{key:"protected",label:"родной/боевой"},{key:"role",label:"роль в продажах"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
-    groupFmt:(k,val)=>k==="acc_role"?(ACC_ROLE_RU[val]||val):k==="protected"?(val==="1"?"🏠 Родные (личные номера)":"🪖 Боевая бригада"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
+    groupOptions:[{key:"acc_role",label:"назначение"},{key:"protected",label:"защита от автоматики"},{key:"role",label:"роль в продажах"},{key:"status",label:"статус"},{key:"session_state",label:"живость"}],
+    groupFmt:(k,val)=>k==="acc_role"?(ACC_ROLE_RU[val]||val):k==="protected"?(val==="1"?"🔒 Защищены (не парсят, не шлют)":"✅ В работе"):k==="role"?(ROLE_RU[val]||val):k==="session_state"?(ACC_LIVE[val]||"⚪ не проверялись"):(ACC_ST[val]||val),
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},

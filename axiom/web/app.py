@@ -889,7 +889,18 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         val = 1 if payload.get("protected") else 0
         with database.get_conn() as conn:
             conn.execute(f"UPDATE accounts SET protected=? WHERE id IN ({qm})", (val, *ids))
-        return JSONResponse({"ok": True, "updated": len(ids), "protected": val})
+            # Роль own принудительно держит protected=1 (см. action=="acc_role"), поэтому
+            # СНЯТИЕ защиты обязано снять и её — иначе флаг возвращается ролью и выглядит
+            # как «галочка не сохраняется». Живьём: #2 Максим865 сняли защиту, а парсинг
+            # продолжал отказывать. Роль меняем только у тех, кто действительно был own.
+            demoted = 0
+            if not val:
+                cur = conn.execute(
+                    f"UPDATE accounts SET acc_role='combat' WHERE id IN ({qm}) AND acc_role='own'",
+                    ids)
+                demoted = cur.rowcount or 0
+        return JSONResponse({"ok": True, "updated": len(ids), "protected": val,
+                             "role_changed": demoted})
     if action == "warmup":
         with database.get_conn() as conn:
             rows = conn.execute(
@@ -4180,8 +4191,8 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
         if guarded:
             who = ", ".join(f"#{r['id']} {r['label'] or ''}".strip() for r in guarded)
             return JSONResponse(
-                {"error": f"защищённые аккаунты не парсят: {who}. Это рабочие номера — "
-                          f"сними защиту в «Аккаунтах», если действительно нужно ими"},
+                {"error": f"защищённые аккаунты не парсят: {who}. Это рабочие номера. "
+                          f"Снять: «Аккаунты» → отметить → «Назначение» → 🪖 Боевой (роль «🏠 Родной» держит защиту включённой)"},
                 status_code=400)
     if acc_ids:
         args += ["--accounts", ",".join(str(a) for a in acc_ids)]
@@ -4273,8 +4284,12 @@ def parse_accounts() -> JSONResponse:
         # включать режим защиты — иначе снять его из пульта нельзя в принципе.
         d["battle"] = bool(d.get("protected"))
         d["native"] = d.get("kind") in ("own", "personal")
-        d["kind_ru"] = ("🔴 боевой (не парсить)" if d["battle"]
-                        else "🏠 родной (не защищён)" if d["native"]
+        # ФОРМУЛИРОВКИ. «🔴 боевой (не парсить)» прямо противоречило назначению
+        # «🪖 Боевой (рассылка, парсинг, прогрев)»: одно и то же слово значило и
+        # «рабочая лошадка», и «трогать нельзя». Оператор читал метку как запрет от
+        # системы, хотя запрет включает он сам полем «Назначение».
+        d["kind_ru"] = ("🔒 защищён (парсинг запрещён)" if d["battle"]
+                        else "🏠 родной (парсить можно)" if d["native"]
                         else "🟢 расходный" if d.get("kind") == "bought"
                         else "🟡 своя симка" if d.get("kind") == "sim"
                         else "⚪ не помечен")
@@ -4389,7 +4404,8 @@ def parse_join(payload: dict = Body(...)) -> JSONResponse:
             f"AND COALESCE(protected,0)=1", acc_ids).fetchall()
     if guarded:
         who = ", ".join(f"#{r['id']} {r['label'] or ''}".strip() for r in guarded)
-        return JSONResponse({"error": f"защищённые аккаунты не вступают: {who}"}, status_code=400)
+        return JSONResponse(
+            {"error": f"защищённые аккаунты не вступают: {who}. Снять: «Аккаунты» → отметить → «Назначение» → 🪖 Боевой (роль «🏠 Родной» держит защиту включённой)"}, status_code=400)
     args = ["channels.chat_join", "--per", "1", "--chats", str(chat["id"]),
             "--ids", ",".join(str(a) for a in acc_ids)]
     res = _run_capture(args, timeout=900)

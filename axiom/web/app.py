@@ -2489,10 +2489,23 @@ def _meetings_scheduler() -> None:
                                 if v.get("ok"))
                 if check_listener_down(conn, listening, enabled):
                     print(f"[сторож] слушатель молчит: enabled={enabled} listening={listening}")
-            if not antiban.within_work_hours():
-                continue                      # ночью не пишем даже напоминания
+            # НОЧЬЮ живым людям не пишем — но СВОИ тест-номера это правило не касается:
+            # проверять сценарий приходится тогда, когда до него дошли руки, и «приходи
+            # в рабочее окно» здесь просто мешает. Риска нет: тестовый контакт — свой же
+            # номер, ни спама, ни потерянного лида. Тот же принцип уже действует в
+            # listener._handle_private (is_test/protected отвечают круглосуточно) и в
+            # campaign_send (гейт часов стоит под `not test`), так что дожим был
+            # единственным местом, где тест всё ещё ждал утра.
+            night = not antiban.within_work_hours()
             with database.get_conn() as conn:
                 actions = collect_due(conn)
+                if night:
+                    test_ids = {r["id"] for r in conn.execute(
+                        "SELECT id FROM contacts WHERE COALESCE(is_test,0)=1").fetchall()}
+                    actions = [a for a in actions if a.contact_id in test_ids]
+                    if not actions:
+                        continue              # ночь и тестовых дел нет — ждём утра
+                    print(f"[sched] ночь: веду только тест-контакты ({len(actions)})")
                 stuck = check_stuck_replies(conn)
                 if stuck:
                     print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")

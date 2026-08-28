@@ -43,8 +43,11 @@ PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "mtproto_proxy_free",
                   # добавлено 28.08.2026 — расширяем донорскую базу: публичный прокси
                   # живёт 30 мин — пару часов, поэтому берём числом источников, а не
                   # глубиной по каждому (per_channel и так ограничен).
-                  "mtproto_proxy", "MTProto_Proxy_Free", "proxybest_mtproto",
-                  "freemtprotoproxy", "mtprotoproxies_free", "ProxyMTProtoRu"]
+                  # Оставлены только СУЩЕСТВУЮЩИЕ: proxybest_mtproto, freemtprotoproxy и
+                  # mtprotoproxies_free убраны — таких юзернеймов нет, каждый прогон
+                  # тратил на них ResolveUsernameRequest (самый лимитируемый вызов) и
+                  # получал ошибку в лог.
+                  "mtproto_proxy", "MTProto_Proxy_Free", "ProxyMTProtoRu"]
 
 # Списки прокси на GitHub — источник КАЧЕСТВЕННЕЕ каналов: там прокси уже прогнаны
 # автопроверкой (репозитории обновляются каждые 4-12 часов), тогда как в каналах
@@ -53,11 +56,12 @@ PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "mtproto_proxy_free",
 # Проверено 28.08.2026 живым запросом; нерабочее сюда не кладём, чтобы каждый прогон
 # не тратил время на 404. mtpro.xyz/api требует ключ (401), репозиторий Grim1313 удалён.
 PROXY_URLS = [
-    # основной: бот обновляет список каждые 12 часов, на проверке дал 47 совместимых
+    # Единственный результативный на прогоне 28.08.2026: дал +47 совместимых, бот
+    # обновляет список каждые 12 часов. Остальные проверенные кандидаты выброшены:
+    # Chumbayoumba и toproxylab дали +0 (их страницы держат ссылки в формате, который
+    # наш парсер не берёт, либо дублируют уже собранное), mtpro.xyz/api просит ключ
+    # (401), репозиторий Grim1313 удалён (404).
     "https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt",
-    # мелкие добавки (по 4-6 ссылок), берём ради разнообразия источников
-    "https://raw.githubusercontent.com/Chumbayoumba/free-telegram-proxy-russia-2026/main/README.md",
-    "https://toproxylab.com/ru/proksi-dlya-tg",
 ]
 TARGET_ALIVE = 10          # запасной ориентир, если парк аккаунтов посчитать не удалось
 

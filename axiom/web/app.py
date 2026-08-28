@@ -1916,6 +1916,7 @@ def proxies_auto_get() -> JSONResponse:
     with database.get_conn() as conn:
         return JSONResponse({
             "auto": database.get_setting(conn, "proxy_auto", "off") == "on",
+            "interval_min": int(database.get_setting(conn, "proxy_interval_min", "360")),
             "interval_h": int(database.get_setting(conn, "proxy_interval_min", "360")) // 60,
             "last_run": database.get_setting(conn, "proxy_last_run", None),
         })
@@ -1923,12 +1924,25 @@ def proxies_auto_get() -> JSONResponse:
 
 @app.post("/api/proxies/auto")
 def proxies_auto_set(payload: dict = Body(...)) -> JSONResponse:
+    """interval_min — в МИНУТАХ (приоритет), interval_h — в часах (старый вызов).
+
+    Часами задать сбор чаще раза в час было нельзя, а публичный MTProto-прокси живёт
+    30 минут — пару часов: за 2 часа между заходами половина собранного успевала
+    умереть, отсюда вечный дефицит пула. Нижняя граница 15 минут: один заход читает
+    каналы и проверяет полторы сотни адресов реальными подключениями — это минуты
+    работы, запускать его чаще значит гнать заходы внахлёст без новых прокси на
+    выходе (доноры обновляются раз в часы, а не секунды)."""
     auto = "on" if payload.get("auto") else "off"
-    interval_h = max(1, int(payload.get("interval_h") or 6))
+    if payload.get("interval_min") is not None:
+        interval_min = max(15, min(int(payload["interval_min"]), 24 * 60))
+    else:
+        interval_min = max(15, int(payload.get("interval_h") or 6) * 60)
     with database.get_conn() as conn:
         database.set_setting(conn, "proxy_auto", auto)
-        database.set_setting(conn, "proxy_interval_min", str(interval_h * 60))
-    return JSONResponse({"ok": True, "auto": auto == "on", "interval_h": interval_h})
+        database.set_setting(conn, "proxy_interval_min", str(interval_min))
+    return JSONResponse({"ok": True, "auto": auto == "on",
+                         "interval_min": interval_min,
+                         "interval_h": round(interval_min / 60, 2)})
 
 
 @app.get("/api/keywords/auto")

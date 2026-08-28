@@ -39,7 +39,26 @@ from db import database
 # прогон тратил на него запрос и получал ResolveUsernameRequest-ошибку в лог.
 # Список можно дополнять — несуществующий канал не ломает сбор, но и пользы не даёт.
 PROXY_CHANNELS = ["TProxyRU", "ProxyMTProto", "mtproto_proxy_free",
-                  "proxy_mtproto_telegram", "MTProtoProxies"]
+                  "proxy_mtproto_telegram", "MTProtoProxies",
+                  # добавлено 28.08.2026 — расширяем донорскую базу: публичный прокси
+                  # живёт 30 мин — пару часов, поэтому берём числом источников, а не
+                  # глубиной по каждому (per_channel и так ограничен).
+                  "mtproto_proxy", "MTProto_Proxy_Free", "proxybest_mtproto",
+                  "freemtprotoproxy", "mtprotoproxies_free", "ProxyMTProtoRu"]
+
+# Списки прокси на GitHub — источник КАЧЕСТВЕННЕЕ каналов: там прокси уже прогнаны
+# автопроверкой (репозитории обновляются каждые 4-12 часов), тогда как в каналах
+# лежит всё подряд, включая мёртвое с прошлой недели. Обычный HTTPS-запрос, аккаунт
+# и Telegram для этого не нужны вовсе — то есть ноль риска для наших сессий.
+# Проверено 28.08.2026 живым запросом; нерабочее сюда не кладём, чтобы каждый прогон
+# не тратил время на 404. mtpro.xyz/api требует ключ (401), репозиторий Grim1313 удалён.
+PROXY_URLS = [
+    # основной: бот обновляет список каждые 12 часов, на проверке дал 47 совместимых
+    "https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt",
+    # мелкие добавки (по 4-6 ссылок), берём ради разнообразия источников
+    "https://raw.githubusercontent.com/Chumbayoumba/free-telegram-proxy-russia-2026/main/README.md",
+    "https://toproxylab.com/ru/proksi-dlya-tg",
+]
 TARGET_ALIVE = 10          # запасной ориентир, если парк аккаунтов посчитать не удалось
 
 
@@ -118,6 +137,42 @@ def _msg_sources(msg) -> list[str]:
     return parts
 
 
+def harvest_web(timeout: int = 20) -> list[tuple[str, int, str]]:
+    """Прокси из веб-списков (PROXY_URLS). Обычный HTTPS, без Telegram и аккаунтов.
+
+    Два формата: текстовые списки со ссылками tg://proxy?… (их разбирает общий
+    parse_proxies_from_text) и JSON от mtpro.xyz, где host/port/secret лежат полями.
+    Сбоя источника достаточно, чтобы его пропустить: доноров много, и падать из-за
+    одного недоступного репозитория незачем."""
+    import json as _json
+    import urllib.request
+
+    found: set[tuple[str, int, str]] = set()
+    for url in PROXY_URLS:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read().decode("utf-8", "replace")
+        except Exception as e:  # noqa: BLE001
+            print(f"[harvest-web] {url}: {e}")
+            continue
+        before = len(found)
+        for p in parse_proxies_from_text(body):
+            found.add(p)
+        # JSON-формат (mtpro.xyz): [{"host": "...", "port": 443, "secret": "..."}, …]
+        if body.lstrip().startswith("["):
+            try:
+                for it in _json.loads(body):
+                    host = it.get("host") or it.get("server")
+                    port, secret = it.get("port"), it.get("secret")
+                    if host and port and secret and _is_telethon_compatible(str(secret)):
+                        found.add((str(host), int(port), str(secret)))
+            except Exception:  # noqa: BLE001
+                pass
+        print(f"[harvest-web] {url.split('/')[2]}: +{len(found) - before}")
+    return list(found)
+
+
 async def harvest(client, per_channel: int = 80) -> list[tuple[str, int, str]]:
     found: set[tuple[str, int, str]] = set()
     for ch in PROXY_CHANNELS:
@@ -128,6 +183,11 @@ async def harvest(client, per_channel: int = 80) -> list[tuple[str, int, str]]:
                         found.add(p)
         except Exception as e:  # noqa: BLE001
             print(f"[harvest] {ch}: {e}")
+    print(f"[harvest] из каналов: {len(found)}")
+    # Веб-списки добираем всегда: они уже прогнаны автопроверкой на своей стороне,
+    # тогда как в каналах лежит всё подряд вперемешку с мёртвым.
+    for p in harvest_web():
+        found.add(p)
     print(f"[harvest] собрано уникальных прокси: {len(found)}")
     return list(found)
 

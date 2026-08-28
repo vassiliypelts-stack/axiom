@@ -7101,9 +7101,43 @@ async function viewParser(v){
     const w=$("#p-period-wrap");if(w)w.style.display=onActive?"":"none";
     const iw=$("#p-incr-wrap");if(iw)iw.style.display=onActive?"flex":"none";
   };
-  $("#p-mode").addEventListener("change",syncMode);syncMode();
+  $("#p-mode").addEventListener("change",()=>{$("#p-mode").dataset.touched="1";syncMode();});
+  syncMode();
+
+  // Цель — КОНКРЕТНЫЙ чат, а не поисковый запрос?
+  const isChatTarget=(t)=>{
+    t=(t||"").trim();
+    if(!t)return false;
+    return /^@[\w]+$/.test(t) || /t\.me\//i.test(t) || /^-?\d{5,}$/.test(t);
+  };
+  // «Поиск групп» ищет ПО СЛОВАМ и людей не собирает вовсе: печатает найденные
+  // каналы и выходит. Со ссылкой в поле это гарантированный «найдено 0» — ровно
+  // так и вышло 27.08 с t.me/+mHeeIJ… Поэтому при вставке ссылки сами переводим
+  // вид на «все участники», пока оператор не выбрал вид руками.
+  const autoMode=()=>{
+    const sel=$("#p-mode");if(!sel||sel.dataset.touched)return;
+    if(isChatTarget($("#p-target").value)&&sel.value==="search"){
+      sel.value="members";syncMode();
+      const m=$("#p-member");
+      if(m&&!m.dataset.modehint){
+        m.dataset.modehint="1";
+        m.innerHTML='<span class="sub">вид переключён на «👥 все участники чата»: '
+          +'«поиск групп» ищет по словам и людей не собирает</span>'+(m.innerHTML||"");
+        setTimeout(()=>{m.dataset.modehint="";},4000);
+      }
+    }
+  };
+  $("#p-target").addEventListener("input",autoMode);
 
   $("#p-run").onclick=()=>{
+    // Последний рубеж: если оператор ВЫБРАЛ «поиск групп» руками, но в цели ссылка —
+    // предупреждаем до запуска. Иначе он получает тихий «найдено 0» и решает, что
+    // сломан парсер, хотя режим просто не про сбор людей.
+    if($("#p-mode").value==="search"&&isChatTarget($("#p-target").value)){
+      if(!confirm("В поле цели ссылка на конкретный чат, а вид парсинга — «поиск групп по теме».\n\n"
+          +"Этот вид ищет группы ПО СЛОВАМ и участников не собирает: результат будет «найдено 0».\n\n"
+          +"Продолжить всё равно?"))return;
+    }
     const ids=[...$("#p-accs").querySelectorAll("input:checked")].map(i=>+i.value);
     // Защищённым парсить нельзя — и это решает СЕРВЕР (см. /api/parse/run). Здесь
     // не confirm, а объяснение: раньше «всё равно запустить?» создавало иллюзию, что

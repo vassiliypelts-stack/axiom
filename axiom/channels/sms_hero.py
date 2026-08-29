@@ -16,13 +16,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import config
 
-BASE = "https://hero-sms.com/stubs/handler_api.php"
+# Адрес API. Протокол — SMS-Activate handler_api, и по нему работают ДЕСЯТКИ
+# сервисов (sms-activate.io, 5sim, smshub, tiger-sms, vak-sms…): у всех одинаковые
+# getBalance/getNumber/getStatus/setStatus. Поэтому смена провайдера — это строка в
+# .env, а не правка кода: SMS_API_BASE + свой ключ. Полезно, когда у текущего
+# сервиса по нужной стране плохая доставляемость: качество SMS у них разное, и
+# «коды не приходят» лечится сменой поставщика, а не ожиданием.
+BASE = os.getenv("SMS_API_BASE", "").strip() or "https://hero-sms.com/stubs/handler_api.php"
 SERVICE_TG = "tg"
 
 # Названия стран берём ЖИВЫМИ с сервера (action=getCountries отдаёт официальные
@@ -162,7 +169,26 @@ def get_status(activation_id: str) -> str:
     return _get("getStatus", id=activation_id)
 
 
-async def poll_code(activation_id: str, timeout: int = 180, interval: float = 5.0) -> str | None:
+def mark_ready(activation_id: str) -> str:
+    """«Номер получен, жду SMS» — status=1 в протоколе SMS-Activate.
+
+    ЗАЧЕМ. По протоколу после getNumber клиент обязан подтвердить готовность: только
+    после status=1 активация переходит в состояние ожидания SMS. Мы этот шаг не делали
+    вовсе — сразу уходили в getStatus, — и у части сервисов активация так и висела
+    «выдан номер», а SMS не доставлялась. Отсюда и жалоба «баланс есть, а коды не
+    приходят»: деньги за номер списывались, код не приходил.
+
+    Ошибку не бросаем: часть провайдеров считает status=1 необязательным и отвечает
+    ошибкой на повторный вызов. Провалить из-за этого регистрацию было бы хуже, чем
+    попробовать дождаться кода и так."""
+    try:
+        return _get("setStatus", id=activation_id, status=1)
+    except SmsHeroError as e:
+        print(f"[sms] status=1 не принят ({e}) — жду код без подтверждения готовности")
+        return ""
+
+
+async def poll_code(activation_id: str, timeout: int = 300, interval: float = 5.0) -> str | None:
     """Опрашивает getStatus, пока не придёт код или не выйдет время. `STATUS_OK:1234` → '1234'.
     Отмена активации ('STATUS_CANCEL') или таймаут → None (деньги за номер НЕ списаны,
     отменять/подтверждать — обязанность вызывающего кода)."""

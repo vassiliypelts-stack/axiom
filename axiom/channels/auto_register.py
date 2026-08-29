@@ -25,7 +25,7 @@ import sys
 import time
 
 import config
-from channels.sms_hero import get_number, poll_code, cancel, finish
+from channels.sms_hero import get_number, poll_code, cancel, finish, mark_ready
 from channels.telegram import build_client
 from channels.privacy import apply_privacy
 from db import database
@@ -102,10 +102,17 @@ async def _register_number(country: int, proxy_period: int = 7,
         return result
 
     # --- Шаг 4: Ждать SMS-код от hero-sms ---
-    _log("sms_wait", "Ожидаю SMS-код от hero-sms...")
-    code = await poll_code(activation_id, timeout=120, interval=3)
+    # Сначала подтверждаем готовность (status=1): по протоколу SMS-Activate активация
+    # переходит в ожидание SMS только после этого шага. Мы его не делали вовсе — сразу
+    # опрашивали getStatus, — и активация могла висеть «номер выдан», пока не истечёт
+    # время. Отсюда «деньги списались, код не пришёл».
+    mark_ready(activation_id)
+    _log("sms_wait", "Ожидаю SMS-код от hero-sms (до 5 мин)...")
+    # 5 минут вместо 2: в дешёвых странах SMS идёт дольше, а отмена раньше времени
+    # означает потраченный номер и повторную попытку с новыми деньгами.
+    code = await poll_code(activation_id, timeout=300, interval=3)
     if not code:
-        _log("sms_wait", "Код не пришёл за 2 мин — отмена")
+        _log("sms_wait", "Код не пришёл за 5 мин — отмена (деньги за номер возвращаются)")
         cancel(activation_id)
         await client.disconnect()
         return result

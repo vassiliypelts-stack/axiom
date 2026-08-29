@@ -7129,11 +7129,26 @@ async function viewParser(v){
       <button id="ac-refresh" title="Перечитать список прямо из Telegram — нужно, если недавно вступил в новые чаты. Займёт до минуты">↻ Обновить из Telegram</button>
       <span id="ac-msg" class="sub"></span>
     </div>
+    <div id="ac-filters" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <input id="ac-q" placeholder="фильтр по названию…" style="max-width:260px">
+      <span class="sub">участников: от <input id="ac-min" type="number" min="0" placeholder="0" style="max-width:90px"> до <input id="ac-max" type="number" min="0" placeholder="∞" style="max-width:90px"></span>
+      <label class="sub" style="display:inline-flex;gap:5px;align-items:center;cursor:pointer" title="Скрыть чаты, из которых контакты уже собирали"><input type="checkbox" id="ac-unparsed"> только непарсенные</label>
+      <span class="grow"></span>
+      <button id="ac-selall" class="sub" style="padding:2px 8px">выделить видимые</button>
+      <button id="ac-selnone" class="sub" style="padding:2px 8px">снять всё</button>
+      <span id="ac-count" class="sub"></span>
+    </div>
     <div id="ac-list" style="display:none;max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
     <div id="ac-go-wrap" style="display:none;margin-top:10px">
       <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="ac-save" checked> записать найденных в книжку</label>
       <button class="primary" id="ac-go">Парсить отмеченные</button>
       <span id="ac-go-msg" class="sub" style="margin-left:8px"></span>
+      <div id="ac-progress" style="display:none;margin-top:10px">
+        <div style="height:8px;background:var(--panel2);border-radius:4px;overflow:hidden">
+          <div id="ac-bar" style="height:100%;width:0;background:var(--accent);transition:width .4s"></div>
+        </div>
+        <div id="ac-prog-txt" class="sub" style="margin-top:5px"></div>
+      </div>
       <div class="hint" style="margin-top:6px">Между чатами пауза 45–120 сек — это антибан, а не медлительность. Идёт фоном, результат появится в «Истории парсинга» внизу.</div>
     </div>
   </div>
@@ -7386,21 +7401,55 @@ async function viewParser(v){
       box.innerHTML='<span class="sub">чатов не найдено. Нажми «↻ Обновить из Telegram» — список собирается инвентаризацией, и для этого аккаунта её могли не делать.</span>';
       return;}
     box.style.display="";$("#ac-go-wrap").style.display="";
-    msg.textContent=`чатов: ${items.length}`;
-    box.innerHTML=items.map(c=>{
+    $("#ac-filters").style.display="flex";
+    AC_ITEMS=items;
+    acRender();
+  };
+
+  // Список бывает на 800+ чатов (у главного аккаунта — 826), глазами в нём не найти
+  // нужный. Фильтруем по названию и размеру, отмеченное при этом НЕ теряем: галочки
+  // живут в наборе, а не в DOM, иначе фильтр снимал бы выбор.
+  let AC_ITEMS=[],AC_SEL=new Set();
+  const acVisible=()=>{
+    const q=($("#ac-q").value||"").trim().toLowerCase();
+    const mn=+$("#ac-min").value||0, mx=+$("#ac-max").value||0;
+    const onlyNew=$("#ac-unparsed").checked;
+    return AC_ITEMS.filter(c=>{
+      if(q&&!((c.title||"").toLowerCase().includes(q)))return false;
+      const n=c.members_count||0;
+      if(mn&&n<mn)return false;
+      if(mx&&n>mx)return false;
+      if(onlyNew&&c.parsed)return false;
+      return true;});
+  };
+  const acRender=()=>{
+    const box=$("#ac-list"),vis=acVisible();
+    $("#ac-count").textContent=`показано ${vis.length} из ${AC_ITEMS.length}`
+      +(AC_SEL.size?` · отмечено ${AC_SEL.size}`:"");
+    box.innerHTML=vis.length?vis.map(c=>{
       const cnt=c.members_count?`<span class="sub"> · ${c.members_count} уч.</span>`:"";
       const kind=c.kind==="channel"?'<span class="badge b-nurture" style="font-size:10px">канал</span>':"";
       const done=c.parsed?`<span class="badge b-active" style="font-size:10px" title="столько контактов уже помечены этим чатом">спарсено: ${c.parsed}</span>`:"";
       const closed=!c.username?'<span class="badge" style="font-size:10px" title="без публичной ссылки — парсится по членству аккаунта">закрытый</span>':"";
       return `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer">
-        <input type="checkbox" class="ac-ch" value="${c.id}">
-        <span>${esc(c.title||("#"+c.id))}</span>${cnt} ${kind} ${closed} ${done}</label>`;}).join("");
+        <input type="checkbox" class="ac-ch" value="${c.id}"${AC_SEL.has(c.id)?" checked":""}>
+        <span>${esc(c.title||("#"+c.id))}</span>${cnt} ${kind} ${closed} ${done}</label>`;}).join("")
+      :'<span class="sub">под фильтр ничего не подошло</span>';
+    box.querySelectorAll(".ac-ch").forEach(cb=>cb.onchange=()=>{
+      const id=+cb.value;
+      if(cb.checked)AC_SEL.add(id);else AC_SEL.delete(id);
+      $("#ac-count").textContent=`показано ${vis.length} из ${AC_ITEMS.length}`
+        +(AC_SEL.size?` · отмечено ${AC_SEL.size}`:"");});
   };
+  ["ac-q","ac-min","ac-max"].forEach(id=>$("#"+id).addEventListener("input",acRender));
+  $("#ac-unparsed").addEventListener("change",acRender);
+  $("#ac-selall").onclick=()=>{acVisible().forEach(c=>AC_SEL.add(c.id));acRender();};
+  $("#ac-selnone").onclick=()=>{AC_SEL.clear();acRender();};
   $("#ac-load").onclick=()=>acLoad(false);
   $("#ac-refresh").onclick=()=>acLoad(true);
   $("#ac-acc").addEventListener("change",()=>{$("#ac-list").style.display="none";$("#ac-go-wrap").style.display="none";$("#ac-msg").textContent="";});
   $("#ac-go").onclick=async()=>{
-    const ids=[...$("#ac-list").querySelectorAll(".ac-ch:checked")].map(i=>+i.value);
+    const ids=[...AC_SEL];
     const acc=+$("#ac-acc").value;
     const m=$("#ac-go-msg");
     if(!ids.length){m.textContent="отметь хотя бы один чат";return;}
@@ -7414,7 +7463,40 @@ async function viewParser(v){
     b.disabled=false;b.textContent=was;
     if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
     m.innerHTML='<span style="color:var(--green)">'+esc(r.message||("запущено: "+r.queued))+'</span>';
-    setTimeout(loadRuns,4000);
+    acWatch(ids.length,(r.titles||[]).length?r.titles:null);
+  };
+
+  // Прогресс. Заход на 10 чатов идёт десятки минут (паузы 45-120с между чатами), и
+  // без индикатора это выглядит как «ничего не происходит». Считаем по истории
+  // запусков: сколько записей появилось с момента старта.
+  let AC_TIMER=null;
+  const acWatch=(total,titles)=>{
+    const wrap=$("#ac-progress"),bar=$("#ac-bar"),txt=$("#ac-prog-txt");
+    if(!wrap)return;
+    wrap.style.display="";
+    const started=Date.now();
+    if(AC_TIMER)clearInterval(AC_TIMER);
+    const tick=async()=>{
+      let rows;try{rows=await api("/api/parse/runs");}catch(e){return;}
+      // берём заходы, начавшиеся после нажатия (с запасом в минуту на часовые сдвиги)
+      const fresh=(rows||[]).filter(r=>{
+        const t=Date.parse((r.started_at||"").replace(" ","T")+"Z");
+        return t && t>=started-90000;});
+      const done=fresh.length;
+      const found=fresh.reduce((a,r)=>a+(r.found||0),0);
+      const saved=fresh.reduce((a,r)=>a+(r.saved_new||0),0);
+      const pct=Math.min(100,Math.round(done*100/Math.max(1,total)));
+      bar.style.width=pct+"%";
+      const mins=Math.round((Date.now()-started)/60000);
+      txt.innerHTML=`чатов пройдено: <b>${done}</b> из ${total} · найдено ${found}, новых в книжке <b>${saved}</b>`
+        +(mins?` · идёт ${mins} мин`:"")
+        +(done<total?' <span class="sub">— между чатами пауза, это нормально</span>':"");
+      loadRuns();
+      if(done>=total){clearInterval(AC_TIMER);AC_TIMER=null;
+        txt.innerHTML+=' <span style="color:var(--green)">— готово</span>';}
+    };
+    tick();
+    AC_TIMER=setInterval(tick,15000);
   };
 
   // ---- История запусков: последние 10, клик ведёт в готовую подборку «Контактов» ----

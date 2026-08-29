@@ -432,12 +432,24 @@ async def _scan_group(event, acc_id: int) -> None:
                 _log(f"[#{acc_id}] 🎯 запрос «{kw}» от {name} в «{title}» → Запросы")
 
 
-def _make_handler(acc_id: int):
+def _make_handler(acc_id: int, role: str | None = None):
+    """role — что этому аккаунту разрешено (accounts.listen_role):
+    'dialogs' — только личка (ответы клиентов), 'hits' — только чаты (ключи),
+    пусто/'both' — и то, и другое, как было раньше.
+
+    Подключение к сессии всё равно ОДНО на аккаунт (два = сожжённый ключ), но
+    разные аккаунты можно посадить на разные задачи: номер, ведущий переписку с
+    клиентами, тогда не вычитывает заодно тысячи чатов — для Telegram это разные
+    профили поведения."""
+    do_dialogs = role in (None, "", "both", "dialogs")
+    do_hits = role in (None, "", "both", "hits")
+
     async def handler(event) -> None:
         try:
             if event.is_private:
-                await _handle_private(event, acc_id)
-            elif (event.is_group or event.is_channel) and _chatscan_on():
+                if do_dialogs:
+                    await _handle_private(event, acc_id)
+            elif (event.is_group or event.is_channel) and do_hits and _chatscan_on():
                 await _scan_group(event, acc_id)
         except Exception as e:  # noqa: BLE001
             _log(f"[#{acc_id}] ошибка обработки сообщения: {e}")
@@ -472,7 +484,7 @@ async def _connect(acc: dict):
         await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
         if not await client.is_user_authorized():
             raise RuntimeError("сессия не авторизована — нужен повторный вход")
-        client.add_event_handler(_make_handler(acc["id"]),
+        client.add_event_handler(_make_handler(acc["id"], acc.get("listen_role")),
                                  events.NewMessage(incoming=True, forwards=False))
         # Что пришло, пока клиент был отключён (рестарт сервиса деплоем, обрыв сети,
         # supervise переподключал аккаунт) — Telethon САМ не доливает, событие теряется

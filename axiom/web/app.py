@@ -2935,14 +2935,22 @@ def listener_status() -> JSONResponse:
     """Статус слушателя входящих: сколько аккаунтов слушается, кто не подключился."""
     try:
         from channels import listener
+        with database.get_conn() as conn:
+            roles = {r["id"]: (r["listen_role"] or "both")
+                     for r in conn.execute("SELECT id, listen_role FROM accounts")}
         accs = []
         for aid, info in sorted(listener.STATUS.get("accounts", {}).items()):
             accs.append({"id": aid, "label": info.get("label"),
-                         "ok": info.get("ok"), "err": info.get("err")})
+                         "ok": info.get("ok"), "err": info.get("err"),
+                         "role": roles.get(aid, "both")})
         with database.get_conn() as conn:
             auto_reply = database.get_setting(conn, "tg_auto_reply", "on") == "on"
             enabled = database.get_setting(conn, "listener_enabled", "on") != "off"
             niches = conn.execute("SELECT COUNT(*) c FROM niches WHERE active=1").fetchone()["c"]
+        # Сколько аккаунтов реально обслуживает каждую задачу — по этому числу в
+        # интерфейсе и видно, что «приём ответов» и «поиск ключей» живут отдельно.
+        on_dialogs = sum(1 for a in accs if a["ok"] and a["role"] in ("both", "dialogs"))
+        on_hits = sum(1 for a in accs if a["ok"] and a["role"] in ("both", "hits"))
         # «жив ли поток»: enabled берётся из БД, а listening — из памяти. Если _supervise
         # упал, пульт продолжал бы показывать бодрый последний снимок. Круг реже RECHECK*3 —
         # значит поток мёртв и нужен рестарт сервера.
@@ -2956,9 +2964,36 @@ def listener_status() -> JSONResponse:
                              "listening": sum(1 for a in accs if a["ok"]),
                              "accounts": accs, "auto_reply": auto_reply, "enabled": enabled,
                              "tick": tick, "thread_alive": alive,
+                             "on_dialogs": on_dialogs, "on_hits": on_hits,
                              "hits": listener.STATUS.get("hits", 0), "niches": niches})
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": str(e)}, status_code=200)
+
+
+@app.post("/api/accounts/listen_role")
+def accounts_listen_role(payload: dict = Body(...)) -> JSONResponse:
+    """Кто чем занят в слушателе: 'dialogs' (ответы клиентов), 'hits' (ключи в
+    чатах) или 'both'/пусто (и то, и другое — поведение по умолчанию).
+
+    Два ПРОЦЕССА слушателя завести нельзя — два подключения одной сессией сжигают
+    ключ навсегда. А развести РОЛИ по разным аккаунтам можно: подключение у каждой
+    сессии остаётся одно, но номер, ведущий живую переписку, перестаёт заодно
+    вычитывать тысячи чатов на ключи. Для Telegram это разные профили поведения,
+    и смешивать их в одном номере — лишний риск.
+
+    Меняется на лету: слушатель перечитывает состав на своём круге (RECHECK_SEC).
+    """
+    ids = [int(x) for x in (payload.get("ids") or []) if str(x).strip()]
+    role = (payload.get("role") or "").strip().lower() or None
+    if role not in (None, "both", "dialogs", "hits"):
+        return JSONResponse({"error": "роль должна быть dialogs | hits | both"}, status_code=400)
+    if not ids:
+        return JSONResponse({"error": "не выбран ни один аккаунт"}, status_code=400)
+    with database.get_conn() as conn:
+        qm = ",".join("?" * len(ids))
+        conn.execute(f"UPDATE accounts SET listen_role=? WHERE id IN ({qm})",
+                     (None if role in (None, "both") else role, *ids))
+    return JSONResponse({"ok": True, "updated": len(ids), "role": role or "both"})
 
 
 @app.post("/api/listener/toggle")

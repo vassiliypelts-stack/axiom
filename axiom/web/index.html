@@ -1943,6 +1943,17 @@ async function viewAgents(v){
       {key:"listener",label:"Слушает чаты",render:r=>`<label class="acc-listen-wrap" title="${esc(r.is_listener?"Этот аккаунт опрашивает публичные чаты каталога. Сними галочку, чтобы исключить его из обхода":"Отметь — и обход каталога («Прослушать чаты сейчас») пойдёт в том числе через этот аккаунт. Отмечать можно несколько, включая родные: чтение чужих сообщений в публичном чате им разрешено")}" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
         <input type="checkbox" class="acc-listen" data-id="${r.id}"${r.is_listener?" checked":""}>
         ${r.is_listener?'<span class="badge b-active">👂 слушает</span>':'<span class="sub">слушать</span>'}</label>`},
+      // Роль в слушателе — какую из двух задач выполняет этот номер. Держать оба
+      // занятия на одном аккаунте можно (так по умолчанию), но развести полезно:
+      // номер, ведущий живую переписку, тогда не вычитывает заодно тысячи чатов —
+      // для Telegram это разные профили поведения. Два ПРОЦЕССА слушателя при этом
+      // не появляются: подключение к сессии по-прежнему одно (два = сожжённый ключ).
+      {key:"listen_role",label:"Роль в слушателе",render:r=>{
+        const v=r.listen_role||"both";
+        const opt=(val,txt)=>`<option value="${val}"${v===val?" selected":""}>${txt}</option>`;
+        return `<select class="acc-role" data-id="${r.id}" style="max-width:150px;font-size:12px"
+          title="dialogs — принимает ответы клиентов (Диалоги, кампании); hits — ловит ключи в чатах (Находки); оба — и то, и другое">
+          ${opt("both","оба")}${opt("dialogs","💬 ответы клиентов")}${opt("hits","🎯 ключи в чатах")}</select>`;}},
       {key:"notifier",label:"Уведомляет о встречах",render:r=>togBtn(TOG.notify,r)},
       {key:"days_alive",label:"Куплен / жив",cls:"sub",render:r=>{
         const d=r.bought_at?String(r.bought_at).slice(0,10):'';
@@ -2037,6 +2048,25 @@ async function viewAgents(v){
       const badge=lc.parentElement&&lc.parentElement.querySelector(".badge,.sub");
       if(badge)badge.outerHTML=lc.checked?'<span class="badge b-active">👂 слушает</span>':'<span class="sub">слушать</span>';
       if(!await saveListeners()){row.is_listener=was;lc.checked=was;}
+      return;
+    }
+    // Роль в слушателе: какую из двух задач выполняет номер (ответы клиентов / ключи
+    // в чатах / обе). Слушатель перечитает состав на своём круге, перезапуск не нужен.
+    const rl=e.target.closest(".acc-role");
+    if(rl){
+      const row=a.find(x=>String(x.id)===String(rl.dataset.id));
+      const prev=row?row.listen_role:null;
+      rl.disabled=true;
+      try{
+        const r=await api("/api/accounts/listen_role",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({ids:[+rl.dataset.id],role:rl.value})});
+        if(r&&r.error)throw new Error(r.error);
+        if(row)row.listen_role=rl.value==="both"?null:rl.value;
+      }catch(err){
+        alert("не сохранилось: "+err.message);
+        rl.value=prev||"both";
+      }
+      rl.disabled=false;
     }
   });
   const bulk=async(body,okMsg)=>{
@@ -5066,6 +5096,12 @@ async function viewLeadHits(v){
         <button class="primary" id="ni-run">🔄 Прослушать чаты сейчас</button></div></div>
     <div class="sub" style="margin-bottom:10px">Слушатель проходит по чатам из каталога «📡 Чаты» и ищет ключи активных ниш. Находки — в очередь ниже на твой обзор (в лиды заносишь сам). <span id="ni-msg"></span></div>
     <div id="ni-status" class="card" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px;font-size:12px">загружаю кто/где слушает…</div>
+    <div class="card" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px">
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="ni-scan-toggle"> <b style="font-size:12.5px">🔎 Поиск ключей в чатах</b></label>
+      <span class="hint" id="ni-scan-msg" style="margin-left:8px"></span>
+      <div class="hint" style="margin-top:4px">Это выключатель ИМЕННО находок. Ответы клиентов в личке он не трогает — у них свой тумблер в «💬 Диалогах». Разные аккаунты можно посадить на разные задачи: «Аккаунты» → колонка «Слушает».</div>
+    </div>
     <div id="ni-list"></div>
     <div class="ttoolbar" style="margin:10px 0 0"><input id="ni-name" placeholder="Название ниши (напр. Загородная)" style="max-width:240px">
       <input id="ni-kw" class="grow" placeholder="ключи через запятую: куплю дом, ищу участок, ...">
@@ -5095,6 +5131,21 @@ async function viewLeadHits(v){
   // экран выглядел рабочим, хотя находок не появлялось и появиться не могло: 28.08
   // слушатель простоял выключенным после служебной паузы, и заметить это на экране
   // с находками было нечем.
+  // Тумблер поиска ключей — «слушатель находок». Отдельный от приёма ответов
+  // клиентов: это разные задачи с разными результатами, и глушить одну, теряя
+  // вторую, нельзя (раньше выключатель был общий, и агент замолкал в личке).
+  (async()=>{
+    const cb=$("#ni-scan-toggle"),msg=$("#ni-scan-msg");if(!cb)return;
+    try{const s=await api("/api/chatscan/status");cb.checked=!!s.enabled;
+        if(msg)msg.textContent=s.enabled?"включён":"выключен — находки не собираются";
+    }catch(e){}
+    cb.onchange=async()=>{cb.disabled=true;if(msg)msg.textContent="сохраняю…";
+      try{await api("/api/chatscan/toggle",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({enabled:cb.checked})});
+          if(msg)msg.textContent=cb.checked?"включён":"выключен — находки не собираются";}
+      catch(e){if(msg)msg.innerHTML='<span style="color:#c0392b">не сохранилось</span>';}
+      cb.disabled=false;};
+  })();
   Promise.all([api("/api/keywords/status").catch(()=>null),
                api("/api/listener/status").catch(()=>null),
                api("/api/chatscan/status").catch(()=>null)]).then(([s,ls,cs])=>{
@@ -5105,12 +5156,15 @@ async function viewLeadHits(v){
     // это РАЗНЫЕ выключатели (их развели намеренно), и мёртв любой из них — находок
     // не будет. Живость слушателя показываем числом подключённых аккаунтов: сам
     // тумблер может стоять «вкл», а не подняться ни одна сессия.
-    const on=ls&&ls.enabled, scan=cs?!!cs.enabled:true, hold=ls?(ls.listening||0):0;
+    // Показываем ИМЕННО «сколько аккаунтов ловят ключи» (on_hits), а не общее число
+    // подключённых: аккаунт может быть посажен только на переписку и в находках не
+    // участвовать вовсе — тогда общее «слушаю N» вводило бы в заблуждение.
+    const on=ls&&ls.enabled, scan=cs?!!cs.enabled:true, hold=ls?(ls.on_hits??ls.listening??0):0;
     const head=!ls?""
-      :on&&scan&&hold?`<span class="badge b-active"><span class="sdot g"></span>приём идёт · ${hold} акк.</span> `
-      :on&&scan&&!hold?`<span class="badge b-stop">⛔ ни один аккаунт не подключён</span> `
+      :on&&scan&&hold?`<span class="badge b-active"><span class="sdot g"></span>ловят ключи: ${hold} акк.</span> `
+      :on&&scan&&!hold?`<span class="badge b-stop">⛔ ни один аккаунт не назначен на находки</span> `
       :on&&!scan?`<span class="badge b-nurture">поиск по ключам выключен</span> `
-      :`<span class="badge b-stop">⛔ слушатель выключен — находок не будет</span> `;
+      :`<span class="badge b-stop">⛔ связь выключена — находок не будет</span> `;
     el.innerHTML=head+`👂 <b>Слушает:</b> ${esc(s.account)} · <b>чатов доступно:</b> ${s.chats} (⭐ ${s.favorite}) · <b>активных ниш:</b> ${s.niches}`
       +(!ls?"":on&&!scan
           ?'<div class="hint" style="margin-top:4px;color:#c0392b">включить: «Парсинг» → галочка «сканировать чаты по ключам (лидген)»</div>'
@@ -6483,7 +6537,8 @@ async function viewChats(v){
   CHATS_ALL=await api("/api/chats");
   const accs=[...new Map(CHATS_ALL.filter(c=>c.account_id).map(c=>[c.account_id,c.account_label||("#"+c.account_id)])).entries()];
   const camps=[...new Map(CHATS_ALL.filter(c=>c.campaign_id).map(c=>[c.campaign_id,c.campaign_name||("#"+c.campaign_id)])).entries()];
-  v.innerHTML=`<div class="chat-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+  v.innerHTML=`<div class="card" id="ch-listen" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px;font-size:12px">загружаю приём ответов…</div>
+    <div class="chat-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       <input id="ch-q" placeholder="🔍 поиск: имя / @ник / текст" style="flex:1;min-width:180px">
       <select id="ch-status">
         <option value="">все статусы</option>
@@ -6531,6 +6586,38 @@ async function viewChats(v){
   };
   ["ch-q","ch-status","ch-acc","ch-camp","ch-sort"].forEach(id=>{const el=$("#"+id);el.oninput=drawList;el.onchange=drawList;});
   drawList();
+
+  // Приём ответов клиентов — «слушатель диалогов». Пульт здесь, а не в «Парсинге»:
+  // это главный тумблер связи (без него встают ответы, дожим и напоминания о
+  // созвоне), и видеть его состояние надо там, где смотрят переписку. Поиск ключей
+  // в чатах — отдельная задача с отдельным тумблером в «🎯 Находках».
+  (async()=>{
+    const box=$("#ch-listen");if(!box)return;
+    const draw=(s)=>{
+      if(!s||s.error){box.innerHTML='<span style="color:#c0392b">статус приёма недоступен</span>';return;}
+      const n=s.on_dialogs??s.listening??0;
+      const bad=(s.accounts||[]).filter(a=>!a.ok).length;
+      box.innerHTML=(s.enabled&&n
+          ?`<span class="badge b-active"><span class="sdot g"></span>приём ответов идёт · ${n} акк.</span>`
+          :s.enabled
+          ?`<span class="badge b-stop">⛔ ни один аккаунт не принимает ответы</span>`
+          :`<span class="badge b-stop">⛔ приём выключен — ответы клиентов НЕ сохраняются</span>`)
+        +` <button type="button" id="ch-listen-btn" style="margin-left:8px">${s.enabled?"⏸ Остановить приём":"▶ Включить приём"}</button>`
+        +(s.enabled?"":'<div class="hint" style="margin-top:4px;color:#c0392b">пока выключено: входящие не попадают ни в «Диалоги», ни к агенту; дожим и напоминания о созвоне не уходят</div>')
+        +(bad?`<div class="hint" style="margin-top:4px">не подключились: ${bad} акк. — см. «Аккаунты»</div>`:"")
+        +(s.thread_alive===false?'<div class="hint" style="margin-top:4px;color:#c0392b">⚠️ фоновый поток не отвечает — нужен перезапуск сервера</div>':"");
+      const b=$("#ch-listen-btn");
+      if(b)b.onclick=async()=>{
+        const on=!s.enabled;b.disabled=true;b.textContent="…";
+        if(on)box.insertAdjacentHTML("beforeend",'<div class="hint" id="ch-listen-wait" style="margin-top:4px">⏳ поднимаю аккаунты — до полминуты</div>');
+        try{await api("/api/listener/toggle",{method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({enabled:on})});}
+        catch(e){box.innerHTML='<span style="color:#c0392b">не удалось переключить</span>';return;}
+        setTimeout(async()=>{try{draw(await api("/api/listener/status"));}catch(e){}},on?25000:5000);
+      };
+    };
+    try{draw(await api("/api/listener/status"));}catch(e){draw(null);}
+  })();
 }
 async function openThread(id){
   const c=await api(`/api/contact/${id}`);const th=$("#thread");
@@ -6996,58 +7083,37 @@ async function viewParser(v){
     <pre id="i-out" style="${POUT}display:none"></pre>
   </div>
   <div class="card" style="background:var(--panel2)">
-    <b style="font-size:13px">👂 Слушатель входящих — приём ответов и лидген</b>
-    <div class="sub" style="margin:6px 0"><b style="color:#c0392b">Это главный тумблер связи, а не только лидген.</b> Пока он включён: ответы клиентов попадают в «Диалоги» и к агенту, работает авто-ответ, уходят дожим и напоминания о созвоне (планировщик шлёт только через соединения слушателя). Выключишь — система оглохнет целиком: входящие не сохранятся нигде, а дожим встанет. Останавливай только на время работ с сессиями (перелогин, 2FA) и сразу включай обратно. Поиск ключей по чатам — отдельный тумблер ниже.</div>
-    <div class="ttoolbar" style="margin:0 0 8px"><button type="button" id="lst-toggle" disabled>…</button></div>
-    <div id="lst-status" class="sub">загружаю статус…</div>
-    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="Ответы клиентам в личке идут ВСЕГДА, пока слушатель включён — этот тумблер их не касается. Он только про поиск ключей в чатах.">
-        <input type="checkbox" id="chatscan-toggle"> сканировать чаты по ключам (лидген)</label>
-      <div class="hint" style="margin-top:3px">Раньше один выключатель глушил и это, и ответы клиентам — выключаешь чаты, агент вместе с ними замолкал в личке. Теперь это разные тумблеры.</div>
-    </div>
+    <b style="font-size:13px">👂 Слушатель входящих</b>
+    <div class="sub" style="margin:6px 0" id="lst-mini">загружаю статус…</div>
+    <div class="hint">Управление переехало в «🎯 Находки» — туда же, где видны его результаты (там же и тумблер поиска ключей по чатам).
+      <a href="javascript:void(0)" id="lst-go" style="color:var(--accent);text-decoration:underline dotted">открыть «Находки» →</a></div>
   </div>
   <div class="card" style="margin-top:16px">
     <div class="dash-chh" style="cursor:pointer"><h3 style="margin:0;font-size:14px">🕘 История парсинга — последние 10 запусков</h3></div>
     <div class="sub" style="margin:6px 0 12px">Что и когда парсили, каким аккаунтом и сколько дало. Клик по строке открывает готовую подборку в «Контактах» — тем же фильтром по источнику.</div>
     <div id="p-runs" class="sub">загружаю…</div>
   </div>`;
+  // Пульт слушателя переехал: приём ответов клиентов — в «💬 Диалоги», поиск ключей
+  // в чатах — в «🎯 Находки». Это РАЗНЫЕ задачи с разными результатами, и держать оба
+  // выключателя в «Парсинге» (где не видно ни того, ни другого) было неудобно: 28-29.08
+  // слушатель дважды простоял выключенным, потому что заметить это было негде.
+  // Здесь оставлена только строка состояния со ссылками.
   (async()=>{
-    const cb=$("#chatscan-toggle");if(!cb)return;
-    try{const s=await api("/api/chatscan/status");cb.checked=!!s.enabled;}catch(e){}
-    cb.onchange=async()=>{cb.disabled=true;
-      try{await api("/api/chatscan/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:cb.checked})});}
-      catch(e){alert("не сохранилось: "+e.message);}
-      cb.disabled=false;};
+    const box=$("#lst-mini");if(!box)return;
+    let s=null,cs=null;
+    try{s=await api("/api/listener/status");}catch(e){}
+    try{cs=await api("/api/chatscan/status");}catch(e){}
+    if(!s||s.error){box.innerHTML='<span style="color:#c0392b">статус недоступен</span>';return;}
+    const d=s.on_dialogs??s.listening??0, h=s.on_hits??s.listening??0;
+    box.innerHTML=(s.enabled
+        ?`<span class="badge b-active"><span class="sdot g"></span>связь есть</span> `
+        :`<span class="badge b-stop">⛔ связь выключена</span> `)
+      +`<span class="badge b-nurture">ответы клиентов: ${s.enabled?d+" акк.":"нет"}</span> `
+      +`<span class="badge b-nurture">ключи в чатах: ${s.enabled&&(cs?cs.enabled:true)?h+" акк.":"выкл"}</span> `
+      +`<span class="badge b-nurture">найдено запросов: ${s.hits}</span>`
+      +(s.thread_alive===false?'<div class="hint" style="margin-top:6px;color:#c0392b">⚠️ фоновый поток не отвечает — нужен перезапуск сервера</div>':"");
   })();
-  (async()=>{
-    const box=$("#lst-status"),btn=$("#lst-toggle");if(!box)return;
-    const draw=(s)=>{
-      if(!s||s.error){box.innerHTML='<span style="color:#c0392b">статус недоступен: '+esc((s&&s.error)||"нет ответа")+'</span>';return;}
-      const bad=(s.accounts||[]).filter(a=>!a.ok);
-      if(btn){btn.disabled=false;btn.dataset.on=s.enabled?"1":"";btn.textContent=s.enabled?"⏸ Остановить слушатель":"▶ Запустить слушатель";}
-      box.innerHTML=(s.enabled
-          ?`<span class="badge b-active"><span class="sdot g"></span>слушаю ${s.listening} из ${(s.accounts||[]).length}</span>`
-          :`<span class="badge b-nurture"><span class="sdot"></span>остановлен из пульта</span>`)+`
-        <span class="badge b-nurture">ниш активно: ${s.niches}</span>
-        <span class="badge b-nurture">найдено запросов: ${s.hits}</span>
-        ${s.thread_alive===false?`<div class="sub" style="margin-top:6px;color:#c0392b">⚠️ фоновый поток слушателя не отвечает (последний круг ${fmt(s.tick)}) — нужен перезапуск сервера</div>`:""}
-        ${s.started?`<div class="sub" style="margin-top:6px">запущен: ${fmt(s.started)}</div>`:""}
-        ${s.enabled&&bad.length?`<div class="sub" style="margin-top:6px">не подключились: ${bad.map(a=>esc(a.label||("#"+a.id))+(a.err?` — ${esc(a.err)}`:"")).join("; ")}</div>`:""}`;
-    };
-    draw(await api("/api/listener/status"));
-    if(btn)btn.onclick=async()=>{
-      const on=!btn.dataset.on;btn.disabled=true;btn.textContent="…";
-      // без finally кнопка при сетевой ошибке навсегда осталась бы disabled с текстом «…»
-      try{
-        await api("/api/listener/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});
-        // подключение аккаунтов занимает до CONNECT_TIMEOUT на круг, поэтому после «Пуска»
-        // честно говорим «поднимаю», а не показываем «слушаю 0 из 0» — это читается как сбой
-        if(on)box.innerHTML='<span class="badge b-nurture">⏳ поднимаю аккаунты — займёт до полминуты</span>';
-        setTimeout(async()=>{try{draw(await api("/api/listener/status"));}catch(e){}},on?25000:6000);
-      }catch(e){box.innerHTML='<span style="color:#c0392b">не удалось переключить — сервер не ответил</span>';}
-      finally{btn.disabled=false;btn.textContent=on?"⏸ Остановить слушатель":"▶ Запустить слушатель";btn.dataset.on=on?"1":"";}
-    };
-  })();
+  const lstGo=$("#lst-go");if(lstGo)lstGo.onclick=()=>{location.hash="hits";};
 
   const run=async(btn,outSel,url,body)=>{
     const out=$(outSel);const t=btn.textContent;btn.disabled=true;btn.textContent="выполняю… (до минуты)";

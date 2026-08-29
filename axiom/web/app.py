@@ -4547,6 +4547,31 @@ def companies_enrich(payload: dict = Body(default={})) -> JSONResponse:
                          "checked": len(rows), "details": details[:10]})
 
 
+# ------------------------- Сигналы найма (hh.ru, без ключа) ---------------------- #
+@app.get("/api/hh/probe")
+def hh_probe() -> JSONResponse:
+    """Пускает ли нас hh.ru в поиск. Отдельная ручка, потому что 403 приходит молча:
+    без неё пустой результат неотличим от «ни у кого нет вакансий»."""
+    from channels.hh_signals import probe
+    return JSONResponse(probe())
+
+
+@app.post("/api/company/{cid}/hh")
+def company_hh(cid: int) -> JSONResponse:
+    """Проверить одну компанию: есть ли у неё открытые вакансии на hh.ru."""
+    from channels.hh_signals import run
+    return JSONResponse(run(cid, 1))
+
+
+@app.post("/api/companies/hh")
+def companies_hh(payload: dict = Body(default={})) -> JSONResponse:
+    """Пачкой — по компаниям, которых ещё не проверяли. Ключ hh.ru не нужен: чтение
+    вакансий у них публичное."""
+    limit = max(1, min(int(payload.get("limit") or 20), 100))
+    from channels.hh_signals import run
+    return JSONResponse(run(None, limit))
+
+
 # --------------------------- Здоровье парка аккаунтов ---------------------------- #
 @app.get("/api/park/health")
 def park_health() -> JSONResponse:

@@ -107,6 +107,9 @@ DAILY_FIRST_MESSAGES = int(os.getenv("DAILY_FIRST_MESSAGES", "15"))
 # --- Обогащение (DaData: ИНН/ОГРН/ФИО руководителя из ЕГРЮЛ) ---
 # Бесплатный токен на dadata.ru → API → ключ доступа. Пусто = шаг ЕГРЮЛ пропускается.
 DADATA_API_KEY = os.getenv("DADATA_API_KEY", "")
+# Токен приложения hh.ru (dev.hh.ru/admin → регистрация приложения → access_token).
+# С апреля 2026 поиск вакансий/работодателей без него отдаёт 403.
+HH_TOKEN = os.getenv("HH_TOKEN", "")
 
 # --- Встречи (Calendar + Zoom) ---
 # ПОСТОЯННАЯ ссылка на созвон (Zoom Personal Meeting Room, Яндекс Телемост, Google

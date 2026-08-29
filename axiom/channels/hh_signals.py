@@ -11,11 +11,17 @@
   hh_employer_id, hh_vacancies (сколько открыто), hh_titles (что ищут),
   hh_checked_at. Дальше это видно в карточке и годится как зацепка.
 
-ПРО ДОСТУП. hh.ru отдаёт /dictionaries всем, а поисковые методы (/employers,
-/vacancies) с части адресов закрывает 403 без объяснения. Это не наша ошибка и не
-поломка ключа (ключ здесь вообще не нужен) — просто их защита от неавторизованного
-трафика. Поэтому модуль отличает «не нашлось» от «нас не пустили» и говорит об этом
-прямо, а не пишет пустые данные.
+ПРО ДОСТУП. С апреля 2026 hh закрыл публичный поиск: /employers и /vacancies без
+токена отдают 403 (при этом /dictionaries открыт всем — по нему и отличаем «API жив,
+но нас не пустили» от «сеть легла»). Нужен ТОКЕН ПРИЛОЖЕНИЯ:
+
+  1. dev.hh.ru/admin (нужен аккаунт работодателя) → «Регистрация нового приложения»;
+  2. после модерации там же виден access_token приложения;
+  3. кладём его в .env как HH_TOKEN=... и перезапускаем пульт.
+
+Токен приложения (client_credentials) даёт доступ к чтению вакансий и работодателей —
+именно то, что нужно; авторизация пользователя (OAuth-редиректы) здесь не требуется.
+Без токена модуль ничего не выдумывает: честно говорит, что доступа нет.
 
 Запуск:
     python -m channels.hh_signals --limit 10          # по компаниям без проверки
@@ -28,25 +34,43 @@ import argparse
 import json
 import time
 
+import config
 from db import database
 
 BASE = "https://api.hh.ru"
 # hh требует осмысленный User-Agent с контактом — иначе режет запросы.
 UA = "AXIOM-CRM/1.0 (vassiliy.pelts@gmail.com)"
+
+
 PAUSE = 0.4          # между запросами: лимитов на чтение нет, но частить незачем
 TOP_TITLES = 5       # сколько названий вакансий показываем оператору
+
+
+def _headers() -> dict:
+    """Заголовки запроса. Токен приложения из .env (HH_TOKEN) — без него поиск
+    закрыт: с апреля 2026 hh отвечает 403 на неавторизованные запросы."""
+    h = {"User-Agent": UA, "Accept": "application/json"}
+    token = (getattr(config, "HH_TOKEN", "") or "").strip()
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
 def _get(path: str, params: dict) -> tuple[dict | None, str | None]:
     """(данные, ошибка). Ошибку возвращаем текстом — она попадёт оператору как есть."""
     try:
         import requests
-        r = requests.get(f"{BASE}{path}", params=params,
-                         headers={"User-Agent": UA, "Accept": "application/json"}, timeout=12)
+        r = requests.get(f"{BASE}{path}", params=params, headers=_headers(), timeout=12)
     except Exception as e:  # noqa: BLE001
         return None, f"сеть: {type(e).__name__}"
     if r.status_code == 403:
-        return None, "hh.ru отдал 403 (доступ к поиску закрыт для этого адреса)"
+        if not (getattr(config, "HH_TOKEN", "") or "").strip():
+            return None, ("нужен токен приложения hh: dev.hh.ru/admin → «Регистрация "
+                          "нового приложения» → скопировать access_token в .env как "
+                          "HH_TOKEN (с апреля 2026 поиск без токена закрыт)")
+        return None, "hh.ru отдал 403 — токен есть, но доступ к методу закрыт (проверь права приложения)"
+    if r.status_code == 401:
+        return None, "hh.ru отдал 401 — токен неверный или истёк, обнови HH_TOKEN в .env"
     if r.status_code == 404:
         return None, "не найдено"
     if r.status_code != 200:
@@ -62,6 +86,7 @@ def probe() -> dict:
     _, err_dict = _get("/dictionaries", {})
     _, err_search = _get("/employers", {"text": "тест", "per_page": 1})
     return {"ok": err_search is None,
+            "has_token": bool((getattr(config, "HH_TOKEN", "") or "").strip()),
             "dictionaries": "доступен" if not err_dict else err_dict,
             "search": "доступен" if not err_search else err_search}
 
@@ -107,6 +132,14 @@ def _vacancies(employer_id: str) -> tuple[list, str | None]:
     return out, None
 
 
+def _is_blocking(err: str) -> bool:
+    """Ошибка доступа, при которой обход надо прекратить: она одинакова для ВСЕХ
+    компаний, и перебирать остальные — только тратить время и плодить пустые записи.
+    Проверять подстроку «403» нельзя: текст про отсутствующий токен её не содержит."""
+    low = (err or "").lower()
+    return "403" in low or "401" in low or "токен" in low
+
+
 def _targets(company_id: int | None, limit: int) -> list[dict]:
     with database.get_conn() as conn:
         if company_id:
@@ -140,14 +173,14 @@ def run(company_id: int | None, limit: int) -> dict:
     details = []
     for r in rows:
         emp, err = _find_employer(r["name"], r.get("city"))
-        if err and "403" in err:
-            blocked = err            # дальше идти смысла нет — закрыт весь поиск
+        if err and _is_blocking(err):
+            blocked = err            # дальше идти смысла нет — доступ закрыт целиком
             break
         checked += 1
         vacs: list = []
         if emp:
             vacs, verr = _vacancies(emp["id"])
-            if verr and "403" in verr:
+            if verr and _is_blocking(verr):
                 blocked = verr
                 break
         _save(r["id"], emp, vacs)

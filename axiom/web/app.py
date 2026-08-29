@@ -4611,6 +4611,128 @@ def companies_enrich(payload: dict = Body(default={})) -> JSONResponse:
                          "checked": len(rows), "details": details[:10]})
 
 
+@app.post("/api/parse/run_many")
+def parse_run_many(payload: dict = Body(...)) -> JSONResponse:
+    """Спарсить НЕСКОЛЬКО чатов аккаунта за один запуск.
+
+    Зачем отдельно от /api/parse/run: оператор выбирает аккаунт, видит его чаты и
+    отмечает нужные — гонять их по одному руками неудобно, а главное, между чатами
+    нужна пауза. Подряд идущие GetParticipants по разным чатам с одного аккаунта —
+    это и есть почерк, за который прилетает флуд-лимит.
+
+    Цель для каждого чата — tg_chat_id, а не ссылка: у закрытых групп ссылки может не
+    быть вовсе, а аккаунт внутри, и Telegram отдаёт ему участников (см. _resolve_target
+    в channels/tg_parser — он ищет чат в диалогах аккаунта по числовому id).
+    """
+    chat_ids = [int(c) for c in (payload.get("chat_ids") or []) if str(c).strip()]
+    if not chat_ids:
+        return JSONResponse({"error": "не выбрано ни одного чата"}, status_code=400)
+    if len(chat_ids) > 20:
+        return JSONResponse({"error": "за раз не больше 20 чатов — это антибан, "
+                                      "а не ограничение интерфейса"}, status_code=400)
+    mode = payload.get("mode") or "members"
+    acc_ids = [int(a) for a in (payload.get("account_ids") or []) if str(a).strip()]
+    if not acc_ids:
+        return JSONResponse({"error": "не выбран аккаунт"}, status_code=400)
+    database.init_db()
+    with database.get_conn() as conn:
+        qm = ",".join("?" * len(acc_ids))
+        guarded = conn.execute(
+            f"SELECT id, label FROM accounts WHERE id IN ({qm}) AND COALESCE(protected,0)=1",
+            acc_ids).fetchall()
+        if guarded:
+            who = ", ".join(f"#{r['id']} {r['label'] or ''}".strip() for r in guarded)
+            return JSONResponse(
+                {"error": f"защищённые аккаунты не парсят: {who}. Снять: «Аккаунты» → "
+                          f"отметить → «Назначение» → 🪖 Боевой"}, status_code=400)
+        qm2 = ",".join("?" * len(chat_ids))
+        chats = conn.execute(
+            f"SELECT id, title, tg_chat_id, username FROM chats WHERE id IN ({qm2})",
+            chat_ids).fetchall()
+    if not chats:
+        return JSONResponse({"error": "чаты не найдены в каталоге"}, status_code=400)
+
+    # Запускаем ФОНОМ: 10 чатов с паузами — это десятки минут, столько браузер ждать
+    # не должен. Прогресс виден в истории запусков (parse_runs) по мере готовности.
+    import subprocess
+    import sys
+    targets = []
+    for c in chats:
+        t = str(c["tg_chat_id"]) if c["tg_chat_id"] else (c["username"] or "")
+        if t:
+            targets.append((t, c["title"] or t))
+    if not targets:
+        return JSONResponse({"error": "у выбранных чатов нет ни tg_chat_id, ни @username — "
+                                      "обнови список чатов аккаунта"}, status_code=400)
+    src_base = (payload.get("source") or "").strip()
+    args = [sys.executable, "-m", "channels.parse_batch",
+            "--targets", "|".join(t for t, _ in targets),
+            "--mode", mode,
+            "--accounts", ",".join(str(a) for a in acc_ids)]
+    if src_base:
+        args += ["--source", src_base]
+    if payload.get("save"):
+        args.append("--save")
+    if payload.get("limit"):
+        args += ["--limit", str(int(payload["limit"]))]
+    if payload.get("scan"):
+        args += ["--scan", str(int(payload["scan"]))]
+    if payload.get("top"):
+        args += ["--top", str(int(payload["top"]))]
+    if payload.get("period_days"):
+        args += ["--period-days", str(int(payload["period_days"]))]
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "parse_batch.log"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n===== {__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S} "
+                f"пакетный парсинг: {len(targets)} чатов =====\n")
+        f.flush()
+        subprocess.Popen(args, cwd=str(BASE_DIR.parent), stdout=f, stderr=subprocess.STDOUT)
+    return JSONResponse({"ok": True, "queued": len(targets),
+                         "titles": [t for _, t in targets],
+                         "message": f"запущено в фоне: {len(targets)} чатов. Между чатами "
+                                    f"паузы — смотри «Историю парсинга» ниже"})
+
+
+@app.get("/api/parse/account_chats")
+def parse_account_chats(account_id: int, refresh: int = 0) -> JSONResponse:
+    """Чаты, в которых состоит выбранный аккаунт — чтобы парсить БЕЗ ссылки.
+
+    Зачем. Ссылка на чат есть не всегда: закрытые группы, инвайты с ограниченным
+    сроком, чаты, куда вступили давно. При этом аккаунт внутри, и Telegram отдаёт ему
+    список участников — нужен только tg_chat_id с access_hash, а они уже собираются
+    инвентаризацией (channels/chat_inventory). Отсюда путь «выбрал аккаунт → вижу его
+    чаты → парсю нужный», а не «найди ссылку».
+
+    refresh=1 — пересобрать список с самого Telegram (займёт до минуты).
+    """
+    database.init_db()
+    if refresh:
+        res = _run_capture(["channels.chat_inventory", "--id", str(account_id)], timeout=240)
+        if not res.get("ok"):
+            tail = (res.get("output") or "").strip()[-200:]
+            return JSONResponse({"ok": False, "error": "не удалось обновить список: " + tail})
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.title, c.username, c.tg_chat_id, c.members_count, c.kind, "
+            "       c.can_write, c.parse_last_msg_id, "
+            "       (SELECT COUNT(*) FROM contacts ct "
+            "        WHERE ct.tags LIKE '%TG-парсинг: ' || c.title || '%') AS parsed "
+            "FROM chats c JOIN account_chats ac ON ac.chat_id=c.id "
+            "WHERE ac.account_id=? AND c.tg_chat_id IS NOT NULL "
+            "ORDER BY COALESCE(c.members_count,0) DESC, c.title", (account_id,)).fetchall()
+        # joined_by — старый способ пометить членство (до появления account_chats):
+        # без него чаты, вступленные раньше, в список не попадут.
+        extra = conn.execute(
+            "SELECT c.id, c.title, c.username, c.tg_chat_id, c.members_count, c.kind, "
+            "       c.can_write, c.parse_last_msg_id, 0 AS parsed FROM chats c "
+            "WHERE c.joined_by=? AND c.tg_chat_id IS NOT NULL "
+            "AND c.id NOT IN (SELECT chat_id FROM account_chats WHERE account_id=?) "
+            "ORDER BY COALESCE(c.members_count,0) DESC", (account_id, account_id)).fetchall()
+    items = [dict(r) for r in rows] + [dict(r) for r in extra]
+    return JSONResponse({"ok": True, "count": len(items), "items": items})
+
+
 # ------------------- Checko: финансы, учредители, риск-флаги --------------------- #
 @app.post("/api/checko/key")
 def checko_set_key(payload: dict = Body(...)) -> JSONResponse:

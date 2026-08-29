@@ -7113,6 +7113,31 @@ async function viewParser(v){
     <pre id="p-out" style="${POUT}display:none"></pre>
   </div>
   <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">📂 Парсить чаты аккаунта <span class="sub" style="font-weight:400">— когда ссылки на чат нет</span></b>
+    <div class="sub" style="margin:6px 0 12px">Выбери аккаунт → увидишь все группы и каналы, где он состоит → отметь нужные и парси. Работает с закрытыми чатами без ссылки: аккаунт внутри, значит участников ему отдают.</div>
+    <div class="row2">
+      <div class="field"><label>Аккаунт</label><select id="ac-acc"><option value="">— выбери —</option></select></div>
+      <div class="field"><label>Вид парсинга</label><select id="ac-mode">
+        <option value="members">👥 все участники чата</option>
+        <option value="active">💬 кто пишет (для каналов — комментаторы)</option>
+        <option value="admins">👑 админы и владелец</option>
+        <option value="all">👑+💬 админы и пишущие</option>
+      </select></div>
+    </div>
+    <div class="ttoolbar" style="margin:0 0 8px">
+      <button id="ac-load">Показать чаты аккаунта</button>
+      <button id="ac-refresh" title="Перечитать список прямо из Telegram — нужно, если недавно вступил в новые чаты. Займёт до минуты">↻ Обновить из Telegram</button>
+      <span id="ac-msg" class="sub"></span>
+    </div>
+    <div id="ac-list" style="display:none;max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+    <div id="ac-go-wrap" style="display:none;margin-top:10px">
+      <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="ac-save" checked> записать найденных в книжку</label>
+      <button class="primary" id="ac-go">Парсить отмеченные</button>
+      <span id="ac-go-msg" class="sub" style="margin-left:8px"></span>
+      <div class="hint" style="margin-top:6px">Между чатами пауза 45–120 сек — это антибан, а не медлительность. Идёт фоном, результат появится в «Истории парсинга» внизу.</div>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
     <b style="font-size:14px">⏱ Постоянные задачи</b>
     <div class="sub" style="margin:6px 0 12px">Заведённые здесь цели сервер парсит сам, по расписанию, без похода оператора на эту страницу. Результат каждого захода — событие в колокольчике.</div>
     <div id="p-sched-list" class="sub">загружаю…</div>
@@ -7197,6 +7222,7 @@ async function viewParser(v){
     // Расходные сверху: ими и надо парсить, боевые уводим вниз, чтобы не кликнуть сгоряча.
     PACCS=(accs||[]).sort((a,b)=>(a.battle?1:0)-(b.battle?1:0)||a.id-b.id);
     renderAccs();
+    acFill();
   }).catch(()=>{const b=$("#p-accs");if(b)b.innerHTML='<span class="sub" style="color:#c0392b">не удалось загрузить аккаунты</span>';});
 
   // ---- Источник: подставляем сам, курсор в поле не нужен ----
@@ -7335,6 +7361,61 @@ async function viewParser(v){
   };
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});
+
+  // ---- Парсинг чатов аккаунта: без ссылки, по членству ----
+  // Ссылки на чат может не быть вовсе (закрытая группа, истёкший инвайт), но если наш
+  // аккаунт внутри — Telegram отдаёт ему участников. Список чатов уже собирает
+  // инвентаризация, поэтому путь «выбрал аккаунт → отметил чаты → парси».
+  const acFill=()=>{
+    const sel=$("#ac-acc");if(!sel)return;
+    sel.innerHTML='<option value="">— выбери —</option>'
+      +PACCS.filter(a=>!a.battle).map(a=>`<option value="${a.id}">#${a.id} ${esc(a.label||a.username||("#"+a.id))}${a.chats&&a.chats.length?` · чатов: ${a.chats.length}`:""}</option>`).join("");
+  };
+  const acLoad=async(refresh)=>{
+    const id=$("#ac-acc").value,box=$("#ac-list"),msg=$("#ac-msg");
+    if(!id){msg.textContent="сначала выбери аккаунт";return;}
+    const b=refresh?$("#ac-refresh"):$("#ac-load"),was=b.textContent;
+    b.disabled=true;b.textContent=refresh?"читаю Telegram… (до минуты)":"загружаю…";msg.textContent="";
+    let r;try{r=await api(`/api/parse/account_chats?account_id=${id}${refresh?"&refresh=1":""}`);}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){msg.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    const items=r.items||[];
+    if(!items.length){
+      box.style.display="";$("#ac-go-wrap").style.display="none";
+      box.innerHTML='<span class="sub">чатов не найдено. Нажми «↻ Обновить из Telegram» — список собирается инвентаризацией, и для этого аккаунта её могли не делать.</span>';
+      return;}
+    box.style.display="";$("#ac-go-wrap").style.display="";
+    msg.textContent=`чатов: ${items.length}`;
+    box.innerHTML=items.map(c=>{
+      const cnt=c.members_count?`<span class="sub"> · ${c.members_count} уч.</span>`:"";
+      const kind=c.kind==="channel"?'<span class="badge b-nurture" style="font-size:10px">канал</span>':"";
+      const done=c.parsed?`<span class="badge b-active" style="font-size:10px" title="столько контактов уже помечены этим чатом">спарсено: ${c.parsed}</span>`:"";
+      const closed=!c.username?'<span class="badge" style="font-size:10px" title="без публичной ссылки — парсится по членству аккаунта">закрытый</span>':"";
+      return `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer">
+        <input type="checkbox" class="ac-ch" value="${c.id}">
+        <span>${esc(c.title||("#"+c.id))}</span>${cnt} ${kind} ${closed} ${done}</label>`;}).join("");
+  };
+  $("#ac-load").onclick=()=>acLoad(false);
+  $("#ac-refresh").onclick=()=>acLoad(true);
+  $("#ac-acc").addEventListener("change",()=>{$("#ac-list").style.display="none";$("#ac-go-wrap").style.display="none";$("#ac-msg").textContent="";});
+  $("#ac-go").onclick=async()=>{
+    const ids=[...$("#ac-list").querySelectorAll(".ac-ch:checked")].map(i=>+i.value);
+    const acc=+$("#ac-acc").value;
+    const m=$("#ac-go-msg");
+    if(!ids.length){m.textContent="отметь хотя бы один чат";return;}
+    if(!confirm(`Парсить ${ids.length} чат(ов) аккаунтом #${acc}?\n\nМежду чатами паузы 45–120 сек — заход займёт примерно ${Math.ceil(ids.length*1.5)} мин.`))return;
+    const b=$("#ac-go"),was=b.textContent;b.disabled=true;b.textContent="запускаю…";
+    let r;try{r=await api("/api/parse/run_many",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({chat_ids:ids,account_ids:[acc],mode:$("#ac-mode").value,
+        save:$("#ac-save").checked,limit:+$("#p-top").value||500,
+        scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.innerHTML='<span style="color:var(--green)">'+esc(r.message||("запущено: "+r.queued))+'</span>';
+    setTimeout(loadRuns,4000);
+  };
 
   // ---- История запусков: последние 10, клик ведёт в готовую подборку «Контактов» ----
   const MODE_ICON={search:"🔍 поиск групп",admins:"👑 админы",active:"💬 кто пишет",

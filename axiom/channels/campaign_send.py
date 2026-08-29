@@ -426,7 +426,7 @@ def _any_live_account() -> dict | None:
             "description, avatar, status, tg_name, COALESCE(protected,0) AS protected, "
             "daily_limit AS cap FROM accounts "
             "WHERE tg_session IS NOT NULL AND tg_session<>'' "
-            "AND session_state='alive' AND status<>'banned' AND COALESCE(protected,0)=0 "
+            "AND session_state='alive' AND status NOT IN ('banned','warming') AND COALESCE(protected,0)=0 "
             "AND COALESCE(acc_role,'')<>'service' "
             "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
             "ORDER BY id LIMIT 1"
@@ -446,6 +446,10 @@ def _team(cid: int) -> list[dict]:
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
+            # Аккаунт на прогреве ещё не готов к холодным ЛС незнакомцам — ловит PeerFlood
+            # и вместо прогрева сгорает (см. инцидент 29.08 с Василий317). В команду его
+            # можно занести заранее, но реально слать он начнёт только когда прогреется.
+            "AND a.status <> 'warming' "
             # Автопауза после PeerFlood (см. spam_pause_until ниже) — не берём отправителя
             # в этот заход вообще, не тратя время на подключение заведомо приторможенного
             # Telegram'ом номера. Снимается сама по дате, руками ничего чинить не нужно.

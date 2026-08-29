@@ -4445,6 +4445,32 @@ def _dadata_to_company(dd: dict) -> dict:
     return out
 
 
+def _norm_org(x: str | None) -> set:
+    """Название → набор значимых слов: сравниваем «Ромашка» и «ООО \"РОМАШКА\"» как одно."""
+    import re
+    junk = {"ооо", "оао", "зао", "ао", "ип", "пао", "нко", "ано", "общество", "с",
+            "ограниченной", "ответственностью", "компания", "групп", "group", "llc"}
+    # Дефис — разделитель, а не часть слова: «АБК-Консалтинг» и «АБК Консалтинг»
+    # это одна организация, а при [\w\-]+ они давали разные наборы слов.
+    words = re.findall(r"\w+", (x or "").lower().replace("ё", "е").replace("-", " "))
+    return {w for w in words if w not in junk and len(w) > 2}
+
+
+def _match_ok(asked: str | None, found: str | None) -> bool:
+    """Похоже ли найденное в ЕГРЮЛ на то, что искали.
+
+    DaData — ПОДСКАЗКИ: на любой запрос она возвращает ближайшее совпадение, даже
+    очень отдалённое. Живьём: по карточке «Александр Альбертович Ерохин» пришло
+    ООО «МОРАВИЯ» с чужим директором. В разделе «Компании» лежат не только юрлица,
+    но и люди с брендами, поэтому без сверки обогащение молча наполняет базу чужими
+    ИНН — хуже, чем пустые поля: по ним потом пишут людям.
+    """
+    a, b = _norm_org(asked), _norm_org(found)
+    if not a or not b:
+        return False
+    return bool(a & b)
+
+
 def _enrich_one_company(conn, row: dict) -> dict:
     """Один запрос в ЕГРЮЛ по «название + город». Заполняем ТОЛЬКО пустые поля:
     то, что оператор вписал руками, справочник не перетирает."""
@@ -4452,6 +4478,12 @@ def _enrich_one_company(conn, row: dict) -> dict:
     dd = dadata_lookup(row.get("name"), row.get("city"))
     if not dd:
         return {"ok": False, "id": row["id"], "error": "в ЕГРЮЛ не нашлось"}
+    # Сверка: ни одного общего значимого слова — это чужая организация, не пишем.
+    if not _match_ok(row.get("name"), dd.get("full_name")):
+        return {"ok": False, "id": row["id"],
+                "error": f"нашлось «{(dd.get('full_name') or '?')[:60]}» — не похоже на "
+                         f"«{(row.get('name') or '')[:40]}», не записываю",
+                "suggested": dd.get("full_name"), "suggested_inn": dd.get("inn")}
     vals = _dadata_to_company(dd)
     if not vals:
         return {"ok": False, "id": row["id"], "error": "DaData не отдала полей"}

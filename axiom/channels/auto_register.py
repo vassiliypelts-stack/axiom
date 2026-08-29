@@ -25,13 +25,42 @@ import sys
 import time
 
 import config
-from channels.sms_hero import get_number, poll_code, cancel, finish, mark_ready
+from channels.sms_hero import (SmsHeroError, get_number, poll_code, cancel, finish,
+                               mark_ready)
 from channels.telegram import build_client
 from channels.privacy import apply_privacy
 from db import database
 from telethon.sessions import StringSession
 
 # Имена для свежих аккаунтов (чередуем)
+def _safe_cancel(activation_id: str) -> None:
+    """cancel(), которая не роняет весь процесс.
+
+    ЗАЧЕМ. 29.08 на живом тесте (Бразилия) send_code_request упал, код полез
+    отменять активацию — а сам cancel() получил HTTP 409 Conflict от hero-sms
+    (сервис уже сам перевёл активацию в другой статус) и это исключение никто не
+    ловил. Процесс упал целиком: клиент Telegram остался не отключён, деньги за уже
+    купленный прокси (33 руб) пропали без всякого отчёта — задача просто зависла
+    с трейсбеком в логе вместо понятного "не получилось, вот почему".
+
+    Отмена — это ЛУЧШАЯ ПОПЫТКА вернуть деньги за номер, а не критичный шаг:
+    если hero-sms уже сам всё решил (409 значит именно это), настаивать незачем."""
+    try:
+        cancel(activation_id)
+    except SmsHeroError as e:
+        print(f"[cancel] не отменил активацию {activation_id} ({e}) — "
+              f"похоже, hero-sms уже сам сменил её статус")
+
+
+def _safe_mark_ready(activation_id: str) -> None:
+    """mark_ready() уже не бросает SmsHeroError сама (см. sms_hero.py), но подстрахуем
+    на случай других исключений — шаг вспомогательный, ронять регистрацию не должен."""
+    try:
+        mark_ready(activation_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[mark_ready] пропущено ({e}) — жду код без подтверждения готовности")
+
+
 FIRST_NAMES = ["Алексей", "Дмитрий", "Максим", "Сергей", "Антон",
                "Елена", "Ольга", "Анна", "Наталья", "Ирина",
                "Артём", "Павел", "Роман", "Денис", "Кирилл",
@@ -97,7 +126,7 @@ async def _register_number(country: int, proxy_period: int = 7,
         _log("code_request", "Код отправлен Telegram на номер")
     except Exception as e:
         _log("code_request", f"Ошибка: {e}")
-        cancel(activation_id)
+        _safe_cancel(activation_id)
         await client.disconnect()
         return result
 
@@ -106,14 +135,14 @@ async def _register_number(country: int, proxy_period: int = 7,
     # переходит в ожидание SMS только после этого шага. Мы его не делали вовсе — сразу
     # опрашивали getStatus, — и активация могла висеть «номер выдан», пока не истечёт
     # время. Отсюда «деньги списались, код не пришёл».
-    mark_ready(activation_id)
+    _safe_mark_ready(activation_id)
     _log("sms_wait", "Ожидаю SMS-код от hero-sms (до 5 мин)...")
     # 5 минут вместо 2: в дешёвых странах SMS идёт дольше, а отмена раньше времени
     # означает потраченный номер и повторную попытку с новыми деньгами.
     code = await poll_code(activation_id, timeout=300, interval=3)
     if not code:
         _log("sms_wait", "Код не пришёл за 5 мин — отмена (деньги за номер возвращаются)")
-        cancel(activation_id)
+        _safe_cancel(activation_id)
         await client.disconnect()
         return result
     _log("sms_wait", f"Получен код: {code}")
@@ -135,12 +164,12 @@ async def _register_number(country: int, proxy_period: int = 7,
                 _log("register", f"Вошёл (уже был зарегистрирован): @{me.username or me.id}")
             except Exception as e2:
                 _log("register", f"Ошибка входа: {e2}")
-                cancel(activation_id)
+                _safe_cancel(activation_id)
                 await client.disconnect()
                 return result
         else:
             _log("register", f"Ошибка регистрации: {err_str}")
-            cancel(activation_id)
+            _safe_cancel(activation_id)
             await client.disconnect()
             return result
 

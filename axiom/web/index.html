@@ -1687,6 +1687,7 @@ async function viewAgents(v){
         <button id="ab-sess-check" title="Реальный вход выбранными сессиями в Telegram (get_me) — покажет жив / сессия слетела / бан в колонке «Живость»">Проверить живость</button>
         <button id="ab-identity" title="Комплексно: своё имя + свой доверие-вызывающий ник + своя ИИ-подпись bio + фото (если загружено) + спрятать номер — сразу в Telegram">Оформить профиль</button>
         <button id="ab-more" aria-expanded="false">⋯ Ещё действия</button>
+        <button id="ab-unprotect" title="Снять запрет на парсинг/рассылку с выбранных аккаунтов. Заодно переводит назначение «🏠 Родной» → «🪖 Боевой»: именно роль держит защиту включённой, поэтому снять её одним флагом было невозможно">🔓 Снять защиту (разрешить парсинг)</button>
         <span class="hint" id="ab-msg"></span>
       </div>
       <div id="ab-more-panel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);gap:8px;flex-wrap:wrap;align-items:center">
@@ -2064,6 +2065,20 @@ async function viewAgents(v){
     // «родной» ставит protected=1 на сервере — одно обещание «автоматика не трогает»,
     // два поля держим согласованными там же, а не двумя кнопками здесь.
     bulk({action:"acc_role",acc_role:v},r=>`назначение «${ACC_ROLE_SHORT[r.acc_role]||r.acc_role}» у ${r.updated} акк.`);
+  };
+  // СНЯТЬ ЗАЩИТУ. Отдельной кнопки для флага protected не было вообще: единственный
+  // action:"protect" в пульте — это 2FA+номер, совсем другое действие. Снять запрет
+  // можно было только через «Назначение» в скрытой панели «Ещё» — догадаться нельзя,
+  // и оператор жал галочки, которые ничего не меняли.
+  $("#ab-unprotect").onclick=async()=>{
+    if(!selAcc.size){$("#ab-msg").textContent="ничего не выбрано";return;}
+    // `a` — список аккаунтов, загруженный в начале viewAgents (STATE.accounts нет).
+    const names=[...selAcc].map(id=>{const x=a.find(y=>y.id===id);return x?(x.label||("#"+id)):("#"+id);});
+    if(!confirm("Снять защиту с: "+names.join(", ")+"?\n\n"
+        +"Эти аккаунты станут доступны парсингу, рассылке и прогреву — автоматика начнёт их использовать.\n"
+        +"Назначение «🏠 Родной» сменится на «🪖 Боевой»."))return;
+    await bulk({action:"protect",protected:false},
+      r=>`🔓 защита снята у ${r.updated} акк.`+(r.role_changed?` · назначение «родной» → «боевой» у ${r.role_changed}`:""));
   };
   $("#ab-more").onclick=()=>{
     const panel=$("#ab-more-panel"),btn=$("#ab-more");

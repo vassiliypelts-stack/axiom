@@ -110,6 +110,9 @@ DADATA_API_KEY = os.getenv("DADATA_API_KEY", "")
 # Токен приложения hh.ru (dev.hh.ru/admin → регистрация приложения → access_token).
 # С апреля 2026 поиск вакансий/работодателей без него отдаёт 403.
 HH_TOKEN = os.getenv("HH_TOKEN", "")
+# Checko (checko.ru) — реквизиты + ФИНАНСЫ и учредители, чего нет у DaData на free.
+# Бесплатный тариф: 100 запросов в СУТКИ, поэтому ходим точечно (см. channels/checko.py).
+CHECKO_API_KEY = os.getenv("CHECKO_API_KEY", "")
 
 # --- Встречи (Calendar + Zoom) ---
 # ПОСТОЯННАЯ ссылка на созвон (Zoom Personal Meeting Room, Яндекс Телемост, Google

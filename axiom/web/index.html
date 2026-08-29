@@ -3714,6 +3714,7 @@ async function viewCompanies(v){
       <button class="primary" id="co-new">Компания</button>
       <button id="co-imp">⬆ Импорт 2ГИС</button>
       <button id="co-enr">Обогатить пачку</button>
+      <button id="co-checko-bulk" title="Checko по компаниям с ИНН, которых ещё не проверяли: выручка, прибыль, учредители, риск-флаги. Лимит 100 запросов в сутки — с финансами это 2 запроса на компанию">💰 Финансы пачкой</button>
       <span class="grow"></span>
       <span class="hint">Юрлица/агентства. Клик по строке — карточка со связанными контактами и сделками.</span>
     </div>
@@ -3742,6 +3743,27 @@ async function viewCompanies(v){
     alert(`Обогащено: ${r.enriched} из ${r.checked}`+(r.failed?`\nне нашлось в ЕГРЮЛ: ${r.failed}`:"")
       +((r.details||[]).length?`\n\n`+r.details.join("\n"):""));
     route();};
+  $("#co-checko-bulk").onclick=async()=>{
+    // Сначала показываем ОСТАТОК: 100 в сутки кончаются быстро, и решать, сколько
+    // брать, оператор должен зная цифру, а не после отказа посреди пачки.
+    let q;try{q=await api("/api/checko/quota");}catch(e){q=null;}
+    const left=(q&&q.ok)?q.left:null;
+    if(q&&q.ok===false){alert("Checko недоступен: "+(q.error||"нет ответа"));return;}
+    const fin=confirm("Добавлять ВЫРУЧКУ и прибыль?\n\nОК — да (2 запроса на компанию)\nОтмена — только реквизиты и учредители (1 запрос)");
+    const max=left!=null?Math.max(1,Math.floor(left/(fin?2:1))):20;
+    const n=prompt(`Сколько компаний обогатить?`+(left!=null?`\n\nОсталось запросов сегодня: ${left} из ${q.limit} — это максимум ${max} компаний`:""),String(Math.min(10,max)));
+    if(!n)return;
+    const b=$("#co-checko-bulk"),was=b.textContent;b.disabled=true;b.textContent="запрашиваю Checko…";
+    let r;try{r=await api("/api/companies/checko",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n,finances:fin})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){alert("не вышло: "+((r&&r.error)||"нет ответа"));return;}
+    alert(`Обогащено: ${r.enriched}`+(r.failed?`, не вышло: ${r.failed}`:"")
+      +(r.left!=null?`\nОсталось запросов сегодня: ${r.left} из ${r.limit}`:"")
+      +(r.stopped?`\n\n${r.stopped}`:"")
+      +((r.details||[]).length?`\n\n`+r.details.join("\n"):""));
+    route();
+  };
   $("#co-new").onclick=async()=>{const name=prompt("Название компании:");if(!name)return;
     const r=await api("/api/companies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openCompany(r.id),200);};
@@ -4049,6 +4071,7 @@ async function openCompany(id){
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
     <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">Сохранить</button>
       <button id="co-enrich-one" title="Найти компанию в ЕГРЮЛ через DaData по названию и городу: ИНН, ОГРН, КПП, руководитель, ОКВЭД, адрес, дата регистрации. Заполняются только ПУСТЫЕ поля — вписанное руками не перетирается">🏛 Обогатить из ЕГРЮЛ</button>
+      <button id="co-checko" title="Checko: то, чего нет у DaData — ВЫРУЧКА и прибыль, учредители, телефоны из ЕГРЮЛ, категория МСП, риск-флаги (массовый руководитель, санкции). Нужен ИНН. Лимит 100 запросов в сутки, с финансами — 2 запроса на компанию">💰 Финансы (Checko)</button>
       <button id="co-del">Удалить</button></div>
     <div id="co-enr-msg" class="hint" style="margin:-2px 0 6px"></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Контакты (${(c.contacts||[]).length})</label>
@@ -4069,6 +4092,20 @@ async function openCompany(id){
     m.innerHTML='<span style="color:var(--green)">✓ заполнено полей: '+((r.fields||[]).length)
       +(r.full_name?' · '+esc(r.full_name):'')+'</span>';
     setTimeout(()=>openCompany(id),700);   // перерисовать карточку с новыми данными
+  };
+  // Checko — второй источник поверх ЕГРЮЛ: даёт деньги и владельцев, но лимит 100
+  // запросов в сутки на весь пульт, поэтому остаток показываем прямо в ответе.
+  $("#co-checko").onclick=async()=>{
+    const b=$("#co-checko"),m=$("#co-enr-msg"),was=b.textContent;
+    b.disabled=true;b.textContent="запрашиваю Checko…";m.textContent="";
+    let r;try{r=await api(`/api/company/${id}/checko`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({finances:true})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    const left=(r.left!=null)?` · осталось сегодня: ${r.left} из ${r.limit}`:"";
+    if(!r.enriched){m.innerHTML='<span style="color:#c0392b">'+esc((r.details||[]).join("; ")||r.stopped||"ничего не добавилось")+esc(left)+'</span>';return;}
+    m.innerHTML='<span style="color:var(--green)">✓ '+esc((r.details||[]).join("; "))+'</span><span class="sub">'+esc(left)+'</span>';
+    setTimeout(()=>openCompany(id),900);
   };
   $("#co-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.type==="checkbox"?el.checked:el.value);
     await api(`/api/company/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});

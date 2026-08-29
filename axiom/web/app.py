@@ -4610,6 +4610,32 @@ def companies_enrich(payload: dict = Body(default={})) -> JSONResponse:
                          "checked": len(rows), "details": details[:10]})
 
 
+# ------------------- Checko: финансы, учредители, риск-флаги --------------------- #
+@app.get("/api/checko/quota")
+def checko_quota() -> JSONResponse:
+    """Сколько запросов Checko осталось на сегодня. Лимит бесплатного тарифа — 100 в
+    сутки, и он общий на весь пульт: без этой цифры оператор узнавал бы об исчерпании
+    только по отказу посреди пачки."""
+    from channels.checko import quota
+    return JSONResponse(quota())
+
+
+@app.post("/api/company/{cid}/checko")
+def company_checko(cid: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Обогатить одну компанию: реквизиты + (по флагу) выручка и прибыль."""
+    from channels.checko import run
+    return JSONResponse(run(cid, 1, bool(payload.get("finances"))))
+
+
+@app.post("/api/companies/checko")
+def companies_checko(payload: dict = Body(default={})) -> JSONResponse:
+    """Пачкой — по компаниям с ИНН, которых ещё не проверяли. Идёт синхронно: Checko
+    отвечает быстро, а оператору важно увидеть остаток лимита, а не «запущено в фоне»."""
+    limit = max(1, min(int(payload.get("limit") or 20), 50))
+    from channels.checko import run
+    return JSONResponse(run(None, limit, bool(payload.get("finances"))))
+
+
 # ------------------------- Сигналы найма (hh.ru, без ключа) ---------------------- #
 @app.get("/api/hh/probe")
 def hh_probe() -> JSONResponse:

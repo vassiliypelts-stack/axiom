@@ -1922,7 +1922,15 @@ async function viewAgents(v){
       }},
       {key:"kind",label:"Тип",cls:"sub",render:r=>`${r.protected?'🏠 ':''}${ACC_KIND[r.kind]||(r.kind?esc(r.kind):'<span class="no">—</span>')}`},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
-      {key:"status",label:"Статус",render:r=>`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`},
+      {key:"status",label:"Статус",render:r=>{
+        const base=`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`;
+        // Автопауза после PeerFlood (channels/campaign_send.py) — холодную рассылку
+        // этим номером сервер сам не запускает до даты в spam_pause_until, растёт
+        // с каждым повтором. Показываем прямо тут: иначе непонятно, почему аккаунт
+        // «активен», а в заходы кампании не попадает.
+        if(r.spam_pause_until&&new Date(r.spam_pause_until+"Z")>new Date())
+          return base+` <span class="badge b-stop" title="PeerFlood ×${r.spam_flood_count||1} — Telegram придержал холодные ЛС этим номером. Снимется само">⏸ до ${fmt(r.spam_pause_until)}</span>`;
+        return base;}},
       {key:"warm_stage",label:"Прогрев",render:r=>{if(r.status!=='warming')return r.status==='active'?'<span class="badge b-active">✅ готов</span>':'<span class="no">—</span>';
         const st=r.warm_stage||0,pct=Math.round(st/14*100);
         return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">прогрев ${st}/14 дн</span></span>`;}},

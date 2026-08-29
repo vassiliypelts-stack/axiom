@@ -446,6 +446,10 @@ def _team(cid: int) -> list[dict]:
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
+            # Автопауза после PeerFlood (см. spam_pause_until ниже) — не берём отправителя
+            # в этот заход вообще, не тратя время на подключение заведомо приторможенного
+            # Telegram'ом номера. Снимается сама по дате, руками ничего чинить не нужно.
+            "AND (a.spam_pause_until IS NULL OR a.spam_pause_until < datetime('now')) "
             "AND a.tg_session IS NOT NULL AND a.tg_session <> '' "
             # Служебный аккаунт (уведомления/отчёты/пробив) в холодную рассылку не идёт,
             # даже если его по ошибке добавили в команду кампании: сгорит отправитель
@@ -803,13 +807,33 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 # ЭТОТ номер за холодные ЛС незнакомцам, то есть сигнал риска бана
                 # приближается, а не рядовая помеха — прятать его в логе нельзя.
                 print(f"[{s['label']}] ⚠ PeerFlood (много ЛС незнакомцам) — пауза аккаунта на заход")
-                with database.get_conn() as conn:
-                    conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
-                    database.add_event(conn, "ban", f"⚠ PeerFlood: «{s['label']}»",
-                                       "слишком много ЛС незнакомцам подряд — Telegram придержал отправку "
-                                       "этим аккаунтом. Не бан, но предвестник: снизь темп/дневной лимит "
-                                       "или выведи номер из ротации на день-два.",
-                                       level="warn", campaign_id=cid, account_id=s["id"])
+                if s["id"]:
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                        # Автозамедление: растущая пауза (1 → 2 → 3… дней) НА ХОЛОДНУЮ
+                        # рассылку этим аккаунтом — раньше PeerFlood выводил его только из
+                        # ТЕКУЩЕГО захода, а на завтра daily_limit возвращался прежним, и
+                        # номер мог словить PeerFlood снова в тот же день (см. #9324/#9332,
+                        # оба поймали дважды за сутки). Прогрев/переписку с уже знакомыми
+                        # людьми пауза НЕ трогает — это ограничение только _team()/campaign_send.
+                        prev = conn.execute(
+                            "SELECT COALESCE(spam_flood_count,0) c FROM accounts WHERE id=?",
+                            (s["id"],)).fetchone()
+                        n = (prev["c"] if prev else 0) + 1
+                        pause_days = min(n, 7)   # потолок — неделя, дальше уже решает оператор
+                        conn.execute(
+                            "UPDATE accounts SET spam_flood_count=?, "
+                            "spam_pause_until=datetime('now', ?) WHERE id=?",
+                            (n, f"+{pause_days} day", s["id"]))
+                        database.add_event(conn, "ban", f"⚠ PeerFlood: «{s['label']}»",
+                                           f"слишком много ЛС незнакомцам подряд ({n}-й раз) — Telegram "
+                                           f"придержал отправку. Автоматически выведен из холодной "
+                                           f"рассылки на {pause_days} дн. Снимется само; чаще одного "
+                                           f"раза в неделю — стоит вывести номер из команды насовсем.",
+                                           level="warn", campaign_id=cid, account_id=s["id"])
+                else:
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
                 s["remaining"] = 0
                 continue
             if cat == "blocked":

@@ -147,17 +147,26 @@ async def collect_admins(client, entity) -> list[User]:
 
 
 async def collect_members(client, entity, limit: int, offset: int = 0) -> list[User]:
-    """offset — с какого места брать участников. Нужен, чтобы поделить большой чат
-    между несколькими аккаунтами: каждый тянет свой кусок, и нагрузка (а с ней и риск
-    флуд-лимита) делится на всех, вместо того чтобы весь чат выгребал один."""
+    """offset — с какого места брать участников: нужен, чтобы поделить большой чат
+    между несколькими аккаунтами (каждый тянет свой кусок, нагрузка делится на всех).
+
+    ВАЖНО про offset. get_participants() в нашей версии Telethon его НЕ принимает —
+    заход падал TypeError'ом и парсинг не начинался вовсе (живьём: «Точка Банк»,
+    7047 участников, 0 собрано). Поэтому смещение делаем срезом: просим limit+offset
+    и отбрасываем первые offset. Для конца списка это дороже по трафику, но участники
+    приходят порциями по 200, и лишнего запроса на порцию не возникает.
+    """
+    want = limit + max(0, offset)
     try:
-        ppl = await client.get_participants(entity, limit=limit, offset=offset)
+        ppl = await client.get_participants(entity, limit=want)
     except ChatAdminRequiredError:
         print("[members] список участников скрыт (нужны права админа) — пропускаю.")
         return []
     except FloodWaitError as e:
         print(f"[floodwait] жду {e.seconds}с"); await asyncio.sleep(e.seconds + 5)
-        ppl = await client.get_participants(entity, limit=limit, offset=offset)
+        ppl = await client.get_participants(entity, limit=want)
+    if offset:
+        ppl = ppl[offset:]
     return [u for u in ppl if _is_lead_user(u)]
 
 

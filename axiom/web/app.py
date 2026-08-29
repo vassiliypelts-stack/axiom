@@ -4611,6 +4611,23 @@ def companies_enrich(payload: dict = Body(default={})) -> JSONResponse:
 
 
 # ------------------- Checko: финансы, учредители, риск-флаги --------------------- #
+@app.post("/api/checko/key")
+def checko_set_key(payload: dict = Body(...)) -> JSONResponse:
+    """Сохранить ключ Checko прямо из пульта.
+
+    Кладём в app_settings, а не в .env: деплой делает git reset --hard, да и доступа
+    к серверу у оператора нет. В БД ключ переживает любое обновление кода.
+    """
+    key = (payload.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "пустой ключ"}, status_code=400)
+    database.init_db()
+    with database.get_conn() as conn:
+        database.set_setting(conn, "checko_api_key", key)
+    from channels.checko import quota
+    return JSONResponse({"ok": True, **quota()})
+
+
 @app.get("/api/checko/quota")
 def checko_quota() -> JSONResponse:
     """Сколько запросов Checko осталось на сегодня. Лимит бесплатного тарифа — 100 в

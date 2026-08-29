@@ -47,6 +47,19 @@ CODE_PROFIT = "2400"
 
 
 def _key() -> str:
+    """Ключ: сперва из БД (app_settings), потом из .env.
+
+    В БД он надёжнее: деплой делает git reset --hard и правки на сервере стирает, а
+    .env хоть и не в репозитории, но задаётся при установке и требует доступа к
+    серверу. Через app_settings ключ можно вписать прямо из пульта и он переживёт
+    любой деплой."""
+    try:
+        with database.get_conn() as conn:
+            v = database.get_setting(conn, "checko_api_key")
+        if v and v.strip():
+            return v.strip()
+    except Exception:  # noqa: BLE001 — БД ещё не поднята: падать из-за ключа незачем
+        pass
     return (getattr(config, "CHECKO_API_KEY", "") or "").strip()
 
 

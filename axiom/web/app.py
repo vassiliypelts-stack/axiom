@@ -435,6 +435,34 @@ def proxy6_whoami() -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@app.get("/api/proxy6/countries")
+def proxy6_countries(version: int = 3) -> JSONResponse:
+    """Где у Proxy6 ЕСТЬ прокси и сколько. READ-ONLY, денег не тратит.
+
+    ЗАЧЕМ. Саморегистрация покупает номер, а затем прокси ТОЙ ЖЕ страны: Telegram
+    должен видеть вход из страны номера, иначе SMS часто не доставляется (проверено
+    29.08 на номере ЮАР — код не пришёл именно из-за отката на прокси без гео).
+    Проверить наличие прокси по стране было нечем, и деньги за номер тратились
+    вслепую. Теперь список стран виден ДО покупки номера.
+
+    version по умолчанию 3 (IPv4 Shared) — самый дешёвый вариант, на котором и
+    считается бюджет; 4 — индивидуальный IPv4, 6 — IPv6."""
+    from channels.proxy6 import Proxy6Error, available, countries
+    try:
+        codes = countries(version)
+        out = []
+        for c in codes[:60]:          # запросов много, ограничиваем разумным числом
+            try:
+                out.append({"country": c, "count": available(c, version)})
+            except Proxy6Error:
+                continue
+        out.sort(key=lambda x: -x["count"])
+        return JSONResponse({"ok": True, "version": version,
+                             "countries": [c for c in out if c["count"] > 0]})
+    except Proxy6Error as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
 @app.post("/api/proxy6/price_bulk")
 def proxy6_price_bulk(payload: dict = Body(...)) -> JSONResponse:
     """Сколько СПИШЕТСЯ по факту за выбранные аккаунты — до самой покупки. Проверка

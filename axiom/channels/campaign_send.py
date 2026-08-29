@@ -411,6 +411,29 @@ def _add_tag(raw: str | None, tag: str) -> str:
     return ",".join(tags)
 
 
+def _any_live_account() -> dict | None:
+    """Любой аккаунт с живой сессией И рабочим прокси, не из команды конкретной
+    кампании. Родные и служебные не берём — это работа для расходных.
+
+    ТОЛЬКО для --test. Тест шлёт человеку, который сам его ждёт (свой номер,
+    is_test=1) — прогревать доверие тут не нужно, важно проверить сам текст. На
+    боевой заход это НЕ распространяется: команда кампании закреплена намеренно
+    (антибан, устойчивый почерк одних и тех же отправителей на аудиторию), и
+    подставлять туда случайный живой номер нельзя."""
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, username, phone, tg_session, proxy, api_id, api_hash, "
+            "description, avatar, status, tg_name, COALESCE(protected,0) AS protected, "
+            "daily_limit AS cap FROM accounts "
+            "WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND session_state='alive' AND status<>'banned' AND COALESCE(protected,0)=0 "
+            "AND COALESCE(acc_role,'')<>'service' "
+            "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def _team(cid: int) -> list[dict]:
     """Аккаунты кампании с ЖИВОЙ сессией (для мультиаккаунт-рассылки).
     Берём из campaign_accounts, исключаем забаненных и без сессии. Лимит на аккаунт —
@@ -542,6 +565,17 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     # Команда кампании (мультиаккаунт). Если команда не задана/без сессий —
     # откатываемся на основной аккаунт из .env (старое поведение, ничего не ломаем).
     team = _team(cid)
+    if test and not any(a.get("proxy") and a.get("tg_session") for a in team):
+        # Вся закреплённая команда сейчас без живого выхода в сеть (частый случай при
+        # дефиците прокси в пуле) — тест физически не может уйти. Проверить сам ТЕКСТ
+        # важнее, чем строго держаться закреплённых отправителей: берём любой живой
+        # аккаунт со своим прокси. На боевой заход это НЕ распространяется — там
+        # команда остаётся строгой (см. _any_live_account).
+        fallback = _any_live_account()
+        if fallback:
+            print(f"[ТЕСТ] команда кампании без живого выхода в сеть — беру любой живой: "
+                  f"{fallback.get('label') or fallback['id']}")
+            team = [fallback]
     senders: list[dict] = []
     if team:
         # «Основной» (⭐, campaigns.account_id) — первый в очереди ротации: ему
@@ -760,10 +794,22 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                 continue
             if cat == "spam":
                 # PeerFlood: слишком много ЛС незнакомцам → пауза аккаунта на этот заход
-                # отправки не было — контакт обратно в 'new'
+                # отправки не было — контакт обратно в 'new'.
+                #
+                # Раньше это оседало ТОЛЬКО в консольном print — журнал сервера никто
+                # не читает на регулярной основе, а вот «отправлено 0» в колокольчике
+                # выглядело как «дело в прокси/аудитории» (сообщение об этом коде и
+                # предлагает искать там). PeerFlood — это Telegram уже насторожился на
+                # ЭТОТ номер за холодные ЛС незнакомцам, то есть сигнал риска бана
+                # приближается, а не рядовая помеха — прятать его в логе нельзя.
                 print(f"[{s['label']}] ⚠ PeerFlood (много ЛС незнакомцам) — пауза аккаунта на заход")
                 with database.get_conn() as conn:
                     conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                    database.add_event(conn, "ban", f"⚠ PeerFlood: «{s['label']}»",
+                                       "слишком много ЛС незнакомцам подряд — Telegram придержал отправку "
+                                       "этим аккаунтом. Не бан, но предвестник: снизь темп/дневной лимит "
+                                       "или выведи номер из ротации на день-два.",
+                                       level="warn", campaign_id=cid, account_id=s["id"])
                 s["remaining"] = 0
                 continue
             if cat == "blocked":

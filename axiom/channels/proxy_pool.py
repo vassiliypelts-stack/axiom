@@ -764,6 +764,16 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         accs_raw = conn.execute(
             f"SELECT id, label, proxy FROM accounts WHERE {where}", params
         ).fetchall()
+        # Кто уже ведёт БОЕВУЮ переписку (писал живому человеку за последние 14 дней) —
+        # в очередь на лечение первым. Пул живых прокси мал и делится на всех, кто
+        # проверяется в этом проходе; без приоритета аккаунт с реальным диалогом мог
+        # остаться без замены только потому, что раньше по id встал прогреваемый номер,
+        # который вообще ещё никому не писал.
+        busy_ids = {r["account_id"] for r in conn.execute(
+            "SELECT DISTINCT account_id FROM messages WHERE direction='out' "
+            "AND account_id IS NOT NULL AND ts >= datetime('now','-14 day')"
+        ).fetchall()}
+        accs_raw = sorted(accs_raw, key=lambda a: 0 if a["id"] in busy_ids else 1)
         accs = [(a["id"], a["label"] or f"#{a['id']}", a["proxy"] or "") for a in accs_raw]
 
     # НЕ трогаем тех, кто ПРЯМО СЕЙЧАС подключён слушателем: смена прокси у живого

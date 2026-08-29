@@ -107,15 +107,32 @@ def dadata_lookup(name: str | None, city: str | None) -> dict | None:
         nm = (f.get("fio") or {}).get("source") or f.get("name")
         if nm:
             founders.append(nm)
+    # Адрес/КПП/дата регистрации/штат — для карточки КОМПАНИИ (web: /api/company/{id}/enrich).
+    # Контактам они не нужны, поэтому раньше не извлекались, хотя DaData отдаёт их в
+    # том же ответе — второй запрос ради них был бы лишним.
+    state = d.get("state") or {}
+    reg_ts = state.get("registration_date")
+    reg_date = None
+    if reg_ts:
+        try:  # DaData отдаёт миллисекунды epoch
+            from datetime import datetime, timezone
+            reg_date = datetime.fromtimestamp(int(reg_ts) / 1000, timezone.utc).strftime("%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            reg_date = None
     return {
         "inn": d.get("inn"),
         "ogrn": d.get("ogrn"),
+        "kpp": d.get("kpp"),
         "director": director,
         "role": role,
         "founders": founders,
         "okved": d.get("okved"),
-        "status": (d.get("state") or {}).get("status"),
+        "status": state.get("status"),
         "full_name": (d.get("name") or {}).get("full_with_opf"),
+        "address": (d.get("address") or {}).get("unrestricted_value")
+                   or (d.get("address") or {}).get("value"),
+        "registration_date": reg_date,
+        "employee_count": d.get("employee_count"),
     }
 
 

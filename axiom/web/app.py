@@ -4417,6 +4417,104 @@ def parse_join(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse(data)
 
 
+# ------------------------- Обогащение КОМПАНИЙ через DaData ---------------------- #
+def _dadata_to_company(dd: dict) -> dict:
+    """Ответ DaData → поля таблицы companies (они уже есть в схеме, но никем не
+    заполнялись: обогащение умело только контакты)."""
+    out = {}
+    if dd.get("inn"):
+        out["inn"] = dd["inn"]
+    if dd.get("ogrn"):
+        out["ogrn"] = dd["ogrn"]
+    if dd.get("director"):
+        out["director_name"] = dd["director"]
+    if dd.get("role"):
+        out["director_role"] = dd["role"]
+    if dd.get("okved"):
+        out["main_activity"] = dd["okved"]
+    if dd.get("founders"):
+        out["founders"] = "; ".join(dd["founders"])
+    if dd.get("address"):
+        out["address"] = dd["address"]
+    if dd.get("kpp"):
+        out["kpp"] = dd["kpp"]
+    if dd.get("registration_date"):
+        out["registration_date"] = dd["registration_date"]
+    if dd.get("employee_count"):
+        out["employee_count"] = dd["employee_count"]
+    return out
+
+
+def _enrich_one_company(conn, row: dict) -> dict:
+    """Один запрос в ЕГРЮЛ по «название + город». Заполняем ТОЛЬКО пустые поля:
+    то, что оператор вписал руками, справочник не перетирает."""
+    from agent.enrich import dadata_lookup
+    dd = dadata_lookup(row.get("name"), row.get("city"))
+    if not dd:
+        return {"ok": False, "id": row["id"], "error": "в ЕГРЮЛ не нашлось"}
+    vals = _dadata_to_company(dd)
+    if not vals:
+        return {"ok": False, "id": row["id"], "error": "DaData не отдала полей"}
+    sets, params = [], []
+    for k, v in vals.items():
+        # COALESCE(NULLIF(...)) — пустое заполняем, заполненное оставляем как есть
+        sets.append(f"{k}=COALESCE(NULLIF({k},''),?)")
+        params.append(v)
+    conn.execute(f"UPDATE companies SET {', '.join(sets)} WHERE id=?", (*params, row["id"]))
+    return {"ok": True, "id": row["id"], "fields": list(vals), "inn": vals.get("inn"),
+            "director": vals.get("director_name"), "full_name": dd.get("full_name")}
+
+
+@app.post("/api/company/{company_id}/enrich")
+def company_enrich(company_id: int) -> JSONResponse:
+    """Обогатить ОДНУ компанию из ЕГРЮЛ (кнопка в карточке).
+
+    Раньше обогащения компаний не было вовсе: и «Обогатить пачку» в разделе
+    «Компании», и кнопка в карточке контакта вели в agent.enrich, а он работает по
+    таблице contacts. Поля ИНН/ОГРН/директор в companies существовали, но заполнить
+    их было нечем — оператор видел пустую карточку и не понимал, почему.
+    """
+    if not config.DADATA_API_KEY:
+        return JSONResponse({"ok": False,
+                             "error": "не задан DADATA_API_KEY в .env — обогащение из ЕГРЮЛ "
+                                      "недоступно"}, status_code=400)
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT id, name, city FROM companies WHERE id=?",
+                           (company_id,)).fetchone()
+        if not row:
+            return JSONResponse({"ok": False, "error": "компания не найдена"}, status_code=404)
+        res = _enrich_one_company(conn, dict(row))
+    return JSONResponse(res)
+
+
+@app.post("/api/companies/enrich")
+def companies_enrich(payload: dict = Body(default={})) -> JSONResponse:
+    """Пачкой — по компаниям без ИНН. Синхронно и небольшими порциями: DaData отвечает
+    быстро, а оператору важно увидеть результат, а не «запущено в фоне»."""
+    if not config.DADATA_API_KEY:
+        return JSONResponse({"ok": False,
+                             "error": "не задан DADATA_API_KEY в .env — обогащение из ЕГРЮЛ "
+                                      "недоступно"}, status_code=400)
+    limit = max(1, min(int(payload.get("limit") or 10), 50))
+    database.init_db()
+    done = failed = 0
+    details = []
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, city FROM companies WHERE COALESCE(inn,'')='' "
+            "AND COALESCE(name,'')<>'' ORDER BY id LIMIT ?", (limit,)).fetchall()
+        for r in rows:
+            res = _enrich_one_company(conn, dict(r))
+            if res.get("ok"):
+                done += 1
+            else:
+                failed += 1
+                details.append(f"#{r['id']} {r['name']}: {res.get('error')}")
+    return JSONResponse({"ok": True, "enriched": done, "failed": failed,
+                         "checked": len(rows), "details": details[:10]})
+
+
 # --------------------------- Здоровье парка аккаунтов ---------------------------- #
 @app.get("/api/park/health")
 def park_health() -> JSONResponse:

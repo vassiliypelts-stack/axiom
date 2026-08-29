@@ -3701,9 +3701,17 @@ async function viewCompanies(v){
     <div id="co-body"></div>`;
   wireSourcePicker($("#imp-source"));
   $("#co-imp").onclick=()=>{const p=$("#imp-panel");p.style.display=p.style.display==="none"?"block":"none";};
-  $("#co-enr").onclick=async()=>{const n=prompt("Сколько НЕобогащённых обогатить за раз?","10");if(!n)return;
-    const r=await api("/api/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});
-    alert(`Запущено обогащение до ${r.limit} в фоне. Обнови через минуту-две.`);};
+  // Кнопка раздела «Компании» вела в /api/enrich — а он обогащает КОНТАКТЫ, поэтому
+  // компании после неё оставались пустыми. Теперь зовём обогащение компаний.
+  $("#co-enr").onclick=async()=>{const n=prompt("Сколько компаний без ИНН обогатить из ЕГРЮЛ?","10");if(!n)return;
+    const b=$("#co-enr"),was=b.textContent;b.disabled=true;b.textContent="ищу в ЕГРЮЛ…";
+    let r;try{r=await api("/api/companies/enrich",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({limit:+n})});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){alert("не вышло: "+((r&&r.error)||"нет ответа"));return;}
+    alert(`Обогащено: ${r.enriched} из ${r.checked}`+(r.failed?`\nне нашлось в ЕГРЮЛ: ${r.failed}`:"")
+      +((r.details||[]).length?`\n\n`+r.details.join("\n"):""));
+    route();};
   $("#co-new").onclick=async()=>{const name=prompt("Название компании:");if(!name)return;
     const r=await api("/api/companies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openCompany(r.id),200);};
@@ -4009,11 +4017,29 @@ async function openCompany(id){
       ${c.employee_count?`<div class="fin-item"><span class="fin-val">${c.employee_count}</span><span class="fin-label">Сотрудников</span></div>`:''}
     </div>`:''}
     <div class="field"><label>Заметки</label><textarea data-k="notes" rows="2">${esc(c.notes||"")}</textarea></div>
-    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">Сохранить</button><button id="co-del">Удалить</button></div>
+    <div class="ttoolbar" style="margin:6px 0"><button class="primary" id="co-save">Сохранить</button>
+      <button id="co-enrich-one" title="Найти компанию в ЕГРЮЛ через DaData по названию и городу: ИНН, ОГРН, КПП, руководитель, ОКВЭД, адрес, дата регистрации. Заполняются только ПУСТЫЕ поля — вписанное руками не перетирается">🏛 Обогатить из ЕГРЮЛ</button>
+      <button id="co-del">Удалить</button></div>
+    <div id="co-enr-msg" class="hint" style="margin:-2px 0 6px"></div>
     <hr><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Контакты (${(c.contacts||[]).length})</label>
     <div style="margin:6px 0">${(c.contacts||[]).map(p=>`<div class="lnk" data-cid="${p.id}" style="padding:6px 0;cursor:pointer">👤 ${esc(p.person_name||p.name||"без имени")}${p.person_role?` · <span class="sub">${esc(p.person_role)}</span>`:""}${p.phone?` · <span class="sub mono">${esc(p.phone)}</span>`:""}</div>`).join("")||'<div class="no">нет — добавь в разделе «Контакты»</div>'}</div>
     <hr><div style="display:flex;justify-content:space-between;align-items:center"><label style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Сделки (${(c.deals||[]).length})</label><button id="co-deal-new">сделка</button></div>
     <div style="margin:6px 0">${(c.deals||[]).map(d=>`<div class="lnk" data-did="${d.id}" style="padding:6px 0;cursor:pointer">💼 ${esc(d.title||"сделка")} · ${statusBadge(d.stage)}${d.amount?` · <span class="mono">${Number(d.amount).toLocaleString("ru-RU")} ₽</span>`:""}</div>`).join("")||'<div class="no">нет</div>'}</div>`;
+  // Обогащение КОМПАНИИ из ЕГРЮЛ. Раньше его не было вовсе: и «Обогатить пачку» в
+  // разделе, и кнопка в карточке контакта ведут в agent.enrich, который работает по
+  // таблице contacts. Поля ИНН/ОГРН/директор у компании существовали, но заполнить их
+  // было нечем — карточка оставалась пустой без объяснения.
+  $("#co-enrich-one").onclick=async()=>{
+    const b=$("#co-enrich-one"),m=$("#co-enr-msg"),was=b.textContent;
+    b.disabled=true;b.textContent="ищу в ЕГРЮЛ…";m.textContent="";
+    let r;try{r=await api(`/api/company/${id}/enrich`,{method:"POST"});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;b.textContent=was;
+    if(!r||r.ok===false||r.error){m.innerHTML='<span style="color:#c0392b">⚠ '+esc((r&&r.error)||"не вышло")+'</span>';return;}
+    m.innerHTML='<span style="color:var(--green)">✓ заполнено полей: '+((r.fields||[]).length)
+      +(r.full_name?' · '+esc(r.full_name):'')+'</span>';
+    setTimeout(()=>openCompany(id),700);   // перерисовать карточку с новыми данными
+  };
   $("#co-save").onclick=async()=>{const body={};$("#dr-body").querySelectorAll("[data-k]").forEach(el=>body[el.dataset.k]=el.type==="checkbox"?el.checked:el.value);
     await api(`/api/company/${id}/update`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     $("#co-save").textContent="✓ сохранено";setTimeout(route,500);};

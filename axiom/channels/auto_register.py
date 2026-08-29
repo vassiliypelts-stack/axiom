@@ -221,7 +221,12 @@ def main():
     result = asyncio.run(register_batch(
         args.country, args.qty, args.proxy_period, args.proxy_version
     ))
-    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    # Одной строкой, БЕЗ indent: web/app.py:_last_json (тот же приём, что у всех
+    # остальных модулей — campaign_send, proxy_pool и т.д.) ищет строку, начинающуюся
+    # с '{', и многострочный json.dumps(indent=2) под это не подходил — итоговый
+    # результат регистрации не распознавался, /api/auto/status показывал "done: false"
+    # даже когда процесс уже завершился и деньги были возвращены/списаны.
+    print(json.dumps(result, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":

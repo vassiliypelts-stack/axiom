@@ -7505,6 +7505,16 @@ def campaign_preflight(cid: int) -> JSONResponse:
     add(bool((camp.get("channel") or "").strip()), "fail", "Канал выбран" if camp.get("channel") else "Не выбран канал (Telegram/WhatsApp)")
     add(bool((camp.get("message_template") or "").strip()), "fail",
         "Первое сообщение заполнено" if (camp.get("message_template") or "").strip() else "Пустое первое сообщение — нечего слать")
+    # Без agent_prompt диалог после первого касания ведёт SYSTEM_PROMPT из кода —
+    # заглушка «Академия ИЖС» про строительные компании и созвон на 15 минут. Она
+    # осталась в коде как аварийный дефолт для самой первой кампании и не имеет
+    # отношения ни к одному реальному скрипту. Раньше это всплывало только когда
+    # живой человек уже получал ответ про застройщиков — здесь ловим ДО запуска.
+    add(bool((camp.get("agent_prompt") or "").strip()), "fail",
+        "Промпт диалога задан" if (camp.get("agent_prompt") or "").strip()
+        else "Пустой промпт агента — ответы в диалоге пойдут по промпту-заглушке "
+             "(«Академия ИЖС», строительство домов), не по вашему сценарию. "
+             "Заполни промпт в «Настроить» перед запуском")
     add(aud > 0, "fail", f"Аудитория: {aud} контактов" if aud > 0 else "Аудитория пуста (проверь тег и канал)")
 
     if team:
@@ -8658,11 +8668,24 @@ def campaign_launch(cid: int, payload: dict = Body(...)) -> JSONResponse:
     limit = int(payload.get("limit") or 3)
     force = bool(payload.get("force"))
     with database.get_conn() as conn:
-        row = conn.execute("SELECT message_template FROM campaigns WHERE id=?", (cid,)).fetchone()
+        row = conn.execute("SELECT message_template, agent_prompt FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         if not (row["message_template"] or "").strip():
             return JSONResponse({"error": "сначала заполни текст первого сообщения"}, status_code=400)
+        # Пустой agent_prompt — не «пойдёт с дефолтом», а тихая подмена сценария.
+        # Без своего промпта диалог после первого касания ведёт SYSTEM_PROMPT из
+        # channels/agent/prompts.py — заглушка «Академия ИЖС» про строительные
+        # компании и созвон, оставшаяся в коде от самой первой кампании. Она не
+        # имеет отношения ни к одному реальному скрипту, и без этого гейта живой
+        # человек первым узнаёт о подмене, получив ответ про застройщиков вместо
+        # заготовленного сценария. Жёсткий блок, без --force: обхода нет, потому
+        # что «продолжить всё равно» здесь означает «отправить чужой скрипт».
+        if not (row["agent_prompt"] or "").strip():
+            return JSONResponse({"error": "пустой промпт диалога — заполни его в «Настроить» "
+                                          "перед запуском, иначе ответы в диалоге пойдут по "
+                                          "промпту-заглушке («Академия ИЖС», не твой сценарий)"},
+                                status_code=400)
         # Гейт «в поле промпт, а не письмо». Каждая строка этого поля уходит человеку
         # ОТДЕЛЬНЫМ сообщением, поэтому оставленная инструкция («# Формат вывода…»,
         # «ВАЖНО:», «- каждая новая строка = отдельное сообщение») превращается в

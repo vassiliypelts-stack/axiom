@@ -365,15 +365,24 @@ def sms_register(payload: dict = Body(default={})) -> JSONResponse:
 
 
 # --- Авто-регистрация (полный цикл) ---
-_AUTO_TASKS: dict = {}   # task_id -> {"done": bool, "result": dict}
 
 
 @app.post("/api/auto/register")
 def auto_register(payload: dict = Body(default={})) -> JSONResponse:
     """Полная авто-регистрация: купить номер → SMS → Telegram → прокси → упаковка.
-    Запускается в фоне, возвращает task_id для опроса статуса."""
+    Запускается ОТДЕЛЬНЫМ ПРОЦЕССОМ (не потоком), возвращает task_id для опроса статуса.
+
+    ЗАЧЕМ ОТДЕЛЬНЫЙ ПРОЦЕСС, А НЕ ПОТОК (как было). Раньше регистрация шла в
+    threading.Thread внутри процесса пульта, и деплой (рестарт uvicorn) убивал её на
+    середине — 29.08 так оборвали ожидание SMS ровно после того, как номер и прокси
+    были куплены и деньги списаны: аккаунт не создался, а факт покупки узнали только
+    по балансу. Свой subprocess переживает рестарт родителя (та же логика, что у
+    campaign_send — Popen, а не Thread), а прогресс лежит в файле, не в памяти
+    процесса, которая обнуляется при рестарте вместе с _AUTO_TASKS."""
+    import os
+    import subprocess
+    import sys
     import uuid
-    import threading
 
     country = payload.get("country")
     qty = int(payload.get("qty") or 1)
@@ -386,43 +395,35 @@ def auto_register(payload: dict = Body(default={})) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Заполни TG_API_ID и TG_API_HASH в .env"}, status_code=400)
 
     task_id = str(uuid.uuid4())[:8]
-    _AUTO_TASKS[task_id] = {"done": False, "result": {}, "progress": []}
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = LOG_DIR / f"auto_register_{task_id}.json"
 
-    def _run():
-        import asyncio
-        from channels.auto_register import register_batch
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            results = loop.run_until_complete(register_batch(
-                country, qty, proxy_period, proxy_version,
-            ))
-            _AUTO_TASKS[task_id] = {
-                "done": True,
-                "result": {"ok": any(r.get("ok") for r in results),
-                           "accounts": results},
-                "progress": [s for r in results for s in r.get("steps", [])],
-            }
-        except Exception as e:
-            _AUTO_TASKS[task_id] = {"done": True, "result": {"error": str(e)}}
-        finally:
-            loop.close()
-
-    threading.Thread(target=_run, daemon=True).start()
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    args = [sys.executable, "-m", "channels.auto_register",
+            "--country", str(country), "--qty", str(qty),
+            "--proxy-period", str(proxy_period), "--proxy-version", str(proxy_version)]
+    with open(out_path, "w", encoding="utf-8") as f:
+        subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env,
+                         stdout=f, stderr=subprocess.STDOUT)
     return JSONResponse({"ok": True, "task_id": task_id})
 
 
 @app.get("/api/auto/status/{task_id}")
 def auto_status(task_id: str) -> JSONResponse:
-    """Статус задачи авто-регистрации."""
-    task = _AUTO_TASKS.get(task_id)
-    if not task:
+    """Статус задачи авто-регистрации — читает файл-лог процесса, а не память пульта.
+    Так статус переживает рестарт: даже если пульт передеплоили посреди регистрации,
+    опрос покажет то, что процесс успел записать, а не «задача не найдена»."""
+    safe = "".join(ch for ch in task_id if ch.isalnum())
+    out_path = LOG_DIR / f"auto_register_{safe}.json"
+    if not out_path.exists():
         return JSONResponse({"ok": False, "error": "задача не найдена"}, status_code=404)
-    return JSONResponse({
-        "done": task["done"],
-        "result": task.get("result"),
-        "progress": task.get("progress", []),
-    })
+    text = out_path.read_text(encoding="utf-8", errors="replace")
+    data = _last_json(text)
+    if data is not None:
+        return JSONResponse({"done": True, "result": data, "progress": []})
+    return JSONResponse({"done": False, "result": {}, "progress": [],
+                         "tail": text[-500:]})
 
 
 @app.get("/api/proxy6/whoami")

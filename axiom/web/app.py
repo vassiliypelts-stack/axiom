@@ -8094,6 +8094,132 @@ def account_spare_promote(acc_id: int) -> JSONResponse:
     return JSONResponse(data)
 
 
+SPARE_PROMOTE_STALE_MIN = 15   # снимок прогресса старше — прогон умер вместе с процессом
+
+
+def _spare_progress_write(state: dict) -> None:
+    """Прогресс массового подъёма — в settings, как chatscan_progress."""
+    try:
+        state = dict(state, ts=_t.time())   # по ней ловим прогон, убитый рестартом пульта
+        with database.get_conn() as conn:
+            database.set_setting(conn, "spare_promote_progress", json.dumps(state, ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001
+        print(f"[spare] не смог записать прогресс: {e}")
+
+
+def _spare_progress_read() -> dict:
+    """Снимок прогресса. Прогон, чей снимок не обновлялся дольше
+    SPARE_PROMOTE_STALE_MIN, считаем мёртвым: воркер — daemon-поток, и рестарт пульта
+    убивает его молча, не дав отработать finally. Иначе running=True залипает навсегда
+    и кнопка вечно отвечает «подъём уже идёт», то есть восстановление аккаунтов
+    оказывается заблокировано без единого способа разблокировать из интерфейса."""
+    with database.get_conn() as conn:
+        raw = database.get_setting(conn, "spare_promote_progress", None)
+    if not raw:
+        return {"running": False}
+    try:
+        st = json.loads(raw)
+    except ValueError:
+        return {"running": False}
+    if st.get("running") and (_t.time() - float(st.get("ts") or 0)) > SPARE_PROMOTE_STALE_MIN * 60:
+        st = dict(st, running=False, stale=True)
+    return st
+
+
+@app.get("/api/accounts/spare_promote_progress")
+def accounts_spare_promote_progress() -> JSONResponse:
+    """Прогресс массового подъёма запасок для пульта."""
+    return JSONResponse(_spare_progress_read())
+
+
+@app.post("/api/accounts/spare_promote")
+def accounts_spare_promote(payload: dict = Body(default={})) -> JSONResponse:
+    """Поднять запаски пачкой: мёртвая основная → запаска становится основной.
+
+    ЗАЧЕМ ОТДЕЛЬНЫМ РОУТОМ, а не циклом в браузере. Каждый подъём гасит слушатель на
+    7с и поднимает обратно; одиннадцать нажатий подряд — одиннадцать таких качелей, и
+    в каждую щель между ними слушатель успевает схватить сессии, которые следующий
+    промоут тут же дёрнет вторым подключением. Это ровно тот сценарий, которым жгут
+    аккаунты (см. _listener_released). Здесь окно ОДНО на весь прогон.
+
+    Аккаунты идут СТРОГО последовательно и с паузой: параллельный вход пачкой с одного
+    IP Telegram читает как захват серии аккаунтов. Работа уходит в фоновый поток —
+    11 аккаунтов × (промоут + выпуск новой запаски) не укладываются в HTTP-таймаут.
+    """
+    import threading
+
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    if not ids:
+        # Пусто = все, кого реально можно поднять: мёртвая сессия + живая запаска.
+        with database.get_conn() as conn:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM accounts WHERE COALESCE(session_alive,1)=0 "
+                "AND tg_session_spare IS NOT NULL AND tg_session_spare<>''").fetchall()]
+    if not ids:
+        return JSONResponse({"ok": False, "error": "некого поднимать: нет мёртвых аккаунтов с запаской"})
+
+    if _spare_progress_read().get("running"):
+        return JSONResponse({"ok": False, "error": "подъём уже идёт — дождись окончания"})
+
+    _spare_progress_write({"running": True, "total": len(ids), "done": 0, "results": []})
+
+    def _worker() -> None:
+        results: list[dict] = []
+        try:
+            # ОДНО окно на весь прогон: слушатель гаснет один раз, а не 11.
+            with _listener_released():
+                for n, aid in enumerate(ids, 1):
+                    with database.get_conn() as conn:
+                        row = conn.execute("SELECT label FROM accounts WHERE id=?", (aid,)).fetchone()
+                        # ПРОДЛЕВАЕМ служебную паузу на каждом круге. Сторож
+                        # (_listener_watchdog) поднимает слушатель, если метка висит
+                        # дольше LISTENER_STUCK_MIN=20 мин — а прогон на десяток
+                        # аккаунтов идёт дольше. Без этого сторож посреди прогона
+                        # включил бы слушатель, тот схватил бы сессии, и следующий
+                        # промоут открыл бы по ним ВТОРОЕ подключение: ровно тот
+                        # AuthKeyDuplicatedError, ради которого окно и держится.
+                        database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+                    label = (row["label"] if row else None) or f"#{aid}"
+
+                    res = _run_capture(["channels.session_spare", "--promote", str(aid)], timeout=300)
+                    data = _last_json(res.get("output")) or {
+                        "ok": False, "msg": "не отчитался: " + (res.get("output") or "")[-200:]}
+                    item = {"id": aid, "label": label,
+                            "ok": bool(data.get("ok")), "msg": data.get("msg") or ""}
+
+                    if item["ok"]:
+                        # Запаска израсходована — сразу выпускаем новую, пока окно ещё
+                        # открыто и аккаунт жив. Иначе висел бы без страховки до автозащиты.
+                        res2 = _run_capture(["channels.session_spare", "--ids", str(aid)], timeout=300)
+                        d2 = _last_json(res2.get("output")) or {}
+                        item["new_spare"] = bool(d2.get("minted"))
+
+                    results.append(item)
+                    _spare_progress_write({"running": True, "total": len(ids),
+                                           "done": n, "current": label, "results": results})
+                    if n < len(ids):
+                        _t.sleep(20)   # серия входов с одного IP подряд читается как захват
+        except Exception as e:  # noqa: BLE001
+            results.append({"id": 0, "label": "—", "ok": False, "msg": f"прогон упал: {e}"})
+        finally:
+            ok_n = sum(1 for r in results if r.get("ok"))
+            _spare_progress_write({"running": False, "total": len(ids), "done": len(results),
+                                   "restored": ok_n, "results": results})
+            try:
+                with database.get_conn() as conn:
+                    database.add_event(
+                        conn, "account_protected",
+                        f"♻️ Массовый подъём запасок: восстановлено {ok_n} из {len(ids)}",
+                        "; ".join(f"{r['label']}: {'✅' if r.get('ok') else '✗ ' + str(r.get('msg'))}"
+                                  for r in results)[:900],
+                        level="good" if ok_n else "warn")
+            except Exception as e:  # noqa: BLE001
+                print(f"[spare] не смог записать событие: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return JSONResponse({"ok": True, "started": len(ids), "ids": ids})
+
+
 @app.post("/api/accounts/twofa")
 def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
     """Поставить облачный пароль. Пароль генерится и пишется в БД ДО установки —

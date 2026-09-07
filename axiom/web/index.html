@@ -1468,7 +1468,10 @@ async function loadSpare(){
   const recover=(d.recoverable||[]).length
     ? `<div class="card" style="padding:9px 12px;margin-top:8px;border-left:3px solid var(--accent)">
         <b>♻️ Можно вернуть: ${d.recoverable.length}</b>
-        <div class="hint" style="margin-top:4px">Сессия мертва, но запаска цела — открой карточку и жми «Поднять запаску»: ${d.recoverable.map(x=>esc(x.label||("#"+x.id))).join(" · ")}</div></div>`
+        <div class="hint" style="margin-top:4px">Сессия мертва, но запаска цела: ${d.recoverable.map(x=>esc(x.label||("#"+x.id))).join(" · ")}</div>
+        <div class="ttoolbar" style="margin:8px 0 0">
+          <button class="primary" id="sp-promote-all">♻️ Поднять все запаски</button>
+          <span class="hint" id="sp-promote-msg"></span></div></div>`
     : "";
   if(!d.without_spare){
     box.innerHTML=`<div class="card" style="padding:9px 12px"><span class="badge b-active">🧯 застрахованы все ${d.with_spare}</span>
@@ -1494,6 +1497,47 @@ async function loadSpare(){
       if(r.log)console.log(r.log.join("\n"));
       setTimeout(route,1500);};
   }
+  // Массовый подъём идёт в фоне (11 акк. × промоут+новая запаска не влезают в HTTP),
+  // поэтому опрашиваем прогресс, а не ждём ответа POST.
+  const pall=$("#sp-promote-all");
+  // Слежение вынесено из обработчика: прогон живёт на сервере, а не в этой вкладке,
+  // поэтому его надо подхватывать и после F5, а не только сразу после нажатия.
+  const spWatch=()=>{
+    const m=$("#sp-promote-msg");if(!pall||!m)return;
+    pall.disabled=true;pall.textContent="поднимаю…";
+    const t=setInterval(async()=>{
+      // Экран сменили — таймер иначе живёт до перезагрузки страницы и каждые 3с
+      // дёргает сервер, переписывая уже несуществующий узел.
+      if(!document.body.contains(pall)){clearInterval(t);return;}
+      let p;try{p=await api("/api/accounts/spare_promote_progress");}catch(e){return;}
+      if(!p)return;
+      if(p.running){m.textContent=`${p.done||0} из ${p.total||0}${p.current?" · "+p.current:""}…`;return;}
+      clearInterval(t);pall.disabled=false;pall.textContent="♻️ Поднять все запаски";
+      if(p.stale){m.innerHTML='<span style="color:#c0392b">прогон оборвался (пульт перезапустился) — можно запустить заново</span>';return;}
+      const bad=(p.results||[]).filter(x=>!x.ok);
+      m.innerHTML=`восстановлено ${p.restored||0} из ${p.total||0}`
+        +(bad.length?`<span style="color:#c0392b"> · не вышло: ${bad.map(x=>esc(x.label)+" ("+esc(x.msg||"")+")").join(", ")}</span>`:"");
+      setTimeout(route,2500);},3000);};
+  if(pall){
+    // Прогон мог начаться до перезагрузки страницы — подхватываем его молча.
+    api("/api/accounts/spare_promote_progress").then(p=>{if(p&&p.running)spWatch();}).catch(()=>{});
+    pall.onclick=async()=>{
+      const n=(d.recoverable||[]).length;
+      if(!confirm(`Поднять запаски у ${n} аккаунт(ов)?
+
+К каждому подключаемся вживую, по очереди с паузой — это ориентировочно ${Math.ceil(n*2)}–${Math.ceil(n*3)} мин.
+
+ВАЖНО: слушатель на всё это время выключен — входящие сообщения в этот период не сохраняются. Лучше запускать не в часы активности клиентов.
+
+Поднятая запаска расходуется, взамен сразу выпускается новая.`))return;
+      const m=$("#sp-promote-msg");pall.disabled=true;pall.textContent="поднимаю…";
+      let r;try{r=await api("/api/accounts/spare_promote",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});}
+      catch(e){r={error:e.message};}
+      if(!r||r.ok===false||r.error){pall.disabled=false;pall.textContent="♻️ Поднять все запаски";
+        m.innerHTML='<span style="color:#c0392b">'+esc((r&&r.error)||"не вышло")+'</span>';return;}
+      spWatch();};
+  }
+
   const au=$("#sp-auto");
   if(au)au.onchange=async()=>{
     const msg=$("#sp-auto-msg");msg.textContent="сохраняю…";
@@ -8344,7 +8388,8 @@ async function refreshNotif(){
 const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"📅",ban:"⛔",account_banned:"⛔",warm_ready:"🌡",warm_check:"⚠️",info:"ℹ️",
   chat_join:"➕",outreach:"📨",hit:"🎯",reply:"💬",warm_run:"🔥",agent_error:"🔴",campaign_test:"🧪",campaign_stop:"⏸",
   listener_down:"🔇",listener_off:"🔇",listener_on:"🔊",sched_undelivered:"📵",stuck_reply:"⏳",campaign_blocked:"🛑",
-  proxy_heal:"🌐",proxy_renew:"🌐",proxy_harvest_down:"🌐",parse_schedule:"🛰️",name_mismatch:"🙅"};
+  proxy_heal:"🌐",proxy_renew:"🌐",proxy_harvest_down:"🌐",parse_schedule:"🛰️",name_mismatch:"🙅",
+  account_protected:"♻️"};
 function renderNotif(){
   const box=$("#notif");
   if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}

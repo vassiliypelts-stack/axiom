@@ -30,6 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent
 INDEX_HTML = BASE_DIR / "index.html"
 KP_DIR = config.DB_PATH.parent / "kp"   # файлы КП кампаний (data/kp/)
 AVATAR_DIR = config.DB_PATH.parent / "avatars"   # аватары агентов
+EXPORT_DIR = config.DB_PATH.parent / "exports"  # CSV-выгрузки парсера (data/exports/)
 
 FUNNEL = [
     ("new", "Новые"), ("messaged", "Написано"), ("in_dialog", "В диалоге"),
@@ -4308,7 +4309,49 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
         args += ["--scan", str(int(payload.get("scan") or 2000)), "--top", str(int(payload.get("top") or 50))]
     elif mode == "search":
         args += ["--limit", str(int(payload.get("limit") or 30))]
-    return JSONResponse(_run_capture(args))
+    # CSV-выгрузка «на руки»: консоль парсера печатает только первые 60 строк, а
+    # запись в книжку идёт лишь по save. Без этого большая выборка (тысячи авторов
+    # за год-два) собиралась и тут же терялась — оператор видел верхушку списка.
+    csv_name = (payload.get("csv") or "").strip()
+    if csv_name:
+        # С фронта принимаем только ИМЯ файла: путь оттуда — это запись куда угодно
+        # правами сервиса. Каталог назначаем здесь.
+        csv_name = Path(csv_name).name
+        if not csv_name.lower().endswith(".csv"):
+            csv_name += ".csv"
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        args += ["--csv", str(EXPORT_DIR / csv_name)]
+        if payload.get("min_comments"):
+            args += ["--min-comments", str(int(payload["min_comments"]))]
+    res = _run_capture(args)
+    if csv_name and isinstance(res, dict):
+        res["csv"] = csv_name
+        res["csv_url"] = f"/api/exports/{csv_name}"
+    return JSONResponse(res)
+
+
+@app.get("/api/exports")
+def exports_list() -> JSONResponse:
+    """Что уже выгружено парсером — файл лежит на сервере, забрать его иначе нечем."""
+    import datetime as _dt
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out = []
+    for f in sorted(EXPORT_DIR.glob("*.csv"), key=lambda x: x.stat().st_mtime, reverse=True):
+        st = f.stat()
+        out.append({"name": f.name, "size": st.st_size,
+                    "at": _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    "url": f"/api/exports/{f.name}"})
+    return JSONResponse({"ok": True, "items": out})
+
+
+@app.get("/api/exports/{name}")
+def exports_download(name: str):
+    """Скачать выгрузку. Path(...).name — чтобы «../» не увёл чтение за каталог."""
+    safe = Path(name).name
+    path = EXPORT_DIR / safe
+    if not safe.lower().endswith(".csv") or not path.exists():
+        return JSONResponse({"error": "файл не найден"}, status_code=404)
+    return FileResponse(path, filename=safe, media_type="text/csv")
 
 
 @app.post("/api/parse/invites")

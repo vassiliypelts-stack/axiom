@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import random
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -533,6 +534,78 @@ def _report(title: str, users: list, counts: dict | None = None) -> None:
         print(f"  {_display_name(u):30} @{u.username or '-':20}{extra}")
 
 
+CSV_COLUMNS = ["chat", "role", "tg_id", "username", "name", "comments",
+               "phone", "premium", "link"]
+
+# Кого показывать первым, когда человек попал и в админы, и в активные: одна строка
+# на человека, роль берём «сильнее». Иначе владелец чата, который сам же активно
+# пишет, выпадал бы в CSV дважды и терял бы пометку ЛПР.
+_ROLE_RANK = {ROLE_CREATOR: 3, ROLE_ADMIN: 2, ROLE_ACTIVE: 1, ROLE_MEMBER: 0}
+
+
+def _csv_rows(users: list, chat_label: str, default_role: str,
+              counts: dict | None = None) -> list[dict]:
+    """Строки CSV по пачке пользователей. counts — {tg_id: сколько написал}."""
+    counts = counts or {}
+    rows: list[dict] = []
+    for u in users:
+        code = _role_of(u, default_role)
+        rows.append({
+            "chat": chat_label,
+            "role": ROLE_RU.get(code, code),
+            "_role_code": code,
+            "tg_id": u.id,
+            "username": u.username or "",
+            "name": _display_name(u),
+            "comments": counts.get(u.id, ""),
+            "phone": _visible_phone_sync(u) or "",
+            "premium": "да" if getattr(u, "premium", False) else "",
+            "link": f"https://t.me/{u.username}" if u.username else "",
+        })
+    return rows
+
+
+def _merge_rows(rows: list[dict]) -> list[dict]:
+    """Один человек — одна строка: роль сильнее, счётчик комментариев не теряем.
+
+    Админы собираются отдельным вызовом от активных, и один и тот же человек приходит
+    двумя записями: у первой есть роль, у второй — число комментариев. Склеиваем."""
+    best: dict[int, dict] = {}
+    for r in rows:
+        cur = best.get(r["tg_id"])
+        if cur is None:
+            best[r["tg_id"]] = dict(r)
+            continue
+        if _ROLE_RANK.get(r["_role_code"], 0) > _ROLE_RANK.get(cur["_role_code"], 0):
+            keep_comments = cur["comments"] or r["comments"]
+            cur.update(r)
+            cur["comments"] = keep_comments
+        elif r["comments"] and not cur["comments"]:
+            cur["comments"] = r["comments"]
+    # Сортировка: сначала владелец/админы, потом самые активные — оператор читает
+    # сверху вниз и сразу видит ЛПР.
+    return sorted(best.values(),
+                  key=lambda r: (-_ROLE_RANK.get(r["_role_code"], 0),
+                                 -int(r["comments"] or 0)))
+
+
+def _write_csv(path: str, rows: list[dict], min_comments: int = 1) -> int:
+    """Пишет CSV и возвращает число строк. utf-8-sig — иначе Excel ломает кириллицу.
+
+    Порог min_comments режет только КОММЕНТАТОРОВ: админ важен сам по себе, даже если
+    за окно он не написал ни разу."""
+    out = [r for r in rows
+           if r["_role_code"] in (ROLE_CREATOR, ROLE_ADMIN)
+           or int(r["comments"] or 0) >= min_comments]
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(out)
+    print(f"[csv] {path}: {len(out)} строк"
+          + (f" (порог: от {min_comments} коммент.)" if min_comments > 1 else ""))
+    return len(out)
+
+
 def _persist(users: list, target: str, role: str, source: str = "tg_parse",
              default_role_code: str | None = None,
              phones: dict[int, str] | None = None) -> tuple[int, int]:
@@ -605,7 +678,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
               harvest: bool = False, days: int = HARVEST_DAYS,
               account_id: int | None = None, source: str = "tg_parse",
               account_ids: list[int] | None = None, period_days: int | None = None,
-              incremental: bool = False) -> None:
+              incremental: bool = False, csv_path: str | None = None,
+              min_comments: int = 1) -> None:
     """account_id=None — главный аккаунт из .env; иначе рабочий аккаунт по id.
 
     ⚠️ Парсинг резолвит username'ы, а ResolveUsername — самый лимитируемый вызов TG.
@@ -634,11 +708,14 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
     label = getattr(entity, "title", None) or target
 
     found = new_total = dup_total = 0
+    csv_rows: list[dict] = []
 
     if mode in ("admins", "all"):
         admins = await collect_admins(client, entity)
         _report("Админы", admins)
         found += len(admins)
+        if csv_path:
+            csv_rows += _csv_rows(admins, label, ROLE_ADMIN)
         if save:
             n, d = _persist(admins, label, "админ", source, ROLE_ADMIN,
                             _phones_of(admins))
@@ -649,6 +726,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         members = await _collect_members_shared(accs, entity, target, limit, client)
         _report("Участники", members)
         found += len(members)
+        if csv_path:
+            csv_rows += _csv_rows(members, label, ROLE_MEMBER)
         if save:
             n, d = _persist(members, label, "участник", source, ROLE_MEMBER,
                             _phones_of(members))
@@ -662,6 +741,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
         counts = {u.id: c for u, c in active}
         _report("Активные комментаторы", users, counts)
         found += len(users)
+        if csv_path:
+            csv_rows += _csv_rows(users, label, ROLE_ACTIVE, counts)
         if save:
             n, d = _persist(users, label, "активный", source, ROLE_ACTIVE, _phones_of(users))
             new_total += n; dup_total += d
@@ -677,6 +758,8 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
             print("[harvest] сырьё для досье собрано в tg_user_posts — дальше agent/enrich_person.py")
 
     await client.disconnect()
+    if csv_path:
+        _write_csv(csv_path, _merge_rows(csv_rows), min_comments)
     if run_id:
         _run_finish(run_id, label, found, new_total, dup_total)
     print("\nГотово." + ("" if save else "  (сухой прогон — добавь --save, чтобы записать в книжку)"))
@@ -714,12 +797,20 @@ def main() -> None:
                         "список участников видит только тот, кто реально в чате состоит. "
                         "Не задан — используется главный аккаунт из .env (годится только для "
                         "публичных @чатов, куда .env-аккаунт не обязан быть вступившим)")
+    p.add_argument("--csv", default=None, dest="csv_path",
+                   help="выгрузить найденных в CSV-файл (сама книжка при этом не трогается — "
+                        "запись в неё только по --save). Консоль печатает лишь первые 60 строк, "
+                        "поэтому для больших выгрузок это единственный способ увидеть всех")
+    p.add_argument("--min-comments", type=int, default=1, dest="min_comments",
+                   help="режим active + --csv: не выгружать написавших меньше N сообщений. "
+                        "Админов порог не касается — они ценны сами по себе")
     args = p.parse_args()
     acc_ids = [int(x) for x in (args.accounts or "").split(",") if x.strip()] or None
     asyncio.run(run(args.target, args.mode, args.limit, args.scan, args.top, args.save,
                     harvest=args.harvest, days=args.days, account_id=args.account_id,
                     source=args.source, account_ids=acc_ids, period_days=args.period_days,
-                    incremental=args.incremental))
+                    incremental=args.incremental, csv_path=args.csv_path,
+                    min_comments=args.min_comments))
 
 
 if __name__ == "__main__":

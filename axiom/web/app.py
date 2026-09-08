@@ -843,6 +843,35 @@ def accounts_add(payload: dict = Body(...)) -> JSONResponse:
         return JSONResponse({"error": "нужен хотя бы ярлык или телефон"}, status_code=400)
     country = payload.get("country") or phone_geo.detect(f["phone"])   # страна по коду номера
     with database.get_conn() as conn:
+        # Дубль ищем ДО вставки, чтобы ответить по-человечески. Раньше здесь ловилось
+        # исключение SQLite и наружу уходило «возможно, такой телефон уже есть (UNIQUE
+        # constraint failed: accounts.phone)». Оно не отвечало на единственный вопрос,
+        # который в этот момент есть у оператора: чей это номер и где его смотреть, —
+        # а слово «возможно» заставляло гадать, добавился аккаунт или нет. Плюс сама
+        # форма не очищалась после успеха (см. index.html, #a-add), поэтому типовой
+        # сценарий был такой: аккаунт УЖЕ заведён, поля остались заполненными, оператор
+        # жмёт «Добавить» второй раз и получает эту ошибку на собственную же удачную
+        # попытку. Ищем по цифрам номера, а не по строке: +7 989…, 7989…, 8989… — это
+        # один и тот же телефон, и «не нашли дубль» из-за формата было бы хуже всего.
+        if f["phone"]:
+            digits = "".join(ch for ch in f["phone"] if ch.isdigit())
+            dup = conn.execute(
+                "SELECT id, label, status, phone, "
+                "       COALESCE(substr(bought_at,1,16),'') AS added "
+                "FROM accounts "
+                "WHERE replace(replace(replace(replace(replace("
+                "        COALESCE(phone,''),'+',''),' ',''),'(',''),')',''),'-','') = ? "
+                "   OR phone = ?",
+                (digits, f["phone"]),
+            ).fetchone()
+            if dup:
+                return JSONResponse({
+                    "error": f"Этот номер уже заведён — «{dup['label'] or ('#' + str(dup['id']))}»",
+                    "duplicate_id": dup["id"],
+                    "duplicate_label": dup["label"],
+                    "duplicate_status": dup["status"],
+                    "duplicate_added": dup["added"],
+                }, status_code=400)
         try:
             cur = conn.execute(
                 "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, country, bought_at) "
@@ -850,8 +879,8 @@ def accounts_add(payload: dict = Body(...)) -> JSONResponse:
                 (f["label"], f["phone"], f["username"], f["role"], f["status"], limit, f["notes"], country),
             )
         except Exception as e:
-            return JSONResponse({"error": f"возможно, такой телефон уже есть ({e})"}, status_code=400)
-        return JSONResponse({"ok": True, "id": cur.lastrowid})
+            return JSONResponse({"error": f"не удалось завести аккаунт: {e}"}, status_code=400)
+        return JSONResponse({"ok": True, "id": cur.lastrowid, "label": f["label"]})
 
 
 @app.post("/api/accounts/{acc_id}/delete")

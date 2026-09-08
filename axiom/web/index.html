@@ -1656,7 +1656,8 @@ async function viewAgents(v){
         <span style="width:1px;height:18px;background:var(--border);margin:0 4px"></span>
         <span class="hint">быстро:</span>
         <button class="a-fill" data-phones="+77027417272,+79881678180,+79137876067">📋 3 номера</button>
-      </div></div>
+      </div>
+      <div class="hint" id="a-add-msg" style="margin-top:6px"></div></div>
     <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">Проверить аккаунты (@SpamBot)</button>
       <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
@@ -1810,11 +1811,38 @@ async function viewAgents(v){
       m.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     m.textContent=`каждая из ${r.queued} сессий реально входит в Telegram — это ~минута, потом обновлю сам`;
     setTimeout(()=>{b.disabled=false;b.textContent="🫀 Проверить живость всех";route();},60000);};
+  // Форма ОЧИЩАЕТСЯ после успеха и говорит, кого именно завела. Раньше поля
+  // оставались заполненными и никакого подтверждения не было — выглядело так, будто
+  // ничего не произошло, оператор жал «Добавить» второй раз и получал ошибку про
+  // дубль на свою же удачную попытку. При дубле показываем, ЧЕЙ это номер и где его
+  // открыть, вместо сырого текста SQLite (см. app.py: accounts_add).
   $("#a-add").onclick=async()=>{
+    const b=$("#a-add"),msg=$("#a-add-msg");
     const body={label:$("#a-label").value,phone:$("#a-phone").value,username:$("#a-user").value.replace(/^@/,""),
       role:$("#a-role").value,status:$("#a-status").value,daily_limit:$("#a-limit").value};
-    const r=await api("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(r.error){alert(r.error);return;}route();
+    b.disabled=true;msg.textContent="завожу…";
+    let r;try{r=await api("/api/accounts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
+    catch(e){r={error:e.message};}
+    b.disabled=false;
+    if(r&&r.error){
+      if(r.duplicate_id){
+        msg.innerHTML='<span style="color:#c0392b">⚠️ '+esc(r.error)+'</span> '
+          +'<span class="hint">(id '+r.duplicate_id+(r.duplicate_status?", статус: "+esc(r.duplicate_status):"")
+          +(r.duplicate_added?", заведён "+esc(r.duplicate_added):"")+')</span> '
+          +'<a href="javascript:void(0)" id="a-add-dup">Открыть карточку →</a>';
+        const lnk=$("#a-add-dup");
+        if(lnk)lnk.onclick=()=>openAgent(r.duplicate_id);
+      } else msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';
+      return;
+    }
+    // Успех: чистим поля, чтобы следующий аккаунт заводился с чистого листа и
+    // повторное нажатие не било в тот же номер.
+    ["#a-label","#a-phone","#a-user"].forEach(s=>{const el=$(s);if(el)el.value="";});
+    $("#a-limit").value=15;
+    msg.innerHTML='<span style="color:#27ae60">✅ «'+esc(r.label||("#"+r.id))+'» заведён</span> '
+      +'<span class="hint">— дальше нужен свой прокси и вход в сессию</span>';
+    $("#a-label").focus();
+    setTimeout(route,1200);
   };
   let _fillIdx=0;
   document.querySelectorAll(".a-fill").forEach(b=>b.onclick=()=>{

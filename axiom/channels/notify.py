@@ -267,21 +267,51 @@ def campaign_report_text(conn, cid: int) -> str | None:
     ).fetchone()["c"]
     week = sent_since("date('now','-7 day')")
 
-    replied = conn.execute(
-        "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
-        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
-        "WHERE m.direction='in'", (cid,)
-    ).fetchone()["c"]
-    replied_today = conn.execute(
-        "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
-        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
-        "WHERE m.direction='in' AND m.ts >= date('now')", (cid,)
-    ).fetchone()["c"]
-    kev = conn.execute(
+    def replied_since(period_sql: str | None) -> int:
+        """Ответившие — по ПЕРВОМУ входящему в периоде, а не по любому.
+
+        Иначе диалог, который человек начал неделю назад и продолжает отвечать
+        сегодня, попадал бы в «ответили вчера» каждый день заново и завышал
+        дневную цифру: за день интересны НОВЫЕ отклики, а не активность старых."""
+        where = ""
+        if period_sql:
+            where = f" AND f.first_in >= {period_sql}"
+        return conn.execute(
+            "SELECT COUNT(*) c FROM ("
+            "  SELECT m.contact_id, MIN(m.ts) first_in FROM messages m "
+            "  JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+            "  WHERE m.direction='in' GROUP BY m.contact_id) f"
+            f" WHERE 1=1{where}", (cid,)).fetchone()["c"]
+
+    def kev_since(period_sql: str | None) -> int:
+        """КЭВ за период — по дате ПОЯВЛЕНИЯ договорённости (created_at сделки), а не
+        по meeting_at: встреча может стоять на следующей неделе, но договорились о
+        ней вчера — в отчёт за вчера она и должна попасть."""
+        where = f" AND d.created_at >= {period_sql}" if period_sql else ""
+        return conn.execute(
+            "SELECT COUNT(DISTINCT d.contact_id) c FROM deals d "
+            "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
+            f"WHERE d.meeting_at IS NOT NULL{where}", (cid,)).fetchone()["c"]
+
+    replied = replied_since(None)
+    replied_today = replied_since("date('now')")
+    replied_week = replied_since("date('now','-7 day')")
+    replied_yest = conn.execute(
+        "SELECT COUNT(*) c FROM ("
+        "  SELECT m.contact_id, MIN(m.ts) first_in FROM messages m "
+        "  JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+        "  WHERE m.direction='in' GROUP BY m.contact_id) f "
+        "WHERE f.first_in >= date('now','-1 day') AND f.first_in < date('now')",
+        (cid,)).fetchone()["c"]
+
+    kev = kev_since(None)
+    kev_today = kev_since("date('now')")
+    kev_week = kev_since("date('now','-7 day')")
+    kev_yest = conn.execute(
         "SELECT COUNT(DISTINCT d.contact_id) c FROM deals d "
         "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
-        "WHERE d.meeting_at IS NOT NULL", (cid,)
-    ).fetchone()["c"]
+        "WHERE d.meeting_at IS NOT NULL AND d.created_at >= date('now','-1 day') "
+        "AND d.created_at < date('now')", (cid,)).fetchone()["c"]
 
     # Дата старта — по ПЕРВОЙ фактической отправке, а не по campaigns.created_at:
     # кампанию заводят заранее, и «создана 17.07» при первой отправке 07.08 давало бы
@@ -307,23 +337,49 @@ def campaign_report_text(conn, cid: int) -> str | None:
     # вчерашнего контакта — это не работа рассылки, а её последствие.
     worked_today = "да" if today else "нет"
     worked_yesterday = "да" if yesterday_only else "нет"
-    conv = f" ({replied * 100 // total}%)" if total else ""
-    kev_conv = f" ({kev * 100 // replied}%)" if replied else ""
 
     def _d(ts):
         return (ts or "")[:10] or "—"
 
-    head = f"📊 «{camp['name']}»\n"
-    line_start = f"запущена: {_d(first_at)} · в работе дней: {days}\n"
-    line_work = f"работала сегодня: {worked_today} · вчера: {worked_yesterday}"
+    # Отчёт СГРУППИРОВАН ПО ПЕРИОДАМ (всё время / неделя / вчера), а не по метрикам.
+    # Раньше метрики шли вперемешку: отправки одной строкой за три периода сразу, а
+    # ответы и КЭВ — только «всего». На вопрос «как сработали вчера» отчёт не отвечал:
+    # приходилось держать периоды в голове и вычитать одно из другого. Внутри каждого
+    # блока порядок один и тот же: отправлено → ответили → КЭВ, чтобы взгляд не искал.
+    def _pct(part, whole):
+        return f" ({part * 100 // whole}%)" if whole else ""
+
+    out = [f"📊 «{camp['name']}»"]
+    out.append(f"запущена: {_d(first_at)} · в работе дней: {days}")
+    work = f"работала сегодня: {worked_today} · вчера: {worked_yesterday}"
     if not today and last_at:
-        line_work += f" · последняя отправка: {_d(last_at)}"
-    line_work += "\n"
-    line_base = f"обработано контактов: {total} · осталось в базе: {left}\n"
-    line_sent = f"отправлено — сегодня: {today} · за 7 дней: {week} · всего: {total}\n"
-    line_rep = f"ответили: {replied}{conv} (сегодня: {replied_today})\n"
-    line_kev = f"на КЭВ: {kev}{kev_conv}"
-    return head + line_start + line_work + line_base + line_sent + line_rep + line_kev
+        work += f" · последняя отправка: {_d(last_at)}"
+    out.append(work)
+    out.append(f"осталось в базе: {left}")
+
+    out.append("")
+    out.append("📅 ЗА ВСЁ ВРЕМЯ")
+    out.append(f"отправлено: {total}")
+    out.append(f"ответили: {replied}{_pct(replied, total)}")
+    out.append(f"на КЭВ: {kev}{_pct(kev, replied)}")
+
+    out.append("")
+    out.append("🗓 ЗА НЕДЕЛЮ")
+    out.append(f"отправлено: {week}")
+    out.append(f"ответили: {replied_week}{_pct(replied_week, week)}")
+    out.append(f"на КЭВ: {kev_week}{_pct(kev_week, replied_week)}")
+
+    out.append("")
+    out.append("☀️ ЗА ВЧЕРА")
+    out.append(f"отправлено: {yesterday_only}")
+    out.append(f"ответили: {replied_yest}{_pct(replied_yest, yesterday_only)}")
+    out.append(f"на КЭВ: {kev_yest}{_pct(kev_yest, replied_yest)}")
+
+    # Сегодня — одной короткой строкой: утром она ещё пустая, разворачивать её в
+    # полный блок с нулями незачем, но темп текущего дня видеть нужно.
+    out.append("")
+    out.append(f"сегодня: отправлено {today} · ответили {replied_today} · КЭВ {kev_today}")
+    return "\n".join(out)
 
 
 async def send_campaign_report(cid: int) -> dict:

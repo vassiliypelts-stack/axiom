@@ -7165,12 +7165,21 @@ async function viewParser(v){
         <option value="90">за последние 3 месяца</option>
         <option value="180">за последние полгода</option>
         <option value="365">за последний год</option>
+        <option value="730">за последние 2 года</option>
       </select>
       <div class="hint" style="margin-top:4px">Фильтр по дате есть только у сообщений, поэтому работает для «кто пишет в чат». У списка участников даты вступления Telegram не отдаёт — там парсятся все подряд.</div></div>
     <div class="field"><label>Источник (ярлык для «Контактов»)</label>
       <input id="p-source" placeholder="напр.: 210826точканетворк" autocomplete="off">
       <div class="hint" style="margin-top:4px">Под этим ярлыком найденные лягут в «Контакты» — там по нему можно отфильтровать и посмотреть, сколько дал именно этот чат. Оставишь пустым — попадут в общий «tg_parse» вперемешку со всеми прошлыми парсингами.</div></div>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="p-save"> записать найденных в книжку (без галочки — только показать)</label>
+    <div class="row2" id="p-csv-wrap">
+      <div class="field"><label>Выгрузить в CSV <span class="sub" style="font-weight:400">— имя файла, пусто = не выгружать</span></label>
+        <input id="p-csv" placeholder="напр.: crimea_yulia" autocomplete="off">
+        <div class="hint" style="margin-top:4px">На экран печатаются только первые 60 строк — всех найденных видно лишь в файле. Готовое скачивается ссылкой под кнопкой и живёт в «Выгрузках».</div></div>
+      <div class="field"><label>Порог: от скольких сообщений брать</label>
+        <input id="p-mincomm" type="number" min="1" value="1">
+        <div class="hint" style="margin-top:4px">Отсекает случайных, написавших один раз. Админов порог не касается — они попадут в файл в любом случае.</div></div>
+    </div>
     <label id="p-incr-wrap" style="display:none;gap:8px;align-items:center;margin:8px 0">
       <input type="checkbox" id="p-incremental" checked>
       только новое с прошлого раза
@@ -7246,6 +7255,14 @@ async function viewParser(v){
       <a href="javascript:void(0)" id="lst-go" style="color:var(--accent);text-decoration:underline dotted">открыть «Находки» →</a></div>
   </div>
   <div class="card" style="margin-top:16px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <b style="font-size:14px">📂 Выгрузки CSV</b>
+      <button id="ex-refresh" class="sub" style="padding:2px 8px">↻ обновить</button>
+    </div>
+    <div class="sub" style="margin:6px 0 12px">Файлы, собранные парсером. Сбор за большой период идёт фоном — если файла ещё нет, он появится здесь по готовности.</div>
+    <div id="ex-list" class="sub">загружаю…</div>
+  </div>
+  <div class="card" style="margin-top:16px">
     <div class="dash-chh" style="cursor:pointer"><h3 style="margin:0;font-size:14px">🕘 История парсинга — последние 10 запусков</h3></div>
     <div class="sub" style="margin:6px 0 12px">Что и когда парсили, каким аккаунтом и сколько дало. Клик по строке открывает готовую подборку в «Контактах» — тем же фильтром по источнику.</div>
     <div id="p-runs" class="sub">загружаю…</div>
@@ -7278,6 +7295,8 @@ async function viewParser(v){
     try{
       const r=await api(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       out.textContent=r.error?("Ошибка: "+r.error):(r.output||"(пусто)");
+      btn.disabled=false;btn.textContent=t;
+      return r;   // ответ нужен вызывающему: по нему рисуется ссылка на CSV
     }catch(e){out.textContent="Ошибка сети: "+e.message;}
     btn.disabled=false;btn.textContent=t;
   };
@@ -7443,8 +7462,17 @@ async function viewParser(v){
       period_days:(mode==="active"||mode==="all")?(+$("#p-period").value||0):0,
       incremental:(mode==="active"||mode==="all")?$("#p-incremental").checked:false,
       source:($("#p-source").value||"").trim()||null,
-      scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30})
-      .then(()=>loadRuns());
+      scan:+$("#p-scan").value||2000,top:+$("#p-top").value||50,limit:+$("#p-top").value||30,
+      csv:($("#p-csv").value||"").trim()||null,min_comments:+$("#p-mincomm").value||1})
+      .then(r=>{
+        // Файл лежит на сервере, и без ссылки забрать его нечем — SSH у оператора нет.
+        if(r&&r.csv_url){
+          const out=$("#p-out");
+          if(out)out.insertAdjacentHTML("beforebegin",
+            `<div class="sub" style="margin-top:8px">📄 <a href="${r.csv_url}" download style="color:var(--accent);text-decoration:underline">скачать ${esc(r.csv)}</a></div>`);
+        }
+        loadRuns();
+      });
   };
   $("#i-run").onclick=()=>run($("#i-run"),"#i-out","/api/parse/invites",{
     target:$("#i-target").value.trim(),dialogs:$("#i-dialogs").checked,limit:3000,per:800});
@@ -7601,6 +7629,24 @@ async function viewParser(v){
         <td>${link}</td></tr>`;}).join("")+"</tbody></table>";
   };
   loadRuns();
+
+  // ---- Выгрузки: файл лежит на сервере, забрать его больше нечем (SSH у оператора нет)
+  const loadExports=async()=>{
+    const box=$("#ex-list");if(!box)return;
+    let r;try{r=await api("/api/exports");}
+    catch(e){box.innerHTML='<span style="color:#c0392b">не загрузилось: '+esc(e.message)+'</span>';return;}
+    const items=(r&&r.items)||[];
+    if(!items.length){box.innerHTML="Пока пусто — запусти парсинг, указав имя файла в поле «Выгрузить в CSV».";return;}
+    box.innerHTML='<table class="tbl"><thead><tr><th>Файл</th><th>Когда</th><th style="text-align:right">Размер</th></tr></thead><tbody>'
+      +items.map(f=>`<tr>
+        <td><a href="${f.url}" download style="color:var(--accent);text-decoration:underline">${esc(f.name)}</a></td>
+        <td class="sub">${esc(f.at)}</td>
+        <td class="sub" style="text-align:right">${(f.size/1024).toFixed(1)} КБ</td></tr>`).join("")
+      +"</tbody></table>";
+  };
+  loadExports();
+  if($("#ex-refresh"))$("#ex-refresh").onclick=loadExports;
+
   wireCollapse(v);
 
   // ---- Постоянные задачи парсинга: та же форма выше, но по таймеру на сервере ----

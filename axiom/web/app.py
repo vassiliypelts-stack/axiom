@@ -17,6 +17,7 @@ import csv
 import io
 import json
 import time as _t
+import datetime as _dtmod
 from pathlib import Path
 
 from fastapi import FastAPI, Body, UploadFile, File, Form, Request
@@ -4323,11 +4324,27 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
         args += ["--csv", str(EXPORT_DIR / csv_name)]
         if payload.get("min_comments"):
             args += ["--min-comments", str(int(payload["min_comments"]))]
-    res = _run_capture(args)
-    if csv_name and isinstance(res, dict):
-        res["csv"] = csv_name
-        res["csv_url"] = f"/api/exports/{csv_name}"
-    return JSONResponse(res)
+    if not csv_name:
+        return JSONResponse(_run_capture(args))
+    # С выгрузкой запускаем ФОНОМ. _run_capture ждёт ответа 240с, а сбор за год-два
+    # идёт часами: синхронный запуск гарантированно обрывался бы по таймауту, и
+    # оператор видел бы «таймаут» вместо файла, хотя парсер ещё работает.
+    import subprocess
+    import sys
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "parse_csv.log"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n===== {_dtmod.datetime.now():%Y-%m-%d %H:%M:%S} "
+                f"{target} → {csv_name} =====\n")
+        f.flush()
+        subprocess.Popen([sys.executable, "-m", *args], cwd=str(BASE_DIR.parent),
+                         stdout=f, stderr=subprocess.STDOUT)
+    return JSONResponse({
+        "ok": True, "csv": csv_name, "csv_url": f"/api/exports/{csv_name}",
+        "output": f"Запущено в фоне: {target} → {csv_name}\n\n"
+                  "Сбор за большой период идёт долго (часами при периоде в год-два) — "
+                  "страницу можно закрыть.\nГотовый файл появится в «Выгрузках» внизу; "
+                  "пока его там нет, сбор ещё идёт."})
 
 
 @app.get("/api/exports")

@@ -8493,7 +8493,7 @@ async def accounts_import_keys(file: UploadFile = File(None),
     fname = (file.filename or "").lower() if file is not None else ""
     is_zip = fname.endswith(".zip") or blob[:4] == b"PK\x03\x04"
     if is_zip:
-        return await _import_tdata_zip(blob, status)
+        return _import_tdata_zip(blob, status)
 
     raw = blob.decode("utf-8", errors="replace") if blob else ""
     if not raw.strip():

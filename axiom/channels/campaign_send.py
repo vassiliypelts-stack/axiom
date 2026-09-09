@@ -177,7 +177,13 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
         # тег B и сбрасывают статус. NULL — старые записи, для них поведение как раньше.
         where += " AND (test_campaign_id IS NULL OR test_campaign_id=?)"
         params.append(cid)
-    if tag:
+    # Тег аудитории отбирает БОЕВУЮ базу. К своим тест-номерам он не применяется:
+    # это одни и те же 2-3 родных номера владельца на все кампании, и требовать от
+    # них тег каждой новой кампании — значит заводить их заново перед каждым тестом.
+    # Пока так и было: номера, добавленные в кампанию A, для кампании B не
+    # существовали, и «Тест» молча находил ноль. Принадлежность тест-номера кампании
+    # уже задаёт test_campaign_id выше (NULL = общий, годится всем).
+    if tag and not test:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
     with database.get_conn() as conn:

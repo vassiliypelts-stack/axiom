@@ -4347,6 +4347,53 @@ def parse_run(payload: dict = Body(...)) -> JSONResponse:
                   "пока его там нет, сбор ещё идёт."})
 
 
+@app.post("/api/exports/merge")
+def exports_merge(payload: dict = Body(default={})) -> JSONResponse:
+    """Слить несколько выгрузок в одну книжку по людям.
+
+    Один человек комментирует в нескольких каналах, и по отдельным файлам этого не
+    видно: в каждом он отдельная строка с частью активности. Здесь он одной строкой —
+    суммарная активность и перечень каналов, где засветился. Это и есть список,
+    который идёт в работу.
+    """
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    names = [Path(str(n)).name for n in (payload.get("files") or [])]
+    files = [EXPORT_DIR / n for n in names] if names else sorted(EXPORT_DIR.glob("*.csv"))
+    out_name = Path(str(payload.get("out") or "merged.csv")).name
+    if not out_name.lower().endswith(".csv"):
+        out_name += ".csv"
+    files = [f for f in files if f.exists() and f.name != out_name]
+    if not files:
+        return JSONResponse({"error": "нечего сливать"}, status_code=400)
+    best: dict[str, dict] = {}
+    for f in files:
+        with open(f, encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                k = r.get("tg_id") or ""
+                if not k:
+                    continue
+                cnt = int(r.get("comments") or 0)
+                if k in best:
+                    b = best[k]
+                    b["comments"] = str(int(b["comments"] or 0) + cnt)
+                    if r.get("chat") and r["chat"] not in b["chat"]:
+                        b["chat"] += " + " + r["chat"]
+                    if not b.get("username") and r.get("username"):
+                        b.update({"username": r["username"], "link": r.get("link", ""),
+                                  "name": r.get("name") or b.get("name", "")})
+                else:
+                    best[k] = dict(r)
+    rows = sorted(best.values(), key=lambda r: -int(r.get("comments") or 0))
+    cols = ["chat", "role", "tg_id", "username", "name", "comments", "phone", "premium", "link"]
+    with open(EXPORT_DIR / out_name, "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    return JSONResponse({"ok": True, "out": out_name, "url": f"/api/exports/{out_name}",
+                         "people": len(rows), "sources": [f.name for f in files],
+                         "with_username": len([r for r in rows if r.get("username")])})
+
+
 @app.get("/api/exports")
 def exports_list() -> JSONResponse:
     """Что уже выгружено парсером — файл лежит на сервере, забрать его иначе нечем."""

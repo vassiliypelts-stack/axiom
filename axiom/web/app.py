@@ -8771,6 +8771,16 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # в момент отправки (ImportContacts) — самый быстрый способ поймать бан.
         "unchecked_tg": sum(1 for i in items if (i.get("has_tg") or "unknown") == "unknown"),
         "unchecked_wa": sum(1 for i in items if (i.get("has_wa") or "unknown") == "unknown"),
+        # Пробивают ТЕЛЕФОН. Аудитория, собранная парсингом чатов, — это @ники без
+        # номеров: пробивать там нечего, и тревога «непробитый номер резолвится во
+        # время рассылки» к ней не относится вовсе. Без этого счётчика предупреждение
+        # висело над списком, где у всех уже стоит «есть Telegram», и читалось как
+        # «телеграма нет ни у кого».
+        "no_tg": sum(1 for i in items if (i.get("has_tg") or "unknown") == "no"),
+        "no_wa": sum(1 for i in items if (i.get("has_wa") or "unknown") == "no"),
+        "unchecked_with_phone": sum(1 for i in items
+                                    if (i.get("has_tg") or "unknown") == "unknown"
+                                    and (i.get("phone") or "").strip()),
         "items": items,
     })
 

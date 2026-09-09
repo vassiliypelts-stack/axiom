@@ -1089,7 +1089,18 @@ async function openAudience(cid){
       <div class="card" style="background:var(--panel2);padding:9px 11px;margin-bottom:10px">
         <b>${d.in_queue}</b> из <b>${d.total}</b> пойдут в рассылку.
         ${reasons?`<div class="hint" style="margin-top:4px">Остальные не пойдут — ${reasons}</div>`:""}
-        ${(d.unchecked_tg||d.unchecked_wa)?`<div class="hint" style="margin-top:4px;color:#c0392b">⚠️ не проверено: Telegram у ${d.unchecked_tg}, WhatsApp у ${d.unchecked_wa}. Непробитый номер резолвится прямо во время рассылки — это прямой путь к бану аккаунта.</div>
+        ${(()=>{
+          // Раньше здесь было «не проверено: Telegram у 0, WhatsApp у 1000» — фраза про
+          // количество НЕПРОВЕРЕННЫХ, которую читали наоборот: «телеграма нет ни у кого».
+          // Показываем прямо: сколько человек в канале, которым эта кампания шлёт.
+          const ch=(d.channel||"");
+          const tg=ch.includes("telegram"), wa=ch.includes("whatsapp");
+          const t=d.total||0, out=[];
+          if(tg)out.push(`Telegram есть у ${t-(d.no_tg||0)-(d.unchecked_tg||0)} из ${t}`+((d.unchecked_tg||0)?`, не проверено ${d.unchecked_tg}`:""));
+          if(wa)out.push(`WhatsApp: не проверено ${d.unchecked_wa||0} из ${t}`);
+          return out.length?`<div class="hint" style="margin-top:4px">${out.join(" · ")}</div>`:"";
+        })()}
+        ${(d.unchecked_with_phone)?`<div class="hint" style="margin-top:4px;color:#c0392b">⚠️ не пробито номеров: ${d.unchecked_with_phone}. Непробитый номер резолвится прямо во время рассылки — это прямой путь к бану аккаунта.</div>
         <div class="ttoolbar" style="margin:6px 0 0">
           <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" title="фоном, по 25 номеров на аккаунт в сутки — безопасный темп"><input type="checkbox" id="aud-tgauto"> пробивать Telegram фоном</label>
           <button id="aud-tgrun" title="пробить порцию прямо сейчас (25 на аккаунт)">Пробить сейчас</button>

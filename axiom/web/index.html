@@ -1645,7 +1645,7 @@ async function viewAgents(v){
     <div class="card" style="margin-bottom:12px;padding:10px 12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>🔑 Завести купленные аккаунты</b>
-        <input type="file" id="ak-file" accept=".txt" style="max-width:260px">
+        <input type="file" id="ak-file" accept=".txt,.zip" style="max-width:260px">
         <select id="ak-status" style="max-width:150px">
           <option value="warming">на прогрев</option>
           <option value="active">сразу в бой</option>
@@ -1653,7 +1653,7 @@ async function viewAgents(v){
         <button class="primary" id="ak-go">Завести</button>
         <span class="hint" id="ak-msg"></span>
       </div>
-      <div class="hint" style="margin-top:5px">Файл из магазина: строки вида <code>ключ:dc</code>. Уже заведённые пропустятся — сверяем по самому ключу, а не по номеру. Каждый подключается вживую, поэтому 6 аккаунтов ≈ минута.</div>
+      <div class="hint" style="margin-top:5px">Два формата: текстовый дамп (<code>ключ:dc</code>) <b>или zip с tdata/.session</b> (выгрузка Lolzteam «TData» или «.session Telethon», названная по телефону). Уже заведённые пропустятся — сверяем по самому ключу, а не по номеру. Каждый подключается вживую, поэтому ~10 сек на аккаунт.</div>
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="ttoolbar" style="margin:0">
@@ -1808,9 +1808,12 @@ async function viewAgents(v){
     if(r.dead.length)parts.push(`не ожили: ${r.dead.length}`);
     m.innerHTML=esc(parts.join(" · "));
     // Разбор поимённо — иначе «заведено 4 из 6» оставляет вопрос, что с двумя.
+    // Дамп ключей помечает строкой (s.line), tdata-архив — именем папки (s.name):
+    // показываем то, что есть, чтобы обе выгрузки читались одинаково.
+    const who=x=>x.line?`строка ${x.line}`:esc(x.name||"");
     const det=[...r.added.map(a=>`✅ ${esc(a.label||a.phone||"")}${a.username?" @"+esc(a.username):""}`),
-      ...r.skipped.map(s=>`↩ строка ${s.line}: уже заведён — ${esc(s.already.label||s.already.phone||("#"+s.already.id))}`),
-      ...r.dead.map(d=>`✕ строка ${d.line}: ${esc(d.why)}`)];
+      ...r.skipped.map(s=>`↩ ${who(s)}: уже заведён — ${esc((s.already&&(s.already.label||s.already.phone||("#"+s.already.id)))||"")}`),
+      ...r.dead.map(d=>`✕ ${who(d)}: ${esc(d.why)}`)];
     if(det.length)alert(det.join("\n"));
     route();};
   $("#a-health").onclick=async()=>{const b=$("#a-health");b.disabled=true;b.textContent="проверяю…";

@@ -7,6 +7,7 @@ openpyxl>=3.1            # выгрузка чекера в Excel с подсв�
 # --- Telegram + планировщик (дни 3+, нужны живые доступы) ---
 telethon>=1.36           # userbot / MTProto
 python-socks[asyncio]>=2.4  # прокси (socks5) для Telethon
+PyQt5>=5.15              # opentele/td: чтение tdata при импорте купленных аккаунтов (kind=tdata). Без него .session-путь работает, tdata — нет
 APScheduler>=3.10         # напоминания, дожим
 
 # --- Веб-морда (дашборд + контакты) ---

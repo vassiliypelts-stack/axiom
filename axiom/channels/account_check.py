@@ -132,9 +132,45 @@ class Result:
     session_str: str | None = None
     api_id: int | None = None
     api_hash: str | None = None
+    already: dict | None = None     # {id,label,phone} если этот ключ уже в БД
 
 
 _CONN = dict(connection_retries=2, retry_delay=1, timeout=10)
+
+
+def _known_authkeys() -> dict[str, dict]:
+    """auth_key (hex) → {id,label,phone} по всем сессиям в БД. Ключ — единственный
+    надёжный признак дубля: один аккаунт даёт разные строки сессии при разных DC."""
+    known: dict[str, dict] = {}
+    try:
+        with database.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, label, phone, tg_session FROM accounts "
+                "WHERE tg_session IS NOT NULL AND tg_session<>''").fetchall()
+    except Exception:  # noqa: BLE001 — нет БД/таблицы → просто нет известных
+        return known
+    for r in rows:
+        try:
+            ss = StringSession(r["tg_session"])
+            if ss.auth_key:
+                known[ss.auth_key.key.hex().lower()] = {
+                    "id": r["id"], "label": r["label"], "phone": r["phone"]}
+        except Exception:  # noqa: BLE001 — битую сессию не учитываем
+            continue
+    return known
+
+
+async def _authkey_hex(cand: Candidate) -> str | None:
+    """auth_key аккаунта в hex, БЕЗ подключения к сети — чтобы отсеять дубль до connect.
+    Для tdata ключ читается из папки локально; для .session — из SQLite."""
+    try:
+        client, _, _ = await _make_client(cand, None)
+        key = getattr(client.session, "auth_key", None)
+        if key is None:
+            return None
+        return key.key.hex().lower()
+    except Exception:  # noqa: BLE001 — не смогли прочитать ключ офлайн → пусть решает connect
+        return None
 
 
 def _string_session_from(sess) -> str:
@@ -171,9 +207,30 @@ async def _make_client(cand: Candidate, proxy) -> tuple[TelegramClient, int | No
     return client, int(api_id), str(api_hash)
 
 
-async def check_one(cand: Candidate) -> Result:
+async def check_one(cand: Candidate, known: dict[str, dict] | None = None) -> Result:
     r = Result(cand=cand)
     proxy = _proxy_dict(cand.meta)
+    # tdata читается только через opentele.td → PyQt5. Если его нет в окружении,
+    # честно скажем об этом, а не спишем живой аккаунт в «мёртв» (общий except ниже
+    # проглотил бы ImportError). Для .session PyQt5 не нужен — эта ветка не мешает.
+    if cand.kind == "tdata":
+        try:
+            import PyQt5.QtCore  # noqa: F401
+        except Exception:  # noqa: BLE001
+            r.reason = ("tdata требует PyQt5, а его нет в окружении — установи "
+                        "(pip install PyQt5) или используй выгрузку .session Telethon")
+            return r
+    # ЗАЩИТА ОТ ОЖОГА: если этот ключ уже заведён в пульте — НЕ подключаемся вовсе.
+    # Иначе проба «напрямую» пойдёт с IP этой машины, а слушатель на сервере держит
+    # ту же сессию через прокси → один ключ с двух адресов → AuthKeyDuplicated и
+    # сожжённый навсегда аккаунт (так потеряно 8 лотов, см. шапку session_check.py).
+    # auth_key читается из tdata/сессии офлайн, без сети.
+    if known:
+        hexkey = await _authkey_hex(cand)
+        if hexkey and hexkey in known:
+            r.already = known[hexkey]
+            r.reason = "уже заведён"
+            return r
     # сначала через прокси аккаунта; если он мёртв — пробуем напрямую
     #
     # Безопасно ТОЛЬКО потому, что модуль разбирает свежекупленный архив: этих сессий
@@ -261,31 +318,54 @@ async def run(root: Path, save: bool, status: str) -> None:
     cands = discover(root)
     if not cands:
         print("не нашёл ни .session, ни tdata по пути")
+        # машиночитаемый итог для пульта (последняя строка вывода)
+        print(json.dumps({"ok": True, "total": 0, "added": [], "skipped": [], "dead": []},
+                         ensure_ascii=False))
         return
     print(f"Найдено кандидатов: {len(cands)}\n")
+    known = _known_authkeys()   # для отсева дублей ДО подключения (защита от ожога)
     alive: list[Result] = []
+    skipped: list[Result] = []
+    dead: list[Result] = []
     for c in cands:
         print(f"… {c.name:<22} [{c.kind}] {'(proxy)' if _proxy_dict(c.meta) else '(no proxy)'}")
-        r = await check_one(c)
+        r = await check_one(c, known)
+        if r.already:
+            skipped.append(r)
+            print(f"   уже заведён — #{r.already.get('id')} {r.already.get('phone') or ''}")
+            continue   # не спим 2с и не коннектимся — дубль отсеян офлайн
         if r.alive:
             alive.append(r)
             print(f"   ЖИВОЙ  id={r.user_id}  @{r.username or '—'}  {r.phone or '—'}  {r.first_name or ''}")
         else:
+            dead.append(r)
             print(f"   мёртв/ошибка — {r.reason}")
         await asyncio.sleep(2)  # щадящий темп, не палим аккаунты пачкой
 
     print("\n================= ИТОГ =================")
-    print(f"Живых: {len(alive)} из {len(cands)}")
+    print(f"Живых: {len(alive)} из {len(cands)}" + (f", уже были: {len(skipped)}" if skipped else ""))
     for r in alive:
         print(f"  • {r.cand.name:<22} @{r.username or '—':<16} {r.phone or '—':<16} "
               f"{'2FA:'+r.cand.twofa if r.cand.twofa else ''}")
 
+    added_out: list[dict] = []
     if save and alive:
         print("\n— запись в БД —")
         for r in alive:
             print("  " + save_to_db(r, status))
+            added_out.append({"label": r.first_name or r.username or r.phone,
+                              "phone": r.phone, "username": r.username})
     elif alive:
         print("\n(для записи в базу повтори с флагом --save)")
+
+    # Итоговый JSON последней строкой — пульт (web/app.py) читает его через _last_json
+    # и рисует поимённо. Живых-но-не-сохранённых (save=False) в added не кладём.
+    print(json.dumps({
+        "ok": True, "total": len(cands),
+        "added": added_out if save else [],
+        "skipped": [{"name": r.cand.name, "already": r.already} for r in skipped],
+        "dead": [{"name": r.cand.name, "why": r.reason} for r in dead],
+    }, ensure_ascii=False))
 
 
 def main() -> None:

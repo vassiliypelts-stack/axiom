@@ -7564,10 +7564,15 @@ def campaign_test_contacts(cid: int, payload: dict = Body(...)) -> JSONResponse:
             # иначе добавление номера в тест роняло живой диалог обратно в «сырьё» и
             # человеку прилетал опенер поверх переписки (см. _TEST_KEEP_STATUS).
             keep = ",".join("?" * len(_TEST_KEEP_STATUS))
+            # test_campaign_id=NULL — номер становится ОБЩИМ тест-номером: он
+            # годится для теста любой кампании, а не только той, где его вписали.
+            # Это родные номера владельца, их два-три на весь пульт, и заводить их
+            # заново под каждую кампанию — лишний шаг, на котором «Тест» отвечал
+            # «нет тест-номеров».
             conn.execute(
-                f"UPDATE contacts SET is_test=1, test_campaign_id=?, "
+                f"UPDATE contacts SET is_test=1, test_campaign_id=NULL, "
                 f"status=CASE WHEN status IN ({keep}) THEN status ELSE 'new' END WHERE id=?",
-                (cid, *_TEST_KEEP_STATUS, row_id))
+                (*_TEST_KEEP_STATUS, row_id))
             added += 1
     if not added:
         return JSONResponse({"error": "не нашёл ни валидного номера, ни @username"}, status_code=400)
@@ -8402,11 +8407,63 @@ def accounts_twofa_set(payload: dict = Body(default={})) -> JSONResponse:
     return JSONResponse(data)
 
 
+def _import_tdata_zip(blob: bytes, status: str) -> JSONResponse:
+    """Завести купленные аккаунты из zip с tdata/.session (выгрузка Lolzteam).
+
+    AXIOM хранит Telethon StringSession, а Desktop отдаёт tdata — поэтому не читаем
+    архив здесь, а отдаём его channels.account_check: он офлайн конвертит tdata через
+    opentele (UseCurrentSession — родной api, без нового логина), отсеивает по auth_key
+    уже заведённые ДО подключения (иначе повторный залив коннектится к живущей сессии
+    с чужого IP и жжёт ключ), проверяет живость и живых пишет в accounts.
+
+    Архив кладём во временную папку и удаляем сразу после — tdata это полный доступ
+    к аккаунту, на диске он не задерживается.
+    """
+    import shutil
+    import tempfile
+    import zipfile
+    if status not in ("warming", "active", "paused"):
+        status = "warming"
+    tmp = Path(tempfile.mkdtemp(prefix="axiom_tdata_"))
+    try:
+        zpath = tmp / "upload.zip"
+        zpath.write_bytes(blob)
+        try:
+            with zipfile.ZipFile(zpath) as zf:
+                # Обход путей: extractall у zipfile (Python 3.6+) нормализует имена —
+                # абсолютные пути и `..` срезаются, распаковка не выйдет за пределы tmp.
+                zf.extractall(tmp)
+        except zipfile.BadZipFile:
+            return JSONResponse({"error": "файл не открылся как zip-архив"}, status_code=400)
+        zpath.unlink(missing_ok=True)   # сам zip больше не нужен
+
+        res = _run_capture(
+            ["channels.account_check", str(tmp), "--save", "--status", status],
+            timeout=600,   # 10с/аккаунт + запас: пачка в ~20 штук укладывается
+        )
+        info = _last_json(res.get("output"))
+        if not info:
+            # модуль не отдал JSON — вернём сырой вывод, чтобы было видно причину
+            return JSONResponse({"error": "не удалось разобрать ответ проверки",
+                                 "output": (res.get("output") or "")[-1500:]},
+                                status_code=500)
+        # приводим к формату, который уже рисует фронтенд (added/skipped/dead)
+        return JSONResponse({
+            "ok": True,
+            "total": info.get("total", 0),
+            "added": info.get("added", []),
+            "skipped": info.get("skipped", []),
+            "dead": info.get("dead", []),
+        })
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @app.post("/api/accounts/import_keys")
 async def accounts_import_keys(file: UploadFile = File(None),
                                text: str = Form(""),
                                status: str = Form("warming")) -> JSONResponse:
-    """Завести аккаунты из дампа магазина: строки вида «authkey_hex:dc_id».
+    """Завести аккаунты из дампа магазина: строки «authkey_hex:dc_id» ИЛИ zip с tdata.
 
     Раньше это умел только консольный модуль (channels.import_authkeys), то есть
     требовался SSH и ручная заливка файла на сервер. Здесь то же самое, но файлом
@@ -8417,14 +8474,23 @@ async def accounts_import_keys(file: UploadFile = File(None),
     заводим и забываем.
     """
     from channels.account_add_fields import build_session, save_to_db, verify
-    raw = ""
+    # Читаем БАЙТЫ один раз: файл может быть либо текстовым дампом ключей (.txt),
+    # либо zip-архивом с tdata/.session (выгрузка Lolzteam «TData» / «.session»).
+    blob = b""
     if file is not None:
-        raw = (await file.read()).decode("utf-8", errors="replace")
+        blob = await file.read()
+    fname = (file.filename or "").lower() if file is not None else ""
+    is_zip = fname.endswith(".zip") or blob[:4] == b"PK\x03\x04"
+    if is_zip:
+        return await _import_tdata_zip(blob, status)
+
+    raw = blob.decode("utf-8", errors="replace") if blob else ""
     if not raw.strip():
         raw = text or ""
     lines = [l.strip() for l in raw.splitlines() if l.strip()]
     if not lines:
-        return JSONResponse({"error": "пустой файл: нужны строки «ключ:dc»"}, status_code=400)
+        return JSONResponse({"error": "пустой файл: нужны строки «ключ:dc» или zip с tdata"},
+                            status_code=400)
 
     # Чем сверяем дубли: auth_key внутри уже сохранённых сессий. Сравнивать сами
     # строки сессий нельзя — один ключ даёт разные строки при разных DC-адресах.
@@ -9331,12 +9397,13 @@ def campaign_test(cid: int) -> JSONResponse:
         # человеку, уже ведущему переписку, прилетал опенер «добрый день, правильно
         # обращаюсь?» поверх диалога (вживую поймали три штуки подряд), а статус
         # in_dialog/meeting_set затирался на 'new' — состояние диалога терялось.
-        tag = (row["audience_tag"] or "").strip()
-        where_test = "COALESCE(is_test,0)=1"
-        params_test: list = []
-        if tag:
-            where_test += " AND tags LIKE ?"
-            params_test.append(f"%{tag}%")
+        # Свои тест-номера общие для всех кампаний: тегом аудитории их не отбираем
+        # (см. campaign_send._audience). Иначе три родных номера владельца пришлось бы
+        # заводить заново под каждую новую кампанию, а «Тест» до тех пор отвечал
+        # «нет тест-номеров». Принадлежность, если она нужна, задаёт test_campaign_id.
+        where_test = ("COALESCE(is_test,0)=1 AND (test_campaign_id IS NULL "
+                      "OR test_campaign_id=?)")
+        params_test: list = [cid]
         rows_test = conn.execute(
             f"SELECT id, status FROM contacts WHERE {where_test}", params_test).fetchall()
         test_ids = [r["id"] for r in rows_test]

@@ -34,7 +34,7 @@ from telethon.tl.functions.channels import GetChannelRecommendationsRequest
 from telethon.tl.types import Channel
 
 from channels.chat_keywords import _target
-from channels.telegram import _build_client
+from channels.telegram import _build_client, client_for_account
 from db import database
 
 SEED_PAUSE = (2.0, 4.5)   # антибан-пауза между затравками
@@ -127,7 +127,8 @@ def _upsert(c: Channel, topic: str | None, seed_title: str,
 
 
 async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth: int,
-              min_members: int, groups_only: bool, max_new: int = MAX_NEW, join: int = 0) -> None:
+              min_members: int, groups_only: bool, max_new: int = MAX_NEW, join: int = 0,
+              account_id: int | None = None) -> None:
     database.init_db()
     seeds = _seed_chats(chat_id, favorites, niche_id)
     if not seeds:
@@ -135,8 +136,14 @@ async def run(chat_id: int | None, favorites: bool, niche_id: int | None, depth:
                                                 "(нужен tg_chat_id или @username)"}, ensure_ascii=False))
         return
 
-    client = _build_client()
-    await client.start()
+    # Главного аккаунта в .env на сервере нет, и _build_client() там уходит спрашивать телефон
+    # в консоли — фоновый запуск падал EOFError'ом. Работаем тем же аккаунтом,
+    # что и остальной парсинг: у него свой прокси и своя сессия.
+    client, _ = client_for_account(account_id) if account_id else (_build_client(), None)
+    await client.connect()
+    if not await client.is_user_authorized():
+        print(json.dumps({"ok": False, "error": "аккаунт не авторизован — укажи --account с живой сессией"}, ensure_ascii=False))
+        return
 
     # затравки помечаем виденными и по tg_chat_id, и по @username: у части чатов
     # tg_chat_id ещё не заполнен (см. channels/backfill.py), и без username-ключа
@@ -227,12 +234,15 @@ def main() -> None:
     p.add_argument("--min-members", type=int, default=0, help="отсекать чаты меньше N участников")
     p.add_argument("--groups-only", action="store_true", help="только супергруппы, без каналов")
     p.add_argument("--max-new", type=int, default=MAX_NEW, help="потолок новых чатов за прогон")
+    p.add_argument("--account", type=int, default=None, dest="account_id",
+                   help="аккаунт из БД, которым спрашивать рекомендации (без него — главный из .env)")
     p.add_argument("--join", type=int, default=0, metavar="N",
                    help="сразу вступить армией в найденное: до N новых чатов на аккаунт (0 = не вступать)")
     args = p.parse_args()
     depth = max(1, min(args.depth, 4))
     asyncio.run(run(args.chat, args.favorites, args.niche, depth,
-                    args.min_members, args.groups_only, args.max_new, join=args.join))
+                    args.min_members, args.groups_only, args.max_new, join=args.join,
+                    account_id=args.account_id))
 
 
 if __name__ == "__main__":

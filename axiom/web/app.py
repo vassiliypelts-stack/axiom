@@ -5773,6 +5773,10 @@ def chatcat_similar(payload: dict = Body(default={})) -> JSONResponse:
         args += ["--groups-only"]
     if payload.get("max_new"):
         args += ["--max-new", str(int(payload["max_new"]))]
+    # Без явного аккаунта модуль уходит в главный из .env, которого на сервере нет,
+    # и падает, спрашивая телефон в консоли (EOFError).
+    if payload.get("account_id"):
+        args += ["--account", str(int(payload["account_id"]))]
     args += _join_arg(payload)
     res = _run_capture(args, timeout=1800 if payload.get("join") else 900)
     return JSONResponse({"ok": res.get("ok"), "summary": _last_json(res.get("output")),

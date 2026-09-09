@@ -3360,6 +3360,17 @@ def contact_detail(contact_id: int) -> JSONResponse:
             "COALESCE(a.label, a.username, a.phone) AS account_label "
             "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
             "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
+        # Пометка «не доставлено» — только для записей ПОСЛЕ того, как id вообще стали
+        # сохраняться. До этого пустой tg_msg_id стоит у каждого исходящего и ничего
+        # не значит: Олег Дьяконов 21.08 ОТВЕТИЛ на три сообщения без id, то есть они
+        # дошли. Считать их недоставленными — врать оператору о собственной переписке.
+        first_id_ts = conn.execute(
+            "SELECT MIN(ts) t FROM messages WHERE direction='out' "
+            "AND COALESCE(tg_msg_id,'')<>''").fetchone()["t"]
+        for m in history:
+            m["undelivered"] = bool(
+                m["direction"] == "out" and not (m.get("tg_msg_id") or "")
+                and first_id_ts and str(m.get("ts") or "") >= str(first_id_ts))
         deal = conn.execute("SELECT * FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
         camp = database.get_contact_campaign(conn, contact_id)
         paused = bool(camp) and conn.execute(

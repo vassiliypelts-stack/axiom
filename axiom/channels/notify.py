@@ -349,28 +349,38 @@ def campaign_report_text(conn, cid: int) -> str | None:
     def _pct(part, whole):
         return f" ({part * 100 // whole}%)" if whole else ""
 
+    # С КАКОГО МОМЕНТА пустой tg_msg_id вообще что-то значит. Сохранять id начали не
+    # с первого дня: до этого КАЖДОЕ исходящее лежит без него, и «не дошло» по такому
+    # признаку — ложь. Живой пример: Олег Дьяконов, 21.08 — три первых сообщения без
+    # id, а человек на них ОТВЕТИЛ, то есть они дошли. Без этой отсечки отчёт по 9406
+    # показывал «НЕ ДОШЛО: 68» при 31 отправленном, из которых 33 были такой ложью.
+    # Порог берём по самой кампании: у разных кампаний история началась по-разному.
+    id_since = conn.execute(
+        "SELECT MIN(m.ts) t FROM messages m "
+        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+        "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')<>''", (cid,)).fetchone()["t"]
+
     def undelivered_since(period_sql: str | None) -> int:
         """Сколько исходящих ЗАПИСАНО, но Telegram их не принял.
 
-        Признак — пустой tg_msg_id: на подтверждённой отправке туда ложатся id
-        сообщений, вернувшиеся от Telegram. 09.09.2026 три дожима ушли с мёртвой
-        сессии, легли в базу как отправленные и попали в «отправлено», хотя ни один
-        собеседник их не получил — расхождение нашлось только ручной сверкой
-        переписки. Причина закрыта (недоставленное больше не пишется), но СТАРЫЕ
-        записи остаются, да и новая причина может появиться завтра: строка ниже
-        показывает разрыв сразу, а не через сверку.
+        Признак — пустой tg_msg_id при том, что запись сделана ПОСЛЕ id_since: на
+        подтверждённой отправке туда ложатся id, вернувшиеся от Telegram. 09.09.2026
+        три дожима ушли с мёртвой сессии, легли в базу как отправленные и попали в
+        «отправлено», хотя ни один собеседник их не получил — расхождение нашлось
+        только ручной сверкой переписки. Причина закрыта (недоставленное больше не
+        пишется), но СТАРЫЕ записи остаются, да и новая причина может появиться
+        завтра: строка ниже показывает разрыв сразу, а не через сверку.
 
-        Считаем только исходящие самой кампании и только те, где отправитель был
-        известен, — входящие и ручные сообщения оператора сюда не относятся.
+        Считаем только исходящие самой кампании — входящие сюда не относятся.
         """
-        where = ""
-        if period_sql:
-            where = f" AND m.ts >= {period_sql}"
+        if not id_since:
+            return 0          # в этой кампании id не сохранялись ни разу — судить не по чему
+        where = f" AND m.ts >= {period_sql}" if period_sql else ""
         return conn.execute(
             "SELECT COUNT(*) c FROM messages m "
             "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
-            "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')=''"
-            f"{where}", (cid,)).fetchone()["c"]
+            "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')='' AND m.ts >= ?"
+            f"{where}", (cid, id_since)).fetchone()["c"]
 
     undeliv_all = undelivered_since(None)
     undeliv_week = undelivered_since("date('now','-7 day')")
@@ -378,8 +388,9 @@ def campaign_report_text(conn, cid: int) -> str | None:
     undeliv_yest = conn.execute(
         "SELECT COUNT(*) c FROM messages m "
         "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
-        "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')='' "
-        "AND m.ts >= date('now','-1 day') AND m.ts < date('now')", (cid,)).fetchone()["c"]
+        "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')='' AND m.ts >= ? "
+        "AND m.ts >= date('now','-1 day') AND m.ts < date('now')",
+        (cid, id_since or "9999")).fetchone()["c"]
 
     def _undeliv(n: int) -> str:
         return f"\n⚠️ НЕ ДОШЛО: {n} — записано, но Telegram не принял" if n else ""

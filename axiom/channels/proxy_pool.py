@@ -213,17 +213,28 @@ async def ping_tcp(server: str, port: int) -> int | None:
         return None
 
 
+_FAIL_STATS: dict[str, int] = {}   # тип ошибки → сколько раз за прогон (сводка «почему 0 живых»)
+
+
 async def telethon_test(server: str, port: int, secret: str,
                         api_id: int, api_hash: str) -> int | None:
     """РЕАЛЬНАЯ проверка прокси: создаёт Telethon-клиента с этим прокси,
     логинится (get_me), выходит. Если прокси реально работает с Telethon —
     возвращает пинг (мс). Если нет — None.
 
-    Дороже TCP-пинга (~3-8 сек на прокси), зато даёт 100% гарантию."""
+    Дороже TCP-пинга (~3-8 сек на прокси), зато даёт 100% гарантию.
+
+    ПРИЧИНУ отказа копим в _FAIL_STATS. Раньше исключение проглатывалось молча, и
+    в логе оставалось только «Telethon-совместимых живых: 0 из 233» — по такой
+    строке нельзя отличить «прокси сдохли» от «нас блокируют по IP дата-центра»
+    или «порт режет фаервол». 09.09.2026 пул был пуст сутки, 85 адресов отвечали
+    по TCP и все проваливали этот тест, а разобраться по логу было нечем."""
     from channels.telegram import parse_mtproxy
     proxy_link = _mt_link(server, port, secret)
     mt = parse_mtproxy(proxy_link)
     if not mt:
+        _FAIL_STATS["секрет не принят parse_mtproxy"] = _FAIL_STATS.get(
+            "секрет не принят parse_mtproxy", 0) + 1
         return None  # faketls/битый — telethon не потянет
     t0 = time.monotonic()
     try:
@@ -232,7 +243,9 @@ async def telethon_test(server: str, port: int, secret: str,
             connection=ConnectionTcpMTProxyRandomizedIntermediate,
             proxy=mt,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _FAIL_STATS[f"клиент не создался: {type(e).__name__}"] = _FAIL_STATS.get(
+            f"клиент не создался: {type(e).__name__}", 0) + 1
         return None
     # finally, а не except: отмена задачи прилетает как CancelledError (BaseException),
     # мимо `except Exception` — и клиент оставался жить с висящими _send_loop/_recv_loop.
@@ -241,7 +254,12 @@ async def telethon_test(server: str, port: int, secret: str,
         await asyncio.wait_for(client.connect(), timeout=TELETHON_TEST_TIMEOUT)
         # Сессия пустая — это ок: нас интересует только что коннект через прокси состоялся.
         return int((time.monotonic() - t0) * 1000)
-    except Exception:  # noqa: BLE001
+    except asyncio.TimeoutError:
+        _FAIL_STATS["таймаут коннекта"] = _FAIL_STATS.get("таймаут коннекта", 0) + 1
+        return None
+    except Exception as e:  # noqa: BLE001
+        key = f"{type(e).__name__}: {str(e)[:60]}"
+        _FAIL_STATS[key] = _FAIL_STATS.get(key, 0) + 1
         return None
     finally:
         try:
@@ -565,6 +583,13 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
         )
 
     print(f"[refresh] Telethon-совместимых живых: {alive} из {len(rows)}")
+    # ПОЧЕМУ столько: без разбивки по причинам строка выше не отличает «прокси
+    # сдохли» от «нас режут по IP/порту». Печатаем только когда есть отказы —
+    # в норме (пул набрался) лишний шум в логе не нужен.
+    if _FAIL_STATS:
+        top = sorted(_FAIL_STATS.items(), key=lambda kv: -kv[1])[:6]
+        print("[refresh] причины отказов: " + " · ".join(f"{k} ×{n}" for k, n in top))
+        _FAIL_STATS.clear()
     assigned = assign(ids=ids)
 
     # Хватило ли собранного на весь парк. Раньше target_alive был мёртвым параметром:
@@ -636,7 +661,20 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
         live = [(p, _link(p)) for p in live]
         live = [(p, lk) for p, lk in live if _usable_link(lk)]
         if not live:
-            print("[assign] в пуле нет telethon-совместимых прокси (все faketls/битые) — не раздаю")
+            # Раньше здесь безусловно печаталось «все faketls/битые» — и это враньё в
+            # самом частом случае: пул пуст не потому, что секреты плохие, а потому что
+            # НИ ОДИН прокси не прошёл живую проверку (status='alive' никому не достался).
+            # 09.09.2026 по этой строке искали проблему в секретах, а в пуле лежали
+            # нормальные 32-hex и dd — разбор ушёл не туда. Отделяем два разных случая.
+            total = conn.execute("SELECT COUNT(*) c FROM proxies").fetchone()["c"]
+            alive_n = conn.execute(
+                "SELECT COUNT(*) c FROM proxies WHERE status='alive'").fetchone()["c"]
+            if alive_n:
+                print(f"[assign] живых {alive_n}, но все несовместимого формата "
+                      f"(faketls ee… / битый секрет) — не раздаю")
+            else:
+                print(f"[assign] в пуле НЕТ ЖИВЫХ прокси: {total} записей, все мертвы "
+                      f"по живой проверке — раздавать нечего (см. «причины отказов» выше)")
             return 0
         cond = "(proxy IS NULL OR proxy='')" + (" OR proxy_alive=0" if replace_dead else "")
         params: list = []

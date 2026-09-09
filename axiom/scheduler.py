@@ -174,6 +174,10 @@ class Action:
                             # (глобальный список + доп. шаг кампании, если задан)
     tg_msg_ids: list | None = None  # id реально отправленных TG-сообщений — send()
                                      # проставляет ПОСЛЕ отправки, apply() кладёт в messages
+    account_id: int | None = None    # каким аккаунтом реально ушло — тоже проставляет
+                                     # отправитель. Без него сообщение ложилось в базу
+                                     # «ничьим», и в переписке было не видно, с какого
+                                     # номера писали (09.09.2026: acc=None у дожимов)
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -360,9 +364,12 @@ def apply(conn, action: Action) -> None:
         conn.execute("UPDATE deals SET outcome = 'no_show', stage = 'lost' WHERE id = ?", (action.deal_id,))
         database.set_status(conn, action.contact_id, "nurture")
     elif action.kind == "followup":
-        # фиксируем сам пинг как исходящее — счётчик дожима = trailing-out streak
+        # фиксируем сам пинг как исходящее — счётчик дожима = trailing-out streak.
+        # Зовётся ТОЛЬКО после подтверждённой доставки (вызывающий проверяет, что
+        # Telegram вернул id сообщений), поэтому account_id/tg_msg_ids здесь всегда
+        # заполнены — по ним видно, с какого номера ушло и что именно.
         database.add_message(conn, action.contact_id, "out", action.text, intent=None,
-                             tg_msg_ids=action.tg_msg_ids)
+                             account_id=action.account_id, tg_msg_ids=action.tg_msg_ids)
         cap = action.followup_max or len(FOLLOWUP_TEMPLATES)
         if action.followup_n >= cap:
             database.set_status(conn, action.contact_id, "nurture")  # дожали максимум

@@ -2621,12 +2621,23 @@ def _meetings_scheduler() -> None:
                         continue              # остальное догоним следующими тиками
                     sent_by_acc[acc] = sent_by_acc.get(acc, 0) + 1
                 parts = [p for p in a.text.split("\n\n") if p.strip()] or [a.text]
-                if not listener.send_via_listener(row["account_id"], int(a.tg_user_id), parts):
+                # ЗАБИРАЕМ id отправленных сообщений, а не просто «получилось/нет».
+                # Раньше результат send_via_listener выбрасывался, а sched_apply писал
+                # в messages tg_msg_ids=action.tg_msg_ids — поле, которое НИКТО никогда
+                # не заполнял, то есть всегда None. Итог 09.09.2026: три дожима с
+                # мёртвой сессии Василий610 легли в базу как отправленные (acc=None,
+                # tg_msg_id=None), пульт показывал их в переписке, отчёт считал в
+                # «отправлено», а собеседники не получили ничего. Наличие id от
+                # Telegram — единственное доказательство доставки.
+                sent_ids = listener.send_via_listener(row["account_id"], int(a.tg_user_id), parts)
+                if not sent_ids:
                     # Отказ копим, а не логируем поштучно: причина у всех одна (нет
                     # подключения слушателя), и 340 одинаковых строк в systemd — это
                     # ровно то, что 26.08 никто не увидел. Сводка уходит ниже.
                     failed.append(f"{a.kind}→{a.name or a.contact_id}")
                     continue                  # не ушло — пробуем на следующем тике
+                a.tg_msg_ids = sent_ids
+                a.account_id = row["account_id"]
                 with database.get_conn() as conn:
                     sched_apply(conn, a)
                     database.add_event(

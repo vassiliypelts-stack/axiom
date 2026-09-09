@@ -6764,9 +6764,15 @@ async function openThread(id){
         // опенер, ушедший залпом из нескольких сообщений, правится по одному тем же
         // способом, что и удаление (см. contact_message_edit в app.py).
         const canEdit=m.direction==="out"&&m.tg_msg_id&&!String(m.tg_msg_id).includes(",");
-        return `<div class="bubble ${m.direction}" ${m.id?`data-msgid="${m.id}"`:""}>
+        // Исходящее без tg_msg_id Telegram НЕ ПРИНЯЛ: id сообщения возвращает он сам,
+        // и его отсутствие — единственный надёжный признак недоставки. Такие записи
+        // копились молча (09.09.2026 три дожима с мёртвой сессии выглядели в переписке
+        // как отправленные), и оператор узнавал правду, только сверяя с телефоном.
+        // Причина закрыта, но старые записи остались — помечаем их явно.
+        const undelivered=m.direction==="out"&&!m.tg_msg_id;
+        return `<div class="bubble ${m.direction}" ${m.id?`data-msgid="${m.id}"`:""} ${undelivered?'style="opacity:.6;border-style:dashed"':""}>
           <span class="bubble-text">${esc(m.text)}</span>
-          <div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}${canEdit?` · <span class="bubble-edit" data-msgid="${m.id}" title="Редактировать у обеих сторон в Telegram">✎</span>`:""}${m.direction==="out"&&m.tg_msg_id?` · <span class="bubble-del" data-msgid="${m.id}" title="Удалить у обеих сторон в Telegram">✕</span>`:""}</div></div>`;
+          <div class="t">${m.direction==="out"&&m.account_label?`<b>${esc(m.account_label)}</b> · `:""}${fmt(m.ts)}${m.intent?" · "+esc(m.intent):""}${undelivered?` · <span style="color:#c0392b;font-weight:600" title="Telegram не подтвердил доставку: у сообщения нет id. Собеседник его НЕ получил — обычно потому, что сессия аккаунта была мертва в момент отправки">⚠️ не доставлено</span>`:""}${canEdit?` · <span class="bubble-edit" data-msgid="${m.id}" title="Редактировать у обеих сторон в Telegram">✎</span>`:""}${m.direction==="out"&&m.tg_msg_id?` · <span class="bubble-del" data-msgid="${m.id}" title="Удалить у обеих сторон в Telegram">✕</span>`:""}</div></div>`;
       }).join("")||'<div class="empty">Сообщений нет</div>'}</div>
     <div class="th-send" style="border-top:1px solid var(--border);padding:10px 12px">
       <div style="display:flex;gap:8px;align-items:flex-end">

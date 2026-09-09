@@ -349,6 +349,41 @@ def campaign_report_text(conn, cid: int) -> str | None:
     def _pct(part, whole):
         return f" ({part * 100 // whole}%)" if whole else ""
 
+    def undelivered_since(period_sql: str | None) -> int:
+        """Сколько исходящих ЗАПИСАНО, но Telegram их не принял.
+
+        Признак — пустой tg_msg_id: на подтверждённой отправке туда ложатся id
+        сообщений, вернувшиеся от Telegram. 09.09.2026 три дожима ушли с мёртвой
+        сессии, легли в базу как отправленные и попали в «отправлено», хотя ни один
+        собеседник их не получил — расхождение нашлось только ручной сверкой
+        переписки. Причина закрыта (недоставленное больше не пишется), но СТАРЫЕ
+        записи остаются, да и новая причина может появиться завтра: строка ниже
+        показывает разрыв сразу, а не через сверку.
+
+        Считаем только исходящие самой кампании и только те, где отправитель был
+        известен, — входящие и ручные сообщения оператора сюда не относятся.
+        """
+        where = ""
+        if period_sql:
+            where = f" AND m.ts >= {period_sql}"
+        return conn.execute(
+            "SELECT COUNT(*) c FROM messages m "
+            "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+            "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')=''"
+            f"{where}", (cid,)).fetchone()["c"]
+
+    undeliv_all = undelivered_since(None)
+    undeliv_week = undelivered_since("date('now','-7 day')")
+    undeliv_today = undelivered_since("date('now')")
+    undeliv_yest = conn.execute(
+        "SELECT COUNT(*) c FROM messages m "
+        "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+        "WHERE m.direction='out' AND COALESCE(m.tg_msg_id,'')='' "
+        "AND m.ts >= date('now','-1 day') AND m.ts < date('now')", (cid,)).fetchone()["c"]
+
+    def _undeliv(n: int) -> str:
+        return f"\n⚠️ НЕ ДОШЛО: {n} — записано, но Telegram не принял" if n else ""
+
     out = [f"📊 «{camp['name']}»"]
     out.append(f"запущена: {_d(first_at)} · в работе дней: {days}")
     work = f"работала сегодня: {worked_today} · вчера: {worked_yesterday}"
@@ -359,26 +394,29 @@ def campaign_report_text(conn, cid: int) -> str | None:
 
     out.append("")
     out.append("📅 ЗА ВСЁ ВРЕМЯ")
-    out.append(f"отправлено: {total}")
+    out.append(f"отправлено: {total}{_undeliv(undeliv_all)}")
     out.append(f"ответили: {replied}{_pct(replied, total)}")
     out.append(f"на КЭВ: {kev}{_pct(kev, replied)}")
 
     out.append("")
     out.append("🗓 ЗА НЕДЕЛЮ")
-    out.append(f"отправлено: {week}")
+    out.append(f"отправлено: {week}{_undeliv(undeliv_week)}")
     out.append(f"ответили: {replied_week}{_pct(replied_week, week)}")
     out.append(f"на КЭВ: {kev_week}{_pct(kev_week, replied_week)}")
 
     out.append("")
     out.append("☀️ ЗА ВЧЕРА")
-    out.append(f"отправлено: {yesterday_only}")
+    out.append(f"отправлено: {yesterday_only}{_undeliv(undeliv_yest)}")
     out.append(f"ответили: {replied_yest}{_pct(replied_yest, yesterday_only)}")
     out.append(f"на КЭВ: {kev_yest}{_pct(kev_yest, replied_yest)}")
 
     # Сегодня — одной короткой строкой: утром она ещё пустая, разворачивать её в
     # полный блок с нулями незачем, но темп текущего дня видеть нужно.
     out.append("")
-    out.append(f"сегодня: отправлено {today} · ответили {replied_today} · КЭВ {kev_today}")
+    today_line = f"сегодня: отправлено {today} · ответили {replied_today} · КЭВ {kev_today}"
+    if undeliv_today:
+        today_line += f" · ⚠️ не дошло {undeliv_today}"
+    out.append(today_line)
     return "\n".join(out)
 
 

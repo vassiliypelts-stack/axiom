@@ -139,11 +139,27 @@ async def _resolve_scan_chat(client, entity):
 
 
 async def collect_admins(client, entity) -> list[User]:
+    """Админы чата. Пустой список — это ОТВЕТ, а не сбой.
+
+    У КАНАЛА (broadcast) Telegram отдаёт админов только своим админам — постороннему
+    аккаунту прилетает ChatAdminRequiredError. Раньше это роняло ВЕСЬ заход в режиме
+    all: комментаторы не собирались вообще, хотя ради них парсинг и запускался. Закрытый
+    список — норма для каналов, а не повод прерывать работу."""
     try:
         ppl = await client.get_participants(entity, filter=ChannelParticipantsAdmins())
     except FloodWaitError as e:
         print(f"[floodwait] жду {e.seconds}с"); await asyncio.sleep(e.seconds + 5)
-        ppl = await client.get_participants(entity, filter=ChannelParticipantsAdmins())
+        try:
+            ppl = await client.get_participants(entity, filter=ChannelParticipantsAdmins())
+        except ChatAdminRequiredError:
+            print("[admins] список админов закрыт — пропускаю.")
+            return []
+    except ChatAdminRequiredError:
+        print("[admins] список админов закрыт (это канал, а мы не его админ) — пропускаю.")
+        return []
+    except Exception as e:  # noqa: BLE001 — чей-то закрытый чат не должен ронять весь прогон
+        print(f"[admins] не получил список: {type(e).__name__}: {str(e)[:120]} — пропускаю.")
+        return []
     return [u for u in ppl if _is_lead_user(u)]
 
 
@@ -712,6 +728,14 @@ async def run(target: str, mode: str, limit: int, scan: int, top: int, save: boo
 
     if mode in ("admins", "all"):
         admins = await collect_admins(client, entity)
+        if not admins:
+            # У самого канала список закрыт, а вот в ГРУППЕ КОММЕНТАРИЕВ модераторы
+            # обычно видны — а именно они там и отвечают людям. Спрашиваем вторым
+            # заходом, чтобы «админы» не оставались пустыми там, где они на самом деле доступны.
+            disc = await _resolve_scan_chat(client, entity)
+            if disc is not None and getattr(disc, "id", None) != getattr(entity, "id", None):
+                print("[admins] пробую взять админов в группе комментариев…")
+                admins = await collect_admins(client, disc)
         _report("Админы", admins)
         found += len(admins)
         if csv_path:

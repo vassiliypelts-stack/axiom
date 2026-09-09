@@ -88,7 +88,20 @@ def target_alive() -> int:
         return TARGET_ALIVE
 MIN_ALIVE_BEFORE_REFILL = 2
 PING_TIMEOUT = 4.0         # TCP-пинг: таймаут на коннект (сек)
-TELETHON_TEST_TIMEOUT = 8.0  # Telethon-тест: таймаут на всю попытку (сек)
+TELETHON_TEST_TIMEOUT = 20.0  # Telethon-тест: таймаут на всю попытку (сек)
+# Сколько Telethon-тестов держим ОДНОВРЕМЕННО.
+#
+# ЗАЧЕМ ОГРАНИЧЕНИЕ. Раньше здесь был голый asyncio.gather по всем кандидатам сразу:
+# 86 клиентов стартовали в один момент, каждый со своим сокетом и полным DH-обменом
+# ключами. Хост этого не тянет — 08-09.09.2026 пул сутки давал «живых 0 из 233», и
+# диагностика показала «таймаут коннекта ×85»: не прокси были мертвы, а тесты душили
+# друг друга. Доказательство было прямо в парке: 12 аккаунтов в это же время спокойно
+# работали через MTProto, и адрес new.nchnch.co.uk:4455 стоял в пуле как dead, пока
+# Василий702 через него ходил в Telegram.
+#
+# 8 — компромисс: 86 адресов проходят пачками примерно за 3-4 минуты (укладываемся в
+# таймаут роута 900с), и при этом ни один тест не голодает.
+TEST_CONCURRENCY = 8
 
 
 def _is_telethon_compatible(secret: str) -> bool:
@@ -266,6 +279,22 @@ async def telethon_test(server: str, port: int, secret: str,
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _gather_limited(cands: list[tuple[str, int, str]],
+                          api_id: int, api_hash: str) -> list[int | None]:
+    """Прогнать telethon_test по кандидатам, держа не больше TEST_CONCURRENCY разом.
+
+    Порядок результатов совпадает с порядком входа — вызывающий сопоставляет их с
+    telethon_indices по позиции, поэтому семафор здесь обязателен именно внутри задач,
+    а не через нарезку списка на куски."""
+    sem = asyncio.Semaphore(TEST_CONCURRENCY)
+
+    async def one(server: str, port: int, secret: str) -> int | None:
+        async with sem:
+            return await telethon_test(server, port, secret, api_id, api_hash)
+
+    return await asyncio.gather(*[one(s, p, sec) for s, p, sec in cands])
 
 
 def _store_harvested(conn, proxies: list[tuple[str, int, str]], source: str,
@@ -508,20 +537,26 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
             socks_indices.append(i)
 
     if telethon_candidates:
-        print(f"[refresh] Telethon-тест (MTProto): {len(telethon_candidates)} кандидатов...")
-        tl_results = await asyncio.gather(*[
-            telethon_test(r["server"], r["port"], r["secret"], api_id, api_hash)
-            for r in telethon_candidates
-        ])
+        print(f"[refresh] Telethon-тест (MTProto): {len(telethon_candidates)} кандидатов "
+              f"(по {TEST_CONCURRENCY} за раз)...")
+        tl_results = await _gather_limited([
+            (r["server"], r["port"], r["secret"]) for r in telethon_candidates
+        ], api_id, api_hash)
     else:
         tl_results = []
 
     if socks_candidates:
         print(f"[refresh] проверка socks/http: {len(socks_candidates)} кандидатов...")
-        sk_results = await asyncio.gather(*[
-            _test_account_proxy(r["id"], f"{r['server']}:{r['port']}", _link(r), api_id, api_hash)
-            for r in socks_candidates
-        ])
+        # Тот же семафор, что и у MTProto: _test_account_proxy тоже поднимает полноценного
+        # Telethon-клиента, поэтому пачкой сразу упирается в тот же потолок по хосту.
+        sk_sem = asyncio.Semaphore(TEST_CONCURRENCY)
+
+        async def _one_socks(r):
+            async with sk_sem:
+                return await _test_account_proxy(
+                    r["id"], f"{r['server']}:{r['port']}", _link(r), api_id, api_hash)
+
+        sk_results = await asyncio.gather(*[_one_socks(r) for r in socks_candidates])
     else:
         sk_results = []
     # индекс строки -> прошла ли socks-проверка (True/False)

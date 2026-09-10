@@ -9070,7 +9070,16 @@ _KEV_REACHED = ("meeting_set", "met", "won")
 # обращаюсь?» поверх переписки (вживую: три раза подряд), а статус диалога затирался.
 # refused добавлен к _ENGAGED отдельно: человек уже отказался, повторный опенер ему —
 # чистый спам, хотя «вовлечённым» он не считается.
-_TEST_KEEP_STATUS = _ENGAGED + ("refused",)
+# messaged и lost добавлены 10.09.2026 по живому прогону. «Вовлечённым» ни тот, ни
+# другой не считается, но опенер поверх них — то же самое дублирование:
+#   • messaged — опенер уже ушёл, человек просто ещё не ответил. Следующий «Тест»
+#     откатывал такой контакт в 'new' и слал приветствие второй раз; на скрине два
+#     одинаковых опенера с разницей в минуту.
+#   • lost — статус, который campaign_send ставит при ЛЮБОЙ ошибке отправки
+#     (см. «[skip] contact … lost»), в том числе после успешно начатого диалога.
+#     Контакт 10204 с живой перепиской висел в 'lost' и получал опенер заново.
+# Начатую переписку определяет наличие исходящих, а не только «хороший» статус.
+_TEST_KEEP_STATUS = _ENGAGED + ("refused", "messaged", "lost")
 
 
 @app.get("/api/campaign/{cid}/report")
@@ -9547,8 +9556,17 @@ def campaign_test(cid: int) -> JSONResponse:
         rows_test = conn.execute(
             f"SELECT id, status FROM contacts WHERE {where_test}", params_test).fetchall()
         test_ids = [r["id"] for r in rows_test]
-        # кого пропускаем и почему — покажем оператору словами, а не молча
-        skipped = [r["id"] for r in rows_test if (r["status"] or "") in _TEST_KEEP_STATUS]
+        # кого пропускаем и почему — покажем оператору словами, а не молча.
+        # Статуса для этого НЕ ХВАТАЕТ: он живёт своей жизнью (ошибка отправки роняет
+        # контакт в 'lost' прямо посреди диалога, «Обнулить тест» ставит 'new'), и
+        # 10.09.2026 из-за этого опенер трижды ушёл поверх живой переписки. Решает
+        # факт: есть ли вообще сообщения. Если да — тест по этому номеру повторно не
+        # начинаем, чтобы не затирать диалог, который как раз и проверяем.
+        with_msgs = {r["id"] for r in conn.execute(
+            "SELECT DISTINCT contact_id AS id FROM messages WHERE contact_id IN ({})".format(
+                ",".join("?" * len(test_ids)) or "NULL"), test_ids).fetchall()} if test_ids else set()
+        skipped = [r["id"] for r in rows_test
+                   if (r["status"] or "") in _TEST_KEEP_STATUS or r["id"] in with_msgs]
         resettable = [r["id"] for r in rows_test if r["id"] not in set(skipped)]
         if resettable:
             conn.execute(

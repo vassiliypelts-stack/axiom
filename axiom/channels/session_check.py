@@ -181,8 +181,22 @@ async def _check_one(acc: dict) -> tuple[str, str]:
 def _save(acc_id: int, state: str, reason: str) -> None:
     alive = {"alive": 1, "revoked": 0, "banned": 0}.get(state)   # noconn/nosess → NULL: «не знаю»
     with database.get_conn() as conn:
-        prev = conn.execute("SELECT session_state, label, phone FROM accounts WHERE id=?",
-                            (acc_id,)).fetchone()
+        prev = conn.execute("SELECT session_state, session_alive, label, phone FROM accounts "
+                            "WHERE id=?", (acc_id,)).fetchone()
+        # «НЕ ЗНАЮ» НЕ СТИРАЕТ ТО, ЧТО УЖЕ ИЗВЕСТНО. noconn — это «не смогли проверить»
+        # (слушатель держит сессию, прокси лёг, сеть моргнула), а не «сессия в порядке».
+        # Раньше он всё равно писал session_alive=NULL поверх честного 0, и мёртвый
+        # аккаунт превращался в «непроверенный»: в таблице пропадала красная метка, а в
+        # карточке — вместе с ней и блок «Сессия мертва» с кнопкой «Перелогинить», то
+        # есть починить аккаунт из интерфейса становилось нечем (09.09.2026, Василий610).
+        # Прежний вердикт держим, обновляя только отметку времени и причину.
+        if alive is None and prev and prev["session_alive"] is not None:
+            conn.execute(
+                "UPDATE accounts SET session_reason=?, session_checked_at=datetime('now') "
+                "WHERE id=?",
+                (f"{reason[:150]} (прежний вердикт «{prev['session_state']}» сохранён)", acc_id),
+            )
+            return
         conn.execute(
             "UPDATE accounts SET session_alive=?, session_state=?, session_reason=?, "
             "session_checked_at=datetime('now') WHERE id=?",

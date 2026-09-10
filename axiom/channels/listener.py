@@ -576,14 +576,27 @@ async def _supervise() -> None:
                 # Живьём: Василий189 висел «живым» в базе, хотя слушатель уже сутки
                 # писал по нему ровно эту ошибку.
                 name = type(e).__name__
-                if name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
-                            "SessionRevokedError", "SessionExpiredError", "AuthKeyInvalidError"):
+                # «Сессия не авторизована» прилетает НАШИМ RuntimeError (см. _connect):
+                # Telethon тут не бросает своё исключение, клиент просто отвечает
+                # is_user_authorized()=False. Раньше этот случай в БД не попадал — и
+                # 09.09.2026 Василий610 сутки числился session_alive=1, пока слушатель
+                # каждые 30 секунд писал в лог обратное. Из-за «живого» флага в карточке
+                # не показывался блок с кнопкой «Перелогинить», то есть починить аккаунт
+                # из интерфейса было нечем. Слушатель узнаёт правду первым — он и пишет.
+                unauth = name == "RuntimeError" and "не авторизована" in str(e)
+                if unauth or name in ("AuthKeyDuplicatedError", "AuthKeyUnregisteredError",
+                                      "SessionRevokedError", "SessionExpiredError",
+                                      "AuthKeyInvalidError"):
+                    # Для RuntimeError имя класса оператору ничего не говорит — пишем
+                    # сам текст («сессия не авторизована — нужен повторный вход»),
+                    # он и объясняет, что делать.
+                    why = str(e)[:190] if unauth else f"{name}: {str(e)[:150]}"
                     try:
                         with database.get_conn() as conn:
                             conn.execute(
                                 "UPDATE accounts SET session_alive=0, session_state='revoked', "
                                 "session_reason=?, session_checked_at=datetime('now') WHERE id=?",
-                                (f"{name}: {str(e)[:150]}", a["id"]))
+                                (why, a["id"]))
                     except Exception:  # noqa: BLE001 — пометка не должна ронять слушатель
                         pass
                 # быстрый фейловер (как автосвитч прокси в TG-клиенте): не ждём

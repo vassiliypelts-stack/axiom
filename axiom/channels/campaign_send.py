@@ -841,7 +841,8 @@ async def run(cid: int, limit: int, test: bool = False,
             # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
             # опенер целиком сразу — очередь на потом ставить некому.
             sent_ids = await _send_parts(s["client"], entity,
-                              parts if s["id"] is None else parts[:OPENER_BURST])
+                              parts if s["id"] is None else parts[:OPENER_BURST],
+                              fast=test)
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
             print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
@@ -972,9 +973,15 @@ async def run(cid: int, limit: int, test: bool = False,
         print(f"[sent {sent}/{cap}] {s['label']} -> {name or row['username'] or row['phone']}"
               + (f" (+{len(rest)} строк(и) следом, если не ответит)" if rest and s["id"] is not None else ""))
         if sent < cap:
-            # темп делим на число аккаунтов (пропускная выше), но каждый аккаунт
-            # всё равно паузит между своими сообщениями; не меньше 2 сек.
-            await asyncio.sleep(max(2.0, random.uniform(*OUTREACH_PAUSE) / len(live)))
+            if test:
+                # Тест идёт на свои же номера и его ЖДУТ у экрана: боевые 40-130 сек
+                # между сообщениями превращали проверку текста в «ничего не пришло».
+                # Антибан здесь не при чём — спамом себе быть нельзя.
+                await asyncio.sleep(random.uniform(15.0, 20.0))
+            else:
+                # темп делим на число аккаунтов (пропускная выше), но каждый аккаунт
+                # всё равно паузит между своими сообщениями; не меньше 2 сек.
+                await asyncio.sleep(max(2.0, random.uniform(*OUTREACH_PAUSE) / len(live)))
 
     # Если в аудитории больше никого не осталось — кампания отработана. Пауза не в счёт:
     # контакты на паузе ещё вернутся, из-за них одних "done" ставить нельзя.

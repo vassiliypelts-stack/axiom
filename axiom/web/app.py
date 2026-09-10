@@ -9533,16 +9533,29 @@ def campaign_stop(cid: int) -> JSONResponse:
 @app.get("/api/campaign/{cid}/test_options")
 def campaign_test_options(cid: int) -> JSONResponse:
     """Что показать в диалоге теста: с какого аккаунта слать и на какие свои номера.
-    Аккаунты — тот же справочник, что в разделе «Аккаунты» (с живой сессией: без неё
-    отправить физически нечем). Номера — тест-контакты (is_test=1), общие плюс
-    закреплённые за этой кампанией."""
+    Аккаунты — только те, кем реально можно отправить сегодня. Номера — тест-контакты
+    (is_test=1), общие плюс закреплённые за этой кампанией."""
     with database.get_conn() as conn:
+        # Условием была просто непустая tg_session — в список падали все 62 аккаунта
+        # подряд, включая архивные без прокси и те, чья сессия давно отозвана
+        # (session_state='revoked' — таких треть парка). Отличить живого от трупа и
+        # служебного от боевого было нельзя, а выбор мёртвого означал тест, который
+        # молча никуда не уйдёт. Берём те же условия, по которым отправитель проходит
+        # в реальный заход: живая сессия + свой живой прокси (общий IP жжёт ключ) +
+        # не забанен. Служебный (уведомления/пробив) и родной личный исключаем совсем:
+        # сгоревший нотификатор — это пропущенные встречи.
         accs = conn.execute(
             "SELECT id, label, username, phone, status, "
-            "CASE WHEN tg_session IS NOT NULL AND tg_session<>'' THEN 1 ELSE 0 END AS has_session, "
+            "COALESCE(acc_role,'') AS acc_role, session_checked_at, "
             "CASE WHEN proxy IS NOT NULL AND proxy<>'' THEN 1 ELSE 0 END AS has_proxy "
-            "FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
-            "ORDER BY COALESCE(label, username, phone)").fetchall()
+            "FROM accounts "
+            "WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "AND session_state='alive' "
+            "AND status<>'banned' "
+            "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
+            "AND COALESCE(acc_role,'')<>'service' AND COALESCE(protected,0)=0 "
+            "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'warming' THEN 1 ELSE 2 END, "
+            "COALESCE(label, username, phone)").fetchall()
         main_row = conn.execute("SELECT account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
         cts = conn.execute(
             "SELECT id, name, phone, username, status FROM contacts "

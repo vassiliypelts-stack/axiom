@@ -327,7 +327,10 @@ async def _send_parts(client, peer, parts: list[str]) -> list[int]:
         sent = await client.send_message(peer, part)
         sent_ids.append(sent.id)
         if i < len(clean) - 1:
-            await asyncio.sleep(random.uniform(*PART_PAUSE))
+            # fast — тест на свои номера: его ждут у экрана, и боевые 5-15 сек между
+            # строками превращают проверку текста в долгое «ничего не приходит».
+            await asyncio.sleep(random.uniform(1.5, 3.0) if fast
+                                else random.uniform(*PART_PAUSE))
     return sent_ids
 
 

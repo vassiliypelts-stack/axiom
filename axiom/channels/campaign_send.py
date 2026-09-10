@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import random
+import pathlib
 import time
 from datetime import datetime, timedelta
 
@@ -89,7 +90,13 @@ class _RunLock:
                     age = time.time() - self.path.stat().st_mtime
                 except OSError:
                     continue                       # файл увели прямо сейчас — пробуем снова
-                if age < LOCK_STALE_SEC:
+                # В локе лежит PID. Если такого процесса уже нет — заход не «идёт», а
+                # был убит (перезапуск сервиса, деплой, падение), и ждать LOCK_STALE_SEC
+                # незачем: полчаса кампания отвечала «заход уже идёт» на пустом месте,
+                # а кнопка при этом рапортовала об успехе.
+                if age < LOCK_STALE_SEC and not self._holder_alive():
+                    print("[lock] держатель лока мёртв — забираю лок")
+                elif age < LOCK_STALE_SEC:
                     return False
                 print(f"[lock] прошлый заход брошен {int(age // 60)} мин назад — забираю лок")
                 try:
@@ -97,6 +104,30 @@ class _RunLock:
                 except OSError:
                     return False
         return False
+
+    def _holder_alive(self) -> bool:
+        """Жив ли процесс, записавший себя в лок. Нечитаемый/чужой лок считаем живым:
+        ошибиться в эту сторону безопаснее — двух отправщиков на кампанию быть не должно."""
+        os = self._os
+        try:
+            pid = int(self.path.read_text().strip() or 0)
+        except (OSError, ValueError):
+            return True
+        if pid <= 0 or pid == os.getpid():
+            return True
+        # Linux (боевой сервер): /proc — самый прямой ответ, есть ли такой процесс.
+        proc = pathlib.Path("/proc")
+        if proc.exists():
+            return (proc / str(pid)).exists()
+        try:
+            os.kill(pid, 0)      # сигнал 0 ничего не делает, только проверяет наличие
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True          # процесс есть, но чужой — значит живой
+        except OSError:
+            return True          # Windows на мёртвый PID даёт WinError 87 — не рискуем
+        return True
 
     def release(self) -> None:
         os = self._os

@@ -76,6 +76,8 @@ def finish_auth(code: str) -> None:
     """Меняем код из редиректа на токен и сохраняем. Бросает — вызывающий покажет."""
     flow = _flow()
     flow.fetch_token(code=code)
+    # Перезаписываем безусловно: сюда приходят в том числе поверх мёртвого
+    # (invalid_grant) токена — именно ради того, чтобы его заменить.
     Path(config.GOOGLE_TOKEN_FILE).write_text(flow.credentials.to_json(), encoding="utf-8")
 
 
@@ -106,10 +108,10 @@ def _notify_down(exc: Exception) -> None:
         hint = ("Refresh-токен OAuth умер (обычно потому что проект в Google Cloud "
                 "остался в статусе «Testing» — там токен живёт максимум 7 дней). "
                 "Встречи и ссылка на созвон всё равно уходят клиенту, но событие в "
-                "твой личный календарь не попадает. Почини разово: Google Cloud "
-                f"Console → проект «{_project_id()}» → APIs & Services → OAuth "
-                "consent screen → Publish App, затем удали google_token.json и "
-                "заново открой «Календарь» в пульте для повторного входа.")
+                "твой личный календарь не попадает. Чинится в пульте: раздел "
+                "«Календарь» → кнопка «Подключить Google-календарь». Чтобы не "
+                "повторялось каждую неделю — Google Cloud Console → проект "
+                f"«{_project_id()}» → APIs & Services → OAuth consent screen → Publish App.")
     else:
         title = "🔴 Google Calendar не отвечает"
         hint = msg[:200]
@@ -151,7 +153,16 @@ def _service():
     creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as e:  # noqa: BLE001
+                # invalid_grant = refresh-токен отозван/просрочен (частый случай:
+                # проект в Google Cloud остался в статусе Testing, где токен живёт
+                # 7 дней). Чинится ТОЛЬКО повторным входом, поэтому это needs_auth
+                # с кнопкой, а не «Google не отвечает» с предложением подождать.
+                if "invalid_grant" in str(e):
+                    raise NeedsAuth("Доступ к Google отозван — нужен повторный вход") from e
+                raise
             token_path.write_text(creds.to_json(), encoding="utf-8")
         else:
             # Refresh невозможен (нет refresh_token или он отозван) — раньше здесь

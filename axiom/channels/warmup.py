@@ -177,8 +177,23 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
             if want and (not cur or want not in cur or stale):
                 from telethon.tl.functions.account import CheckUsernameRequest, UpdateUsernameRequest
                 candidate = None
-                for suffix in ("", str(random.randint(10, 99)), str(random.randint(100, 999))):
-                    cand = (base + suffix)[:32]
+                # Запасные варианты — тоже ЦИФРЫ НОМЕРА, просто больше: «vasiliy328»
+                # занято → «vasiliy5328» → «vasiliy85328». Случайный хвост
+                # (@vasiliy32878) читается как сгенерированный ботом, а номер
+                # выглядит осмысленно — так живые люди и разбирают тёзок.
+                from channels.ru_names import _name_only, phone_digits
+                nm = translit(_name_only(full_name, "user")) or "user"
+                tail = [phone_digits(acc.get("phone"), n) for n in (4, 5, 6)]
+                variants = [base] + [nm + t for t in tail if t]
+                # хвост из random — последний рубеж, если и по номеру всё занято
+                variants += [base + str(random.randint(10, 99)),
+                             base + str(random.randint(100, 999))]
+                seen = set()
+                for cand in variants:
+                    cand = cand[:32]
+                    if cand in seen:
+                        continue
+                    seen.add(cand)
                     if len(cand) < 5:      # минимум Telegram — 5 символов
                         continue
                     try:

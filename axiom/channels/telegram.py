@@ -544,7 +544,10 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # сразу на оба сообщения (см. паузу «дописанное успевает лечь в базу» выше).
     # Известный пробел: если человек больше НЕ напишет, ответ сам не «догонит» его с
     # открытием окна — это требует отдельного катчап-тика планировщика, пока не сделан.
-    if camp and not database.in_work_hours(camp):
+    # Свой тест-номер (is_test=1) расписание не глушит: «🧪 Тест» гоняют тогда, когда
+    # проверяют сценарий, — часто поздно вечером или ночью, и молчание агента читается
+    # как поломка. Живых людей это не касается: у них is_test=0, и ночной гейт в силе.
+    if camp and not database.in_work_hours(camp) and not _col(contact, "is_test"):
         print(f"[work hours] contact {contact_id}: кампания «{camp['name']}» молчит вне "
               f"{camp.get('work_hours_start')}–{camp.get('work_hours_end')} "
               f"{camp.get('work_hours_tz') or 'UTC'} — ответ отложен")

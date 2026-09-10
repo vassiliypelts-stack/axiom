@@ -8604,8 +8604,13 @@ def accounts_identity_check() -> JSONResponse:
         # с фамилией совпадали дословно (напр. «Василий Аксиоменко» vs «Василий
         # Аксиоменко» — то же самое имя, но не первым словом против целой строки).
         label_first = base_label.split()[0] if base_label.split() else base_label
-        tg_first = tg.split()[0] if tg.split() else tg
-        if not label_first or label_first.lower() == tg_first.lower():
+        # Цифры срезаем с ОБЕИХ сторон. tg_name у нас штатно совпадает с ярлыком
+        # («Василий5328» и там, и там — так его ставит переименование), а чистили
+        # только label: «Василий» против «Василий5328» давало расхождение на ровном
+        # месте, и плашка ругалась на весь парк, где на деле всё сходится.
+        base_tg = _label_first_name(tg)
+        tg_first = base_tg.split()[0] if base_tg.split() else base_tg
+        if not label_first or not tg_first or label_first.lower() == tg_first.lower():
             continue
         g1, g2 = gender_of(label_first), gender_of(tg)
         out.append({

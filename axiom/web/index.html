@@ -1409,6 +1409,10 @@ const ACC_PRESETS={
 // стоит в самом Telegram и по чьему полу подобрано фото). Переименование в пульте
 // меняло только первое — и получалось «Кристина Орлова» в списке, «Никита» в
 // переписке, мужчина на аватаре. Собеседник видит это сразу, оператор — никогда.
+// Имя без хвоста цифр: ярлык у нас «Имя+цифры номера» одним токеном
+// («Василий5328»), и отбор цифр по отдельным словам его не брал — обе кнопки
+// выбора показывали один и тот же текст, будто выбирать не из чего.
+const nameOnly=s=>String(s||"").trim().replace(/[0-9]+$/,"").trim();
 async function loadIdentityCheck(){
   const box=$("#acc-identity");if(!box)return;
   let d;try{d=await api("/api/accounts/identity_check");}catch(e){return;}
@@ -1420,8 +1424,8 @@ async function loadIdentityCheck(){
       <div><b>${esc(i.label)}</b> <span class="hint">в пульте</span> → <b style="color:#c0392b">${esc(i.tg_name)}</b> <span class="hint">в Telegram</span>
         ${i.gender_conflict?'<span class="badge b-stop" style="margin-left:6px">разный пол</span>':''}</div>
       <div class="ttoolbar" style="margin:0">
-        <button class="idfix" data-id="${i.id}" data-src="label" title="Считать верным имя из пульта — оно уйдёт в Telegram">оставить «${esc((i.label||"").split(" ").filter(w=>!/^\\d+$/.test(w)).join(" "))}»</button>
-        <button class="idfix" data-id="${i.id}" data-src="tg" title="Считать верным имя из Telegram — оно встанет в пульт">оставить «${esc(i.tg_name)}»</button>
+        <button class="idfix" data-id="${i.id}" data-src="label" title="Считать верным имя из пульта — оно уйдёт в Telegram">оставить «${esc(nameOnly(i.label))}»</button>
+        <button class="idfix" data-id="${i.id}" data-src="tg" title="Считать верным имя из Telegram — оно встанет в пульт">оставить «${esc(nameOnly(i.tg_name))}»</button>
       </div></div>`).join("")}
     ${d.count>8?`<div class="hint" style="margin-top:6px">…и ещё ${d.count-8}</div>`:""}
     <div class="hint" style="margin-top:8px">После выбора нажми у аккаунта «оформить сейчас» — имя, ник и фото уйдут в Telegram. При смене пола фото сбрасывается, чтобы подобралось новое.</div>

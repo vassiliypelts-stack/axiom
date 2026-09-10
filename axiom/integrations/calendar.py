@@ -1,10 +1,12 @@
 """Google Calendar: создание события встречи.
 
-Нужно: файл OAuth-клиента (GOOGLE_CREDENTIALS_FILE, тип «Desktop app» из Google Cloud,
-Calendar API включён). Первый запуск откроет браузер для согласия и сохранит токен в
-GOOGLE_TOKEN_FILE. Дальше — без браузера.
+Нужно: файл OAuth-клиента (GOOGLE_CREDENTIALS_FILE, тип «Web application» из Google
+Cloud, Calendar API включён, в Authorized redirect URIs — адрес из redirect_uri()).
+Согласие даётся один раз в браузере ОПЕРАТОРА через кнопку в пульте (/api/gcal/auth),
+токен сохраняется в GOOGLE_TOKEN_FILE, дальше всё молча обновляется само.
 
-Нет файла доступа → enabled()=False, create_event() вернёт None.
+Нет файла доступа → enabled()=False; нет токена → authorized()=False и _service()
+бросает NeedsAuth. create_event() в обоих случаях вернёт None.
 google-* либы импортируются лениво, чтобы модуль грузился даже без них.
 """
 from __future__ import annotations
@@ -14,11 +16,72 @@ from pathlib import Path
 
 import config
 
-_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+class NeedsAuth(Exception):
+    """Нужно согласие оператора в браузере — не «сломалось», а «ещё не вошли»."""
+
+
+# calendar.events хватает на создание/перенос встреч, но не на чтение чужих/всех
+# событий основного календаря — а пульт показывает ленту «что у меня на неделе».
+# readonly добавлен именно ради показа. Порядок важен: Google возвращает scope в
+# ответе, и рассинхрон списка приводит к вечному «Scope has changed» при refresh.
+_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
 
 
 def enabled() -> bool:
     return Path(config.GOOGLE_CREDENTIALS_FILE).exists()
+
+
+def authorized() -> bool:
+    """Файл клиента лежит И согласие уже получено. enabled() отвечает только на
+    первое: без этой пары пульт писал «подключено», пока первый же запрос не падал
+    в попытку открыть браузер на сервере."""
+    return enabled() and Path(config.GOOGLE_TOKEN_FILE).exists()
+
+
+def redirect_uri() -> str:
+    """Куда Google вернёт оператора после согласия. Тот же адрес нужно вписать в
+    OAuth-клиенте (Authorized redirect URIs), иначе Google ответит redirect_uri_mismatch."""
+    return config.PUBLIC_URL.rstrip("/") + "/api/gcal/callback"
+
+
+def _flow():
+    """Web-flow вместо InstalledAppFlow.run_local_server().
+
+    run_local_server() поднимал локальный сервер и открывал браузер В ТОМ ЖЕ
+    процессе — на GCP-сервере браузера нет, поэтому первый же заход в «Календарь»
+    после протухания токена вешал запрос вместо того, чтобы дать войти. Здесь
+    согласие даёт оператор в СВОЁМ браузере, а сервер только принимает код."""
+    from google_auth_oauthlib.flow import Flow
+
+    return Flow.from_client_secrets_file(
+        config.GOOGLE_CREDENTIALS_FILE, scopes=_SCOPES, redirect_uri=redirect_uri(),
+    )
+
+
+def auth_url() -> str:
+    """Ссылка на согласие Google. prompt=consent + access_type=offline —
+    чтобы refresh_token пришёл ОБЯЗАТЕЛЬНО: без него токен живёт час, и календарь
+    «отваливается» к вечеру того же дня."""
+    url, _ = _flow().authorization_url(
+        access_type="offline", include_granted_scopes="true", prompt="consent",
+    )
+    return url
+
+
+def finish_auth(code: str) -> None:
+    """Меняем код из редиректа на токен и сохраняем. Бросает — вызывающий покажет."""
+    flow = _flow()
+    flow.fetch_token(code=code)
+    Path(config.GOOGLE_TOKEN_FILE).write_text(flow.credentials.to_json(), encoding="utf-8")
+
+
+def disconnect() -> None:
+    """Забыть согласие (кнопка «отключить» / принудительный перезаход)."""
+    Path(config.GOOGLE_TOKEN_FILE).unlink(missing_ok=True)
 
 
 def _notify_down(exc: Exception) -> None:
@@ -75,22 +138,26 @@ def _project_id() -> str:
 
 
 def _service():
+    # Проверка токена ДО импорта google-либ: иначе на машине без зависимостей
+    # (и при кривой установке на сервере) вместо честного «нужен вход» прилетал
+    # ImportError, который выше читался как «календарь сломался».
+    token_path = Path(config.GOOGLE_TOKEN_FILE)
+    if not token_path.exists():
+        raise NeedsAuth("Google-календарь ещё не подключён")
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
-
-    token_path = Path(config.GOOGLE_TOKEN_FILE)
-    creds = None
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(config.GOOGLE_CREDENTIALS_FILE, _SCOPES)
-            creds = flow.run_local_server(port=0)
-        token_path.write_text(creds.to_json(), encoding="utf-8")
+            # Refresh невозможен (нет refresh_token или он отозван) — раньше здесь
+            # молча открывался браузер на сервере и запрос висел. Теперь честно
+            # говорим «нужен повторный вход», а пульт показывает кнопку.
+            raise NeedsAuth("Требуется повторный вход в Google")
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -121,6 +188,8 @@ def list_events(days_ahead: int = 21, max_results: int = 50) -> list[dict] | Non
                 "location": ev.get("location"),
             })
         return out
+    except NeedsAuth:
+        raise            # «не вошли» — это не авария, наверх, там покажут кнопку входа
     except Exception as e:  # noqa: BLE001
         print(f"[calendar list error] {e}")
         _notify_down(e)
@@ -147,6 +216,9 @@ def create_event(
             body["attendees"] = [{"email": a} for a in attendees]
         ev = svc.events().insert(calendarId="primary", body=body).execute()
         return {"id": ev.get("id"), "htmlLink": ev.get("htmlLink")}
+    except NeedsAuth:
+        print(f"[calendar error] не подключён Google-календарь — нужен вход в пульте")
+        return None
     except Exception as e:
         print(f"[calendar error] {e}")
         _notify_down(e)
@@ -182,6 +254,9 @@ def update_event(
             body["description"] = description
         ev = svc.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
         return {"id": ev.get("id"), "htmlLink": ev.get("htmlLink")}
+    except NeedsAuth:
+        print(f"[calendar update error] не подключён Google-календарь — нужен вход в пульте")
+        return None
     except Exception as e:
         print(f"[calendar update error] {e}")
         _notify_down(e)

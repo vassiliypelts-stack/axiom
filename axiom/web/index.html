@@ -8085,13 +8085,27 @@ async function viewCalendar(v){
           <td class="sub">${esc(e.location)||""}</td>
           <td>${e.link?`<a class="ext" href="${esc(e.link)}" target="_blank">↗</a>`:""}</td></tr>`).join("")}
       </table></div>`:'<div class="empty" style="margin:0">В Google-календаре нет ближайших событий (21 день).</div>';
+  } else if(g&&g.reason==="needs_auth"){
+    // Доступ настроен, не хватает только согласия — это одна кнопка, а не инструкция
+    // на три пункта. Раньше сюда попадал и этот случай, и «нет файла», и оператор
+    // перечитывал шаги про Google Cloud, хотя всё уже лежало на месте.
+    gcalBlock=`<div class="card" style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:14px 16px">
+      <b>📅 Осталось войти в Google</b>
+      <div class="sub" style="margin:6px 0 10px;line-height:1.5">Доступ настроен — нужно разово подтвердить вход в свой аккаунт Google.</div>
+      <a class="btn" href="/api/gcal/auth">Подключить Google-календарь</a></div>`;
+  } else if(g&&g.reason==="api_error"){
+    gcalBlock=`<div class="card" style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:14px 16px">
+      <b>📅 Google не ответил</b>
+      <div class="sub" style="margin:6px 0 10px;line-height:1.5">Доступ на месте, но запрос к Google не прошёл (сеть или лимит). Обнови страницу через минуту; если не пройдёт — можно перезайти.</div>
+      <a class="btn" href="/api/gcal/auth">Войти заново</a></div>`;
   } else {
     gcalBlock=`<div class="card" style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:14px 16px">
       <b>📅 Google-календарь не подключён</b>
       <div class="sub" style="margin-top:6px;line-height:1.5">Чтобы видеть свои личные встречи прямо здесь:
-      <br>1) в Google Cloud создай OAuth-доступ (тип «Desktop app»), включи Calendar API, скачай <b>credentials.json</b>;
-      <br>2) положи его в папку <code>axiom</code> под именем <b>google_credentials.json</b>;
-      <br>3) обнови страницу — при первом обращении откроется окно входа Google (разово).
+      <br>1) в Google Cloud создай OAuth-доступ (тип <b>«Web application»</b>), включи Calendar API;
+      <br>2) в этом же клиенте добавь в <b>Authorized redirect URIs</b> адрес: <code>${esc(location.origin)}/api/gcal/callback</code>;
+      <br>3) скачай credentials.json и положи в папку <code>axiom</code> как <b>google_credentials.json</b>;
+      <br>4) обнови страницу — появится кнопка «Подключить».
       <br><span style="opacity:.7">Скажи Claude «подключи Google-календарь» — проведу по шагам.</span></div></div>`;
   }
   // Объединяем оба источника в один список событий для недельного грида.
@@ -8123,8 +8137,17 @@ async function viewCalendar(v){
     $("#wk-grid").querySelectorAll(".wk-ev").forEach(el=>{if(el.onclick)el.style.cursor="pointer";});
   };
 
+  // Возврат от Google (/#calendar?gcal=...) — сказать, чем кончился вход. Без этого
+  // оператор просто оказывался обратно в разделе и гадал, применилось или нет.
+  const gcalMsg={ok:["✅ Google-календарь подключён","var(--green)"],
+    denied:["Вход отменён — доступ к календарю не выдан","var(--accent)"],
+    error:["Не удалось подключить Google-календарь — подробности в логах сервера","var(--accent)"],
+    no_credentials:["Нет файла доступа google_credentials.json на сервере","var(--accent)"]}[
+      (location.hash.split("?")[1]||"").match(/gcal=([a-z_]+)/)?.[1]];
+  const gcalNote=gcalMsg?`<div class="card" style="border-left:3px solid ${gcalMsg[1]};padding:10px 14px;margin-bottom:12px">${esc(gcalMsg[0])}</div>`:"";
+
   v.innerHTML=`<p class="sub" style="margin-top:0">Встречи AXIOM (КЭВ) + твой личный Google-календарь в одном месте.</p>
-    <section class="dash-glass dash-card" id="dash-today" style="display:none;margin-bottom:14px"></section>
+    ${gcalNote}
     <div class="ttoolbar" style="margin-bottom:10px">
       <button id="wk-prev" title="прошлая неделя">← неделя</button>
       <button id="wk-today">Сегодня</button>
@@ -8145,7 +8168,6 @@ async function viewCalendar(v){
   $("#wk-next").onclick=()=>{weekBase.setDate(weekBase.getDate()+7);renderWeek();};
   $("#wk-today").onclick=()=>{weekBase=startOfWeek(new Date());renderWeek();};
   renderWeek();
-  loadTodayTasks();
   wireCollapse(v);
 }
 
@@ -8625,7 +8647,11 @@ function _applyTableFilter(tableKey,col,val){
   localStorage.setItem(KEY,JSON.stringify(saved));
 }
 async function route(){
-  const raw=(location.hash||"#dashboard").slice(1);
+  // Хвост ?key=val после секции (возврат от внешних OAuth — например Google-календарь)
+  // читают сами view через location.hash. Роутеру он мешает: без среза секцией
+  // становилось «calendar?gcal=ok», в NAV такого нет — и вместо календаря
+  // открывался дашборд, проглатывая результат входа.
+  const raw=(location.hash||"#dashboard").slice(1).split("?")[0];
   const slash=raw.indexOf("/");
   let section=slash>=0?raw.slice(0,slash):raw;
   let entityId=slash>=0?raw.slice(slash+1):null;

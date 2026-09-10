@@ -3156,14 +3156,66 @@ def meetings_list() -> JSONResponse:
 @app.get("/api/gcal")
 def gcal_events() -> JSONResponse:
     """События из личного Google-календаря (показываем рядом со встречами AXIOM).
-    connected=False → файл доступа не подключён (см. README по Google Calendar)."""
+
+    reason различает три РАЗНЫХ состояния, которые раньше сливались в одно
+    «не подключён» и не давали понять, что чинить:
+      no_credentials — нет файла OAuth-клиента, класть руками на сервер;
+      needs_auth     — файл есть, согласия нет (или токен отозван) → кнопка «Подключить»;
+      api_error      — доступ есть, но Google не ответил (сеть/квота) → просто повторить."""
     from integrations import calendar as gcal
     if not gcal.enabled():
         return JSONResponse({"connected": False, "reason": "no_credentials"})
-    evs = gcal.list_events()
+    try:
+        evs = gcal.list_events()
+    except gcal.NeedsAuth:
+        return JSONResponse({"connected": False, "reason": "needs_auth"})
     if evs is None:
-        return JSONResponse({"connected": False, "reason": "auth_error"})
+        return JSONResponse({"connected": False, "reason": "api_error"})
     return JSONResponse({"connected": True, "events": evs})
+
+
+@app.get("/api/gcal/auth")
+def gcal_auth() -> RedirectResponse:
+    """Отправляем оператора на согласие Google — вход происходит в ЕГО браузере.
+    Так работает и на сервере, где браузера нет вовсе (раньше попытка открыть его
+    прямо в процессе пульта просто вешала запрос)."""
+    from integrations import calendar as gcal
+    if not gcal.enabled():
+        return RedirectResponse("/#calendar?gcal=no_credentials", status_code=302)
+    try:
+        return RedirectResponse(gcal.auth_url(), status_code=302)
+    except Exception as e:  # noqa: BLE001
+        print(f"[gcal auth error] {e}")
+        return RedirectResponse("/#calendar?gcal=error", status_code=302)
+
+
+@app.get("/api/gcal/callback")
+def gcal_callback(request: Request) -> RedirectResponse:
+    """Google вернул оператора сюда с ?code=... — меняем код на токен и уводим
+    обратно в «Календарь». Ошибку не прячем: она видна в адресе, а пульт покажет
+    текст вместо молчаливого «не подключён»."""
+    from integrations import calendar as gcal
+    err = request.query_params.get("error")
+    if err:
+        return RedirectResponse("/#calendar?gcal=denied", status_code=302)
+    code = request.query_params.get("code")
+    if not code:
+        return RedirectResponse("/#calendar?gcal=error", status_code=302)
+    try:
+        gcal.finish_auth(code)
+    except Exception as e:  # noqa: BLE001
+        print(f"[gcal callback error] {e}")
+        return RedirectResponse("/#calendar?gcal=error", status_code=302)
+    return RedirectResponse("/#calendar?gcal=ok", status_code=302)
+
+
+@app.post("/api/gcal/disconnect")
+def gcal_disconnect() -> JSONResponse:
+    """Забыть согласие — нужно, чтобы перелогиниться в другой аккаунт Google
+    или починить протухший refresh-токен, не лазая по серверу руками."""
+    from integrations import calendar as gcal
+    gcal.disconnect()
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/notifications")

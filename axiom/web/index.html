@@ -6249,15 +6249,26 @@ async function showTestDialog(id){
     go.disabled=true;
     return;
   }
-  // Аккаунт-отправитель. Пустое значение — прежнее поведение (команда кампании).
-  accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
-    (opts.accounts||[]).map(a=>{
-      const nm=esc(a.label||a.username||a.phone||("#"+a.id));
-      // Нет прокси — не запрет, а предупреждение: отправка через общий IP жжёт
-      // сессию (инцидент 13.08), и оператор должен видеть это до нажатия.
-      const warn=a.has_proxy?"":" ⚠ без прокси";
-      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm} · ${esc(a.status||"")}${warn}</option>`;
-    }).join("");
+  // Аккаунт-отправитель. В списке только живые боевые (мёртвых, служебных и родных
+  // сервер не отдаёт вовсе), поэтому показываем главное: имя, НОМЕР и готовность.
+  // Прогретые и «на прогреве» разведены по группам: слать тест можно с любого, но
+  // видеть, что берёшь недопрогретый, оператор должен до нажатия.
+  const accs=opts.accounts||[];
+  if(!accs.length){
+    accSel.innerHTML='<option value="">нет готовых аккаунтов</option>';
+    msg.innerHTML='<span style="color:#c0392b">Ни одного аккаунта с живой сессией и своим прокси. Открой «Аккаунты» — проверь сессии и прокси.</span>';
+  }else{
+    const opt=a=>{
+      const nm=esc(a.label||a.username||("#"+a.id));
+      const ph=a.phone?" · "+esc(a.phone):"";
+      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm}${ph}</option>`;
+    };
+    const grp=(title,list)=>list.length?`<optgroup label="${title}">${list.map(opt).join("")}</optgroup>`:"";
+    accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
+      grp("прогретые — готовы слать", accs.filter(a=>a.status==="active"))+
+      grp("на прогреве — для теста годятся", accs.filter(a=>a.status==="warming"))+
+      grp("прочие", accs.filter(a=>a.status!=="active"&&a.status!=="warming"));
+  }
   const cts=opts.contacts||[];
   ctsBox.innerHTML=cts.length?cts.map(c=>{
     const who=esc(c.phone||("@"+(c.username||""))), nm=esc(c.name||"");

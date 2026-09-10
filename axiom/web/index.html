@@ -8100,7 +8100,12 @@ async function viewCalendar(v){
     gcalBlock=`<div class="card" style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:14px 16px">
       <b>📅 Осталось войти в Google</b>
       <div class="sub" style="margin:6px 0 10px;line-height:1.5">Доступ настроен — нужно разово подтвердить вход в свой аккаунт Google.</div>
-      <a class="btn" href="/api/gcal/auth">Подключить Google-календарь</a></div>`;
+      <a class="btn" href="/api/gcal/auth">Подключить Google-календарь</a>
+      <div class="sub" style="margin-top:10px;line-height:1.5;opacity:.8">Кнопка выше сработает, только если пульт открыт по https.
+      Пока его нет — вход делается один раз на своём компьютере, а сюда заливается готовый токен:</div>
+      <div style="margin-top:6px"><input type="file" id="gcal-tok" accept=".json,application/json" style="display:none">
+      <button onclick="document.getElementById('gcal-tok').click()">🔑 Загрузить google_token.json</button>
+      <span id="gcal-tok-msg" class="sub" style="margin-left:8px"></span></div></div>`;
   } else if(g&&g.reason==="api_error"){
     gcalBlock=`<div class="card" style="background:var(--accent-soft);border-left:3px solid var(--accent);padding:14px 16px">
       <b>📅 Google не ответил</b>
@@ -8181,6 +8186,19 @@ async function viewCalendar(v){
   renderWeek();
   // Загрузка файла доступа прямо из пульта: класть его руками некуда — SSH в этом
   // проекте запрещён, а деплой файл не везёт (он в .gitignore, там client_secret).
+  const tokInput=$("#gcal-tok");
+  if(tokInput)tokInput.onchange=async()=>{
+    const f=tokInput.files[0];if(!f)return;
+    const msg=$("#gcal-tok-msg");msg.textContent="проверяю у Google…";
+    const fd=new FormData();fd.append("file",f);
+    try{
+      const r=await fetch("/api/gcal/token",{method:"POST",body:fd});
+      const d=await r.json();
+      if(!d.ok){msg.textContent="⚠ "+(d.error||"не вышло");return;}
+      msg.textContent=`✅ подключено (событий: ${d.events})`;
+      setTimeout(()=>route(),800);
+    }catch(e){msg.textContent="⚠ ошибка сети";}
+  };
   const credInput=$("#gcal-cred");
   if(credInput)credInput.onchange=async()=>{
     const f=credInput.files[0];if(!f)return;

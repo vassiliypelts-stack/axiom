@@ -3253,6 +3253,34 @@ async def gcal_upload_credentials(file: UploadFile = File(...)) -> JSONResponse:
                          "redirect_uris": data[kind].get("redirect_uris", [])})
 
 
+@app.post("/api/gcal/token")
+async def gcal_upload_token(file: UploadFile = File(...)) -> JSONResponse:
+    """Залить google_token.json, полученный входом на машине оператора.
+
+    Обычный веб-вход (/api/gcal/auth) здесь недоступен: Google принимает в
+    redirect URI только https либо http://localhost, а пульт слушает http:8000
+    без сертификата. Localhost сервера — не браузер оператора, поэтому согласие
+    берётся локально, а результат приезжает сюда."""
+    from integrations import calendar as gcal
+
+    raw = (await file.read())[:100_000]
+    try:
+        gcal.import_token(raw.decode("utf-8"))
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": "Это не google_token.json"}, status_code=400)
+    # Сразу дёргаем Google: иначе «принято» означало бы лишь «файл записан», а
+    # рабочий он или нет выяснялось бы при первой встрече, когда уже поздно.
+    try:
+        evs = gcal.list_events()
+    except gcal.NeedsAuth:
+        return JSONResponse({"ok": False, "error": "Токен не принят Google — войди заново"}, status_code=400)
+    if evs is None:
+        return JSONResponse({"ok": False, "error": "Google не ответил — попробуй ещё раз"}, status_code=400)
+    return JSONResponse({"ok": True, "events": len(evs)})
+
+
 @app.post("/api/gcal/disconnect")
 def gcal_disconnect() -> JSONResponse:
     """Забыть согласие — нужно, чтобы перелогиниться в другой аккаунт Google

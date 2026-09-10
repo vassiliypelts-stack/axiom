@@ -94,6 +94,29 @@ def finish_auth(code: str, origin: str = "") -> None:
     Path(config.GOOGLE_TOKEN_FILE).write_text(flow.credentials.to_json(), encoding="utf-8")
 
 
+def import_token(raw: str) -> None:
+    """Принять готовый authorized_user-токен (google_token.json), полученный входом
+    на машине оператора.
+
+    Зачем в обход обычного веб-входа: Google требует https в Authorized redirect
+    URIs и не принимает http ни с IP, ни с домена — а пульт слушает голый http:8000
+    (порты 80/443 наружу закрыты, сертификата нет). Единственное исключение в
+    правилах Google — http://localhost, но localhost сервера это не браузер
+    оператора. Поэтому согласие даётся один раз локально, а сюда приезжает
+    результат. Токен самообновляемый: refresh_token живёт, пока его не отозвали,
+    так что повторять это годами не придётся.
+
+    Проверяем состав, а не просто пишем файл: без refresh_token доступ умрёт через
+    час, и «подключено» превратится в тыкву тем же вечером — честнее отказать сразу."""
+    import json
+
+    data = json.loads(raw)
+    missing = [k for k in ("client_id", "client_secret", "refresh_token") if not data.get(k)]
+    if missing:
+        raise ValueError("в токене нет: " + ", ".join(missing))
+    Path(config.GOOGLE_TOKEN_FILE).write_text(json.dumps(data), encoding="utf-8")
+
+
 def disconnect() -> None:
     """Забыть согласие (кнопка «отключить» / принудительный перезаход)."""
     Path(config.GOOGLE_TOKEN_FILE).unlink(missing_ok=True)

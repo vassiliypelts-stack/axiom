@@ -565,9 +565,19 @@ async def _supervise() -> None:
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": True}
                 _log(f"[#{a['id']}] {a.get('label') or ''} — слушаю ✓")
             except Exception as e:  # noqa: BLE001
+                # У TimeoutError текст ПУСТОЙ — в пульте и логе оставалась строка
+                # «не подключился: » без причины, и понять, что аккаунт просто не
+                # достучался через свой прокси, было нельзя (10.09.2026: так висели
+                # Василий913 с прокси, проверенным месяц назад, и Василий5328).
+                # Тип ошибки говорит достаточно, когда сообщения нет.
+                why = str(e).strip()
+                if not why:
+                    why = (f"таймаут {CONNECT_TIMEOUT}с — прокси не пропускает или не "
+                           f"отвечает (сессия при этом может быть жива)"
+                           if isinstance(e, asyncio.TimeoutError) else type(e).__name__)
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": False,
-                                               "err": str(e)[:120]}
-                _log(f"[#{a['id']}] не подключился: {str(e)[:120]}")
+                                               "err": why[:120]}
+                _log(f"[#{a['id']}] не подключился: {why[:120]}")
                 # Telegram прямо сказал, что ключа больше нет (AuthKeyDuplicated и
                 # родня) — ЗАПИСЫВАЕМ это в карточку. Раньше слушатель знал о смерти
                 # сессии только у себя в STATUS, а в БД аккаунт оставался session_state

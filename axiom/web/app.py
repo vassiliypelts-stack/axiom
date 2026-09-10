@@ -3174,8 +3174,15 @@ def gcal_events() -> JSONResponse:
     return JSONResponse({"connected": True, "events": evs})
 
 
+def _origin(request: Request) -> str:
+    """Схема+хост+порт, которыми ОТКРЫТ пульт прямо сейчас. Нужен, чтобы redirect_uri
+    для Google совпал с фактическим адресом захода: IP сервера эфемерный, а PUBLIC_URL
+    в .env за ним не поспевает и уже разъезжался с боевым."""
+    return str(request.base_url).rstrip("/")
+
+
 @app.get("/api/gcal/auth")
-def gcal_auth() -> RedirectResponse:
+def gcal_auth(request: Request) -> RedirectResponse:
     """Отправляем оператора на согласие Google — вход происходит в ЕГО браузере.
     Так работает и на сервере, где браузера нет вовсе (раньше попытка открыть его
     прямо в процессе пульта просто вешала запрос)."""
@@ -3183,7 +3190,7 @@ def gcal_auth() -> RedirectResponse:
     if not gcal.enabled():
         return RedirectResponse("/#calendar?gcal=no_credentials", status_code=302)
     try:
-        return RedirectResponse(gcal.auth_url(), status_code=302)
+        return RedirectResponse(gcal.auth_url(_origin(request)), status_code=302)
     except Exception as e:  # noqa: BLE001
         print(f"[gcal auth error] {e}")
         return RedirectResponse("/#calendar?gcal=error", status_code=302)
@@ -3202,7 +3209,7 @@ def gcal_callback(request: Request) -> RedirectResponse:
     if not code:
         return RedirectResponse("/#calendar?gcal=error", status_code=302)
     try:
-        gcal.finish_auth(code)
+        gcal.finish_auth(code, _origin(request))
     except Exception as e:  # noqa: BLE001
         print(f"[gcal callback error] {e}")
         return RedirectResponse("/#calendar?gcal=error", status_code=302)

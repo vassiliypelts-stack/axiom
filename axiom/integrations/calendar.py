@@ -42,13 +42,23 @@ def authorized() -> bool:
     return enabled() and Path(config.GOOGLE_TOKEN_FILE).exists()
 
 
-def redirect_uri() -> str:
-    """Куда Google вернёт оператора после согласия. Тот же адрес нужно вписать в
-    OAuth-клиенте (Authorized redirect URIs), иначе Google ответит redirect_uri_mismatch."""
-    return config.PUBLIC_URL.rstrip("/") + "/api/gcal/callback"
+def redirect_uri(origin: str = "") -> str:
+    """Куда Google вернёт оператора после согласия. Тот же адрес должен быть вписан
+    в OAuth-клиенте (Authorized redirect URIs), иначе Google ответит redirect_uri_mismatch.
+
+    origin (схема+хост+порт того запроса, которым оператор открыл пульт) важнее
+    PUBLIC_URL: адрес в конфиге живёт в .env и уже разъезжался с боевым — IP у
+    сервера эфемерный. Собирая uri из фактического адреса захода, мы гарантируем,
+    что «куда ушли» и «куда вернулись» — один и тот же хост, а не два разных.
+
+    Отдельно про IP: Google НЕ принимает голый IP в redirect URI (нужен домен с
+    настоящей зоной), поэтому в консоли прописан nip.io-адрес вида
+    http://<ip>.nip.io:8000/... — nip.io резолвит такое имя обратно в этот же IP."""
+    base = (origin or config.PUBLIC_URL).rstrip("/")
+    return base + "/api/gcal/callback"
 
 
-def _flow():
+def _flow(origin: str = ""):
     """Web-flow вместо InstalledAppFlow.run_local_server().
 
     run_local_server() поднимал локальный сервер и открывал браузер В ТОМ ЖЕ
@@ -58,23 +68,26 @@ def _flow():
     from google_auth_oauthlib.flow import Flow
 
     return Flow.from_client_secrets_file(
-        config.GOOGLE_CREDENTIALS_FILE, scopes=_SCOPES, redirect_uri=redirect_uri(),
+        config.GOOGLE_CREDENTIALS_FILE, scopes=_SCOPES, redirect_uri=redirect_uri(origin),
     )
 
 
-def auth_url() -> str:
+def auth_url(origin: str = "") -> str:
     """Ссылка на согласие Google. prompt=consent + access_type=offline —
     чтобы refresh_token пришёл ОБЯЗАТЕЛЬНО: без него токен живёт час, и календарь
     «отваливается» к вечеру того же дня."""
-    url, _ = _flow().authorization_url(
+    url, _ = _flow(origin).authorization_url(
         access_type="offline", include_granted_scopes="true", prompt="consent",
     )
     return url
 
 
-def finish_auth(code: str) -> None:
+def finish_auth(code: str, origin: str = "") -> None:
     """Меняем код из редиректа на токен и сохраняем. Бросает — вызывающий покажет."""
-    flow = _flow()
+    # origin обязан совпасть с тем, что ушёл в auth_url — Google сверяет redirect_uri
+    # на обмене кода тоже, и рассинхрон здесь дал бы redirect_uri_mismatch уже на
+    # возврате, когда пользователь всё подтвердил.
+    flow = _flow(origin)
     flow.fetch_token(code=code)
     # Перезаписываем безусловно: сюда приходят в том числе поверх мёртвого
     # (invalid_grant) токена — именно ради того, чтобы его заменить.

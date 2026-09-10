@@ -8065,6 +8065,14 @@ function showConnectorConfigDialog(id,cur,onSaved){
 
 // ----------------------------------------------------------------- calendar
 async function viewCalendar(v){
+  // Google отвергает голый IP в redirect URI («must use a valid top private domain»),
+  // а домена у пульта нет. nip.io — публичный DNS, резолвящий <ip>.nip.io обратно в
+  // этот же IP: для Google это нормальная зона .io, для нас — тот же сервер.
+  const gcalRedirect=()=>{
+    const m=location.hostname.match(/^(\d+\.\d+\.\d+\.\d+)$/);
+    return m?`${location.protocol}//${m[1]}.nip.io${location.port?":"+location.port:""}`:location.origin;
+  };
+
   const [m,g]=await Promise.all([api("/api/meetings"),api("/api/gcal").catch(()=>({connected:false}))]);
   const meetTable=m.length?`<div style="border:1px solid var(--border);border-radius:8px;overflow:auto"><table style="width:100%;border-collapse:collapse">
       <tr><th>Когда</th><th>Кто</th><th>Контакт</th><th>Zoom</th><th>Заметка</th></tr>
@@ -8103,7 +8111,7 @@ async function viewCalendar(v){
       <b>📅 Google-календарь не подключён</b>
       <div class="sub" style="margin-top:6px;line-height:1.5">Чтобы видеть свои личные встречи прямо здесь:
       <br>1) в Google Cloud создай OAuth-доступ (тип <b>«Web application»</b>), включи Calendar API;
-      <br>2) в этом же клиенте добавь в <b>Authorized redirect URIs</b> адрес: <code>${esc(location.origin)}/api/gcal/callback</code>;
+      <br>2) в этом же клиенте добавь в <b>Authorized redirect URIs</b> адрес: <code>${esc(gcalRedirect())}/api/gcal/callback</code>;
       <br>3) скачай credentials.json и положи в папку <code>axiom</code> как <b>google_credentials.json</b>;
       <br>4) обнови страницу — появится кнопка «Подключить».
       <br><span style="opacity:.7">Скажи Claude «подключи Google-календарь» — проведу по шагам.</span></div></div>`;

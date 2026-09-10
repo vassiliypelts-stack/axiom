@@ -128,11 +128,23 @@ def phone_digits(phone: str | None, n: int = 3) -> str:
     return digits[-n:] if len(digits) >= n else digits
 
 
+def _name_only(full_name: str, default: str) -> str:
+    """Первое слово имени БЕЗ хвостовых цифр: «Василий5328» → «Василий».
+
+    Имя аккаунта уже может нести цифры номера (ярлык «Имя+цифры» — наш штатный
+    формат, и он же попадает в tg_name). Клеить к такому имени цифры повторно
+    значит получить «Василий53285328» в ярлыке и @vasiliy5328328 в нике — вид
+    заведомо ботский. Срезаем то, что допишем сами."""
+    first = (full_name or "").split()[0] if full_name else ""
+    first = first.rstrip("0123456789")
+    return first or default
+
+
 def make_label(full_name: str, phone: str | None) -> str:
     """Внутренний ярлык для НАШЕЙ таблицы: «Имя» + последние цифры номера,
     например «Василий928» — быстро узнать аккаунт по номеру, не путая с профилем
     в самом Telegram (там имя чистое, без цифр — см. accounts.tg_name)."""
-    first = (full_name or "").split()[0] if full_name else "Акк"
+    first = _name_only(full_name, "Акк")
     digits = phone_digits(phone)
     return f"{first}{digits}" if digits else first
 
@@ -140,7 +152,7 @@ def make_label(full_name: str, phone: str | None) -> str:
 def make_username_base(full_name: str, phone: str | None) -> str:
     """База для Telegram @username: транслит имени + цифры номера, напр. «vasiliy928».
     Обычный, не «спамный» вид ника — с именем и цифрами, как у живых людей."""
-    first = (full_name or "").split()[0] if full_name else "user"
+    first = _name_only(full_name, "user")
     base = translit(first) or "user"
     digits = phone_digits(phone, 3)
     return f"{base}{digits}" if digits else base

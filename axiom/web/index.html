@@ -6285,7 +6285,15 @@ async function showTestDialog(id){
         body:JSON.stringify({account_id:accSel.value||null,contact_ids:picked})});
       if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';back();return;}
       const from=accSel.options[accSel.selectedIndex].textContent;
-      msg.innerHTML='<span style="color:#27ae60">✅ Тест запущен на '+r.test_targets+' номер(ов) с «'+esc(from)+'». Сообщение придёт с паузой — проверь Telegram.</span>';
+      // «придёт с паузой» ничего не говорило: оператор смотрит в Telegram и не знает,
+      // ждать ему 10 секунд или 10 минут. Считаем вслух: ~15-30 с на подключение
+      // сессии до первого сообщения, дальше 15-20 с на каждый следующий номер.
+      const n=+r.test_targets||1;
+      const eta=n>1?('первое — через ~15-30 сек, дальше по одному каждые 15-20 сек (всё за ~'
+                     +Math.ceil((30+(n-1)*20)/60)+' мин)')
+                  :'сообщение придёт через ~15-30 сек';
+      msg.innerHTML='<span style="color:#27ae60">✅ Тест запущен на '+n+' номер(ов) с «'+esc(from)+'». '
+        +eta+'. Смотри Telegram; в «Переписке» появится тот же текст.</span>';
       go.disabled=false;go.textContent="Запустить ещё раз";
     }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска теста</span>';back();}
   };

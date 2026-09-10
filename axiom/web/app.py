@@ -3216,6 +3216,43 @@ def gcal_callback(request: Request) -> RedirectResponse:
     return RedirectResponse("/#calendar?gcal=ok", status_code=302)
 
 
+@app.post("/api/gcal/credentials")
+async def gcal_upload_credentials(file: UploadFile = File(...)) -> JSONResponse:
+    """Положить google_credentials.json на сервер кнопкой из пульта.
+
+    Файл в .gitignore (в нём client_secret), поэтому деплоем он не приезжает, а
+    ручной путь — SSH, который в этом проекте запрещён: деплой делает reset --hard
+    и затирает любые правки на сервере. Так что единственный штатный способ — сюда.
+
+    Проверяем содержимое, а не только расширение: положить сюда что угодно и
+    получить «подключено» с последующим падением на первом же запросе — худший
+    исход, чем честная ошибка прямо в момент загрузки."""
+    import json as _json
+
+    from integrations import calendar as gcal
+
+    raw = (await file.read())[:100_000]
+    try:
+        data = _json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": "Это не JSON — нужен файл, скачанный кнопкой DOWNLOAD JSON"}, status_code=400)
+    kind = next(iter(data), "")
+    if kind not in ("web", "installed"):
+        return JSONResponse({"ok": False, "error": "В файле нет секции web/installed — это не OAuth-клиент"}, status_code=400)
+    if kind == "installed":
+        return JSONResponse({"ok": False, "error": "Это клиент типа Desktop. Нужен Web application — иначе Google не примет возврат в пульт"}, status_code=400)
+    if not data[kind].get("client_secret") or not data[kind].get("client_id"):
+        return JSONResponse({"ok": False, "error": "В файле нет client_id/client_secret"}, status_code=400)
+
+    Path(config.GOOGLE_CREDENTIALS_FILE).write_text(
+        _json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    # Старый токен принадлежит ПРЕДЫДУЩЕМУ клиенту: оставить его — значит получить
+    # invalid_client на первом же обращении и снова гадать, что сломалось.
+    gcal.disconnect()
+    return JSONResponse({"ok": True, "project_id": data[kind].get("project_id", ""),
+                         "redirect_uris": data[kind].get("redirect_uris", [])})
+
+
 @app.post("/api/gcal/disconnect")
 def gcal_disconnect() -> JSONResponse:
     """Забыть согласие — нужно, чтобы перелогиниться в другой аккаунт Google

@@ -8113,8 +8113,11 @@ async function viewCalendar(v){
       <br>1) в Google Cloud создай OAuth-доступ (тип <b>«Web application»</b>), включи Calendar API;
       <br>2) в этом же клиенте добавь в <b>Authorized redirect URIs</b> адрес: <code>${esc(gcalRedirect())}/api/gcal/callback</code>;
       <br>3) скачай credentials.json и положи в папку <code>axiom</code> как <b>google_credentials.json</b>;
-      <br>4) обнови страницу — появится кнопка «Подключить».
-      <br><span style="opacity:.7">Скажи Claude «подключи Google-календарь» — проведу по шагам.</span></div></div>`;
+      <br>4) загрузи этот JSON кнопкой ниже — и появится «Подключить».
+      <br><span style="opacity:.7">Скажи Claude «подключи Google-календарь» — проведу по шагам.</span></div>
+      <div style="margin-top:10px"><input type="file" id="gcal-cred" accept=".json,application/json" style="display:none">
+      <button onclick="document.getElementById('gcal-cred').click()">📤 Загрузить google_credentials.json</button>
+      <span id="gcal-cred-msg" class="sub" style="margin-left:8px"></span></div></div>`;
   }
   // Объединяем оба источника в один список событий для недельного грида.
   const events=[
@@ -8176,6 +8179,21 @@ async function viewCalendar(v){
   $("#wk-next").onclick=()=>{weekBase.setDate(weekBase.getDate()+7);renderWeek();};
   $("#wk-today").onclick=()=>{weekBase=startOfWeek(new Date());renderWeek();};
   renderWeek();
+  // Загрузка файла доступа прямо из пульта: класть его руками некуда — SSH в этом
+  // проекте запрещён, а деплой файл не везёт (он в .gitignore, там client_secret).
+  const credInput=$("#gcal-cred");
+  if(credInput)credInput.onchange=async()=>{
+    const f=credInput.files[0];if(!f)return;
+    const msg=$("#gcal-cred-msg");msg.textContent="загружаю…";
+    const fd=new FormData();fd.append("file",f);
+    try{
+      const r=await fetch("/api/gcal/credentials",{method:"POST",body:fd});
+      const d=await r.json();
+      if(!d.ok){msg.textContent="⚠ "+(d.error||"не вышло");return;}
+      msg.textContent="✅ принято, обновляю…";
+      setTimeout(()=>route(),600);
+    }catch(e){msg.textContent="⚠ ошибка сети";}
+  };
   wireCollapse(v);
 }
 

@@ -6222,7 +6222,7 @@ async function showTestDialog(id){
       <select id="tst-acc" style="width:100%"><option>загружаю…</option></select></div>
     <div class="field" style="margin-top:10px"><label>На какие номера (мои тест-контакты)</label>
       <div id="tst-cts" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">загружаю…</div>
-      <div class="sub" style="margin-top:6px">Ничего не отмечено — уйдёт на все номера из списка.</div></div>
+      <div class="sub" style="margin-top:6px">Отметь, кому слать. Ничего не отмечено — уйдёт на все свои тест-номера из списка выше (боевая база сюда не входит).</div></div>
     <div class="ttoolbar" style="justify-content:flex-end;margin-top:14px"><button class="tst-close">Отмена</button><button class="primary" id="tst-go">Обнулить и запустить тест</button></div>
     <div id="tst-msg" style="margin-top:8px;font-size:13px"></div></div>`;
   document.body.appendChild(modal);
@@ -6232,8 +6232,23 @@ async function showTestDialog(id){
   const accSel=modal.querySelector("#tst-acc"), ctsBox=modal.querySelector("#tst-cts"),
         msg=modal.querySelector("#tst-msg"), go=modal.querySelector("#tst-go");
   let opts=null;
-  try{opts=await api(`/api/campaign/${id}/test_options`);}catch(e){opts={error:"не загрузились справочники"};}
-  if(!opts||opts.error){msg.innerHTML='<span style="color:#c0392b">'+esc((opts&&opts.error)||"ошибка")+'</span>';return;}
+  try{
+    const resp=await fetch(`/api/campaign/${id}/test_options`);
+    // Пульт после деплоя перезапускается несколько секунд, а слетевшая сессия
+    // отдаёт HTML страницы входа — в обоих случаях r.json() бросает, и раньше
+    // диалог навсегда застывал на «загружаю…», не сказав почему.
+    if(resp.status===401||resp.status===403)throw new Error("сессия пульта истекла — обнови страницу и войди заново");
+    if(!resp.ok)throw new Error("сервер ответил "+resp.status+" — пульт перезапускается после деплоя? Обнови страницу через несколько секунд");
+    opts=await resp.json();
+  }catch(e){opts={error:(e&&e.message)||"не загрузились справочники"};}
+  if(!opts||opts.error){
+    const t=esc(opts&&opts.error?opts.error:"ошибка");
+    msg.innerHTML='<span style="color:#c0392b">'+t+'</span>';
+    accSel.innerHTML='<option>—</option>';
+    ctsBox.innerHTML='<span style="color:#c0392b">'+t+'</span>';
+    go.disabled=true;
+    return;
+  }
   // Аккаунт-отправитель. Пустое значение — прежнее поведение (команда кампании).
   accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
     (opts.accounts||[]).map(a=>{

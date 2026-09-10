@@ -154,7 +154,8 @@ def _channels(channel: str | None) -> list[str]:
 
 
 def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = False,
-              exclude_paused: bool = True, verified_only: bool | None = None):
+              exclude_paused: bool = True, verified_only: bool | None = None,
+              only_contacts: list[int] | None = None):
     """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram.
     test=True — ТОЛЬКО тестовые (is_test=1): «кнопка Тест» шлёт исключительно на свои
     номера, боевой аудитории коснуться не может даже при большом лимите.
@@ -208,6 +209,11 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
         # тег B и сбрасывают статус. NULL — старые записи, для них поведение как раньше.
         where += " AND (test_campaign_id IS NULL OR test_campaign_id=?)"
         params.append(cid)
+        # Оператор выбрал в диалоге теста КОНКРЕТНЫЕ свои номера — шлём ровно им.
+        # Пусто = всем тест-номерам, как раньше.
+        if only_contacts:
+            where += " AND id IN ({})".format(",".join("?" * len(only_contacts)))
+            params.extend(only_contacts)
     # Тег аудитории отбирает БОЕВУЮ базу. К своим тест-номерам он не применяется:
     # это одни и те же 2-3 родных номера владельца на все кампании, и требовать от
     # них тег каждой новой кампании — значит заводить их заново перед каждым тестом.
@@ -471,6 +477,20 @@ def _any_live_account() -> dict | None:
     return dict(row) if row else None
 
 
+def _account_by_id(acc_id: int) -> dict | None:
+    """Конкретный аккаунт-отправитель, выбранный оператором в диалоге теста.
+    Отдаём тем же набором полей, что _team/_any_live_account, — дальше по коду
+    отправитель обрабатывается единообразно. Статус и прогрев здесь НЕ фильтруем:
+    в тест-режиме гейт прогрева и так снят (шлём на свои номера), а выбор оператора
+    важнее нашей эвристики — иначе кнопка молча ничего не делает."""
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, username, phone, tg_session, proxy, api_id, api_hash, "
+            "description, avatar, status, tg_name, COALESCE(protected,0) AS protected, "
+            "daily_limit AS cap FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def _team(cid: int) -> list[dict]:
     """Аккаунты кампании с ЖИВОЙ сессией (для мультиаккаунт-рассылки).
     Берём из campaign_accounts, исключаем забаненных и без сессии. Лимит на аккаунт —
@@ -511,7 +531,9 @@ def _pick(live: list[dict], rr: int) -> dict | None:
     return avail[rr % len(avail)]
 
 
-async def run(cid: int, limit: int, test: bool = False) -> None:
+async def run(cid: int, limit: int, test: bool = False,
+              test_account: int | None = None,
+              test_contacts: list[int] | None = None) -> None:
     camp = _load_campaign(cid)
     if not camp:
         print(f"кампания #{cid} не найдена")
@@ -560,7 +582,8 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
                     level="info", campaign_id=cid)
             return
         cap = min(cap, left_today)
-    rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test)
+    rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test,
+                     only_contacts=test_contacts if test else None)
     if not rows:
         msg = ("тест: нет тест-контактов (is_test=1) в аудитории" if test
                else "аудитория пуста — некому слать. " + _audience_report(cid, camp))
@@ -610,7 +633,31 @@ async def run(cid: int, limit: int, test: bool = False) -> None:
     # Команда кампании (мультиаккаунт). Если команда не задана/без сессий —
     # откатываемся на основной аккаунт из .env (старое поведение, ничего не ломаем).
     team = _team(cid)
-    if test and not any(a.get("proxy") and a.get("tg_session") for a in team):
+    if test and test_account:
+        # Оператор явно выбрал, С КАКОГО аккаунта идёт тест — команда кампании и
+        # ротация тут не при чём: шлём ровно с него. Требования те же, что к любому
+        # тестовому отправителю: живая сессия и свой прокси (общий IP жжёт ключ).
+        picked = _account_by_id(int(test_account))
+        if not picked:
+            print(f"[ТЕСТ] аккаунт #{test_account} не найден — тест не запускаю")
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "campaign_test", f"⚠️ Тест «{camp['name']}»: отправитель не найден",
+                    f"Выбранный для теста аккаунт #{test_account} отсутствует в базе.",
+                    level="warn", campaign_id=cid)
+            return
+        if not (picked.get("tg_session") or "").strip():
+            print(f"[ТЕСТ] у аккаунта {picked.get('label') or picked['id']} нет сессии")
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "campaign_test", f"⚠️ Тест «{camp['name']}»: отправитель без сессии",
+                    f"У аккаунта «{picked.get('label') or picked['id']}» пустая tg_session — "
+                    f"войди в него в разделе «Аккаунты» и повтори тест.",
+                    level="warn", campaign_id=cid)
+            return
+        print(f"[ТЕСТ] отправитель задан вручную: {picked.get('label') or picked['id']}")
+        team = [picked]
+    elif test and not any(a.get("proxy") and a.get("tg_session") for a in team):
         # Вся закреплённая команда сейчас без живого выхода в сеть (частый случай при
         # дефиците прокси в пуле) — тест физически не может уйти. Проверить сам ТЕКСТ
         # важнее, чем строго держаться закреплённых отправителей: берём любой живой
@@ -969,14 +1016,20 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=3, help="сколько контактов взять в этот заход")
     p.add_argument("--test", action="store_true",
                    help="тест-режим: слать ТОЛЬКО на свои номера (is_test=1), в обход гейта прогрева")
+    p.add_argument("--test-account", type=int, default=None,
+                   help="id аккаунта-отправителя для теста (пусто — команда кампании)")
+    p.add_argument("--test-contacts", default="",
+                   help="id тест-контактов через запятую (пусто — все тест-номера)")
     args = p.parse_args()
+    only = [int(x) for x in str(args.test_contacts).split(",") if x.strip().isdigit()]
     lock = _RunLock(args.cid)
     if not lock.acquire():
         print(f"кампания #{args.cid}: заход уже идёт (лок {lock.path}) — второй процесс "
               f"не запускаю, иначе оба будут драться за одни и те же контакты")
         return
     try:
-        asyncio.run(run(args.cid, args.limit, test=args.test))
+        asyncio.run(run(args.cid, args.limit, test=args.test,
+                        test_account=args.test_account, test_contacts=only))
     finally:
         lock.release()
 

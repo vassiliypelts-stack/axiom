@@ -8235,7 +8235,9 @@ def _listener_released(active: bool = True):
                 database.set_setting(conn, "listener_paused_by_op_ts", "")
 
 
-def _spawn_campaign_send(cid: int, limit: int, test: bool = False) -> None:
+def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
+                         test_account: int | None = None,
+                         test_contacts: list[int] | None = None) -> None:
     """Запустить заход рассылки, ОТПУСТИВ слушатель на время его работы.
 
     ЗАЧЕМ. campaign_send поднимает свои Telethon-клиенты по сессиям аккаунтов, а
@@ -8262,6 +8264,12 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False) -> None:
     args = [sys.executable, "-m", "channels.campaign_send", str(cid), "--limit", str(limit)]
     if test:
         args.append("--test")
+        # Выбор оператора в диалоге теста: конкретный отправитель и конкретные свои
+        # номера. Пусто — прежнее поведение (команда кампании / все тест-номера).
+        if test_account:
+            args += ["--test-account", str(int(test_account))]
+        if test_contacts:
+            args += ["--test-contacts", ",".join(str(int(i)) for i in test_contacts)]
     # Без PYTHONIOENCODING дочерний процесс падает на первом же эмодзи в print()
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
@@ -9522,12 +9530,44 @@ def campaign_stop(cid: int) -> JSONResponse:
     return JSONResponse({"ok": True, "dropped_openers": dropped})
 
 
+@app.get("/api/campaign/{cid}/test_options")
+def campaign_test_options(cid: int) -> JSONResponse:
+    """Что показать в диалоге теста: с какого аккаунта слать и на какие свои номера.
+    Аккаунты — тот же справочник, что в разделе «Аккаунты» (с живой сессией: без неё
+    отправить физически нечем). Номера — тест-контакты (is_test=1), общие плюс
+    закреплённые за этой кампанией."""
+    with database.get_conn() as conn:
+        accs = conn.execute(
+            "SELECT id, label, username, phone, status, "
+            "CASE WHEN tg_session IS NOT NULL AND tg_session<>'' THEN 1 ELSE 0 END AS has_session, "
+            "CASE WHEN proxy IS NOT NULL AND proxy<>'' THEN 1 ELSE 0 END AS has_proxy "
+            "FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
+            "ORDER BY COALESCE(label, username, phone)").fetchall()
+        main_row = conn.execute("SELECT account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
+        cts = conn.execute(
+            "SELECT id, name, phone, username, status FROM contacts "
+            "WHERE COALESCE(is_test,0)=1 AND (test_campaign_id IS NULL OR test_campaign_id=?) "
+            "AND deleted_at IS NULL ORDER BY id", (cid,)).fetchall()
+    return JSONResponse({
+        "accounts": [dict(r) for r in accs],
+        "main_account_id": (main_row["account_id"] if main_row else None),
+        "contacts": [dict(r) for r in cts],
+    })
+
+
 @app.post("/api/campaign/{cid}/test")
-def campaign_test(cid: int) -> JSONResponse:
+def campaign_test(cid: int, payload: dict = Body(default={})) -> JSONResponse:
     """Тестовый заход: шлёт ТОЛЬКО на свои тест-номера (is_test=1), в обход гейта прогрева.
     Отдельная кнопка «Тест» — проверить скрипт живьём на себе перед боевым запуском.
-    Перед отправкой СБРАСЫВАЕТ статус тестовых контактов в 'new' — чтобы можно было
-    тестировать многократно, не добавляя номера заново."""
+
+    КАЖДОЕ нажатие = новый тест с нуля. Перед отправкой начисто стираем предыдущий
+    тестовый прогон по этим номерам: сообщения, встречи, очередь опенера, отметку
+    «уже отправлено» в этой кампании; статус — 'new'. Иначе после первого же теста
+    у номера появлялась история, и старая защита «не шлём поверх диалога» глушила
+    все следующие нажатия — оператор жал «Тест», а сообщения не приходили.
+
+    Живых лидов это не касается физически: `is_test=1` — жёсткое условие выборки,
+    зачищаем ровно те id, что в неё попали."""
     import subprocess
     import sys
     with database.get_conn() as conn:
@@ -9542,11 +9582,6 @@ def campaign_test(cid: int) -> JSONResponse:
         block = opener_lint.blocking_message(opener_lint.lint(row["message_template"]))
         if block:
             return JSONResponse({"error": block}, status_code=400)
-        # Сбрасываем статус тестовых контактов — чтобы тест срабатывал повторно.
-        # НО только у тех, с кем разговор ещё не начался: сброс шёл безусловно, и
-        # человеку, уже ведущему переписку, прилетал опенер «добрый день, правильно
-        # обращаюсь?» поверх диалога (вживую поймали три штуки подряд), а статус
-        # in_dialog/meeting_set затирался на 'new' — состояние диалога терялось.
         # Свои тест-номера общие для всех кампаний: тегом аудитории их не отбираем
         # (см. campaign_send._audience). Иначе три родных номера владельца пришлось бы
         # заводить заново под каждую новую кампанию, а «Тест» до тех пор отвечал
@@ -9554,57 +9589,44 @@ def campaign_test(cid: int) -> JSONResponse:
         where_test = ("COALESCE(is_test,0)=1 AND (test_campaign_id IS NULL "
                       "OR test_campaign_id=?)")
         params_test: list = [cid]
-        rows_test = conn.execute(
-            f"SELECT id, status FROM contacts WHERE {where_test}", params_test).fetchall()
-        test_ids = [r["id"] for r in rows_test]
-        # кого пропускаем и почему — покажем оператору словами, а не молча.
-        # Статуса для этого НЕ ХВАТАЕТ: он живёт своей жизнью (ошибка отправки роняет
-        # контакт в 'lost' прямо посреди диалога, «Обнулить тест» ставит 'new'), и
-        # 10.09.2026 из-за этого опенер трижды ушёл поверх живой переписки. Решает
-        # факт: есть ли вообще сообщения. Если да — тест по этому номеру повторно не
-        # начинаем, чтобы не затирать диалог, который как раз и проверяем.
-        with_msgs = {r["id"] for r in conn.execute(
-            "SELECT DISTINCT contact_id AS id FROM messages WHERE contact_id IN ({})".format(
-                ",".join("?" * len(test_ids)) or "NULL"), test_ids).fetchall()} if test_ids else set()
-        skipped = [r["id"] for r in rows_test
-                   if (r["status"] or "") in _TEST_KEEP_STATUS or r["id"] in with_msgs]
-        resettable = [r["id"] for r in rows_test if r["id"] not in set(skipped)]
-        if resettable:
-            conn.execute(
-                "UPDATE contacts SET status='new' WHERE id IN ({})".format(
-                    ",".join("?" * len(resettable))),
-                resettable,
-            )
-        # Очищаем старые записи очереди тестовых контактов (чтобы не было дублей).
-        # Только у тех, кого реально перезапускаем: у пропущенных остаток опенера
-        # трогать нельзя — там идёт живая переписка.
-        if resettable:
-            conn.execute(
-                "DELETE FROM opener_queue WHERE contact_id IN ({}) AND campaign_id=?".format(
-                    ",".join("?" * len(resettable))
-                ),
-                (*resettable, cid),
-            )
-        # Считаем ИМЕННО тех, кто уйдёт в этот заход. Раньше здесь был глобальный
-        # COUNT по всем is_test в базе — цифра не сходилась с тем, что реально уходит
-        # по кампании с тегом.
-        n_test = len(resettable)
-        if not n_test:
-            if skipped:
-                return JSONResponse({"error": (
-                    f"все тест-номера ({len(skipped)}) уже в диалоге — опенер им повторно "
-                    f"не шлём, чтобы не затирать переписку. Добавь новый номер или напиши "
-                    f"в существующий диалог руками.")}, status_code=400)
+        # Оператор мог выбрать в диалоге конкретные свои номера — тогда обнуляем и
+        # шлём ровно им, остальные тест-номера не трогаем вовсе.
+        picked_ids = [int(x) for x in (payload.get("contact_ids") or [])
+                      if str(x).strip().isdigit() or isinstance(x, int)]
+        if picked_ids:
+            where_test += " AND id IN ({})".format(",".join("?" * len(picked_ids)))
+            params_test.extend(picked_ids)
+        test_ids = [r["id"] for r in conn.execute(
+            f"SELECT id FROM contacts WHERE {where_test}", params_test).fetchall()]
+        if not test_ids:
+            if picked_ids:
+                return JSONResponse({"error": "выбранные номера не найдены среди тест-контактов "
+                                              "этой кампании"}, status_code=400)
             return JSONResponse({"error": "нет тест-номеров (is_test=1). Добавь свои "
                                           "номера в тест-контакты кампании."}, status_code=400)
-        note = f"сброс {n_test} тестовых контактов → статус new, отправка"
-        if skipped:
-            note += f"; пропущено {len(skipped)} — уже в диалоге, опенер не дублируем"
+        # Полное обнуление предыдущего прогона — то же, что делает «🔄 Обнулить тест»,
+        # только теперь это часть самого теста, а не отдельная кнопка. Историю чистим
+        # обязательно: без неё агент читает вчерашний диалог и здоровается второй раз.
+        qmarks = ",".join("?" * len(test_ids))
+        conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qmarks})", test_ids)
+        conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qmarks})", test_ids)
+        conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", test_ids)
+        conn.execute(
+            f"DELETE FROM campaign_contacts WHERE campaign_id=? AND contact_id IN ({qmarks})",
+            (cid, *test_ids))
+        conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})", test_ids)
+        n_test = len(test_ids)
+        skipped: list = []
+        note = (f"обнулено и заново запущено {n_test} тестовых контактов: "
+                f"переписка, встречи и очередь удалены, статус new, отправка")
         database.add_event(conn, "campaign_test", f"🧪 Тест кампании «{row['name']}»",
                            note, level="good", campaign_id=cid)
     # Тест идёт на свои номера, но подключается теми же сессиями — слушателя
     # отпускаем так же, как на боевом заходе.
-    _spawn_campaign_send(cid, 10, test=True)
+    acc_id = payload.get("account_id")
+    acc_id = int(acc_id) if str(acc_id or "").strip().isdigit() else None
+    _spawn_campaign_send(cid, max(10, n_test), test=True,
+                         test_account=acc_id, test_contacts=test_ids)
     return JSONResponse({"ok": True, "test_targets": n_test, "skipped_in_dialog": len(skipped)})
 
 

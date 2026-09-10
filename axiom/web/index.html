@@ -6206,6 +6206,65 @@ async function viewCampaigns(v){
   $("#c-date-reset").onclick=()=>{$("#c-date-from").value="";$("#c-date-to").value="";applyCampFilters();};
   applyCampFilters();
 }
+// Диалог теста: выбрать, С КАКОГО аккаунта уйдёт тестовая рассылка и НА КАКИЕ свои
+// номера. Оба списка — из справочников пульта: аккаунты те же, что в разделе
+// «Аккаунты», номера — тест-контакты кампании. Каждый запуск обнуляет предыдущий
+// тестовый прогон по выбранным номерам (переписку, встречи, очередь) и шлёт заново:
+// без этого второе нажатие «Теста» молча ничего не отправляло — у номера уже была
+// история, и защита «не пишем поверх диалога» глушила отправку.
+async function showTestDialog(id){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:560px;width:92%;padding:20px;max-height:88vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">🧪 Тестовая рассылка</b><button class="tst-close">✕</button></div>
+    <div class="sub" style="margin-bottom:12px">Каждый запуск начинает тест <b>с нуля</b>: переписка, встречи и очередь по выбранным своим номерам удаляются, опенер уходит заново. Боевую базу не трогает никогда.</div>
+    <div class="field"><label>С какого аккаунта слать</label>
+      <select id="tst-acc" style="width:100%"><option>загружаю…</option></select></div>
+    <div class="field" style="margin-top:10px"><label>На какие номера (мои тест-контакты)</label>
+      <div id="tst-cts" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">загружаю…</div>
+      <div class="sub" style="margin-top:6px">Ничего не отмечено — уйдёт на все номера из списка.</div></div>
+    <div class="ttoolbar" style="justify-content:flex-end;margin-top:14px"><button class="tst-close">Отмена</button><button class="primary" id="tst-go">Обнулить и запустить тест</button></div>
+    <div id="tst-msg" style="margin-top:8px;font-size:13px"></div></div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  modal.querySelectorAll(".tst-close").forEach(x=>x.onclick=close);
+  modal.onclick=e=>{if(e.target===modal)close();};
+  const accSel=modal.querySelector("#tst-acc"), ctsBox=modal.querySelector("#tst-cts"),
+        msg=modal.querySelector("#tst-msg"), go=modal.querySelector("#tst-go");
+  let opts=null;
+  try{opts=await api(`/api/campaign/${id}/test_options`);}catch(e){opts={error:"не загрузились справочники"};}
+  if(!opts||opts.error){msg.innerHTML='<span style="color:#c0392b">'+esc((opts&&opts.error)||"ошибка")+'</span>';return;}
+  // Аккаунт-отправитель. Пустое значение — прежнее поведение (команда кампании).
+  accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
+    (opts.accounts||[]).map(a=>{
+      const nm=esc(a.label||a.username||a.phone||("#"+a.id));
+      // Нет прокси — не запрет, а предупреждение: отправка через общий IP жжёт
+      // сессию (инцидент 13.08), и оператор должен видеть это до нажатия.
+      const warn=a.has_proxy?"":" ⚠ без прокси";
+      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm} · ${esc(a.status||"")}${warn}</option>`;
+    }).join("");
+  const cts=opts.contacts||[];
+  ctsBox.innerHTML=cts.length?cts.map(c=>{
+    const who=esc(c.phone||("@"+(c.username||""))), nm=esc(c.name||"");
+    return `<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer">
+      <input type="checkbox" class="tst-ct" value="${c.id}"> <span>${who}${nm&&nm!==who?" · "+nm:""}</span></label>`;
+  }).join("")
+    :'<span class="sub">нет тест-номеров. Добавь свои номера в тест-контакты кампании («Настроить» → тест-номера).</span>';
+  go.onclick=async()=>{
+    const picked=[...modal.querySelectorAll(".tst-ct:checked")].map(i=>+i.value);
+    go.disabled=true;go.textContent="…";msg.textContent="";
+    const back=()=>{go.disabled=false;go.textContent="Обнулить и запустить тест";};
+    try{
+      const r=await api(`/api/campaign/${id}/test`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:accSel.value||null,contact_ids:picked})});
+      if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';back();return;}
+      const from=accSel.options[accSel.selectedIndex].textContent;
+      msg.innerHTML='<span style="color:#27ae60">✅ Тест запущен на '+r.test_targets+' номер(ов) с «'+esc(from)+'». Сообщение придёт с паузой — проверь Telegram.</span>';
+      go.disabled=false;go.textContent="Запустить ещё раз";
+    }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска теста</span>';back();}
+  };
+}
+
 function renderCampList(mount,camps){
   // если шторка настроек сейчас перенесена внутрь списка (открыта под своей карточкой),
   // перерисовка mount.innerHTML её физически удалит из DOM — сначала вернуть к якорю наверху,
@@ -6574,37 +6633,10 @@ function renderCampList(mount,camps){
     };
     render();
   });
-  mount.querySelectorAll(".cl-test").forEach(b=>b.onclick=async()=>{
-    const id=b.dataset.id;
-    if(!confirm("🧪 Тестовый заход.\nШлёт первое сообщение ТОЛЬКО на твои тест-номера (is_test) — боевую базу не трогает, прогрев аккаунта не важен.\nПроверь, как приходит и как агент ведёт диалог. Запустить тест?"))return;
-    const t=b.textContent;b.textContent="…";
-    try{const r=await api(`/api/campaign/${id}/test`,{method:"POST"});
-      if(r.error){alert(r.error);}
-      else{
-        // Про пропущенных говорим прямо: иначе «пошло на 1 номер» вместо трёх выглядит
-        // как потеря номеров, а на деле мы намеренно не шлём опенер в живой диалог.
-        const skip=r.skipped_in_dialog?`\n\n⏸ Пропущено номеров: ${r.skipped_in_dialog} — по ним уже идёт переписка. Опенер повторно не отправляем, чтобы не затирать диалог.`:"";
-        alert(`✅ Тест пошёл на ${r.test_targets} свой(их) номер(а). Проверь Telegram — сообщение придёт с паузой. Ответь себе, чтобы проверить, как агент ведёт диалог.${skip}`);}
-    }catch(e){alert("ошибка запуска теста");}
-    b.textContent=t;
-  });
-  mount.querySelectorAll(".cl-test-reset").forEach(b=>b.onclick=async()=>{
-    const id=b.dataset.id;
-    if(!confirm("🔄 Обнулить и запустить тест заново.\nУдалит переписку, встречи и очередь опенера у ТВОИХ тестовых номеров (is_test) этой кампании и СРАЗУ ЖЕ пошлёт им опенер с нуля — второй кнопки нажимать не нужно.\nЖивых лидов не трогает НИКОГДА.\n\nОтменить нельзя. Продолжить?"))return;
-    const t=b.textContent;b.textContent="…";
-    try{
-      const r=await api(`/api/campaign/${id}/test/reset_dialogs`,{method:"POST"});
-      if(r.error){alert(r.error);b.textContent=t;return;}
-      // Обнуление само по себе не шлёт опенер — жмём «Тест» тем же вызовом, что и
-      // отдельная кнопка, чтобы оператору не нужно было щёлкать дважды.
-      const r2=await api(`/api/campaign/${id}/test`,{method:"POST"});
-      if(r2.error){alert(`✅ Переписка обнулена у ${r.reset} номер(ов), но тест не запустился: ${r2.error}`);}
-      else{
-        const skip=r2.skipped_in_dialog?`\n⏸ Пропущено: ${r2.skipped_in_dialog}`:"";
-        alert(`✅ Обнулено ${r.reset} номер(ов) и тест запущен на ${r2.test_targets} свой(их) номер(а).\nПроверь Telegram — сообщение придёт с паузой.${skip}`);}
-    }catch(e){alert("ошибка обнуления/запуска теста");}
-    b.textContent=t;
-  });
+  mount.querySelectorAll(".cl-test").forEach(b=>b.onclick=()=>showTestDialog(b.dataset.id));
+  // «Обнулить тест» ведёт в тот же диалог: обнуление предыдущего прогона теперь
+  // делает сам тест при каждом запуске, отдельная кнопка осталась привычным входом.
+  mount.querySelectorAll(".cl-test-reset").forEach(b=>b.onclick=()=>showTestDialog(b.dataset.id));
   mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));
   mount.querySelectorAll(".cl-openbatch").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=+(document.getElementById("cl-batch-"+id).value||3);

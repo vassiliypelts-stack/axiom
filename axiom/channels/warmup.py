@@ -160,14 +160,22 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
     if force:
         try:
             me = await client.get_me()
-            from channels.ru_names import make_username_base, translit
+            from channels.ru_names import _name_only, make_username_base, translit
             cur = (me.username or "").strip().lower()
-            want = (translit((full_name or "").split()[0]) or "").lower() if full_name else ""
+            # Имя БЕЗ цифр: ярлык «Василий5328» дал бы want='vasiliy5328', и тогда
+            # правильный ник @vasiliy328 не прошёл бы проверку «имя входит в ник».
+            want = (translit(_name_only(full_name, "")) or "").lower() if full_name else ""
+            base = make_username_base(full_name, acc.get("phone"))
             # Ставим/МЕНЯЕМ ник, если его нет ИЛИ он не отражает имя персоны (напр. ник
             # от продавца «xk_9271» при имени «Василий»). Имя и ник должны совпадать.
-            if want and (not cur or want not in cur):
+            #
+            # Мало проверить, что имя ВХОДИТ в ник: @vasiliy5328328 (задвоенные цифры
+            # от старой сборки) имя содержит, и такой ник чинить бы не стали. Поэтому
+            # ник, начинающийся с имени, но не равный нужному base, тоже переставляем —
+            # иначе ботский хвост остаётся навсегда.
+            stale = bool(cur) and bool(want) and cur != base.lower() and cur.startswith(want)
+            if want and (not cur or want not in cur or stale):
                 from telethon.tl.functions.account import CheckUsernameRequest, UpdateUsernameRequest
-                base = make_username_base(full_name, acc.get("phone"))
                 candidate = None
                 for suffix in ("", str(random.randint(10, 99)), str(random.randint(100, 999))):
                     cand = (base + suffix)[:32]

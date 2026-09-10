@@ -775,21 +775,28 @@ async def catchup_reply_pass(limit: int = 20) -> int:
 
     Возвращает число отвеченных. Вне рабочих часов не делает ничего.
     """
-    if not antiban.within_work_hours():
-        return 0
+    # ВНЕ ОКНА ДОГОНЯЕМ ТОЛЬКО СВОИ ТЕСТ-НОМЕРА. Живым людям ночью не пишем — это
+    # правило остаётся. Но глушить весь проход было слишком грубо: тестовый прогон
+    # оператор гоняет тогда, когда проверяет сценарий, сплошь и рядом поздно вечером,
+    # и молчание агента в этот момент читается как поломка — 10.09.2026 ровно так и
+    # вышло (ответы в 21:51 МСК, окно закрылось в 21:30). Ниже в _agent_reply то же
+    # исключение для is_test уже сделано, и антибан-докстринг его обещает — здесь
+    # проход обрывался раньше, чем до него доходило дело.
+    only_test = not antiban.within_work_hours()
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT m.contact_id, m.account_id, c.username "
             "FROM messages m JOIN contacts c ON c.id = m.contact_id "
             "WHERE m.id IN (SELECT MAX(id) FROM messages GROUP BY contact_id) "
             "AND m.direction='in' AND m.account_id IS NOT NULL "
+            + ("AND COALESCE(c.is_test,0)=1 " if only_test else "")
             # 'lost' здесь наравне с рабочими статусами: его ставит campaign_send при
             # ЛЮБОЙ ошибке отправки, в том числе когда диалог уже идёт (одна неудачная
             # досылка — и живая переписка помечена потерянной). 10.09.2026 контакт с
             # тремя неотвеченными вопросами висел в 'lost' и в догон не попадал вовсе.
             # Ответить человеку, который нам пишет, важнее ярлыка на карточке; чужих
             # это не заденет — правом на ответ по-прежнему заведует _should_reply ниже.
-            "AND c.status IN ('in_dialog','messaged','new','lost') "
+            + "AND c.status IN ('in_dialog','messaged','new','lost') "
             "ORDER BY m.id LIMIT ?", (limit,)).fetchall()
         pending = [dict(r) for r in rows]
     done = 0

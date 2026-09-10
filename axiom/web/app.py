@@ -2687,9 +2687,10 @@ def _night_reply_scheduler() -> None:
     while True:
         time.sleep(600)
         try:
-            from channels import antiban
-            if not antiban.within_work_hours():
-                continue
+            # Окно рабочих часов проверяет САМ проход (telegram.catchup_reply_pass):
+            # вне окна он догоняет только свои тест-номера, живых людей ночью не
+            # трогает. Раньше тик отсекал всё здесь и до этой развилки не доходил —
+            # 10.09.2026 тестовый прогон в 21:51 МСК остался без ответа вообще.
             res = subprocess.run([sys.executable, "-m", "channels.telegram", "--night-replies"],
                                  cwd=str(BASE_DIR.parent), timeout=900, env=env,
                                  capture_output=True, text=True, encoding="utf-8",

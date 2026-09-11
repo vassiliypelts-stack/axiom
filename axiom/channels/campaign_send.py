@@ -531,6 +531,27 @@ def _pick(live: list[dict], rr: int) -> dict | None:
     return avail[rr % len(avail)]
 
 
+def _human_conn_error(e: Exception) -> str:
+    """Ошибка подключения Telethon → фраза, по которой понятно, что чинить.
+    Сырое «The authorization key (session file) was used under two different IP
+    addresses simultaneously...» в колокольчике не читается, а действие за ним
+    всегда одно и то же — повторный вход."""
+    t = str(e)
+    low = t.lower()
+    if "two different ip" in low or "authkeyduplicated" in low:
+        return ("сессия сожжена — ключ засветился с двух IP сразу. Нужен повторный "
+                "вход, прокси менять не надо")
+    if "not authorized" in low or "не авторизован" in low:
+        return "сессия разлогинена — нужен повторный вход"
+    if "нет своего прокси" in low:
+        return "нет своего прокси (общий IP жжёт сессию) — раздай прокси в «Аккаунтах»"
+    if "timeout" in low or "таймаут" in low:
+        return "таймаут — прокси не отвечает (сессия при этом может быть жива)"
+    if "banned" in low or "deactivated" in low:
+        return "аккаунт заблокирован Telegram"
+    return t[:200]
+
+
 async def run(cid: int, limit: int, test: bool = False,
               test_account: int | None = None,
               test_contacts: list[int] | None = None) -> None:
@@ -702,6 +723,7 @@ async def run(cid: int, limit: int, test: bool = False,
     # (warming/paused) пропускаем — иначе свежий аккаунт сгорит на первой же рассылке.
     live: list[dict] = []
     skipped_warm: list[str] = []
+    why_dead: list[str] = []   # почему конкретно не поднялся каждый отправитель
     needs_sender = any(v in (camp["message_template"] or "") for v in ("{sender}", "{от_кого}"))
     for s in senders:
         acc = s["acc"]
@@ -731,13 +753,32 @@ async def run(cid: int, limit: int, test: bool = False,
             live.append(s)
         except Exception as e:
             print(f"[{s['label']}] не удалось подключить (сессия/прокси): {e}")
+            # Причина нужна не только в логе: без неё «отправлено 0» ниже объясняло
+            # заход разбором АУДИТОРИИ («ещё не писали 1094»), хотя аудитория ни при
+            # чём — не подключился отправитель. Текст ошибки Telethon кладём рядом.
+            why_dead.append(f"{s['label']}: {_human_conn_error(e)}")
     if not live:
         if skipped_warm:
-            print(f"нет ПРОГРЕТЫХ (active) аккаунтов: {', '.join(skipped_warm)} ещё в прогреве. "
-                  f"Холодную с непрогретых не шлём (антибан). Дождись окончания прогрева "
-                  f"или вручную переведи аккаунт в статус 'active'.")
+            msg = (f"нет ПРОГРЕТЫХ (active) аккаунтов: {', '.join(skipped_warm)} ещё в прогреве. "
+                   f"Холодную с непрогретых не шлём (антибан). Дождись окончания прогрева "
+                   f"или вручную переведи аккаунт в статус 'active'.")
         else:
-            print("нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
+            msg = ("ни один отправитель не подключился:\n" + "\n".join(why_dead)
+                   if why_dead else
+                   "нет живых аккаунтов-отправителей — проверь сессии и прокси команды")
+        print(msg)
+        # Раньше здесь был голый return: заход умирал молча, в колокольчике не
+        # появлялось ничего, и оператор (особенно на тесте) видел только то, что
+        # сообщение не пришло. Теперь причина доезжает до пульта.
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "campaign_test" if test else "info",
+                ("⚠️ Тест «{}»: отправить не с чего" if test
+                 else "⚠️ Кампания «{}»: отправить не с чего").format(camp["name"]),
+                msg + ("\n\nСессию чинят повторным входом в разделе «Аккаунты» "
+                       "(для купленных — загрузкой .session/tdata, не по SMS)."
+                       if why_dead else ""),
+                level="warn", campaign_id=cid)
         return
 
     # «Родные» (protected) аккаунты слушатель ТЕПЕРЬ подключает (channels/listener.

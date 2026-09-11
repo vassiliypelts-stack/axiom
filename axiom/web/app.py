@@ -9561,8 +9561,27 @@ def campaign_test_options(cid: int) -> JSONResponse:
             "SELECT id, name, phone, username, status FROM contacts "
             "WHERE COALESCE(is_test,0)=1 AND (test_campaign_id IS NULL OR test_campaign_id=?) "
             "AND deleted_at IS NULL ORDER BY id", (cid,)).fetchall()
+    # session_state в базе — снимок последней проверки, а не текущая правда. Аккаунт,
+    # проверенный неделю назад, показывался как «живой», оператор выбирал его, и тест
+    # тихо умирал на AuthKeyDuplicated (так было 10.09 с «Антон419» — проверка от 09.09).
+    # Сказать «мёртв» мы не можем, не сходив в сеть, поэтому честно отдаём возраст
+    # проверки, а диалог рисует предупреждение.
+    import datetime as _dt
+    out = []
+    for r in accs:
+        a = dict(r)
+        age = None
+        raw = a.get("session_checked_at")
+        if raw:
+            try:
+                age = (_dt.datetime.utcnow()
+                       - _dt.datetime.strptime(str(raw)[:19], "%Y-%m-%d %H:%M:%S")).days
+            except ValueError:
+                age = None
+        a["session_age_days"] = age
+        out.append(a)
     return JSONResponse({
-        "accounts": [dict(r) for r in accs],
+        "accounts": out,
         "main_account_id": (main_row["account_id"] if main_row else None),
         "contacts": [dict(r) for r in cts],
     })

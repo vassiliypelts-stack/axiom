@@ -6258,16 +6258,34 @@ async function showTestDialog(id){
     accSel.innerHTML='<option value="">нет готовых аккаунтов</option>';
     msg.innerHTML='<span style="color:#c0392b">Ни одного аккаунта с живой сессией и своим прокси. Открой «Аккаунты» — проверь сессии и прокси.</span>';
   }else{
+    // Возраст проверки сессии виден ДО нажатия: «живой» в базе — это снимок с
+    // прошлой проверки, и аккаунт, не проверявшийся неделю, с равной вероятностью
+    // уже сожжён (два IP на ключ). Именно так тест уходил в никуда 10.09.
+    const stale=a=>Number.isInteger(a.session_age_days)&&a.session_age_days>=1;
     const opt=a=>{
       const nm=esc(a.label||a.username||("#"+a.id));
       const ph=a.phone?" · "+esc(a.phone):"";
-      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm}${ph}</option>`;
+      const d=a.session_age_days;
+      const age=stale(a)?` · сессия не проверялась ${d} дн.`:(Number.isInteger(d)?" · сессия свежая":"");
+      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm}${ph}${age}</option>`;
     };
     const grp=(title,list)=>list.length?`<optgroup label="${title}">${list.map(opt).join("")}</optgroup>`:"";
     accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
       grp("прогретые — готовы слать", accs.filter(a=>a.status==="active"))+
       grp("на прогреве — для теста годятся", accs.filter(a=>a.status==="warming"))+
       grp("прочие", accs.filter(a=>a.status!=="active"&&a.status!=="warming"));
+    // Предупреждение живёт под селектом и обновляется на каждый выбор: молча
+    // отправить с протухшей сессии можно, но оператор должен знать заранее, что
+    // «ничего не пришло» будет означать не плохой текст, а мёртвый ключ.
+    const warnStale=()=>{
+      const a=accs.find(x=>String(x.id)===String(accSel.value));
+      if(a&&stale(a)){
+        msg.innerHTML='<span style="color:#b9770e">⚠️ Сессия этого аккаунта не проверялась '
+          +a.session_age_days+' дн. Если тест не придёт — скорее всего ключ сожжён '
+          +'(вход с двух IP), чинится повторным входом в «Аккаунтах», а не текстом.</span>';
+      }else if(msg.textContent.startsWith("⚠️")){msg.textContent="";}
+    };
+    accSel.onchange=warnStale; warnStale();
   }
   const cts=opts.contacts||[];
   ctsBox.innerHTML=cts.length?cts.map(c=>{

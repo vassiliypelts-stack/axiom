@@ -2521,8 +2521,40 @@ def agent_why_silent() -> JSONResponse:
     if not llm.available(config.agent_model()):
         problems.append({"что": f"Нет ключа под модель «{config.agent_model()}»",
                          "делать": "Заполни ключ в .env на сервере — без него агент не может ответить."})
+    # ДЕНЬГИ НА API. Ключ на месте и модель выбрана, но Anthropic отказывает на входе:
+    # «credit balance is too low». Снаружи это выглядит как поломка агента — слушатель
+    # исправно ловит входящие, пишет их в «Диалоги», и там же всё замирает. Раньше
+    # причина лежала только в recent_errors одной строкой среди прочих, и «ok: true»
+    # выше уверенно говорило, что всё в порядке. Теперь это ПРОБЛЕМА №1 с прямым
+    # указанием, что делать: кодом она не лечится, нужен платёж.
+    with database.get_conn() as conn:
+        broke = conn.execute(
+            "SELECT ts FROM events WHERE type='agent_error' "
+            "AND (text LIKE '%кредит%' OR text LIKE '%credit%' OR title LIKE '%кредит%') "
+            "AND ts >= datetime('now','-1 day') ORDER BY id DESC LIMIT 1").fetchone()
+    if broke:
+        problems.insert(0, {
+            "что": f"Кончились деньги на API Anthropic (последний отказ: {broke['ts']} UTC) — "
+                   f"агент физически не может сгенерировать ответ",
+            "делать": "console.anthropic.com → Plans & Billing → пополнить баланс. "
+                      "Это НЕ подписка Claude Pro — у AXIOM отдельный API-ключ, "
+                      "оплачивается отдельно. Входящие в это время не теряются: они "
+                      "сохраняются в «Диалоги», и после пополнения догон ответит сам.",
+        })
+    # Сколько ключей в пуле: с одним ключом переключаться при исчерпании кредитов
+    # некуда (agent/llm.py call() — ротация работает только при двух и более).
+    n_keys = len(llm.keys())
+    if n_keys > 1:
+        ok.append(f"ключей Anthropic в пуле: {n_keys} (при исчерпании переключится сам)")
+    elif n_keys == 1 and broke:
+        problems.append({
+            "что": "Ключ Anthropic всего один — при исчерпании кредитов переключаться не на что",
+            "делать": "Можно держать запасной: ANTHROPIC_API_KEYS=sk-ant-...,sk-ant-... "
+                      "в .env на сервере. Тогда при отказе по деньгам агент сам уйдёт "
+                      "на второй ключ и диалоги не встанут.",
+        })
     return JSONResponse({"ok": not problems, "problems": problems, "fine": ok,
-                         "recent_errors": mute})
+                         "keys": n_keys, "recent_errors": mute})
 
 
 def _meetings_scheduler() -> None:

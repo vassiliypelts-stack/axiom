@@ -459,6 +459,26 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     for col, typ in _EXTRA_CONTACT_COLS.items():
         if col not in have:
             conn.execute(f"ALTER TABLE contacts ADD COLUMN {col} {typ}")
+    # Засыпка lead_since по hot_since. У тех, кто согласился ДО ввода колонки, факт
+    # согласия жил только в hot_since — а его снимает проверка через несколько часов.
+    # Без этой строки вчерашние лиды навсегда остались бы невидимыми для отчёта
+    # кампании («согласились: 0» при живых лидах). Условие по самой строке, а не по
+    # факту создания колонки: колонка появляется одним деплоем, а данные могут
+    # дожидаться следующего.
+    conn.execute("UPDATE contacts SET lead_since=hot_since "
+                 "WHERE hot_since IS NOT NULL AND lead_since IS NULL")
+    # Те, у кого hot_since уже СНЯТ проверкой: факт согласия остался только в ленте
+    # событий — вытаскиваем оттуда (тип 'lead' пишется в момент согласия вместе с
+    # hot, см. channels/telegram._agent_reply).
+    try:
+        conn.execute(
+            "UPDATE contacts SET lead_since=("
+            "  SELECT MIN(e.ts) FROM events e "
+            "  WHERE e.contact_id=contacts.id AND e.type='lead') "
+            "WHERE lead_since IS NULL AND EXISTS("
+            "  SELECT 1 FROM events e WHERE e.contact_id=contacts.id AND e.type='lead')")
+    except sqlite3.OperationalError:
+        pass          # таблицы events ещё нет (первый запуск) — нечего засыпать
     camp = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
     for col, typ in _EXTRA_CAMPAIGN_COLS.items():
         if col not in camp:

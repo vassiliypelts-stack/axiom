@@ -170,9 +170,10 @@ def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
     любое следующее сообщение, хотя разговор по факту уже передан оператору (тот
     должен позвонить). Дальнейшие реплики бота поверх реального звонка — это и
     задвоенный контакт с лидом, и бот, отвечающий за оператора, которого лид не
-    просил. hot_since снимает web/app.py._hot_lead_scheduler — если оператор не
-    среагировал за HOT_LEAD_TIMEOUT_MIN (10 мин), бот сам мягко закрывает разговор
-    и очищает hot_since; до этого момента новые входящие от контакта в книжку
+    просил. hot_since снимает web/app.py._hot_lead_scheduler — если владелец не
+    написал человеку за HOT_LEAD_RECHECK_HOURS (3 ч), бот напоминает тому проверить
+    личку, дублирует презентацию и поднимает тревогу владельцу, после чего очищает
+    hot_since; до этого момента новые входящие от контакта в книжку
     по-прежнему пишутся (см. _record_incoming выше по коду), просто без авто-ответа."""
     with database.get_conn() as conn:
         if database.get_setting(conn, "tg_auto_reply", "on") != "on":
@@ -698,6 +699,29 @@ def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: f
     except Exception as e:  # noqa: BLE001 — сеть/флуд: пусть решает вызывающий
         _log(f"[sched] не отправилось аккаунтом #{acc_id}: {e}")
         return None
+
+
+def send_file_via_listener(acc_id: int, tg_user_id: int, path: str,
+                           timeout: float = 300.0) -> bool:
+    """Отправить ФАЙЛ аккаунтом, который уже подключён слушателем.
+
+    Тот же запрет на свой Telethon-клиент, что и у send_via_listener: одна сессия в
+    двух процессах — сгоревший аккаунт. Нужна для антириск-проверки горячего лида:
+    бот дублирует презентацию, если владелец не написал человеку сам (web/app.py
+    _hot_lead_scheduler). Таймаут больше текстового — файл может весить мегабайты.
+    """
+    loop = _LOOP
+    client = CLIENTS.get(acc_id)
+    if loop is None or client is None:
+        _log(f"[sched] аккаунт #{acc_id} не подключён слушателем — файл не отправляю")
+        return False
+    fut = asyncio.run_coroutine_threadsafe(client.send_file(tg_user_id, path), loop)
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:  # noqa: BLE001 — сеть/флуд: решает вызывающий
+        _log(f"[sched] файл не отправился аккаунтом #{acc_id}: {e}")
+        return False
 
 
 def edit_via_listener(acc_id: int, tg_user_id: int, msg_id: int, text: str,

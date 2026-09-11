@@ -496,6 +496,45 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
         print(f"[notify] сбой отправки о горячем лиде: {e}")
 
 
+async def notify_hot_stale(contact_id: int, hours: int,
+                           campaign_id: int | None = None) -> None:
+    """Горячий лид ждёт уже `hours` часов, а владелец ему так и не написал.
+
+    Отдельно от notify_hot: то уведомление приходит в момент согласия и легко тонет в
+    ленте — человек согласился, сообщение прочитали мельком и забыли. Это — вторая,
+    громкая попытка, и звучать она должна как тревога, а не как «ещё один лид».
+    Зовётся из web/app._hot_lead_scheduler ОДИН раз на лида.
+    """
+    try:
+        with database.get_conn() as conn:
+            sender_id, target = _owner_route(conn, campaign_id)
+            if not sender_id or not target:
+                return
+            row = conn.execute(
+                "SELECT id, name, person_name, username, phone FROM contacts WHERE id=?",
+                (contact_id,),
+            ).fetchone()
+        if not row:
+            return
+        who = (row["person_name"] or row["name"] or "контакт").strip()
+        uname = f"@{row['username']}" if row["username"] else "без ника в TG"
+        lines = [
+            f"⚠️ Лид ждёт {hours} ч, а ты ему не написал: {who}",
+            "Он согласился, что с ним свяжется представитель — и до сих пор тишина.",
+            f"TG: {uname}",
+        ]
+        phone_link = _phone_link(row["phone"])
+        if phone_link:
+            lines.append(f"Номер: {phone_link}")
+        lines.append("Бот только что напомнил ему проверить личку и продублировал "
+                     "презентацию — напиши сам, пока лид не остыл.")
+        lines.append(_chat_link(row["id"]))
+        await _send_to_owner(sender_id, target, "\n".join(lines),
+                             "лид ждёт ответа", contact_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[notify] сбой отправки о зависшем лиде: {e}")
+
+
 if __name__ == "__main__":
     import argparse
     import asyncio

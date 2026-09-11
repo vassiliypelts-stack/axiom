@@ -3025,48 +3025,107 @@ def _campaign_scheduler() -> None:
             print(f"[campaign scheduler] {e}")
 
 
-HOT_LEAD_TIMEOUT_MIN = 10  # см. channels/telegram._agent_reply — сколько молчания терпим
+HOT_LEAD_RECHECK_HOURS = 3   # сколько ждём владельца, прежде чем бить тревогу
 
 
 def _hot_lead_scheduler() -> None:
-    """Горячий лид (contacts.hot_since, см. agent.Reply.hot) — готов действовать
-    ПРЯМО СЕЙЧАС. Оператору уже упало уведомление в личку (channels/notify.notify_hot);
-    этот тик — подстраховка на случай, если он не успел откликнуться за
-    HOT_LEAD_TIMEOUT_MIN минут: бот сам мягко закрывает разговор, чтобы человек не
-    завис в ожидании звонка, который не пришёл вовремя.
+    """АНТИРИСК по горячему лиду: человек согласился, что с ним свяжется представитель,
+    а владелец так и не написал. Через HOT_LEAD_RECHECK_HOURS часов:
+      1) бот спрашивает, дошло ли сообщение, и просит проверить личку;
+      2) дублирует презентацию файлом — на случай, если человек её не получил;
+      3) владельцу уходит громкий аларм в ЛС (notify.notify_hot_stale).
 
-    Проверяем каждые 2 минуты — 15-минутный тик планировщика встреч для 10-минутного
-    окна слишком грубый, мог бы упустить дедлайн вдвое. Отправляем через уже
-    подключённого слушателя (listener.send_via_listener), не заводя свой Telethon-клиент
-    — та же причина, что и у планировщика встреч: одна сессия в двух местах уже роняла
-    слушатель на этом сервере (см. 11.08.2026)."""
+    ЧТО БЫЛО РАНЬШЕ И ПОЧЕМУ ИЗМЕНИЛОСЬ. Тик ждал 10 минут и писал «спасибо, до связи)»
+    — мягко закрывал разговор. Для прежнего сценария (агент сам вёл к КЭВ) это годилось,
+    для нынешнего вредно: человек ждёт сообщения ОТ ВЛАДЕЛЬЦА, и бот, отпускающий его
+    через 10 минут, своими руками хоронит согласившегося лида. Теперь тик не закрывает
+    разговор, а вытаскивает его.
+
+    СРАБАТЫВАЕТ ОДИН РАЗ: hot_since снимаем сразу после проверки, независимо от того,
+    удалась отправка или нет. Иначе тик раз в 2 минуты долбил бы человека по кругу.
+
+    Отправляем через уже подключённого слушателя (listener.send_via_listener), не заводя
+    свой Telethon-клиент — одна сессия в двух местах уже роняла слушатель на этом
+    сервере (см. 11.08.2026).
+    """
+    import asyncio
     import time
     while True:
         time.sleep(120)
         try:
             from channels import listener
             with database.get_conn() as conn:
+                # Кампания контакта живёт в campaign_contacts (колонки contacts.campaign_id
+                # нет) — берём последнюю по отправке, как database.get_contact_campaign.
                 rows = conn.execute(
-                    "SELECT id, tg_user_id FROM contacts WHERE hot_since IS NOT NULL "
-                    "AND hot_since <= datetime('now', ?) AND tg_user_id IS NOT NULL",
-                    (f"-{HOT_LEAD_TIMEOUT_MIN} minutes",),
+                    "SELECT c.id, c.tg_user_id, c.hot_since, "
+                    "  (SELECT cc.campaign_id FROM campaign_contacts cc "
+                    "   WHERE cc.contact_id = c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_id "
+                    "FROM contacts c "
+                    "WHERE c.hot_since IS NOT NULL AND c.hot_since <= datetime('now', ?) "
+                    "AND c.tg_user_id IS NOT NULL",
+                    (f"-{HOT_LEAD_RECHECK_HOURS} hours",),
                 ).fetchall()
             for r in rows:
                 with database.get_conn() as conn:
+                    # Владелец уже написал сам? Его сообщение идёт мимо нашей базы
+                    # (пишет из своего Telegram), но слушатель его видит и сохраняет
+                    # как исходящее с этого же аккаунта. Любое исходящее ПОСЛЕ момента
+                    # согласия означает, что лид подхвачен — тревожить некого.
+                    later = conn.execute(
+                        "SELECT COUNT(*) c FROM messages WHERE contact_id=? "
+                        "AND direction='out' AND ts > ?", (r["id"], r["hot_since"]),
+                    ).fetchone()["c"]
                     acc = conn.execute(
                         "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
                         "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (r["id"],)
                     ).fetchone()
+                    # Презентация кампании — дублируем ею же, что шлёт агент.
+                    kp = conn.execute(
+                        "SELECT kp_file, kp_text FROM campaign_kps WHERE campaign_id=? "
+                        "AND kp_file IS NOT NULL AND kp_file<>'' ORDER BY id LIMIT 1",
+                        (r["campaign_id"],),
+                    ).fetchone() if r["campaign_id"] else None
+                    # Метку снимаем ДО отправки: что бы дальше ни случилось, второй
+                    # раз этого человека не дёрнем.
+                    conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
+                if later:
+                    print(f"[hot] contact {r['id']}: владелец уже написал — тревогу не поднимаю")
+                    continue
                 if not acc:
                     continue
-                text = "спасибо, до связи)"
-                sent_ids = listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), [text])
+                parts = ["Василий, подскажите — вам написал наш представитель?",
+                         "Проверьте, пожалуйста, личные сообщения: он должен был "
+                         "прислать презентацию и позвать на онлайн-встречу с основателем.",
+                         "Дублирую презентацию на всякий случай."]
+                sent_ids = listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), parts)
                 if sent_ids:
                     with database.get_conn() as conn:
-                        database.add_message(conn, r["id"], "out", text, intent=None,
+                        database.add_message(conn, r["id"], "out", "\n".join(parts), intent=None,
                                              account_id=acc["account_id"], tg_msg_ids=sent_ids)
-                        conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
-                    print(f"[hot] contact {r['id']}: {HOT_LEAD_TIMEOUT_MIN} мин тишины — закрыл мягко")
+                # Файл — отдельно и НЕ обязателен: пока владелец не загрузил презентацию
+                # в кампанию (Кампания → КП → файл), дублируем только текстом.
+                if kp and kp["kp_file"]:
+                    from channels.telegram import _kp_path
+                    path = _kp_path(kp["kp_file"])
+                    if path is not None:
+                        listener.send_file_via_listener(
+                            acc["account_id"], int(r["tg_user_id"]), str(path))
+                with database.get_conn() as conn:
+                    database.add_event(
+                        conn, "lead", f"⚠️ Лид ждал {HOT_LEAD_RECHECK_HOURS} ч без ответа",
+                        "Человек согласился на контакт с представителем, но владелец ему "
+                        "так и не написал. Бот напомнил проверить личку и продублировал "
+                        "презентацию; владельцу ушёл аларм.",
+                        level="warn", contact_id=r["id"], campaign_id=r["campaign_id"])
+                try:
+                    from channels import notify
+                    asyncio.run(notify.notify_hot_stale(
+                        r["id"], HOT_LEAD_RECHECK_HOURS, r["campaign_id"]))
+                except Exception as e:  # noqa: BLE001 — аларм не должен ронять тик
+                    print(f"[hot] аларм владельцу не ушёл (contact {r['id']}): {e}")
+                print(f"[hot] contact {r['id']}: {HOT_LEAD_RECHECK_HOURS} ч тишины — "
+                      f"напомнил клиенту, поднял тревогу владельцу")
         except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
             print(f"[hot lead scheduler] {e}")
 

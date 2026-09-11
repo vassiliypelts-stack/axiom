@@ -95,13 +95,19 @@ def save_to_db(phone: str, session_str: str, info: dict, twofa: str, label: str,
         if row:
             conn.execute(
                 "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), "
-                "label=COALESCE(label,?), notes=?, country=COALESCE(NULLIF(country,''), ?) WHERE id=?",
+                "label=COALESCE(label,?), notes=?, country=COALESCE(NULLIF(country,''), ?), "
+                "session_alive=1, session_state='alive', session_checked_at=datetime('now') "
+                "WHERE id=?",
                 (session_str, username, name, notes, country, row["id"]),
             )
             return f"обновлён #{row['id']} {phone} (@{username or '—'})"
+        # Живость известна: save_to_db зовут только после verify() с успешным get_me.
+        # Оставлять NULL значит «не проверяли» — и свежий аккаунт не виден в фильтре
+        # «🟢 Живые» (см. тот же фикс в channels/account_check.py).
         cur = conn.execute(
             "INSERT INTO accounts (label, phone, username, role, status, daily_limit, notes, "
-            "tg_session, country, bought_at, kind) VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),'bought')",
+            "tg_session, country, bought_at, kind, session_alive, session_state, session_checked_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,datetime('now'),'bought',1,'alive',datetime('now'))",
             (name, phone, username, "sdr", status, 15, notes, session_str, country),
         )
         return f"добавлен #{cur.lastrowid} {phone} (@{username or '—'})"

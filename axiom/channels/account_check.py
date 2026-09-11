@@ -300,13 +300,24 @@ def save_to_db(r: Result, status: str) -> str:
                 "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), "
                 "api_id=COALESCE(?,api_id), api_hash=COALESCE(?,api_hash), "
                 "proxy=COALESCE(?,proxy), label=COALESCE(label,?), notes=?, "
-                "country=COALESCE(NULLIF(country,''), ?) WHERE id=?",
+                "country=COALESCE(NULLIF(country,''), ?), "
+                "session_alive=1, session_state='alive', session_checked_at=datetime('now') "
+                "WHERE id=?",
                 (r.session_str, username, api_id, api_hash, proxy_str, name, notes, country, row["id"]),
             )
             return f"обновлён #{row['id']} {phone} (@{username or '—'})"
+        # session_alive/state ставим ПРЯМО ЗДЕСЬ: сюда попадают только кандидаты,
+        # у которых get_me уже прошёл (check_one), то есть живость доказана этим же
+        # заходом. Без этого поля оставались NULL — «не проверяли», — и свежий
+        # аккаунт проваливался мимо фильтра «🟢 Живые» в пульте: оператор заводил
+        # четыре живых номера и не находил их в списке, пока не прогонит проверку
+        # живости руками. NULL честен для старых записей, но не для только что
+        # подключённой сессии.
         cur = conn.execute(
             "INSERT INTO accounts (label, phone, username, role, status, daily_limit, "
-            "notes, tg_session, api_id, api_hash, proxy, country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "notes, tg_session, api_id, api_hash, proxy, country, "
+            "session_alive, session_state, session_checked_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,'alive',datetime('now'))",
             (name, phone, username, "sdr", status, 15, notes, r.session_str, api_id, api_hash, proxy_str, country),
         )
         return f"добавлен #{cur.lastrowid} {phone} (@{username or '—'})"

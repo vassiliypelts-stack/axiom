@@ -30,6 +30,26 @@ def _chat_link(contact_id: int) -> str:
     return f"{base}/#chats/{contact_id}" if base else f"#chats/{contact_id}"
 
 
+def _campaign_line(conn, campaign_id: int | None) -> str | None:
+    """Строка «Кампания: «Имя» — ссылка» для уведомлений о лиде.
+
+    Без неё владелец видел только контакт: при нескольких кампаниях сразу непонятно,
+    на какое письмо человек откликнулся и каким сценарием с ним говорить дальше.
+    Ссылка ведёт на экран кампании (#campaigns), а не на диалог — диалог даёт
+    _chat_link отдельной строкой."""
+    if not campaign_id:
+        return None
+    try:
+        row = conn.execute("SELECT name FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    base = (config.PUBLIC_URL or "").rstrip("/")
+    link = f"{base}/#campaigns/{campaign_id}" if base else f"#campaigns/{campaign_id}"
+    return f"Кампания: «{row['name']}» → {link}"
+
+
 def _phone_link(phone: str | None) -> str | None:
     """Номер как кликабельная ссылка Telegram: https://t.me/+79137876067 — открывает
     диалог с этим номером сразу, без ручного набора/копирования в поиск."""
@@ -293,6 +313,28 @@ def campaign_report_text(conn, cid: int) -> str | None:
             "JOIN campaign_contacts cc ON cc.contact_id=d.contact_id AND cc.campaign_id=? "
             f"WHERE d.meeting_at IS NOT NULL{where}", (cid,)).fetchone()["c"]
 
+    def leads_since(period_sql: str | None) -> int:
+        """Согласившиеся (agent.Reply.hot → contacts.lead_since) за период.
+
+        Это главная цифра кампании между «ответили» и «КЭВ»: человек сказал «да, пусть
+        свяжется представитель». Раньше её в отчёте не было вовсе — лид жил только в
+        разделе «Диалоги» и в уведомлении, которое легко пролистать, так что понять
+        «сколько лидов дала кампания» можно было лишь пересчётом глазами."""
+        where = f" AND c.lead_since >= {period_sql}" if period_sql else ""
+        return conn.execute(
+            "SELECT COUNT(DISTINCT c.id) n FROM contacts c "
+            "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
+            f"WHERE c.lead_since IS NOT NULL{where}", (cid,)).fetchone()["n"]
+
+    leads = leads_since(None)
+    leads_today = leads_since("date('now')")
+    leads_week = leads_since("date('now','-7 day')")
+    leads_yest = conn.execute(
+        "SELECT COUNT(DISTINCT c.id) n FROM contacts c "
+        "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
+        "WHERE c.lead_since >= date('now','-1 day') AND c.lead_since < date('now')",
+        (cid,)).fetchone()["n"]
+
     replied = replied_since(None)
     replied_today = replied_since("date('now')")
     replied_week = replied_since("date('now','-7 day')")
@@ -407,24 +449,28 @@ def campaign_report_text(conn, cid: int) -> str | None:
     out.append("📅 ЗА ВСЁ ВРЕМЯ")
     out.append(f"отправлено: {total}{_undeliv(undeliv_all)}")
     out.append(f"ответили: {replied}{_pct(replied, total)}")
+    out.append(f"🔥 согласились (лиды): {leads}{_pct(leads, replied)}")
     out.append(f"на КЭВ: {kev}{_pct(kev, replied)}")
 
     out.append("")
     out.append("🗓 ЗА НЕДЕЛЮ")
     out.append(f"отправлено: {week}{_undeliv(undeliv_week)}")
     out.append(f"ответили: {replied_week}{_pct(replied_week, week)}")
+    out.append(f"🔥 согласились (лиды): {leads_week}{_pct(leads_week, replied_week)}")
     out.append(f"на КЭВ: {kev_week}{_pct(kev_week, replied_week)}")
 
     out.append("")
     out.append("☀️ ЗА ВЧЕРА")
     out.append(f"отправлено: {yesterday_only}{_undeliv(undeliv_yest)}")
     out.append(f"ответили: {replied_yest}{_pct(replied_yest, yesterday_only)}")
+    out.append(f"🔥 согласились (лиды): {leads_yest}{_pct(leads_yest, replied_yest)}")
     out.append(f"на КЭВ: {kev_yest}{_pct(kev_yest, replied_yest)}")
 
     # Сегодня — одной короткой строкой: утром она ещё пустая, разворачивать её в
     # полный блок с нулями незачем, но темп текущего дня видеть нужно.
     out.append("")
-    today_line = f"сегодня: отправлено {today} · ответили {replied_today} · КЭВ {kev_today}"
+    today_line = (f"сегодня: отправлено {today} · ответили {replied_today} · "
+                  f"лиды {leads_today} · КЭВ {kev_today}")
     if undeliv_today:
         today_line += f" · ⚠️ не дошло {undeliv_today}"
     out.append(today_line)
@@ -475,12 +521,15 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
                 "SELECT id, name, person_name, username, phone, specialization, niche "
                 "FROM contacts WHERE id=?", (contact_id,),
             ).fetchone()
+            camp_line = _campaign_line(conn, campaign_id)
         if not row:
             return
         who = (row["person_name"] or row["name"] or "контакт").strip()
         spec = (row["specialization"] or row["niche"] or "").strip()
         uname = f"@{row['username']}" if row["username"] else "без ника в TG"
         lines = [f"🔥 Горячий лид — звони, пока не остыл: {who}"]
+        if camp_line:
+            lines.append(camp_line)
         if spec:
             lines.append(f"Чем занимается: {spec}")
         lines.append(f"TG: {uname}")
@@ -514,6 +563,7 @@ async def notify_hot_stale(contact_id: int, hours: int,
                 "SELECT id, name, person_name, username, phone FROM contacts WHERE id=?",
                 (contact_id,),
             ).fetchone()
+            camp_line = _campaign_line(conn, campaign_id)
         if not row:
             return
         who = (row["person_name"] or row["name"] or "контакт").strip()
@@ -521,8 +571,10 @@ async def notify_hot_stale(contact_id: int, hours: int,
         lines = [
             f"⚠️ Лид ждёт {hours} ч, а ты ему не написал: {who}",
             "Он согласился, что с ним свяжется представитель — и до сих пор тишина.",
-            f"TG: {uname}",
         ]
+        if camp_line:
+            lines.append(camp_line)
+        lines.append(f"TG: {uname}")
         phone_link = _phone_link(row["phone"])
         if phone_link:
             lines.append(f"Номер: {phone_link}")

@@ -3051,7 +3051,26 @@ def _campaign_scheduler() -> None:
             print(f"[campaign scheduler] {e}")
 
 
-HOT_LEAD_RECHECK_HOURS = 3   # сколько ждём владельца, прежде чем бить тревогу
+HOT_LEAD_RECHECK_HOURS = 6   # сколько ждём владельца, прежде чем бить тревогу
+
+
+def _owner_tg_handle() -> str | None:
+    """@ник владельца, которым бот представляет «нашего представителя» клиенту.
+
+    Берём получателя уведомлений (notify_owner_target) — это тот же человек, которому
+    падают лиды, то есть он и есть представитель. Телефон сюда не годится: клиенту
+    даём то, что можно нажать и написать, не добавляя номер в контакты. Список из
+    нескольких получателей — берём первый @ник."""
+    try:
+        with database.get_conn() as conn:
+            raw = database.get_setting(conn, "notify_owner_target", "") or ""
+    except Exception:  # noqa: BLE001
+        return None
+    for part in str(raw).replace(";", ",").replace("\n", ",").split(","):
+        p = part.strip()
+        if p.startswith("@") and len(p) > 1:
+            return p
+    return None
 
 
 def _hot_lead_scheduler() -> None:
@@ -3106,12 +3125,14 @@ def _hot_lead_scheduler() -> None:
                         "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
                         "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (r["id"],)
                     ).fetchone()
-                    # Презентация кампании — дублируем ею же, что шлёт агент.
-                    kp = conn.execute(
+                    # ВСЕ материалы кампании, а не первый попавшийся: у «Крыма» их два
+                    # (презентация «7 источников дохода» и бизнес-план), и человек,
+                    # который так и не дождался владельца, должен получить оба.
+                    kps = conn.execute(
                         "SELECT kp_file, kp_text FROM campaign_kps WHERE campaign_id=? "
-                        "AND kp_file IS NOT NULL AND kp_file<>'' ORDER BY id LIMIT 1",
+                        "AND kp_file IS NOT NULL AND kp_file<>'' ORDER BY id",
                         (r["campaign_id"],),
-                    ).fetchone() if r["campaign_id"] else None
+                    ).fetchall() if r["campaign_id"] else []
                     # Метку снимаем ДО отправки: что бы дальше ни случилось, второй
                     # раз этого человека не дёрнем.
                     conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
@@ -3120,23 +3141,36 @@ def _hot_lead_scheduler() -> None:
                     continue
                 if not acc:
                     continue
-                parts = ["Василий, подскажите — вам написал наш представитель?",
-                         "Проверьте, пожалуйста, личные сообщения: он должен был "
-                         "прислать презентацию и позвать на онлайн-встречу с основателем.",
-                         "Дублирую презентацию на всякий случай."]
+                # Текст на случай «сообщение не дошло»: у человека мог сработать фильтр
+                # спама или закрытая личка. Поэтому не просто спрашиваем, а даём ему
+                # СПОСОБ дотянуться самому — контакт представителя, и сразу говорим,
+                # кто это, чтобы незнакомый ник не читался как развод.
+                owner = (_owner_tg_handle() or "").strip()
+                parts = ["Подскажите, с вами уже связался наш представитель?"]
+                if owner:
+                    parts.append(f"Если нет — возможно, сообщение попало в спам. "
+                                 f"Напишите ему сами: {owner} — это один из участников "
+                                 f"проекта, он всё расскажет и ответит на вопросы.")
+                else:
+                    parts.append("Если нет — напишу ему, чтобы он с вами связался.")
+                parts.append("А пока прикладываю материалы по проекту — презентацию "
+                             "и подробный бизнес-план усадьбы.")
                 sent_ids = listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), parts)
                 if sent_ids:
                     with database.get_conn() as conn:
                         database.add_message(conn, r["id"], "out", "\n".join(parts), intent=None,
                                              account_id=acc["account_id"], tg_msg_ids=sent_ids)
-                # Файл — отдельно и НЕ обязателен: пока владелец не загрузил презентацию
-                # в кампанию (Кампания → КП → файл), дублируем только текстом.
-                if kp and kp["kp_file"]:
+                # Файлы — отдельно и НЕ обязательны: пока владелец не загрузил
+                # презентации в кампанию (Кампания → КП → файл), шлём только текстом.
+                if kps:
                     from channels.telegram import _kp_path
-                    path = _kp_path(kp["kp_file"])
-                    if path is not None:
+                    for kp in kps:
+                        path = _kp_path(kp["kp_file"])
+                        if path is None:
+                            continue
                         listener.send_file_via_listener(
                             acc["account_id"], int(r["tg_user_id"]), str(path))
+                        time.sleep(3)        # два файла подряд без паузы — почерк бота
                 with database.get_conn() as conn:
                     database.add_event(
                         conn, "lead", f"⚠️ Лид ждал {HOT_LEAD_RECHECK_HOURS} ч без ответа",

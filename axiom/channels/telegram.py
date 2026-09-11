@@ -802,7 +802,13 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         # HOT_LEAD_RECHECK_HOURS либо увидит, что владелец уже написал, либо напомнит
         # человеку проверить личку, продублирует презентацию и поднимет тревогу.
         if reply.hot:
-            conn.execute("UPDATE contacts SET hot_since=datetime('now') WHERE id=?", (contact_id,))
+            # hot_since — «ждём владельца сейчас», снимается через несколько часов.
+            # lead_since — сам ФАКТ согласия, ставится один раз и не стирается: по
+            # нему отчёт кампании показывает лидов (иначе после снятия hot_since
+            # согласившийся человек исчезал из всех сводок).
+            conn.execute(
+                "UPDATE contacts SET hot_since=datetime('now'), "
+                "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?", (contact_id,))
         else:
             conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (contact_id,))
 

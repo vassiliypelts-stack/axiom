@@ -511,6 +511,9 @@ def _team(cid: int) -> list[dict]:
             # в этот заход вообще, не тратя время на подключение заведомо приторможенного
             # Telegram'ом номера. Снимается сама по дате, руками ничего чинить не нужно.
             "AND (a.spam_pause_until IS NULL OR a.spam_pause_until < datetime('now')) "
+            # FloodWait от Telegram с точной датой снятия: до неё отправка с номера
+            # физически запрещена — ломиться туда значит копить отказы на аккаунте.
+            "AND (a.flood_wait_until IS NULL OR a.flood_wait_until < datetime('now')) "
             "AND a.tg_session IS NOT NULL AND a.tg_session <> '' "
             # Служебный аккаунт (уведомления/отчёты/пробив) в холодную рассылку не идёт,
             # даже если его по ошибке добавили в команду кампании: сгорит отправитель
@@ -890,6 +893,14 @@ async def run(cid: int, limit: int, test: bool = False,
             # отправки НЕ было — возвращаем контакт в 'new', достанется другому заходу
             with database.get_conn() as conn:
                 conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                # Запрет Telegram'а запоминаем с ТОЧНОЙ датой снятия. Без этого номер
+                # выпадал только из текущего захода, а пульт через минуту снова
+                # показывал его «готов слать» — оператор выбирал его для теста и не
+                # понимал, почему сообщение не приходит.
+                if s["id"]:
+                    conn.execute(
+                        "UPDATE accounts SET flood_wait_until=datetime('now', ?) WHERE id=?",
+                        (f"+{int(e.seconds)} seconds", s["id"]))
                 database.add_event(conn, "ban", f"⏳ Флуд-лимит: «{s['label']}»",
                                    f"Telegram запретил отправку на ~{hrs}ч (FloodWait). Холодных ЛС с этого "
                                    f"аккаунта пока слишком много — нужен прогрев и медленнее темп.",

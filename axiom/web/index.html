@@ -6262,28 +6262,52 @@ async function showTestDialog(id){
     // прошлой проверки, и аккаунт, не проверявшийся неделю, с равной вероятностью
     // уже сожжён (два IP на ключ). Именно так тест уходил в никуда 10.09.
     const stale=a=>Number.isInteger(a.session_age_days)&&a.session_age_days>=1;
+    // Telegram придержал номер — писать им СЕЙЧАС нельзя, и это надо видеть до
+    // нажатия, а не выяснять по молчанию в Telegram. Две причины, обе с датой:
+    //   PeerFlood (spam_pause_until) — много холодных ЛС незнакомцам, пауза 1-7 дней;
+    //   FloodWait (flood_wait_until) — прямой запрет Telegram на N часов.
+    const until=s=>{ const d=parseTs(s); return d&&d>new Date()?d:null; };
+    const held=a=>{
+      if(until(a.flood_wait_until)) return {kind:"FloodWait", till:a.flood_wait_until,
+        why:"Telegram запретил отправку с этого номера до "+fmt(a.flood_wait_until)};
+      if(until(a.spam_pause_until)) return {kind:"PeerFlood", till:a.spam_pause_until,
+        why:`PeerFlood ×${a.spam_flood_count||1} — номер на автопаузе до `+fmt(a.spam_pause_until)};
+      return null;
+    };
     const opt=a=>{
       const nm=esc(a.label||a.username||("#"+a.id));
       const ph=a.phone?" · "+esc(a.phone):"";
+      const h=held(a);
       const d=a.session_age_days;
       const age=stale(a)?` · сессия не проверялась ${d} дн.`:(Number.isInteger(d)?" · сессия свежая":"");
-      return `<option value="${a.id}"${String(a.id)===String(opts.main_account_id)?" selected":""}>${nm}${ph}${age}</option>`;
+      // У придержанного номера возраст сессии уже не важен: он не отправит в любом
+      // случае, и лишняя приписка только уводит внимание от настоящей причины.
+      const mark=h?` — ⛔ ${h.kind} до ${esc(fmt(h.till))}`:age;
+      return `<option value="${a.id}"${(!h&&String(a.id)===String(opts.main_account_id))?" selected":""}>${nm}${ph}${mark}</option>`;
     };
     const grp=(title,list)=>list.length?`<optgroup label="${title}">${list.map(opt).join("")}</optgroup>`:"";
+    const free=accs.filter(a=>!held(a)), blocked=accs.filter(held);
     accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
-      grp("прогретые — готовы слать", accs.filter(a=>a.status==="active"))+
-      grp("на прогреве — для теста годятся", accs.filter(a=>a.status==="warming"))+
-      grp("прочие", accs.filter(a=>a.status!=="active"&&a.status!=="warming"));
+      grp("прогретые — готовы слать", free.filter(a=>a.status==="active"))+
+      grp("на прогреве — для теста годятся", free.filter(a=>a.status==="warming"))+
+      grp("прочие", free.filter(a=>a.status!=="active"&&a.status!=="warming"))+
+      grp("⛔ придержаны Telegram — сейчас не отправят", blocked);
     // Предупреждение живёт под селектом и обновляется на каждый выбор: молча
     // отправить с протухшей сессии можно, но оператор должен знать заранее, что
     // «ничего не пришло» будет означать не плохой текст, а мёртвый ключ.
     const warnStale=()=>{
       const a=accs.find(x=>String(x.id)===String(accSel.value));
-      if(a&&stale(a)){
+      const h=a&&held(a);
+      if(h){
+        // Это не «может не дойти», а «точно не дойдёт»: запрет стоит на стороне
+        // Telegram и снимается сам по времени. Лечится ожиданием, не перевходом.
+        msg.innerHTML='<span style="color:#c0392b">⛔ '+esc(h.why)+'. Тест с него НЕ уйдёт — '
+          +'выбери другой номер. Запрет снимется сам, чинить аккаунт не нужно.</span>';
+      }else if(a&&stale(a)){
         msg.innerHTML='<span style="color:#b9770e">⚠️ Сессия этого аккаунта не проверялась '
           +a.session_age_days+' дн. Если тест не придёт — скорее всего ключ сожжён '
           +'(вход с двух IP), чинится повторным входом в «Аккаунтах», а не текстом.</span>';
-      }else if(msg.textContent.startsWith("⚠️")){msg.textContent="";}
+      }else if(msg.textContent.startsWith("⚠️")||msg.textContent.startsWith("⛔")){msg.textContent="";}
     };
     accSel.onchange=warnStale; warnStale();
   }

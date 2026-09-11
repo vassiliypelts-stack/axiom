@@ -9544,9 +9544,19 @@ def campaign_test_options(cid: int) -> JSONResponse:
         # в реальный заход: живая сессия + свой живой прокси (общий IP жжёт ключ) +
         # не забанен. Служебный (уведомления/пробив) и родной личный исключаем совсем:
         # сгоревший нотификатор — это пропущенные встречи.
+        # ВАЖНО: аккаунт, придержанный Telegram'ом, из списка НЕ убираем, а помечаем.
+        # Убрать — значит снова соврать оператору: номер просто исчезал бы из выбора
+        # без объяснения, а «Василий938» вчера был и сегодня нет — это выглядит как
+        # баг пульта. Показываем и пишем, до какого времени он молчит и почему:
+        #   spam_pause_until — автопауза после PeerFlood (растёт 1→7 дней),
+        #   flood_wait_until — FloodWait от Telegram (запрет на N часов).
+        # Оба поля _team() в campaign_send проверяет ровно так же, поэтому список
+        # теста и реальный заход теперь говорят об одном и том же.
         accs = conn.execute(
             "SELECT id, label, username, phone, status, "
             "COALESCE(acc_role,'') AS acc_role, session_checked_at, "
+            "spam_pause_until, COALESCE(spam_flood_count,0) AS spam_flood_count, "
+            "flood_wait_until, "
             "CASE WHEN proxy IS NOT NULL AND proxy<>'' THEN 1 ELSE 0 END AS has_proxy "
             "FROM accounts "
             "WHERE tg_session IS NOT NULL AND tg_session<>'' "
@@ -9554,7 +9564,13 @@ def campaign_test_options(cid: int) -> JSONResponse:
             "AND status<>'banned' "
             "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
             "AND COALESCE(acc_role,'')<>'service' AND COALESCE(protected,0)=0 "
-            "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'warming' THEN 1 ELSE 2 END, "
+            # Придержанные — в конец списка: выбирать из них можно, но первым под
+            # курсор должен попадать тот, кем реально уйдёт сообщение.
+            "ORDER BY CASE WHEN (spam_pause_until IS NOT NULL "
+            "                    AND spam_pause_until > datetime('now')) "
+            "            OR (flood_wait_until IS NOT NULL "
+            "                    AND flood_wait_until > datetime('now')) THEN 1 ELSE 0 END, "
+            "CASE status WHEN 'active' THEN 0 WHEN 'warming' THEN 1 ELSE 2 END, "
             "COALESCE(label, username, phone)").fetchall()
         main_row = conn.execute("SELECT account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
         cts = conn.execute(

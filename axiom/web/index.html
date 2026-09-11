@@ -6218,8 +6218,9 @@ async function showTestDialog(id){
   modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:560px;width:92%;padding:20px;max-height:88vh;overflow:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:16px">🧪 Тестовая рассылка</b><button class="tst-close">✕</button></div>
     <div class="sub" style="margin-bottom:12px">Каждый запуск начинает тест <b>с нуля</b>: переписка, встречи и очередь по выбранным своим номерам удаляются, опенер уходит заново. Боевую базу не трогает никогда.</div>
-    <div class="field"><label>С какого аккаунта слать</label>
-      <select id="tst-acc" style="width:100%"><option>загружаю…</option></select></div>
+    <div class="field"><label>С каких аккаунтов слать</label>
+      <div id="tst-acc" style="max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">загружаю…</div>
+      <div class="sub" style="margin-top:6px">Отметь одного или нескольких — тест уйдёт с каждого по очереди (можно сравнить, как выглядит письмо с разных номеров). Ничего не отмечено — как настроено в кампании.</div></div>
     <div class="field" style="margin-top:10px"><label>На какие номера (мои тест-контакты)</label>
       <div id="tst-cts" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">загружаю…</div>
       <div class="sub" style="margin-top:6px">Отметь, кому слать. Ничего не отмечено — уйдёт на все свои тест-номера из списка выше (боевая база сюда не входит).</div></div>
@@ -6255,7 +6256,7 @@ async function showTestDialog(id){
   // видеть, что берёшь недопрогретый, оператор должен до нажатия.
   const accs=opts.accounts||[];
   if(!accs.length){
-    accSel.innerHTML='<option value="">нет готовых аккаунтов</option>';
+    accSel.innerHTML='<span class="sub">нет готовых аккаунтов</span>';
     msg.innerHTML='<span style="color:#c0392b">Ни одного аккаунта с живой сессией и своим прокси. Открой «Аккаунты» — проверь сессии и прокси.</span>';
   }else{
     // Возраст проверки сессии виден ДО нажатия: «живой» в базе — это снимок с
@@ -6274,40 +6275,51 @@ async function showTestDialog(id){
         why:`PeerFlood ×${a.spam_flood_count||1} — номер на автопаузе до `+fmt(a.spam_pause_until)};
       return null;
     };
-    const opt=a=>{
+    // Строка-галочка вместо <option>. В выпадающем списке причину видно только у
+    // той строки, что под курсором, — а решать, каким номером слать, надо видя
+    // ВСЕ сразу. Придержанные Telegram'ом идут красным и с отключённой галочкой:
+    // отметить нельзя физически, и не надо гадать, почему тест не дошёл.
+    const row=a=>{
       const nm=esc(a.label||a.username||("#"+a.id));
-      const ph=a.phone?" · "+esc(a.phone):"";
+      const ph=a.phone?` · ${esc(a.phone)}`:"";
       const h=held(a);
       const d=a.session_age_days;
-      const age=stale(a)?` · сессия не проверялась ${d} дн.`:(Number.isInteger(d)?" · сессия свежая":"");
-      // У придержанного номера возраст сессии уже не важен: он не отправит в любом
-      // случае, и лишняя приписка только уводит внимание от настоящей причины.
-      const mark=h?` — ⛔ ${h.kind} до ${esc(fmt(h.till))}`:age;
-      return `<option value="${a.id}"${(!h&&String(a.id)===String(opts.main_account_id))?" selected":""}>${nm}${ph}${mark}</option>`;
+      const age=stale(a)?` · сессия не проверялась ${d} дн.`:"";
+      const note=h
+        ? `<span style="color:#c0392b">⛔ ${h.kind} до ${esc(fmt(h.till))}</span>`
+        : `<span class="sub">${esc(age)}</span>`;
+      return `<label title="${h?esc(h.why):""}" style="display:flex;align-items:center;gap:8px;padding:3px 0;${h?"opacity:.65;cursor:not-allowed":"cursor:pointer"}">
+        <input type="checkbox" class="tst-acc-cb" value="${a.id}"${h?" disabled":""}
+          ${(!h&&String(a.id)===String(opts.main_account_id))?" checked":""}>
+        <span>${nm}${ph} ${note}</span></label>`;
     };
-    const grp=(title,list)=>list.length?`<optgroup label="${title}">${list.map(opt).join("")}</optgroup>`:"";
+    const grp=(title,list,color)=>list.length
+      ? `<div class="sub" style="margin:6px 0 2px;font-weight:600${color?";color:"+color:""}">${title}</div>${list.map(row).join("")}`
+      : "";
     const free=accs.filter(a=>!held(a)), blocked=accs.filter(held);
-    accSel.innerHTML='<option value="">как в кампании (команда кампании)</option>'+
+    accSel.innerHTML=
       grp("прогретые — готовы слать", free.filter(a=>a.status==="active"))+
       grp("на прогреве — для теста годятся", free.filter(a=>a.status==="warming"))+
       grp("прочие", free.filter(a=>a.status!=="active"&&a.status!=="warming"))+
-      grp("⛔ придержаны Telegram — сейчас не отправят", blocked);
-    // Предупреждение живёт под селектом и обновляется на каждый выбор: молча
-    // отправить с протухшей сессии можно, но оператор должен знать заранее, что
-    // «ничего не пришло» будет означать не плохой текст, а мёртвый ключ.
+      grp("⛔ придержаны Telegram — сейчас не отправят", blocked, "#c0392b");
+    // Подсказка под списком: сколько выбрано и чем это обернётся. Предупреждение о
+    // протухшей сессии осталось — но теперь оно про КОНКРЕТНЫЕ отмеченные номера.
+    const picked=()=>[...accSel.querySelectorAll(".tst-acc-cb:checked")]
+      .map(i=>accs.find(a=>String(a.id)===i.value)).filter(Boolean);
     const warnStale=()=>{
-      const a=accs.find(x=>String(x.id)===String(accSel.value));
-      const h=a&&held(a);
-      if(h){
-        // Это не «может не дойти», а «точно не дойдёт»: запрет стоит на стороне
-        // Telegram и снимается сам по времени. Лечится ожиданием, не перевходом.
-        msg.innerHTML='<span style="color:#c0392b">⛔ '+esc(h.why)+'. Тест с него НЕ уйдёт — '
-          +'выбери другой номер. Запрет снимется сам, чинить аккаунт не нужно.</span>';
-      }else if(a&&stale(a)){
-        msg.innerHTML='<span style="color:#b9770e">⚠️ Сессия этого аккаунта не проверялась '
-          +a.session_age_days+' дн. Если тест не придёт — скорее всего ключ сожжён '
-          +'(вход с двух IP), чинится повторным входом в «Аккаунтах», а не текстом.</span>';
-      }else if(msg.textContent.startsWith("⚠️")||msg.textContent.startsWith("⛔")){msg.textContent="";}
+      const sel=picked();
+      const st=sel.filter(stale);
+      if(!sel.length){
+        msg.innerHTML='<span class="sub">Ничего не отмечено — тест уйдёт так, как настроено в кампании.</span>';
+      }else if(st.length){
+        msg.innerHTML='<span style="color:#b9770e">⚠️ Сессия не проверялась больше суток у: '
+          +esc(st.map(a=>a.label||a.username||("#"+a.id)).join(", "))
+          +'. Если тест не придёт — скорее всего ключ сожжён (вход с двух IP), '
+          +'чинится повторным входом в «Аккаунтах», а не текстом.</span>';
+      }else{
+        msg.innerHTML='<span class="sub">Выбрано отправителей: <b>'+sel.length+'</b>'
+          +(sel.length>1?' — тест уйдёт с каждого по очереди.':'.')+'</span>';
+      }
     };
     accSel.onchange=warnStale; warnStale();
   }
@@ -6320,21 +6332,33 @@ async function showTestDialog(id){
     :'<span class="sub">нет тест-номеров. Добавь свои номера в тест-контакты кампании («Настроить» → тест-номера).</span>';
   go.onclick=async()=>{
     const picked=[...modal.querySelectorAll(".tst-ct:checked")].map(i=>+i.value);
+    // Отмеченные отправители. Придержанные отмечены быть не могут (галочка disabled),
+    // так что сюда попадают только те, кем реально можно отправить сейчас.
+    const accIds=[...modal.querySelectorAll(".tst-acc-cb:checked")].map(i=>+i.value);
     go.disabled=true;go.textContent="…";msg.textContent="";
     const back=()=>{go.disabled=false;go.textContent="Обнулить и запустить тест";};
     try{
       const r=await api(`/api/campaign/${id}/test`,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({account_id:accSel.value||null,contact_ids:picked})});
+        // account_id оставлен для обратной совместимости (один отправитель),
+        // account_ids — новый список. Сервер понимает оба.
+        body:JSON.stringify({account_id:accIds.length===1?accIds[0]:null,
+                             account_ids:accIds, contact_ids:picked})});
       if(r.error){msg.innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';back();return;}
-      const from=accSel.options[accSel.selectedIndex].textContent;
+      const names=[...modal.querySelectorAll(".tst-acc-cb:checked")]
+        .map(i=>i.parentElement.querySelector("span").textContent.trim().split(" ⛔")[0]);
+      const from=names.length?names.join(", "):"как в кампании";
       // «придёт с паузой» ничего не говорило: оператор смотрит в Telegram и не знает,
       // ждать ему 10 секунд или 10 минут. Считаем вслух: ~15-30 с на подключение
       // сессии до первого сообщения, дальше 15-20 с на каждый следующий номер.
+      // При нескольких отправителях заходов столько же, сколько отмечено номеров.
       const n=+r.test_targets||1;
-      const eta=n>1?('первое — через ~15-30 сек, дальше по одному каждые 15-20 сек (всё за ~'
-                     +Math.ceil((30+(n-1)*20)/60)+' мин)')
+      const runs=Math.max(1,+r.senders||names.length||1);
+      const total=n*runs;
+      const eta=total>1?('первое — через ~15-30 сек, дальше по одному каждые 15-20 сек (всё за ~'
+                     +Math.ceil((30+(total-1)*20)/60)+' мин)')
                   :'сообщение придёт через ~15-30 сек';
-      msg.innerHTML='<span style="color:#27ae60">✅ Тест запущен на '+n+' номер(ов) с «'+esc(from)+'». '
+      msg.innerHTML='<span style="color:#27ae60">✅ Тест запущен: '+n+' номер(ов)'
+        +(runs>1?' × '+runs+' отправителя':'')+' с «'+esc(from)+'». '
         +eta+'. Смотри Telegram; в «Переписке» появится тот же текст.</span>';
       go.disabled=false;go.textContent="Запустить ещё раз";
     }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска теста</span>';back();}

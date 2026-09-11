@@ -8301,6 +8301,84 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
     threading.Thread(target=_restore, daemon=True).start()
 
 
+def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
+                               test_ids: list[int]) -> None:
+    """Тест с НЕСКОЛЬКИХ отправителей: заходы идут строго по очереди, в одном потоке.
+
+    ЗАЧЕМ ОЧЕРЕДЬ. Разом их запускать нельзя по двум причинам, и обе кончаются тем,
+    что оператор получает одно письмо вместо трёх и решает, что «тест опять не
+    работает»:
+      1) на кампанию стоит файловый лок (campaign_send._CampaignLock) — второй
+         процесс просто выходит с «заход уже идёт»;
+      2) контакт захватывается атомарно ('new'→'messaged'), и даже без лока первый
+         же заход забрал бы все тест-номера себе.
+    Поэтому: ждём завершения процесса, возвращаем тест-номера в 'new' и запускаем
+    следующего. Чистим ровно те id, что выбрал оператор (is_test=1) — боевой базы
+    это не касается физически.
+
+    Слушатель гасим ОДИН раз на всю серию, а не на каждый заход: каждое включение
+    ждёт 7 секунд, и на пяти отправителях это полминуты пустого простоя, в течение
+    которого входящие никто не ловит.
+    """
+    import os
+    import subprocess
+    import sys
+    import threading
+    import time as _t
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    with database.get_conn() as conn:
+        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+        if was_on:
+            database.set_setting(conn, "listener_enabled", "off")
+            database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+
+    def _chain() -> None:
+        if was_on:
+            _t.sleep(7)      # дать слушателю отключить клиентов (POLL_SEC=5 + запас)
+        qmarks = ",".join("?" * len(test_ids))
+        try:
+            for n, acc_id in enumerate(acc_ids):
+                if n:
+                    # Предыдущий заход пометил номера 'messaged' и записал переписку —
+                    # следующему отправителю писать было бы некому и поверх диалога.
+                    try:
+                        with database.get_conn() as conn:
+                            conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qmarks})", test_ids)
+                            conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", test_ids)
+                            conn.execute(
+                                f"DELETE FROM campaign_contacts WHERE campaign_id=? "
+                                f"AND contact_id IN ({qmarks})", (cid, *test_ids))
+                            conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})",
+                                         test_ids)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[campaign #{cid}] не смог обнулить тест перед отправителем "
+                              f"#{acc_id}: {e}")
+                args = [sys.executable, "-m", "channels.campaign_send", str(cid),
+                        "--limit", str(limit), "--test",
+                        "--test-account", str(int(acc_id)),
+                        "--test-contacts", ",".join(str(int(i)) for i in test_ids)]
+                proc = subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env)
+                try:
+                    proc.wait(timeout=1800)
+                except Exception:  # noqa: BLE001 — завис: не держим остальную серию
+                    print(f"[campaign #{cid}] заход отправителя #{acc_id} завис — иду дальше")
+        finally:
+            # Слушатель возвращаем в любом случае: глухой системой платим за тест.
+            if was_on:
+                try:
+                    with database.get_conn() as conn:
+                        database.set_setting(conn, "listener_enabled", "on")
+                        database.set_setting(conn, "listener_paused_by_op_ts", "")
+                    print(f"[campaign #{cid}] серия тестов завершена — слушатель возвращён")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[campaign #{cid}] не смог вернуть слушатель: {e}")
+
+    threading.Thread(target=_chain, daemon=True).start()
+
+
 @app.get("/api/accounts/spare")
 def accounts_spare_status() -> JSONResponse:
     """Сколько аккаунтов застраховано запасной сессией, а сколько ходит без страховки."""
@@ -9671,11 +9749,34 @@ def campaign_test(cid: int, payload: dict = Body(default={})) -> JSONResponse:
                            note, level="good", campaign_id=cid)
     # Тест идёт на свои номера, но подключается теми же сессиями — слушателя
     # отпускаем так же, как на боевом заходе.
-    acc_id = payload.get("account_id")
-    acc_id = int(acc_id) if str(acc_id or "").strip().isdigit() else None
-    _spawn_campaign_send(cid, max(10, n_test), test=True,
-                         test_account=acc_id, test_contacts=test_ids)
-    return JSONResponse({"ok": True, "test_targets": n_test, "skipped_in_dialog": len(skipped)})
+    #
+    # Отправителей может быть несколько: оператор отмечает галочками, с каких номеров
+    # прогнать один и тот же опенер, чтобы сравнить, как письмо выглядит с разных
+    # аккаунтов. Каждый — отдельный заход campaign_send с --test-account, иначе
+    # ротация внутри одного захода раздала бы контакты по одному на аккаунт.
+    # account_id (одиночный) оставлен для совместимости со старым фронтом.
+    acc_ids = [int(x) for x in (payload.get("account_ids") or [])
+               if str(x).strip().isdigit() or isinstance(x, int)]
+    if not acc_ids:
+        one = payload.get("account_id")
+        if str(one or "").strip().isdigit():
+            acc_ids = [int(one)]
+    # Пусто — прежнее поведение: команда кампании решает сама.
+    if len(acc_ids) > 1:
+        # ВАЖНО: заходы идут ПО ОЧЕРЕДИ, а не разом. На кампанию стоит файловый лок
+        # (_CampaignLock), и параллельные процессы просто не стартуют — второй и
+        # третий отправители молча ничего бы не прислали. Плюс контакт захватывается
+        # атомарно ('new'→'messaged'): кто первый, того и контакт, остальным нечего
+        # слать. Поэтому ждём завершения каждого захода и перед следующим возвращаем
+        # тест-номера в 'new', чтобы письмо ушло с КАЖДОГО выбранного аккаунта.
+        _spawn_campaign_send_chain(cid, max(10, n_test), acc_ids, test_ids)
+    else:
+        _spawn_campaign_send(cid, max(10, n_test), test=True,
+                             test_account=(acc_ids[0] if acc_ids else None),
+                             test_contacts=test_ids)
+    return JSONResponse({"ok": True, "test_targets": n_test,
+                         "senders": len(acc_ids) or 1,
+                         "skipped_in_dialog": len(skipped)})
 
 
 @app.post("/api/campaign/{cid}/test/reset_dialogs")

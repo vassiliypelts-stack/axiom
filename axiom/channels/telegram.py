@@ -298,17 +298,26 @@ def _reply_delay_range() -> tuple[float, float]:
     return (lo, hi) if hi >= lo > 0 else REPLY_DELAY_DEFAULT
 
 
-async def _humanize_before_reply(client, peer) -> None:
+TEST_REPLY_DELAY = (4.0, 10.0)   # ответ на СВОЙ тест-номер: проверку ждут у экрана
+
+
+async def _humanize_before_reply(client, peer, fast: bool = False) -> None:
     """Ведёт себя как живой человек ПЕРЕД ответом на входящее:
     1) отмечает сообщение прочитанным (собеседник видит галочки «прочитано»);
     2) выдерживает паузу в настроенном диапазоне (см. _reply_delay_range) — у
     собеседника складывается картина живого человека, который увидел, прочитал и
-    через некоторое время ответил, а не бота, отвечающего мгновенно или спящего часами."""
+    через некоторое время ответил, а не бота, отвечающего мгновенно или спящего часами.
+
+    fast=True — собеседник наш СВОЙ тест-номер (contacts.is_test=1): человеку на том
+    конце изображать живого не нужно, он сам проверяет сценарий и сидит у экрана.
+    Боевым контактам эта ветка недоступна — им пауза остаётся полной, иначе мгновенный
+    ответ выдаёт бота."""
     try:
         await client.send_read_acknowledge(peer)
     except Exception:
         pass
-    await asyncio.sleep(random.uniform(*_reply_delay_range()))
+    await asyncio.sleep(random.uniform(*(TEST_REPLY_DELAY if fast
+                                         else _reply_delay_range())))
 
 
 async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> list[int]:
@@ -525,7 +534,17 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     паузу, дописанное успевает лечь в базу и попадает в ТОТ ЖЕ ответ — иначе агент
     отвечает на первую фразу, не видя второй, и человек получает две реплики невпопад.
     """
-    await _humanize_before_reply(event.client, await event.get_input_chat())
+    # Свой тест-номер узнаём ДО паузы — иначе проверка сценария стоила бы 30-60 сек
+    # ожидания на каждой реплике. Ошибка чтения не должна ронять ответ: не смогли
+    # определить — считаем боевым и держим полную паузу (безопасная сторона).
+    try:
+        with database.get_conn() as conn:
+            _t = conn.execute("SELECT COALESCE(is_test,0) t FROM contacts WHERE id=?",
+                              (contact_id,)).fetchone()
+        is_test = bool(_t["t"]) if _t else False
+    except Exception:  # noqa: BLE001
+        is_test = False
+    await _humanize_before_reply(event.client, await event.get_input_chat(), fast=is_test)
     with database.get_conn() as conn:
         contact = conn.execute("SELECT * FROM contacts WHERE id=?", (contact_id,)).fetchone()
         opener, messages = _history_for_agent(database.get_history(conn, contact_id))
@@ -603,7 +622,9 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # Паузу «заметил → прочитал → печатает» уже выдержали В НАЧАЛЕ, до чтения истории
     # (см. docstring): так дописанные сообщения попадают в этот же ответ. Второй раз
     # ждать нельзя — человек и без того ждёт ответа полминуты.
-    reply_ids = await _send_parts(event.client, peer, reply.reply_parts)
+    # fast=is_test — на своём тест-номере строки ответа идут через 1.5-3 сек вместо
+    # боевых 5-15: сценарий проверяют у экрана, а спамить себе нельзя по определению.
+    reply_ids = await _send_parts(event.client, peer, reply.reply_parts, fast=is_test)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 
     # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужное (kp_choice по названию).
@@ -614,16 +635,19 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             if (k.get("name") or "").strip().lower() == want:
                 chosen = k
                 break
+    # На своём тест-номере КП должно прийти следом за ответом, а не через полминуты:
+    # проверяют связку «ответ + нужное КП», и ждать её у экрана незачем.
+    kp_pause = (1.5, 3.0) if is_test else REPLY_DELAY
     if chosen:
         try:
-            await asyncio.sleep(random.uniform(*REPLY_DELAY))
+            await asyncio.sleep(random.uniform(*kp_pause))
             if chosen.get("kp_text"):
-                kp_ids = await _send_parts(event.client, peer, [chosen["kp_text"]])
+                kp_ids = await _send_parts(event.client, peer, [chosen["kp_text"]], fast=is_test)
                 reply_ids += kp_ids
                 reply_text += f"\n[КП «{chosen.get('name')}»: {chosen['kp_text']}]"
             cp = _kp_path(chosen.get("kp_file"))
             if cp is not None:
-                await asyncio.sleep(random.uniform(*REPLY_DELAY))
+                await asyncio.sleep(random.uniform(*kp_pause))
                 await event.client.send_file(peer, str(cp))
                 reply_text += f"\n[отправлен файл КП: {cp.name}]"
             print(f"[KP «{chosen.get('name')}» -> {contact_info.get('name', contact_id)}]")
@@ -632,7 +656,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # Легаси: одно КП файлом на кампании (если набор КП не задан)
     elif not kps and reply.send_kp and kp_path is not None:
         try:
-            await asyncio.sleep(random.uniform(*REPLY_DELAY))
+            await asyncio.sleep(random.uniform(*kp_pause))
             await event.client.send_file(peer, str(kp_path))
             reply_text += f"\n[отправлен файл КП: {kp_path.name}]"
             print(f"[KP -> {contact_info.get('name', contact_id)}] {kp_path.name}")

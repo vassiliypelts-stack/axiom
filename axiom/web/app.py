@@ -16,6 +16,7 @@ import contextlib
 import csv
 import io
 import json
+import threading
 import time as _t
 import datetime as _dtmod
 from pathlib import Path
@@ -2920,6 +2921,16 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
 LISTENER_STUCK_MIN = 20   # дольше этого «служебная» пауза слушателя не бывает
 
 
+def _listener_off_by_operator() -> bool:
+    """Слушатель выключен ЯВНЫМ решением оператора (тумблер в пульте)?
+    Ручную остановку сторож не трогает — это осознанный выбор, а не сбой."""
+    try:
+        with database.get_conn() as conn:
+            return bool((database.get_setting(conn, "listener_off_by_operator", "") or "").strip())
+    except Exception:  # noqa: BLE001 — не смогли прочитать: считаем, что не оператор
+        return False
+
+
 def _listener_watchdog() -> None:
     """Поднять слушатель, если служебная пауза не снялась сама.
 
@@ -2938,9 +2949,24 @@ def _listener_watchdog() -> None:
         try:
             with database.get_conn() as conn:
                 ts = database.get_setting(conn, "listener_paused_by_op_ts", "") or ""
-                if not ts.strip():
-                    continue
                 off = database.get_setting(conn, "listener_enabled", "on") == "off"
+                if not ts.strip():
+                    # Метки нет, а слушатель выключен и заходов в работе НЕТ — значит
+                    # его погасила служебная пауза, чью метку затёр кто-то другой
+                    # (два теста подряд: первый, завершившись, стирал метку второго).
+                    # Оператор в этом случае ничего не выключал, а система стоит глухая:
+                    # входящие не сохраняются нигде. Поднимаем сразу, не дожидаясь
+                    # LISTENER_STUCK_MIN — ждать тут нечего, держать паузу некому.
+                    if off and _SENDS_ACTIVE == 0 and not _listener_off_by_operator():
+                        database.set_setting(conn, "listener_enabled", "on")
+                        database.add_event(
+                            conn, "warn", "🔊 Слушатель поднят сторожем",
+                            "остался выключенным после захода рассылки, хотя ни один "
+                            "заход уже не идёт. Пока он был выключен, входящие от "
+                            "клиентов не сохранялись.", level="warn")
+                        print("[listener watchdog] поднял слушатель: заходов нет, "
+                              "а он был выключен")
+                    continue
                 if not off:
                     database.set_setting(conn, "listener_paused_by_op_ts", "")
                     continue
@@ -3251,6 +3277,10 @@ def listener_toggle(payload: dict = Body(...)) -> JSONResponse:
     with database.get_conn() as conn:
         was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
         database.set_setting(conn, "listener_enabled", on)
+        # Явное решение оператора. По этой метке сторож отличает «выключили руками и
+        # так надо» от «остался выключенным после захода» — второе он обязан чинить
+        # сам, не дожидаясь, пока кто-то заметит глухую систему.
+        database.set_setting(conn, "listener_off_by_operator", "1" if on == "off" else "")
         if was_on and on == "off":
             database.add_event(
                 conn, "listener_off", "🔇 Слушатель входящих выключен",
@@ -8403,6 +8433,64 @@ def _listener_released(active: bool = True):
                 database.set_setting(conn, "listener_paused_by_op_ts", "")
 
 
+# Сколько заходов рассылки ДЕРЖАТ слушатель погашенным прямо сейчас.
+#
+# ЗАЧЕМ СЧЁТЧИК. Каждый заход раньше решал судьбу слушателя в одиночку: «был включён —
+# верну». Два запуска подряд (оператор нажал «Тест» второй раз, пока первый ещё шёл)
+# ломали это наглухо: второй видел уже выключенный слушатель, запоминал was_on=False и
+# в конце ничего не возвращал, а первый, завершившись, включал слушатель ПОД РАБОТАЮЩИМ
+# вторым заходом — тот же ключ с двух IP. 11.09.2026 так и вышло: Telegram оборвал
+# соединения, посыпалось «Server sent a very new message ... ignoring», входящие от
+# оператора не попали в базу вообще (in_cnt=0 у всех тест-контактов), и выглядело это
+# как «агент молчит», хотя агент их просто не видел.
+#
+# Теперь пауза общая: гасит первый вошедший, поднимает последний вышедший.
+_SEND_LOCK = threading.Lock()
+_SENDS_ACTIVE = 0
+_SENDS_WAS_ON = False     # был ли слушатель включён ДО первого захода серии
+
+
+def _listener_hold() -> bool:
+    """Погасить слушатель под заход (или присоединиться к уже погашенному).
+    Возвращает True, если слушатель надо будет вернуть, когда выйдет последний."""
+    global _SENDS_ACTIVE, _SENDS_WAS_ON
+    import time as _t
+    with _SEND_LOCK:
+        first = _SENDS_ACTIVE == 0
+        _SENDS_ACTIVE += 1
+        if not first:
+            return _SENDS_WAS_ON   # уже погашен другим заходом — встаём в очередь
+        with database.get_conn() as conn:
+            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
+            if was_on:
+                database.set_setting(conn, "listener_enabled", "off")
+                database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+        _SENDS_WAS_ON = was_on
+        return was_on
+
+
+def _listener_release(tag: str = "") -> None:
+    """Заход закончился. Слушатель поднимаем, только когда вышел ПОСЛЕДНИЙ — иначе
+    включим его под чужой ещё работающей отправкой и сожжём ключи."""
+    global _SENDS_ACTIVE, _SENDS_WAS_ON
+    with _SEND_LOCK:
+        _SENDS_ACTIVE = max(0, _SENDS_ACTIVE - 1)
+        if _SENDS_ACTIVE:
+            print(f"[{tag}] заход завершён, но ещё {_SENDS_ACTIVE} в работе — "
+                  f"слушатель пока не поднимаю")
+            return
+        if not _SENDS_WAS_ON:
+            return
+        _SENDS_WAS_ON = False
+        try:
+            with database.get_conn() as conn:
+                database.set_setting(conn, "listener_enabled", "on")
+                database.set_setting(conn, "listener_paused_by_op_ts", "")
+            print(f"[{tag}] заход завершён — слушатель возвращён")
+        except Exception as e:  # noqa: BLE001
+            print(f"[{tag}] не смог вернуть слушатель: {e}")
+
+
 def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
                          test_account: int | None = None,
                          test_contacts: list[int] | None = None) -> None:
@@ -8442,11 +8530,7 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
 
-    with database.get_conn() as conn:
-        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-        if was_on:
-            database.set_setting(conn, "listener_enabled", "off")
-            database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+    was_on = _listener_hold()
     if was_on:
         _t.sleep(7)          # POLL_SEC=5 на обнаружение + запас на отключение клиентов
 
@@ -8457,14 +8541,7 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
             proc.wait(timeout=3600)
         except Exception:  # noqa: BLE001 — заход завис: слушатель важнее, поднимаем
             pass
-        if was_on:
-            try:
-                with database.get_conn() as conn:
-                    database.set_setting(conn, "listener_enabled", "on")
-                    database.set_setting(conn, "listener_paused_by_op_ts", "")
-                print(f"[campaign #{cid}] заход завершён — слушатель возвращён")
-            except Exception as e:  # noqa: BLE001
-                print(f"[campaign #{cid}] не смог вернуть слушатель: {e}")
+        _listener_release(f"campaign #{cid}")
 
     threading.Thread(target=_restore, daemon=True).start()
 
@@ -8497,11 +8574,7 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
 
-    with database.get_conn() as conn:
-        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-        if was_on:
-            database.set_setting(conn, "listener_enabled", "off")
-            database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
+    was_on = _listener_hold()
 
     def _chain() -> None:
         if was_on:
@@ -8535,14 +8608,7 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
                     print(f"[campaign #{cid}] заход отправителя #{acc_id} завис — иду дальше")
         finally:
             # Слушатель возвращаем в любом случае: глухой системой платим за тест.
-            if was_on:
-                try:
-                    with database.get_conn() as conn:
-                        database.set_setting(conn, "listener_enabled", "on")
-                        database.set_setting(conn, "listener_paused_by_op_ts", "")
-                    print(f"[campaign #{cid}] серия тестов завершена — слушатель возвращён")
-                except Exception as e:  # noqa: BLE001
-                    print(f"[campaign #{cid}] не смог вернуть слушатель: {e}")
+            _listener_release(f"campaign #{cid} (серия)")
 
     threading.Thread(target=_chain, daemon=True).start()
 

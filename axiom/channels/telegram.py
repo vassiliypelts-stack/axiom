@@ -311,9 +311,13 @@ async def _humanize_before_reply(client, peer) -> None:
     await asyncio.sleep(random.uniform(*_reply_delay_range()))
 
 
-async def _send_parts(client, peer, parts: list[str]) -> list[int]:
+async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> list[int]:
     """Шлёт сообщения по очереди как живой человек: показывает «печатает…»,
     держит паузу пропорционально длине текста, паузит между сообщениями.
+
+    fast=True — режим «тест на свои номера»: паузы между строками урезаны до 1.5-3 с.
+    Живым людям так слать нельзя (пулемётная очередь = признак бота), поэтому по
+    умолчанию False и боевой заход её не включает.
 
     Возвращает id отправленных в Telegram сообщений (по одному на часть) — нужны,
     чтобы потом можно было адресно удалить конкретную реплику «для всех» (см.

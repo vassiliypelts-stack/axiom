@@ -702,34 +702,43 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     reply_ids = await _send_parts(event.client, peer, reply.reply_parts, fast=is_test)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
 
-    # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужное (kp_choice по названию).
-    chosen = None
+    # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужные (kp_choice по названию).
+    # Названий может быть несколько через запятую: в сценарии «Крым» при согласии
+    # уходят СРАЗУ два файла — презентация «7 источников дохода» и бизнес-план.
+    # Раньше брали только первое совпадение, и второй файл человек не получал.
+    chosen_list: list[dict] = []
     if kps and reply.kp_choice:
-        want = reply.kp_choice.strip().lower().strip("«»\"' ")
+        # ВАЖНО: делить строку по запятой напрямую нельзя — запятая бывает В САМОМ
+        # названии («Бизнес-план усадьбы (2 га, миндаль)»), и такое имя рвалось
+        # пополам, после чего не совпадало ни с чем. Поэтому ищем названия КП как
+        # подстроки: что упомянуто — то и шлём, в порядке списка кампании.
+        raw = str(reply.kp_choice).lower()
         for k in kps:
-            if (k.get("name") or "").strip().lower() == want:
-                chosen = k
-                break
+            nm = (k.get("name") or "").strip().lower()
+            if nm and nm in raw:
+                chosen_list.append(k)
     # На своём тест-номере КП должно прийти следом за ответом, а не через полминуты:
     # проверяют связку «ответ + нужное КП», и ждать её у экрана незачем.
     kp_pause = (1.5, 3.0) if is_test else REPLY_DELAY
-    if chosen:
+    for kp in chosen_list:
         try:
             await asyncio.sleep(random.uniform(*kp_pause))
-            if chosen.get("kp_text"):
-                kp_ids = await _send_parts(event.client, peer, [chosen["kp_text"]], fast=is_test)
+            if kp.get("kp_text"):
+                kp_ids = await _send_parts(event.client, peer, [kp["kp_text"]], fast=is_test)
                 reply_ids += kp_ids
-                reply_text += f"\n[КП «{chosen.get('name')}»: {chosen['kp_text']}]"
-            cp = _kp_path(chosen.get("kp_file"))
+                reply_text += f"\n[КП «{kp.get('name')}»: {kp['kp_text']}]"
+            cp = _kp_path(kp.get("kp_file"))
             if cp is not None:
                 await asyncio.sleep(random.uniform(*kp_pause))
                 await event.client.send_file(peer, str(cp))
                 reply_text += f"\n[отправлен файл КП: {cp.name}]"
-            print(f"[KP «{chosen.get('name')}» -> {contact_info.get('name', contact_id)}]")
+            print(f"[KP «{kp.get('name')}» -> {contact_info.get('name', contact_id)}]")
         except Exception as e:
-            print(f"[KP send error] contact {contact_id}: {e}")
+            # Один файл не ушёл — не бросаем остальные: человек должен получить
+            # хотя бы то, что доедет.
+            print(f"[KP send error] contact {contact_id} / «{kp.get('name')}»: {e}")
     # Легаси: одно КП файлом на кампании (если набор КП не задан)
-    elif not kps and reply.send_kp and kp_path is not None:
+    if not chosen_list and not kps and reply.send_kp and kp_path is not None:
         try:
             await asyncio.sleep(random.uniform(*kp_pause))
             await event.client.send_file(peer, str(kp_path))

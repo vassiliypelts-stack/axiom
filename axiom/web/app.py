@@ -2743,6 +2743,63 @@ def _daily_report_scheduler() -> None:
             print(f"[daily report scheduler] {e}")
 
 
+def _session_check_scheduler() -> None:
+    """Живость TG-сессий — сама, три раза в день: утро 08:00, обед 14:00, вечер 20:00 МСК.
+
+    ЗАЧЕМ. Проверка была только ручной, и «Живость» в пульте показывала снимок
+    недельной давности. В диалоге теста у всех подряд висело «сессия не проверялась
+    1 дн.», то есть подсказка не помогала выбрать отправителя: сожжённый ключ
+    выглядел ровно как рабочий, тест уходил в никуда, и виноватым казался текст.
+
+    ОСТОРОЖНО (цена ошибки — аккаунт навсегда). session_check при выключенном
+    слушателе пробует достучаться НАПРЯМУЮ, мимо прокси аккаунта. Если в этот момент
+    сессию держит кто-то ещё, Telegram видит один ключ с двух IP и жжёт его — так
+    13.08.2026 потеряно 8 купленных лотов. Поэтому:
+      • идём под _listener_released() — слушатель гасится на время прохода и
+        поднимается после (тем же механизмом, что и ручная кнопка);
+      • НЕ запускаем, если прямо сейчас идёт заход рассылки: его процессы держат те
+        же сессии, а про них _listener_released ничего не знает.
+
+    Три окна вместо одного: сессии слетают не по расписанию (продавец вошёл по SMS,
+    Telegram разлогинил), и утренний снимок к вечеру уже врёт.
+    """
+    import time
+    WINDOWS = {8: "утро", 14: "обед", 20: "вечер"}
+    while True:
+        time.sleep(600)                       # тик раз в 10 мин, окно ловим по часу
+        try:
+            from channels.antiban import msk_now
+            now = msk_now()
+            slot = WINDOWS.get(now.hour)
+            if not slot or now.minute >= 10:
+                continue
+            # Ключ на «дата+слот»: тик раз в 10 минут попадает в окно один раз, но
+            # рестарт пульта внутри окна запустил бы проверку повторно.
+            stamp = f"{now.strftime('%Y-%m-%d')}:{slot}"
+            with database.get_conn() as conn:
+                if database.get_setting(conn, "session_check_last_slot") == stamp:
+                    continue
+                n = conn.execute("SELECT COUNT(*) c FROM accounts "
+                                 "WHERE tg_session IS NOT NULL AND tg_session<>''"
+                                 ).fetchone()["c"]
+            if not n:
+                continue
+            # Заход рассылки держит сессии своими процессами — проверка в этот момент
+            # и есть та самая «вторая точка входа», за которую жжётся ключ. Окно не
+            # теряем: метку не ставим, и следующий тик через 10 минут попробует снова.
+            if any((config.BASE_DIR / "data" / "locks").glob("campaign_*.lock")):
+                print("[session check] идёт заход рассылки — перенесу на следующий тик")
+                continue
+            with database.get_conn() as conn:
+                database.set_setting(conn, "session_check_last_slot", stamp)
+            print(f"[session check] окно {slot} {now:%Y-%m-%d %H:%M} МСК — проверяю {n} сессий")
+            with _listener_released():
+                res = _run_capture(["channels.session_check"], timeout=900)
+            _log_run("session_check", res)
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[session check scheduler] {e}")
+
+
 def _auto_send_plan(conn, camp) -> tuple[int, str]:
     """Сколько контактов взять ПРЯМО СЕЙЧАС по кампании с дневным объёмом.
 
@@ -2976,6 +3033,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_meetings_scheduler, daemon=True).start()
     threading.Thread(target=_hot_lead_scheduler, daemon=True).start()
     threading.Thread(target=_campaign_scheduler, daemon=True).start()
+    threading.Thread(target=_session_check_scheduler, daemon=True).start()
     threading.Thread(target=_listener_watchdog, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).

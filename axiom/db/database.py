@@ -465,20 +465,31 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     # кампании («согласились: 0» при живых лидах). Условие по самой строке, а не по
     # факту создания колонки: колонка появляется одним деплоем, а данные могут
     # дожидаться следующего.
-    conn.execute("UPDATE contacts SET lead_since=hot_since "
-                 "WHERE hot_since IS NOT NULL AND lead_since IS NULL")
-    # Те, у кого hot_since уже СНЯТ проверкой: факт согласия остался только в ленте
-    # событий — вытаскиваем оттуда (тип 'lead' пишется в момент согласия вместе с
-    # hot, см. channels/telegram._agent_reply).
+    # РОВНО ОДИН РАЗ за всю жизнь базы. init_db() зовётся почти на каждом запросе
+    # пульта (82 места), а засыпка сканирует contacts и events целиком: без флага
+    # отчёт кампании отвечал 155 секунд и держал базу заблокированной.
     try:
-        conn.execute(
-            "UPDATE contacts SET lead_since=("
-            "  SELECT MIN(e.ts) FROM events e "
-            "  WHERE e.contact_id=contacts.id AND e.type='lead') "
-            "WHERE lead_since IS NULL AND EXISTS("
-            "  SELECT 1 FROM events e WHERE e.contact_id=contacts.id AND e.type='lead')")
+        done = conn.execute("SELECT value FROM app_settings WHERE key='lead_since_backfilled'"
+                            ).fetchone()
     except sqlite3.OperationalError:
-        pass          # таблицы events ещё нет (первый запуск) — нечего засыпать
+        done = None   # таблицы настроек ещё нет — значит и база пустая, засыпать нечего
+    if not (done["value"] if done else ""):
+        try:
+            conn.execute("UPDATE contacts SET lead_since=hot_since "
+                         "WHERE hot_since IS NOT NULL AND lead_since IS NULL")
+            # Те, у кого hot_since уже СНЯТ проверкой: факт согласия остался только в
+            # ленте событий (тип 'lead' пишется в момент согласия, см.
+            # channels/telegram._agent_reply).
+            conn.execute(
+                "UPDATE contacts SET lead_since=("
+                "  SELECT MIN(e.ts) FROM events e "
+                "  WHERE e.contact_id=contacts.id AND e.type='lead') "
+                "WHERE lead_since IS NULL AND EXISTS("
+                "  SELECT 1 FROM events e WHERE e.contact_id=contacts.id AND e.type='lead')")
+            conn.execute("INSERT OR REPLACE INTO app_settings (key, value) "
+                         "VALUES ('lead_since_backfilled','1')")
+        except sqlite3.OperationalError:
+            pass      # нужных таблиц ещё нет (первый запуск) — засыпать нечего
     camp = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
     for col, typ in _EXTRA_CAMPAIGN_COLS.items():
         if col not in camp:

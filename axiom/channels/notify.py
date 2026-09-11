@@ -449,21 +449,21 @@ def campaign_report_text(conn, cid: int) -> str | None:
     out.append("📅 ЗА ВСЁ ВРЕМЯ")
     out.append(f"отправлено: {total}{_undeliv(undeliv_all)}")
     out.append(f"ответили: {replied}{_pct(replied, total)}")
-    out.append(f"🔥 согласились (лиды): {leads}{_pct(leads, replied)}")
+    out.append(f"🔥 согласились (лиды): {leads}{_pct(leads, total)}")
     out.append(f"на КЭВ: {kev}{_pct(kev, replied)}")
 
     out.append("")
     out.append("🗓 ЗА НЕДЕЛЮ")
     out.append(f"отправлено: {week}{_undeliv(undeliv_week)}")
     out.append(f"ответили: {replied_week}{_pct(replied_week, week)}")
-    out.append(f"🔥 согласились (лиды): {leads_week}{_pct(leads_week, replied_week)}")
+    out.append(f"🔥 согласились (лиды): {leads_week}{_pct(leads_week, week)}")
     out.append(f"на КЭВ: {kev_week}{_pct(kev_week, replied_week)}")
 
     out.append("")
     out.append("☀️ ЗА ВЧЕРА")
     out.append(f"отправлено: {yesterday_only}{_undeliv(undeliv_yest)}")
     out.append(f"ответили: {replied_yest}{_pct(replied_yest, yesterday_only)}")
-    out.append(f"🔥 согласились (лиды): {leads_yest}{_pct(leads_yest, replied_yest)}")
+    out.append(f"🔥 согласились (лиды): {leads_yest}{_pct(leads_yest, yesterday_only)}")
     out.append(f"на КЭВ: {kev_yest}{_pct(kev_yest, replied_yest)}")
 
     # Сегодня — одной короткой строкой: утром она ещё пустая, разворачивать её в

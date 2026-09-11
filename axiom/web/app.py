@@ -735,6 +735,12 @@ def settings_agent_model_set(payload: dict = Body(...)) -> JSONResponse:
             status_code=400)
     with database.get_conn() as conn:
         database.set_setting(conn, "agent_model", model)
+        # Момент переключения: по нему /api/agent/why_silent отличает «агент молчит
+        # прямо сейчас» от «упирался в старую модель до переключения». Без метки
+        # вчерашний отказ Anthropic по деньгам сутки висел бы главной проблемой уже
+        # после перехода на DeepSeek.
+        database.set_setting(conn, "agent_model_switched_ts",
+                             _dtmod.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
         database.add_event(conn, "info", f"🤖 Модель агента: {model or config.AGENT_MODEL}",
                            "Сменил модель для живых диалогов из пульта.", level="good")
     return JSONResponse({"ok": True, "current": config.agent_model()})
@@ -2527,12 +2533,20 @@ def agent_why_silent() -> JSONResponse:
     # причина лежала только в recent_errors одной строкой среди прочих, и «ok: true»
     # выше уверенно говорило, что всё в порядке. Теперь это ПРОБЛЕМА №1 с прямым
     # указанием, что делать: кодом она не лечится, нужен платёж.
+    # Считается только отказ ТОЙ модели, что работает сейчас. Иначе вчерашний отказ
+    # Anthropic сутки висел бы главной проблемой уже после перехода на DeepSeek —
+    # и оператор чинил бы то, что его больше не касается.
+    cur_model = config.agent_model()
     with database.get_conn() as conn:
         broke = conn.execute(
             "SELECT ts FROM events WHERE type='agent_error' "
             "AND (text LIKE '%кредит%' OR text LIKE '%credit%' OR title LIKE '%кредит%') "
-            "AND ts >= datetime('now','-1 day') ORDER BY id DESC LIMIT 1").fetchone()
-    if broke:
+            "AND ts >= datetime('now','-1 day') "
+            # Отказ, случившийся ДО последнего переключения модели, уже не актуален.
+            "AND ts > COALESCE((SELECT value FROM app_settings "
+            "                   WHERE key='agent_model_switched_ts'), '') "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+    if broke and llm.is_anthropic(cur_model):
         problems.insert(0, {
             "что": f"Кончились деньги на API Anthropic (последний отказ: {broke['ts']} UTC) — "
                    f"агент физически не может сгенерировать ответ",
@@ -2544,7 +2558,12 @@ def agent_why_silent() -> JSONResponse:
     # Сколько ключей в пуле: с одним ключом переключаться при исчерпании кредитов
     # некуда (agent/llm.py call() — ротация работает только при двух и более).
     n_keys = len(llm.keys())
-    if n_keys > 1:
+    if not llm.is_anthropic(cur_model):
+        # Диалоги ведёт чужой провайдер (DeepSeek/Gemini) — пул ключей Anthropic на
+        # них не влияет вовсе. Говорим, кто сейчас отвечает: иначе оператор ищет
+        # причину молчания в балансе Anthropic, к которому ответы уже не ходят.
+        ok.append(f"диалоги ведёт «{cur_model}» — баланс Anthropic на них не влияет")
+    elif n_keys > 1:
         ok.append(f"ключей Anthropic в пуле: {n_keys} (при исчерпании переключится сам)")
     elif n_keys == 1 and broke:
         problems.append({

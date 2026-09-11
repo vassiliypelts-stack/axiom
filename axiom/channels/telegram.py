@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+import re
 from datetime import datetime, timedelta
 
 from telethon import TelegramClient, events
@@ -300,6 +301,29 @@ def _reply_delay_range() -> tuple[float, float]:
 
 TEST_REPLY_DELAY = (4.0, 10.0)   # ответ на СВОЙ тест-номер: проверку ждут у экрана
 
+# Markdown в ответе модели. Живой человек в личке не пишет «**1-2 га**» — это почерк
+# чат-бота, и в переписке он бросается в глаза сильнее любой другой мелочи. Плюс
+# техническая беда: Telethon по умолчанию разбирает разметку, и НЕПАРНАЯ '*' или '_'
+# роняет весь запрос — сообщение не уходит вообще, молча. Claude разметку почти не
+# ставил, DeepSeek ставит регулярно (11.09.2026 первый же его ответ пришёл с '**').
+# Поэтому: разметку снимаем здесь, а сам send_message зовём с parse_mode=None.
+_MD_RE = re.compile(r"(\*\*|__|\*|_|`)")
+
+
+def _strip_md(text: str) -> str:
+    """Убрать markdown-разметку, оставив сам текст: «**1-2 га**» → «1-2 га».
+
+    Снимаем только парные маркеры вокруг слов. Одиночную звёздочку/подчёркивание
+    внутри слова (file_name, 5*3) не трогаем — это не разметка, а часть текста."""
+    if not text or not _MD_RE.search(text):
+        return text
+    out = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.S)
+    out = re.sub(r"__(.+?)__", r"\1", out, flags=re.S)
+    out = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", out, flags=re.S)
+    out = re.sub(r"(?<![\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])", r"\1", out, flags=re.S)
+    out = re.sub(r"`{1,3}(.+?)`{1,3}", r"\1", out, flags=re.S)
+    return out
+
 
 async def _humanize_before_reply(client, peer, fast: bool = False) -> None:
     """Ведёт себя как живой человек ПЕРЕД ответом на входящее:
@@ -331,13 +355,16 @@ async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> lis
     Возвращает id отправленных в Telegram сообщений (по одному на часть) — нужны,
     чтобы потом можно было адресно удалить конкретную реплику «для всех» (см.
     tg_msg_id в messages и /api/contact/{id}/message/{msg_id}/delete)."""
-    clean = [p.strip() for p in parts if p and p.strip()]
+    clean = [_strip_md(p.strip()) for p in parts if p and p.strip()]
     sent_ids: list[int] = []
     for i, part in enumerate(clean):
         typing = min(len(part) / random.uniform(*TYPING_CPS), MAX_TYPING_SEC)
         async with client.action(peer, "typing"):
             await asyncio.sleep(max(1.2, typing))
-        sent = await client.send_message(peer, part)
+        # parse_mode=None — разметку НЕ разбираем. Иначе непарная '*' или '_' в
+        # тексте модели роняет запрос целиком, и человек не получает ничего (см.
+        # _strip_md: звёздочки в ответах DeepSeek — рядовое явление).
+        sent = await client.send_message(peer, part, parse_mode=None)
         sent_ids.append(sent.id)
         if i < len(clean) - 1:
             # fast — тест на свои номера: его ждут у экрана, и боевые 5-15 сек между

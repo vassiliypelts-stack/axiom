@@ -8656,6 +8656,20 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
     threading.Thread(target=_chain, daemon=True).start()
 
 
+@app.get("/api/accounts/lifecycle")
+def accounts_lifecycle(days: int | None = None) -> JSONResponse:
+    """Аналитика жизненного цикла: сколько закуплено/когда, сколько прожили,
+    от чего умерли (авто-категория по session_reason), свод по причинам и по
+    закупкам. Read-only срез по БД — в Telegram не ходит, дёргать можно как
+    угодно часто (см. channels/lifecycle_report.py)."""
+    from channels.lifecycle_report import build
+    try:
+        data = build(days)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return JSONResponse(data)
+
+
 @app.get("/api/accounts/spare")
 def accounts_spare_status() -> JSONResponse:
     """Сколько аккаунтов застраховано запасной сессией, а сколько ходит без страховки."""

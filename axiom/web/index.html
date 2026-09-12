@@ -728,6 +728,7 @@ const NAV_GROUPS=[
     {id:"inviting",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="7" r="3.2"/><path d="M2 17c0-3.3 2.7-5 6-5s6 1.7 6 5"/><line x1="16" y1="6" x2="16" y2="12"/><line x1="13" y1="9" x2="19" y2="9"/></svg>',label:"Инвайтинг"},
     {id:"parser",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14"/><path d="M5 5l12 12"/><circle cx="10" cy="10" r="2" fill="currentColor"/></svg>',label:"Парсинг"},
     {id:"agents",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="1" width="10" height="18" rx="2"/><line x1="8" y1="15" x2="12" y2="15"/></svg>',label:"Аккаунты"},
+    {id:"lifecycle",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 15l4-6 4 3 4-8 4 5"/></svg>',label:"Жизненный цикл"},
     {id:"connectors",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="10" r="2.5"/><circle cx="16" cy="4" r="2.5"/><circle cx="16" cy="16" r="2.5"/><line x1="6.2" y1="9" x2="13.8" y2="5"/><line x1="6.2" y1="11" x2="13.8" y2="15"/></svg>',label:"Коннекторы"},
   ]}
 ];
@@ -8137,6 +8138,61 @@ async function viewProxy(v){
   };
 }
 
+// ------------------------------------------------------------------ lifecycle
+const LC_CAUSE_LABEL={
+  auth_key_duplicated:"⚡ Угон (два IP)", reclaim:"🔑 Реклейм продавцом",
+  banned:"⛔ Бан Telegram", proxy_dead:"📡 Прокси не достучался",
+  no_session:"➖ Не подключали", no_reason:"❔ причина не записана", unknown:"❓ не распознана"};
+async function viewLifecycle(v){
+  v.innerHTML='<div class="sub">считаю…</div>';
+  const d=await api("/api/accounts/lifecycle");
+  if(!d.ok){v.innerHTML='<div class="card"><span style="color:#c0392b">'+esc(d.error||"ошибка")+'</span></div>';return;}
+  const t=d.totals;
+  const kpi=(val,label,color)=>`<div style="flex:1;min-width:110px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:9px 11px">
+    <div style="font-size:18px;font-weight:700${color?";color:"+color:""}">${val}</div><div class="hint">${label}</div></div>`;
+  v.innerHTML=`
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">📈 Жизненный цикл аккаунтов</b>
+    <div class="sub" style="margin:6px 0 12px">Read-only срез: когда закупили, сколько прожили, от чего умерли. Ничего не проверяет само — данные из session_check/health, которые уже ходят по расписанию. Обновлено: ${esc(d.generated_at)}.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      ${kpi(t.total,"всего куплено")}
+      ${kpi(t.alive,"живых","#2e7d32")}
+      ${kpi(t.dead,"умерло","#c0392b")}
+      ${kpi(t.unknown,"не проверено")}
+      ${kpi(t.survival_rate_pct!=null?t.survival_rate_pct+"%":"—","выживаемость")}
+      ${kpi(d.avg_lifespan_days!=null?d.avg_lifespan_days+" дн":"—","средний срок жизни умерших")}
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">Причины смерти</b>
+    <div class="sub" style="margin:6px 0 10px">Авто-категория по тексту ошибки сессии — где искать дыру в процессе, а не разбирать каждый труп руками.</div>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:auto">
+      <table style="width:100%;border-collapse:collapse"><tr><th>Причина</th><th>Сколько</th><th>Что это значит</th></tr>
+      ${d.causes.length?d.causes.map(c=>`<tr><td>${LC_CAUSE_LABEL[c.cause]||esc(c.cause)}</td><td class="mono">${c.count}</td><td class="sub">${esc(c.hint)}</td></tr>`).join(""):'<tr><td colspan="3" class="sub">умерших нет</td></tr>'}
+      </table>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <b style="font-size:14px">Закупки по датам</b>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:300px">
+      <table style="width:100%;border-collapse:collapse"><tr><th>Дата</th><th>Куплено</th><th>Живых</th><th>Умерло</th></tr>
+      ${d.batches.map(b=>`<tr><td class="mono">${esc(b.date)}</td><td class="mono">${b.bought}</td><td class="mono" style="color:#2e7d32">${b.alive}</td><td class="mono" style="color:#c0392b">${b.dead}</td></tr>`).join("")}
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <b style="font-size:14px">Последние смерти</b>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:400px">
+      <table style="width:100%;border-collapse:collapse"><tr><th>#</th><th>Аккаунт</th><th>Куплен</th><th>Умер</th><th>Прожил</th><th>Причина</th></tr>
+      ${d.dead_accounts.length?d.dead_accounts.map(x=>`<tr><td class="mono">#${x.id}</td><td>${esc(x.label||x.phone||"")}</td>
+        <td class="sub">${esc(x.bought_at||"—")}</td><td class="sub">${esc(x.died_at||"—")}</td>
+        <td class="mono">${x.age_days!=null?x.age_days+" дн":"—"}</td>
+        <td title="${esc(x.reason_raw)}">${LC_CAUSE_LABEL[x.cause]||esc(x.cause)}</td></tr>`).join(""):'<tr><td colspan="6" class="sub">умерших нет</td></tr>'}
+      </table>
+    </div>
+  </div>`;
+}
+
 // ----------------------------------------------------------------- connectors
 const CONNECTOR_META={
   max:{label:"MAX",ic:"🔴",tier:"Приоритет",hint:"Bot API (dev.max.ru), REST, лимит 30 запр/сек. С 08.2025 бота публикует только юрлицо РФ — самозанятому/ИП токен не выдадут, нужна компания."},
@@ -8356,7 +8412,7 @@ async function viewCalendar(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors};
+const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 

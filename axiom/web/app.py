@@ -1837,6 +1837,19 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
     acc["avatar"] = ensure_avatar(acc)   # сток/ИИ-фото под пол из имени, если своё не загружено
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
                           acc.get("api_id"), acc.get("api_hash"))
+    # Слушатель держит своё подключение к этой же сессии — без паузы второе
+    # подключение отсюда читается Telegram как угон (AuthKeyDuplicatedError).
+    # Ровно так 12.09.2026 при оформлении профилей легло 19 аккаунтов разом,
+    # включая старые боевые, не участвовавшие в операции напрямую — слушатель
+    # держит ~50 сессий одновременно, и коллизия задевает случайные из них.
+    # _listener_released — обычный (sync) контекстный менеджер с блокирующим
+    # sleep(7) внутри; в async-роуте это заморозило бы event loop на 7с и
+    # придержало бы ВСЕ остальные запросы к пульту. Входим/выходим из него в
+    # отдельном потоке через asyncio.to_thread, а Telegram-вызовы внутри
+    # остаются await — event loop не блокируется ни на паузе, ни на работе.
+    import asyncio
+    ctx = _listener_released()
+    await asyncio.to_thread(ctx.__enter__)
     try:
         await client.start()
         done = await _setup_profile(client, acc, force=True)   # bio+аватар+приватность
@@ -1848,6 +1861,7 @@ async def account_profile_setup(acc_id: int) -> JSONResponse:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
+        await asyncio.to_thread(ctx.__exit__, None, None, None)
     return JSONResponse({"ok": True, "username": me.username or str(me.id), "set": done})
 
 

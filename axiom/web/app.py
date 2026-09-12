@@ -8598,6 +8598,11 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
                                test_ids: list[int]) -> None:
     """Тест с НЕСКОЛЬКИХ отправителей: заходы идут строго по очереди, в одном потоке.
 
+    Распределение 1:1 (round-robin): каждый тест-номер достаётся РОВНО ОДНОМУ
+    отправителю, номера делятся между выбранными аккаунтами по кругу. При 3
+    отправителях и 3 номерах — 3 сообщения всего, не 9. Если отправителей больше,
+    чем номеров, часть отправителей в этом тесте просто не участвует.
+
     ЗАЧЕМ ОЧЕРЕДЬ. Разом их запускать нельзя по двум причинам, и обе кончаются тем,
     что оператор получает одно письмо вместо трёх и решает, что «тест опять не
     работает»:
@@ -8605,9 +8610,8 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
          процесс просто выходит с «заход уже идёт»;
       2) контакт захватывается атомарно ('new'→'messaged'), и даже без лока первый
          же заход забрал бы все тест-номера себе.
-    Поэтому: ждём завершения процесса, возвращаем тест-номера в 'new' и запускаем
-    следующего. Чистим ровно те id, что выбрал оператор (is_test=1) — боевой базы
-    это не касается физически.
+    Поэтому ждём завершения каждого процесса перед следующим. Чистим ровно те id,
+    что выбрал оператор (is_test=1) — боевой базы это не касается физически.
 
     Слушатель гасим ОДИН раз на всю серию, а не на каждый заход: каждое включение
     ждёт 7 секунд, и на пяти отправителях это полминуты пустого простоя, в течение
@@ -8622,33 +8626,24 @@ def _spawn_campaign_send_chain(cid: int, limit: int, acc_ids: list[int],
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
 
+    # Round-robin: делим номера между отправителями по кругу, каждый номер — одному.
+    buckets: list[list[int]] = [[] for _ in acc_ids]
+    for i, contact_id in enumerate(test_ids):
+        buckets[i % len(acc_ids)].append(contact_id)
+
     was_on = _listener_hold()
 
     def _chain() -> None:
         if was_on:
             _t.sleep(7)      # дать слушателю отключить клиентов (POLL_SEC=5 + запас)
-        qmarks = ",".join("?" * len(test_ids))
         try:
-            for n, acc_id in enumerate(acc_ids):
-                if n:
-                    # Предыдущий заход пометил номера 'messaged' и записал переписку —
-                    # следующему отправителю писать было бы некому и поверх диалога.
-                    try:
-                        with database.get_conn() as conn:
-                            conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qmarks})", test_ids)
-                            conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", test_ids)
-                            conn.execute(
-                                f"DELETE FROM campaign_contacts WHERE campaign_id=? "
-                                f"AND contact_id IN ({qmarks})", (cid, *test_ids))
-                            conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})",
-                                         test_ids)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[campaign #{cid}] не смог обнулить тест перед отправителем "
-                              f"#{acc_id}: {e}")
+            for acc_id, own_ids in zip(acc_ids, buckets):
+                if not own_ids:
+                    continue
                 args = [sys.executable, "-m", "channels.campaign_send", str(cid),
                         "--limit", str(limit), "--test",
                         "--test-account", str(int(acc_id)),
-                        "--test-contacts", ",".join(str(int(i)) for i in test_ids)]
+                        "--test-contacts", ",".join(str(int(i)) for i in own_ids)]
                 proc = subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env)
                 try:
                     proc.wait(timeout=1800)

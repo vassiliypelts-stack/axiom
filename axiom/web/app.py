@@ -68,9 +68,13 @@ _LOGIN_HTML = """<!doctype html><html lang=ru><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>AXIOM — вход</title>
 <style>
-body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+padding:16px;box-sizing:border-box;
 background:#0b1020;font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#e8ecf5}
-.card{background:#141b2f;padding:32px 28px;border-radius:16px;width:320px;
+/* width:320px без max-width прижимал карточку к самым краям на узких телефонах
+   (360px вьюпорт), а с клавиатурой наверху ещё и обрезался низ — отсюда
+   min-height вместо height и боковые отступы у body. */
+.card{background:#141b2f;padding:32px 28px;border-radius:16px;width:320px;max-width:100%;
 box-shadow:0 20px 60px rgba(0,0,0,.5);border:1px solid #222c46}
 h1{font-size:20px;margin:0 0 4px;text-align:center}
 p{color:#8b96b3;font-size:13px;margin:0 0 20px;text-align:center}

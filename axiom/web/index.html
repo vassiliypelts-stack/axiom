@@ -630,12 +630,67 @@
 
   .org-mform-wrap{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
   .org-mform-inner{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%;max-height:85vh;overflow-y:auto}
+
+  /* ═══════════ МОБИЛЬНЫЙ ЛЭЙАУТ (телефон, Android Chrome и т.п.) ═══════════
+     Раньше сайдбар шириной 236px просто стоял в потоке рядом с контентом —
+     на узком экране (≤880px) это оставляло под сам пульт меньше половины и
+     без того маленького экрана. Ниже брейкпоинта сайдбар уезжает за левый
+     край (transform, не display:none — переезд остаётся анимированным) и
+     выезжает поверх контента по кнопке-гамбургеру в topbar; сам контент
+     занимает всю ширину. Любую таблицу вложенную в .tbl-wrap скроллим
+     горизонтально В СВОЁМ контейнере, а не раздвигаем страницу вбок. */
+  .nav-toggle{display:none;background:none;border:1px solid var(--border);border-radius:8px;
+    width:38px;height:38px;min-height:0;padding:0;align-items:center;justify-content:center;
+    box-shadow:none;flex-shrink:0;}
+  .nav-toggle svg{width:19px;height:19px;}
+  .nav-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:29;}
+  @media(max-width:880px){
+    .nav-toggle{display:inline-flex;}
+    .side{position:fixed;left:0;top:0;z-index:30;width:82vw;max-width:300px;flex:0 0 auto;
+      transform:translateX(-100%);transition:transform .22s ease;box-shadow:0 0 0 100vmax rgba(0,0,0,0);}
+    .side.open{transform:translateX(0);box-shadow:12px 0 40px -12px rgba(0,0,0,.5);}
+    body.nav-open .nav-backdrop{display:block;}
+    .content{width:100%;min-width:0;}
+    .topbar{padding:12px 14px;gap:8px;}
+    .topbar h2{font-size:16px;}
+    .topbar .right{gap:6px;}
+    .topbar .upd{display:none;}   /* «обновлено N назад» — необязательная строка, съедает место первой */
+    main{padding:14px;max-width:100%;}
+    .card{padding:13px 14px;}
+    .strip{gap:8px;margin-bottom:18px;}
+    .ttoolbar{gap:6px;}
+    .ttoolbar input,.ttoolbar select{min-width:0;flex:1 1 140px;}
+    .dash-grid,.dash-hero{gap:10px;}
+    .dash-hero{padding:16px 16px 20px;}
+    .conv{grid-template-columns:1fr;gap:14px;}
+    .conv .belt,.conv .pkg,.conv .st .arr{display:none;}
+    .org-mform-inner{width:94vw;max-width:94vw;padding:16px;max-height:90vh;}
+    /* Таблицы: не даём им раздвигать страницу вбок — скролл внутри своей рамки.
+       min-width на саму таблицу обязателен: без него браузер вместо прокрутки
+       сжимает колонки в нечитаемую кашу из переносов по одному символу. */
+    table{font-size:12.5px;}
+    .tbl-wrap,div:has(>table){overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    .tbl-wrap>table,div:has(>table)>table{min-width:640px;}
+    th,td{padding:8px 10px;white-space:nowrap;}
+    /* Прилипающая шапка и горизонтальная прокрутка несовместимы: как только
+       #st-tbl становится контейнером прокрутки, position:sticky у thead
+       считается уже от него, и шапка залипает ВНУТРИ таблицы (об этом же
+       предупреждает комментарий у #st-tbl table{overflow:visible} выше).
+       На телефоне прокрутка колонок нужнее прилипшей шапки — отключаем sticky. */
+    #st-tbl thead{position:static;}
+  }
+  @media(max-width:420px){
+    main{padding:10px;}
+    .topbar{padding:10px;}
+    button,.btn{padding:9px 12px;font-size:12.5px;}
+  }
 </style>
 </head>
 <body>
 <div class="atmo glow" aria-hidden="true"></div><div class="atmo grid" aria-hidden="true"></div><div class="atmo grain" aria-hidden="true"></div>
 <div class="app">
-  <aside class="side">
+  <div class="nav-backdrop" id="nav-backdrop"></div>
+  <aside class="side" id="side">
     <div class="brand"><h1>AX<span class="ac">I</span>OM</h1><small>пульт оператора</small></div>
     <nav id="nav" role="navigation" aria-label="Основное меню"></nav>
     <div class="foot">
@@ -649,6 +704,7 @@
   </aside>
   <div class="content">
     <div class="topbar">
+      <button class="nav-toggle" id="nav-toggle" aria-label="Меню" aria-expanded="false"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2.5" y1="5" x2="17.5" y2="5"/><line x1="2.5" y1="10" x2="17.5" y2="10"/><line x1="2.5" y1="15" x2="17.5" y2="15"/></svg></button>
       <h2 id="title">Дашборд</h2>
       <div class="right"><span class="upd" id="upd">—</span>
         <div class="bellwrap"><button id="bell" title="Уведомления" aria-label="Уведомления"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 2a6 6 0 00-6 6v3l-1 3h14l-1-3V8a6 6 0 00-6-6z"/><path d="M7.5 16a2.5 2.5 0 005 0"/></svg><span class="bell-badge" id="bell-badge" style="display:none">0</span></button>
@@ -802,7 +858,7 @@ function smartTable(mount,cfg){
     </div>
     <div id="st-pick" class="card" style="display:none;margin-bottom:10px"></div>
     <div id="st-selbar" class="ttoolbar" style="display:none;align-items:center;gap:10px"></div>
-    <div id="st-tbl"></div>
+    <div id="st-tbl" class="tbl-wrap"></div>
     <div id="st-pager" style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap"></div>`;
   mount.appendChild(wrap);
   // Панель появляется только когда что-то выделено — пустая строка над таблицей
@@ -8943,6 +8999,20 @@ async function route(){
 window.addEventListener("hashchange",route);
 $("#refresh").onclick=route;
 $("#logout-btn").onclick=()=>{document.cookie="axiom_auth=;path=/;max-age=0";location.href="/login";};
+
+// Мобильный сайдбар: гамбургер открывает/закрывает off-canvas меню (см. .side.open
+// в CSS). Закрываем и по клику на подложку, и автоматически при переходе по ссылке —
+// иначе после выбора раздела меню остаётся висеть поверх экрана.
+function _navSet(open){
+  $("#side").classList.toggle("open",open);
+  document.body.classList.toggle("nav-open",open);
+  $("#nav-toggle").setAttribute("aria-expanded",open?"true":"false");
+}
+$("#nav-toggle").onclick=()=>_navSet(!$("#side").classList.contains("open"));
+$("#nav-backdrop").onclick=()=>_navSet(false);
+$("#nav").addEventListener("click",e=>{if(e.target.closest("a"))_navSet(false);});
+window.addEventListener("hashchange",()=>_navSet(false));
+
 route();
 setInterval(refreshNotif,60000);
 </script>

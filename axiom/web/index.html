@@ -6428,6 +6428,7 @@ function renderCampList(mount,camps){
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
           <button class="cl-report" data-id="${c.id}" title="Работала ли сегодня/вчера, сколько отправлено за сегодня/неделю/всё время, ответы, КЭВ">📋 Отчёт</button>
+          <button class="cl-leads" data-id="${c.id}" title="Кто сказал «да» в этой кампании — согласился, что с ним свяжется представитель">🔥 Лиды</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
           <button class="cl-test-reset" data-id="${c.id}" title="удалить переписку, встречи и очередь у СВОИХ тестовых номеров этой кампании — начать тест с нуля, не путая со вчерашним диалогом. Живых лидов не трогает">🔄 Обнулить тест</button>
@@ -6450,6 +6451,7 @@ function renderCampList(mount,camps){
         <div class="cprog" id="prog-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="econ-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="report-${c.id}" style="margin-top:12px"></div>
+        <div class="cprog" id="leads-${c.id}" style="margin-top:12px"></div>
         <div class="cprog" id="warm-${c.id}" style="margin-top:12px"></div></div>`;
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
@@ -6705,6 +6707,30 @@ function renderCampList(mount,camps){
       };
     };
     render();
+  });
+  mount.querySelectorAll(".cl-leads").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.id,box=document.getElementById("leads-"+id);
+    if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}
+    box.dataset.open="1";box.innerHTML='<div class="sub">загружаю…</div>';
+    let d;try{d=await api(`/api/campaign/${id}/leads`);}catch(e){box.innerHTML=`<div class="empty">ошибка: ${esc(e.message)}</div>`;return;}
+    if(d.error){box.innerHTML=`<div class="empty">${esc(d.error)}</div>`;return;}
+    if(!d.leads.length){box.innerHTML='<div class="card" style="background:var(--panel2);padding:12px"><div class="empty">пока никто не сказал «да»</div></div>';return;}
+    const rows=d.leads.map(l=>{
+      const who=esc(l.name||l.username||l.phone||("#"+l.id));
+      const contact=l.username?`@${esc(l.username)}`:esc(l.phone||"");
+      const isHotNow=!!l.hot_since;
+      return `<tr>
+        <td>${who}${isHotNow?' <span class="badge b-active" title="владелец ещё не написал">🔥 ждёт</span>':''}</td>
+        <td class="sub">${contact}</td>
+        <td class="sub">${l.lead_since?esc(l.lead_since):"—"}</td>
+        <td class="sub" style="max-width:320px;white-space:normal">${l.last_in?esc(l.last_in.slice(0,160)):"—"}</td>
+      </tr>`;
+    }).join("");
+    box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
+      <b style="font-size:13px">🔥 Сказали «да»: ${d.count}</b>
+      <table class="tbl" style="margin-top:8px"><thead><tr><th>Кто</th><th>Контакт</th><th>Когда согласился</th><th>Последнее сообщение</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>`;
   });
   mount.querySelectorAll(".cl-warm").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,box=document.getElementById("warm-"+id);

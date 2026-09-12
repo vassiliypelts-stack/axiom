@@ -9544,6 +9544,33 @@ def campaign_econ(cid: int) -> JSONResponse:
     })
 
 
+@app.get("/api/campaign/{cid}/leads")
+def campaign_leads(cid: int) -> JSONResponse:
+    """Сводка «кто сказал да» внутри кампании — контакты с lead_since (человек
+    согласился, что с ним свяжется представитель — см. agent.Reply.hot в
+    channels/telegram.py). lead_since ставится один раз и не стирается, в отличие
+    от hot_since («ждём владельца прямо сейчас»), поэтому список не пустеет после
+    того, как владелец уже написал лиду или прошло время ожидания.
+
+    Замер эффективности кампании прямо на её экране, без похода в «Диалоги»
+    и без единственного канала — уведомления в личку, которое легко пропустить."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.name, c.phone, c.username, c.tg_user_id, c.status, "
+            "c.lead_since, c.hot_since, "
+            "(SELECT text FROM messages m WHERE m.contact_id=c.id AND m.direction='in' "
+            " ORDER BY m.ts DESC LIMIT 1) last_in "
+            "FROM contacts c JOIN campaign_contacts cc "
+            " ON cc.contact_id=c.id AND cc.campaign_id=? "
+            "WHERE c.lead_since IS NOT NULL "
+            "ORDER BY c.lead_since DESC",
+            (cid,),
+        ).fetchall()
+    leads = [dict(r) for r in rows]
+    return JSONResponse({"leads": leads, "count": len(leads)})
+
+
 @app.post("/api/campaign/{cid}/econ")
 def campaign_econ_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
     sets, vals = [], []

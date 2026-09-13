@@ -8545,8 +8545,14 @@ async function viewBusinessMap(v){
     {name:"Платформа продаж",status:"Работает",desc:"Bizon365: размещение курсов, оплаты, выдача доступов и управление учениками.",url:"https://start.bizon365.ru/my/login"},
     {name:"Бот Bizon365",status:"Ресурс",desc:"Быстрый вход в Bizon365 из Telegram.",url:"https://t.me/bizon365_bot"}
   ];
-  const projectCards=projects.map((p,i)=>`<button class="card bm-card" data-project="${i}" style="text-align:left;cursor:pointer;padding:18px;min-height:148px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:start"><strong style="font-size:16px">${p.name}</strong><span class="badge ${i===3?"b-new":"b-active"}">${p.status}</span></div><div class="sub" style="margin-top:10px;line-height:1.45">${p.desc}</div><div class="hint" style="margin-top:14px">${p.tag} · открыть карточку →</div></button>`).join("");
-  const systemCards=systems.map(([name,desc])=>`<div class="card" style="padding:15px"><strong>${name}</strong><div class="sub" style="margin-top:7px;line-height:1.4">${desc}</div></div>`).join("");
+  const TASKS_KEY="axiom_business_map_tasks_v1";
+  let blockTasks={};try{blockTasks=JSON.parse(localStorage.getItem(TASKS_KEY)||"{}");}catch(e){}
+  const blockIndex={};
+  const taskOpen=key=>(blockTasks[key]||[]).filter(t=>!t.done).length;
+  const registerBlock=(key,name,desc)=>{blockIndex[key]={name,desc};return key;};
+  const blockStyle=key=>`text-align:left;cursor:pointer;padding:18px;min-height:148px;border-left:3px solid ${taskOpen(key)?"var(--red)":"var(--border)"}`;
+  const projectCards=projects.map((p,i)=>{const key=registerBlock(`project-${i}`,p.name,p.desc);return `<button class="card bm-card" data-block="${key}" style="${blockStyle(key)}"><div style="display:flex;justify-content:space-between;gap:8px;align-items:start"><strong style="font-size:16px">${p.name}</strong><span class="badge ${taskOpen(key)?"b-lost":(i===3?"b-new":"b-active")}">${taskOpen(key)?`Нужно: ${taskOpen(key)}`:p.status}</span></div><div class="sub" style="margin-top:10px;line-height:1.45">${p.desc}</div><div class="hint" style="margin-top:14px">${p.tag} · задачи и ресурсы →</div></button>`;}).join("");
+  const systemCards=systems.map(([name,desc],i)=>{const key=registerBlock(`system-${i}`,name,desc);return `<button class="card" data-block="${key}" style="${blockStyle(key)};min-height:110px"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${name}</strong>${taskOpen(key)?`<span class="badge b-lost">${taskOpen(key)}</span>`:""}</div><div class="sub" style="margin-top:7px;line-height:1.4">${desc}</div></button>`;}).join("");
   const vibeCards=vibeGroups.map(g=>`<div class="card" style="padding:16px"><strong>${g.name}</strong><div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px">${g.links.map(([name,url])=>`<a class="btn" href="${url}" target="_blank" rel="noopener noreferrer" style="min-height:30px;padding:5px 9px;font-size:12px;text-decoration:none">${name} ↗</a>`).join("")}</div></div>`).join("");
   const focusCards=monthlyFocus.map(([name,desc])=>`<div class="card" style="padding:15px"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${name}</strong><span class="badge b-new">Этот месяц</span></div><div class="sub" style="margin-top:8px;line-height:1.4">${desc}</div></div>`).join("");
   const yearGoalCards=yearGoalSteps.map(([name,desc])=>`<div><div class="hint">${name}</div><div style="margin-top:4px;line-height:1.35">${desc}</div></div>`).join("");
@@ -8563,12 +8569,17 @@ async function viewBusinessMap(v){
     <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:24px 0 10px">Общие системы роста</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">${systemCards}</div>
     <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:24px 0 10px">Вайбкодинг: наработки и ресурсы</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">${vibeCards}</div>
     <div id="bm-detail" class="card" style="display:none;margin-top:16px;padding:20px"></div>`;
-  v.querySelectorAll("[data-project]").forEach(card=>card.onclick=()=>{
-    const p=projects[Number(card.dataset.project)], detail=$("#bm-detail");
+  const openBlock=key=>{
+    const block=blockIndex[key], detail=$("#bm-detail");if(!block)return;
     detail.style.display="block";
-    detail.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px"><div><h3 style="margin:0">${p.name}</h3><div class="sub" style="margin-top:5px">${p.desc}</div></div><span class="badge b-active">${p.status}</span></div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:18px"><div><div class="hint">Цель</div><div style="margin-top:4px">Заполнить</div></div><div><div class="hint">Ответственный</div><div style="margin-top:4px">Назначить</div></div><div><div class="hint">Ближайший шаг</div><div style="margin-top:4px">Определить</div></div><div><div class="hint">Ресурсы и ссылки</div><div style="margin-top:4px">${p.driveUrl?`<a href="${p.driveUrl}" target="_blank" rel="noopener noreferrer">Google Drive ↗</a>`:"Добавить"}</div></div></div>`;
+    const tasks=blockTasks[key]||[];
+    detail.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px"><div><h3 style="margin:0">${block.name}</h3><div class="sub" style="margin-top:5px">${block.desc}</div></div><span class="badge ${taskOpen(key)?"b-lost":"b-active"}">${taskOpen(key)?`Осталось: ${taskOpen(key)}`:"Готово"}</span></div><div style="margin-top:18px"><strong>Задачи для запуска</strong><div id="bm-tasks" style="margin-top:9px">${tasks.length?tasks.map((t,i)=>`<label style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer"><input type="checkbox" data-task="${i}" ${t.done?"checked":""}><span style="${t.done?"text-decoration:line-through;opacity:.55":""}">${esc(t.text)}</span></label>`).join(""):`<div class="sub">Пока нет задач. Добавьте первый конкретный шаг.</div>`}</div><div style="display:flex;gap:8px;margin-top:12px"><input id="bm-new-task" class="grow" placeholder="Что нужно доделать, чтобы заработало?"><button id="bm-add-task" class="primary">Добавить</button></div></div>`;
+    const save=()=>localStorage.setItem(TASKS_KEY,JSON.stringify(blockTasks));
+    detail.querySelectorAll("[data-task]").forEach(box=>box.onchange=()=>{tasks[Number(box.dataset.task)].done=box.checked;blockTasks[key]=tasks;save();viewBusinessMap(v);setTimeout(()=>openBlock(key),0);});
+    $("#bm-add-task").onclick=()=>{const input=$("#bm-new-task"),text=input.value.trim();if(!text)return;tasks.push({text,done:false});blockTasks[key]=tasks;save();viewBusinessMap(v);setTimeout(()=>openBlock(key),0);};
     detail.scrollIntoView({behavior:"smooth",block:"nearest"});
-  });
+  };
+  v.querySelectorAll("[data-block]").forEach(card=>card.onclick=()=>openBlock(card.dataset.block));
   $("#bm-edit").onclick=()=>alert("Следующим этапом добавим редактирование карточек: статусы, ответственных, ссылки и ресурсы.");
 }
 

@@ -71,7 +71,9 @@
 
   /* ---- Sidebar ---- */
   .side{width:236px;flex:0 0 236px;background:var(--panel);border-right:1px solid var(--border);
-    display:flex;flex-direction:column;position:sticky;top:0;height:100vh;}
+    display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow:hidden;
+    transition:width .22s ease,flex-basis .22s ease,border-color .22s ease;}
+  body.sidebar-collapsed .side{width:0;flex-basis:0;border-right-color:transparent;}
   .side .brand{padding:22px 22px 18px;border-bottom:1px solid var(--border);}
   .side .brand h1{margin:0;font-size:23px;font-weight:800;letter-spacing:.32em;color:var(--ink);}
   .side .brand .ac{color:var(--accent);}
@@ -639,13 +641,14 @@
      выезжает поверх контента по кнопке-гамбургеру в topbar; сам контент
      занимает всю ширину. Любую таблицу вложенную в .tbl-wrap скроллим
      горизонтально В СВОЁМ контейнере, а не раздвигаем страницу вбок. */
-  .nav-toggle{display:none;background:none;border:1px solid var(--border);border-radius:8px;
+  .nav-toggle{display:inline-flex;background:none;border:1px solid var(--border);border-radius:8px;
     width:38px;height:38px;min-height:0;padding:0;align-items:center;justify-content:center;
     box-shadow:none;flex-shrink:0;}
   .nav-toggle svg{width:19px;height:19px;}
   .nav-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:29;}
   @media(max-width:880px){
     .nav-toggle{display:inline-flex;}
+    body.sidebar-collapsed .side{width:82vw;max-width:300px;flex-basis:auto;border-right-color:var(--border);}
     .side{position:fixed;left:0;top:0;z-index:30;width:82vw;max-width:300px;flex:0 0 auto;
       transform:translateX(-100%);transition:transform .22s ease;box-shadow:0 0 0 100vmax rgba(0,0,0,0);}
     .side.open{transform:translateX(0);box-shadow:12px 0 40px -12px rgba(0,0,0,.5);}
@@ -763,11 +766,12 @@ function statusBadge(s){return `<span class="badge b-${s}">${STATUS_RU[s]||s}</s
 function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</span>`;if(c.phone)return `<span class="sub mono">${esc(c.phone)}</span>`;return '<span class="no">—</span>';}
 
 const NAV_GROUPS=[
-  {title:"",items:[
+  {title:"Главная",collapsible:true,items:[
     {id:"dashboard",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="10" width="4" height="8" rx="1"/><rect x="8" y="5" width="4" height="13" rx="1"/><rect x="14" y="2" width="4" height="16" rx="1"/></svg>',label:"Виджеты"},
     {id:"orgchart",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="6" height="5" rx="1"/><rect x="12" y="2" width="6" height="5" rx="1"/><rect x="7" y="13" width="6" height="5" rx="1"/><line x1="5" y1="7" x2="10" y2="13"/><line x1="15" y1="7" x2="10" y2="13"/></svg>',label:"Структура"},
     {id:"calendar",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="16" height="14" rx="2"/><line x1="2" y1="8" x2="18" y2="8"/><line x1="6" y1="1" x2="6" y2="5"/><line x1="14" y1="1" x2="14" y2="5"/></svg>',label:"Календарь"},
     {id:"projects",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5h6l2 2h8v9H2V5z"/></svg>',label:"Проекты"},
+    {id:"businessmap",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="5" r="2"/><circle cx="16" cy="5" r="2"/><circle cx="10" cy="15" r="2"/><path d="M5.8 6.1l2.8 7M14.2 6.1l-2.8 7M6 5h8"/></svg>',label:"Карта бизнеса"},
   ]},
   {title:"CRM / Лидген",collapsible:true,items:[
     {id:"campaigns",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7l12-4v14l-12-4z"/></svg>',label:"Кампании"},
@@ -8493,8 +8497,40 @@ async function viewCalendar(v){
   wireCollapse(v);
 }
 
+// ----------------------------------------------------------------- карта бизнеса
+async function viewBusinessMap(v){
+  const projects=[
+    {name:"ИИ100 Vibe",status:"В работе",desc:"AI-разработка, внедрение автоматизаций и агентов",tag:"AI / автоматизация"},
+    {name:"ГГ Крым",status:"В работе",desc:"«Город гениев» и продажа участков в Крыму",tag:"Недвижимость"},
+    {name:"Ипотека 10%",status:"В работе",desc:"Инвесткомитет «Сопрано»",tag:"Инвестиции"},
+    {name:"Новые денежные проекты",status:"Формируется",desc:"Идеи, проверка спроса, MVP и первые продажи",tag:"R&D"}
+  ];
+  const systems=[
+    ["Контент-маркетинг","Текстовый и видео-контент, каналы, метрики"],
+    ["Лидогенерация","Axiom-кампании, партнёрства, офлайн"],
+    ["Продажи","Воронка, команда, CRM, повторные касания"],
+    ["Комьюнити","Клуб, мероприятия, доверие и продажи"],
+    ["Продуктовая платформа","Bizon365, продукты, оплаты и доступы"],
+    ["R&D и автоматизация","Новые проекты, боты и исследования"]
+  ];
+  const projectCards=projects.map((p,i)=>`<button class="card bm-card" data-project="${i}" style="text-align:left;cursor:pointer;padding:18px;min-height:148px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:start"><strong style="font-size:16px">${p.name}</strong><span class="badge ${i===3?"b-new":"b-active"}">${p.status}</span></div><div class="sub" style="margin-top:10px;line-height:1.45">${p.desc}</div><div class="hint" style="margin-top:14px">${p.tag} · открыть карточку →</div></button>`).join("");
+  const systemCards=systems.map(([name,desc])=>`<div class="card" style="padding:15px"><strong>${name}</strong><div class="sub" style="margin-top:7px;line-height:1.4">${desc}</div></div>`).join("");
+  v.innerHTML=`<div class="page-head"><div><h2 style="margin:0">Карта реальности бизнеса</h2><div class="sub" style="margin-top:6px">Навигатор по денежным направлениям и общим системам бизнеса</div></div><button id="bm-edit">⚙ Настроить карту</button></div>
+    <div class="card" style="padding:18px 20px;margin:16px 0;border-left:3px solid var(--accent)"><strong>Как пользоваться</strong><div class="sub" style="margin-top:6px">Выберите направление, чтобы увидеть его цель, ресурсы, владельца, статус внедрения и следующие шаги. Порядок пунктов в разделе «Главная» меняется перетаскиванием в левом меню.</div></div>
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:18px 0 10px">Денежные направления</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">${projectCards}</div>
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:24px 0 10px">Общие системы роста</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">${systemCards}</div>
+    <div id="bm-detail" class="card" style="display:none;margin-top:16px;padding:20px"></div>`;
+  v.querySelectorAll("[data-project]").forEach(card=>card.onclick=()=>{
+    const p=projects[Number(card.dataset.project)], detail=$("#bm-detail");
+    detail.style.display="block";
+    detail.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px"><div><h3 style="margin:0">${p.name}</h3><div class="sub" style="margin-top:5px">${p.desc}</div></div><span class="badge b-active">${p.status}</span></div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:18px"><div><div class="hint">Цель</div><div style="margin-top:4px">Заполнить</div></div><div><div class="hint">Ответственный</div><div style="margin-top:4px">Назначить</div></div><div><div class="hint">Ближайший шаг</div><div style="margin-top:4px">Определить</div></div><div><div class="hint">Ресурсы и ссылки</div><div style="margin-top:4px">Добавить</div></div></div>`;
+    detail.scrollIntoView({behavior:"smooth",block:"nearest"});
+  });
+  $("#bm-edit").onclick=()=>alert("Следующим этапом добавим редактирование карточек: статусы, ответственных, ссылки и ресурсы.");
+}
+
 // ----------------------------------------------------------------- router
-const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle};
+const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 
@@ -9008,7 +9044,19 @@ function _navSet(open){
   document.body.classList.toggle("nav-open",open);
   $("#nav-toggle").setAttribute("aria-expanded",open?"true":"false");
 }
-$("#nav-toggle").onclick=()=>_navSet(!$("#side").classList.contains("open"));
+function _desktopSideSet(collapsed){
+  document.body.classList.toggle("sidebar-collapsed",collapsed);
+  try{localStorage.setItem("axiom_sidebar_collapsed",collapsed?"1":"0");}catch(e){}
+  const btn=$("#nav-toggle");
+  btn.setAttribute("aria-expanded",collapsed?"false":"true");
+  btn.setAttribute("aria-label",collapsed?"Открыть боковое меню":"Скрыть боковое меню");
+  btn.title=collapsed?"Открыть меню":"Скрыть меню";
+}
+try{if(localStorage.getItem("axiom_sidebar_collapsed")==="1")_desktopSideSet(true);}catch(e){}
+$("#nav-toggle").onclick=()=>{
+  if(window.matchMedia("(max-width:880px)").matches)_navSet(!$("#side").classList.contains("open"));
+  else _desktopSideSet(!document.body.classList.contains("sidebar-collapsed"));
+};
 $("#nav-backdrop").onclick=()=>_navSet(false);
 $("#nav").addEventListener("click",e=>{if(e.target.closest("a"))_navSet(false);});
 window.addEventListener("hashchange",()=>_navSet(false));

@@ -8578,6 +8578,17 @@ async function viewBusinessMap(v){
     {name:"Платформа продаж",status:"Работает",desc:"Bizon365: размещение курсов, оплаты, выдача доступов и управление учениками.",url:"https://start.bizon365.ru/my/login"},
     {name:"Бот Bizon365",status:"Ресурс",desc:"Быстрый вход в Bizon365 из Telegram.",url:"https://t.me/bizon365_bot"}
   ];
+  // Публичные точки входа: только реальные ссылки из памяти Jarvis.
+  const publicChannels=[
+    {name:"Threads",icon:"@",desc:"Короткий контент и личный канал",url:"https://www.threads.com/@therealvassiliy"},
+    {name:"Instagram",icon:"◎",desc:"Личный профиль",url:"https://www.instagram.com/therealvassiliy/"},
+    {name:"VK",icon:"VK",desc:"Сообщество и контент",url:"https://vk.ru/therealvassiliy"},
+    {name:"TenChat",icon:"T",desc:"Деловая сеть",url:"https://tenchat.ru/0342942"},
+    {name:"Telegram · Winresult",icon:"✈",desc:"Основной Telegram-канал",url:"https://t.me/winresult"},
+    {name:"Telegram · Mindcode",icon:"✦",desc:"Новый Telegram-канал",url:"https://t.me/mindcode50"},
+    {name:"Сайт neiro365.ru",icon:"⌂",desc:"Главный сайт",url:"https://neiro365.ru/"},
+    {name:"Jarvis · рабочая база",icon:"🧠",desc:"Папка с памятью, проектами и знаниями",url:"https://drive.google.com/drive/folders/1gZmhLDxMaJSarw9SljBdtdDrt4aOxWEn"}
+  ];
   const TASKS_KEY="axiom_business_map_tasks_v1";
   let blockTasks={};try{blockTasks=JSON.parse(localStorage.getItem(TASKS_KEY)||"{}");}catch(e){}
   const blockIndex={};
@@ -8592,6 +8603,7 @@ async function viewBusinessMap(v){
   const yearGoalCards=yearGoalSteps.map(([name,desc])=>`<div><div class="hint">${name}</div><div style="margin-top:4px;line-height:1.35">${desc}</div></div>`).join("");
   const trainingCards=paidTraining.map(([name,desc,badge,link])=>`<div class="card" style="padding:15px"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${name}</strong><span class="badge ${badge}">${badge==="b-active"?"Используется":"Внедряется"}</span></div><div class="sub" style="margin-top:8px;line-height:1.4">${desc}</div>${link?`<a href="${link[1]}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:10px">${link[0]} ↗</a>`:""}</div>`).join("");
   const productCards=productLine.map(p=>`<div class="card" style="padding:16px"><div style="display:flex;justify-content:space-between;gap:8px"><strong>${p.name}</strong><span class="badge b-active">${p.status}</span></div><div class="sub" style="margin-top:8px;line-height:1.4">${p.desc}</div><a href="${p.url}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:10px">Открыть ресурс ↗</a></div>`).join("");
+  const channelCards=publicChannels.map(c=>`<a class="card" href="${c.url}" target="_blank" rel="noopener noreferrer" style="display:block;position:relative;text-decoration:none;color:inherit"><div class="bm-icon">${c.icon}</div><strong>${c.name}</strong><div class="sub" style="margin-top:8px;line-height:1.4">${c.desc}</div><div class="hint" style="margin-top:13px">Открыть ↗</div></a>`).join("");
   v.innerHTML=`<div class="business-map"><div class="bm-hero"><div class="page-head"><div><h2>Карта реальности бизнеса</h2><div class="sub" style="margin-top:6px">Маршрут от стратегии и разработки к работающим денежным системам</div></div><button id="bm-edit">⚙ Настроить карту</button></div></div>
     <div class="card" style="padding:18px 20px;margin:16px 0;border-left:3px solid var(--accent)"><strong>Как пользоваться</strong><div class="sub" style="margin-top:6px">Выберите направление, чтобы увидеть его цель, ресурсы, владельца, статус внедрения и следующие шаги. Порядок пунктов в разделе «Главная» меняется перетаскиванием в левом меню.</div></div>
     <div class="card" style="padding:18px 20px;margin:16px 0;border-left:3px solid var(--accent2)"><div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong style="font-size:16px">Стратегический результат до Нового года</strong><div class="sub" style="margin-top:6px">Автоматическая система продаж образовательных продуктов: доход без ручного ведения каждой сделки.</div></div><span class="badge b-new">До НГ</span></div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px;margin-top:18px">${yearGoalCards}</div></div>
@@ -8601,6 +8613,7 @@ async function viewBusinessMap(v){
     <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:24px 0 10px">Продуктовая линейка и автопродажи</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px">${productCards}</div>
     <section class="bm-lane"><div class="bm-lane-title">Денежные направления</div><div class="bm-road">${projectCards}</div><div class="bm-map-note">Кликните на направление, чтобы увидеть материалы и разложить внедрение на задачи.</div></section>
     <section class="bm-lane"><div class="bm-lane-title">Общие системы роста</div><div class="bm-road">${systemCards}</div><div class="bm-map-note">Эти системы обслуживают все денежные направления.</div></section>
+    <section class="bm-lane"><div class="bm-lane-title">Мои каналы и ресурсы</div><div class="bm-road">${channelCards}</div><div class="bm-map-note">Живые ссылки на площадки, контент и рабочую базу. Открываются в новой вкладке.</div></section>
     <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:24px 0 10px">Вайбкодинг: наработки и ресурсы</div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">${vibeCards}</div>
     <div id="bm-detail" class="card bm-side" style="display:none"></div></div>`;
   const openBlock=key=>{

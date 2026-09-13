@@ -8501,8 +8501,8 @@ async function viewCalendar(v){
 async function viewBusinessMap(v){
   const projects=[
     {name:"ИИ100 Vibe",status:"В работе",desc:"AI-разработка, внедрение автоматизаций и агентов",tag:"AI / автоматизация"},
-    {name:"ГГ Крым",status:"В работе",desc:"«Город гениев» и продажа участков в Крыму",tag:"Недвижимость"},
-    {name:"Ипотека 10%",status:"В работе",desc:"Инвесткомитет «Сопрано»",tag:"Инвестиции"},
+    {name:"ГГ Крым",status:"В работе",desc:"«Город гениев» и продажа участков в Крыму",tag:"Недвижимость",driveUrl:"https://drive.google.com/drive/folders/1PA8qcoo_Vdap5ogDN80ZCcrA8PN6LDNX"},
+    {name:"Ипотека 10%",status:"В работе",desc:"Инвесткомитет «Сопрано»",tag:"Инвестиции",driveUrl:"https://drive.google.com/drive/folders/1su4uG_oxWQ5lCjfsjLbCsxlcQb18KK85"},
     {name:"Новые денежные проекты",status:"Формируется",desc:"Идеи, проверка спроса, MVP и первые продажи",tag:"R&D"}
   ];
   const systems=[
@@ -8517,7 +8517,8 @@ async function viewBusinessMap(v){
     {name:"Учёба",links:[["Курс","https://platform.aibasis.ru/teach/control/stream/view/id/935076511"],["VIP-чат","https://web.telegram.org/k/#-3820874216"],["Чат Нейроуниверситета","https://t.me/+IAHMbbbn3600ZDVi"],["Роадмап разработки","https://platform.aibasis.ru/pl/teach/control/lesson/view?id=348549623&editMode=0#"]]},
     {name:"Инструменты",links:[["Claude","https://claude.ai/"],["Claude Code","https://platform.claude.com/"],["Google AI Studio","https://ai.google.dev/"],["Lovable","https://lovable.dev/"],["SYNTX.AI","https://syntx.ai/"],["Платформа вайбкодера","https://lesson.viberost.ru/"]]},
     {name:"Ипотека 10%: онбординг",links:[["Приложение","https://ipoteka10-onboarding.vercel.app/"],["Supabase проекта","https://supabase.com/dashboard/project/ersfhejltxmfgohrkqns"],["GitHub","https://github.com/vassiliypelts-stack/ipoteka10-onboarding"],["Telegram-бот","https://t.me/onbording10_bot"]]},
-    {name:"Инфраструктура и тесты",links:[["Vercel","https://vercel.com/vassiliy-s-projects/invest-tg-bot"],["Supabase онбординга","https://supabase.com/dashboard/project/iuitxfaamprbsmnxpadx"],["Folk","https://app.folk.app/settings/319fcdc7-86e9-4382-b9ea-d6ab14cecd6a/network-integrations"],["Jeeva: поиск лидов","https://app.jeeva.ai/find-leads"],["Apollo","https://app.apollo.io/#/login"]]}
+    {name:"Инфраструктура и тесты",links:[["Vercel","https://vercel.com/vassiliy-s-projects/invest-tg-bot"],["Supabase онбординга","https://supabase.com/dashboard/project/iuitxfaamprbsmnxpadx"],["Folk","https://app.folk.app/settings/319fcdc7-86e9-4382-b9ea-d6ab14cecd6a/network-integrations"],["Jeeva: поиск лидов","https://app.jeeva.ai/find-leads"],["Apollo","https://app.apollo.io/#/login"]]},
+    {name:"Рабочая база на Google Drive",links:[["Вайбкодинг","https://drive.google.com/drive/folders/1a0T-5tgMqdq8pbteILd-KkS0YTeAnWo4"],["ЦУП вайбкодинга","https://docs.google.com/document/d/1RLHZfUgUAQY7l9qClMcBP5OeIzCduid_c-py-vCpGOc/edit?usp=drivesdk"],["Исходники Axiom","https://drive.google.com/drive/folders/1cEkm_RX1nn6f8IvVzzYojWJ6MVl_mM8n"]]}
   ];
   const monthlyFocus=[
     ["Jarvis + Obsidian","Связка личной базы знаний, задач и ассистента"],
@@ -8541,7 +8542,7 @@ async function viewBusinessMap(v){
   v.querySelectorAll("[data-project]").forEach(card=>card.onclick=()=>{
     const p=projects[Number(card.dataset.project)], detail=$("#bm-detail");
     detail.style.display="block";
-    detail.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px"><div><h3 style="margin:0">${p.name}</h3><div class="sub" style="margin-top:5px">${p.desc}</div></div><span class="badge b-active">${p.status}</span></div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:18px"><div><div class="hint">Цель</div><div style="margin-top:4px">Заполнить</div></div><div><div class="hint">Ответственный</div><div style="margin-top:4px">Назначить</div></div><div><div class="hint">Ближайший шаг</div><div style="margin-top:4px">Определить</div></div><div><div class="hint">Ресурсы и ссылки</div><div style="margin-top:4px">Добавить</div></div></div>`;
+    detail.innerHTML=`<div style="display:flex;justify-content:space-between;gap:12px"><div><h3 style="margin:0">${p.name}</h3><div class="sub" style="margin-top:5px">${p.desc}</div></div><span class="badge b-active">${p.status}</span></div><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:18px"><div><div class="hint">Цель</div><div style="margin-top:4px">Заполнить</div></div><div><div class="hint">Ответственный</div><div style="margin-top:4px">Назначить</div></div><div><div class="hint">Ближайший шаг</div><div style="margin-top:4px">Определить</div></div><div><div class="hint">Ресурсы и ссылки</div><div style="margin-top:4px">${p.driveUrl?`<a href="${p.driveUrl}" target="_blank" rel="noopener noreferrer">Google Drive ↗</a>`:"Добавить"}</div></div></div>`;
     detail.scrollIntoView({behavior:"smooth",block:"nearest"});
   });
   $("#bm-edit").onclick=()=>alert("Следующим этапом добавим редактирование карточек: статусы, ответственных, ссылки и ресурсы.");

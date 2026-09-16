@@ -10012,6 +10012,15 @@ def campaign_test_options(cid: int) -> JSONResponse:
             "CASE status WHEN 'active' THEN 0 WHEN 'warming' THEN 1 ELSE 2 END, "
             "COALESCE(label, username, phone)").fetchall()
         main_row = conn.execute("SELECT account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
+        # Кто в команде ИМЕННО этой кампании и кто занят чужой активной рассылкой.
+        # Без этого диалог теста показывал плоский список без различий, а настройки
+        # кампании рядом — с бейджами «боевой», «свободен», «занят: …». Оператор
+        # видел два разных мира про одни и те же номера и не мог понять, каким
+        # аккаунтом реально уйдёт бой.
+        team_ids = {r["account_id"] for r in conn.execute(
+            "SELECT account_id FROM campaign_accounts WHERE campaign_id=?", (cid,)).fetchall()}
+        busy_map = {b["account_id"]: b["campaign"]
+                    for b in _busy_campaign_accounts(conn, [r["id"] for r in accs], cid)}
         cts = conn.execute(
             "SELECT id, name, phone, username, status FROM contacts "
             "WHERE COALESCE(is_test,0)=1 AND (test_campaign_id IS NULL OR test_campaign_id=?) "
@@ -10034,6 +10043,8 @@ def campaign_test_options(cid: int) -> JSONResponse:
             except ValueError:
                 age = None
         a["session_age_days"] = age
+        a["in_team"] = 1 if a["id"] in team_ids else 0
+        a["busy_campaign"] = busy_map.get(a["id"])
         out.append(a)
     return JSONResponse({
         "accounts": out,

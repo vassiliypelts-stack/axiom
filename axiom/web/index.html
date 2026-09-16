@@ -237,6 +237,12 @@
   .cf-post-stats b{color:var(--text);font-size:12px;}
   .cf-post-stats i{font-style:normal;margin-right:4px;}
   .cf-note{padding:10px 12px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--border);margin-top:4px;}
+  /* Находки дайджеста: две строки — шапка с каналом и цифрами, затем заголовок. */
+  .cf-find{display:block;padding:10px 12px;border-radius:11px;border:1px solid transparent;
+    text-decoration:none;color:var(--text);transition:background .15s,border-color .15s;}
+  .cf-find:hover{background:color-mix(in srgb,var(--panel2) 70%,transparent);border-color:var(--border);}
+  .cf-find-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;font-size:11px;}
+  .cf-find-title{font-size:13px;line-height:1.45;}
   .cf-best{margin-top:14px;padding:10px 14px;border-radius:11px;background:var(--accent-soft);
     border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);font-size:12.5px;}
   .cf-best a{color:var(--accent-ink);text-decoration:underline;}
@@ -2942,19 +2948,38 @@ function cfPostsTable(posts){
       <th class="right">Просм.</th><th class="right">Отв.</th><th class="right">Rate</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+// Раздел живёт двумя вкладками: «Сводка» — свои посты и как они зашли,
+// «Источники» — что дайджест нашёл в чужих каналах. В бот уходит только
+// верхушка дня и там теряется; здесь лежит вся накопленная база со ссылками.
+let CF_TAB="summary";
+function cfTabs(){
+  return `<div class="ttoolbar" style="margin-bottom:14px">
+      <button id="cf-t-summary" class="${CF_TAB==='summary'?'primary':'ghost'}">Сводка</button>
+      <button id="cf-t-sources" class="${CF_TAB==='sources'?'primary':'ghost'}">Источники</button>
+    </div>`;
+}
+function cfBindTabs(v){
+  const b1=$("#cf-t-summary"), b2=$("#cf-t-sources");
+  if(b1)b1.onclick=()=>{CF_TAB="summary";viewContentText(v);};
+  if(b2)b2.onclick=()=>{CF_TAB="sources";viewContentText(v);};
+}
+
 async function viewContentText(v){
-  v.innerHTML=`<div class="empty">Загружаю сводку из Google-таблицы…</div>`;
+  if(CF_TAB==="sources")return viewContentSources(v);
+
+  v.innerHTML=cfTabs()+`<div class="empty">Загружаю сводку из Google-таблицы…</div>`;
+  cfBindTabs(v);
   let s;
   try{ s=await api("/api/content/text/summary"); }
-  catch(e){ v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`; return; }
-  if(s.error){ v.innerHTML=`<div class="empty">⚠️ ${esc(s.error)}</div>`; return; }
+  catch(e){ v.innerHTML=cfTabs()+`<div class="empty">Ошибка: ${esc(e.message)}</div>`; cfBindTabs(v); return; }
+  if(s.error){ v.innerHTML=cfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`; cfBindTabs(v); return; }
 
   const filtered=cfApplyFilter(s.posts||[]);
   const best=s.best_week;
   const bestBlock=best?`<div class="cf-best">🏆 Лучший пост недели (${best.replies} ответов) — ${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.first_line)}</a>`:esc(best.first_line)}</div>`:"";
   const pendingWarn=s.pending<=2?`<span class="tag" style="border-color:var(--red);color:var(--red)">⚠️ пора пополнить очередь</span>`:"";
 
-  v.innerHTML=`<div class="dash">
+  v.innerHTML=cfTabs()+`<div class="dash">
     <div class="dash-grid">
       <section class="dash-glass dash-card" style="grid-column:1/-1">
         <div class="dash-chh"><h3>Сводка · Threads / VK / Telegram</h3>
@@ -2992,6 +3017,65 @@ async function viewContentText(v){
   </div>`;
 
   wireContentText(v,s);
+  cfBindTabs(v);
+}
+
+/** Источники: что дайджест нашёл в чужих каналах и во что это выросло. */
+let CF_SRC_CHAN="";
+async function viewContentSources(v){
+  v.innerHTML=cfTabs()+`<div class="empty">Загружаю находки дайджеста…</div>`;
+  cfBindTabs(v);
+  let s;
+  try{ s=await api("/api/content/text/sources"); }
+  catch(e){ v.innerHTML=cfTabs()+`<div class="empty">Ошибка: ${esc(e.message)}</div>`; cfBindTabs(v); return; }
+  if(s.error){ v.innerHTML=cfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`; cfBindTabs(v); return; }
+
+  const finds=CF_SRC_CHAN?s.finds.filter(f=>f.channel===CF_SRC_CHAN):s.finds;
+
+  const chips=[`<button class="cf-chip${CF_SRC_CHAN?"":" on"}" data-chan="">все</button>`]
+    .concat(s.channels.map(c=>
+      `<button class="cf-chip${CF_SRC_CHAN===c.channel?" on":""}" data-chan="${esc(c.channel)}">${esc(c.channel)} · ${c.count}</button>`))
+    .join("");
+
+  const list=finds.map(f=>`<a class="cf-find" href="${esc(f.link)}" target="_blank" rel="noopener">
+      <div class="cf-find-head">
+        <span class="tag">${esc(f.channel)}</span>
+        <span class="sub mono">${esc((f.date||"").slice(0,10))}</span>
+        <span class="sub mono">${f.views.toLocaleString("ru-RU")} просм · ${f.reactions} реакц</span>
+        ${f.used?'<span class="tag" style="border-color:var(--green);color:var(--green)">взято</span>':""}
+      </div>
+      <div class="cf-find-title">${esc(f.title)}</div>
+    </a>`).join("");
+
+  const themes=s.themes.filter(t=>t.from_digest).slice(-20).reverse()
+    .map(t=>`<div class="cf-plain-post"><span class="cf-post-text">${esc(t.theme)}</span>
+      <span class="sub">${esc(t.status||"")}</span></div>`).join("");
+
+  v.innerHTML=cfTabs()+`<div class="dash"><div class="dash-grid">
+      <section class="dash-glass dash-card" style="grid-column:1/-1">
+        <div class="dash-chh"><h3>Каналы</h3>
+          <span class="tag">${s.total_finds} находок</span>
+          <span class="sub">дайджест собирает раз в сутки</span></div>
+        <div class="cf-chart-switch" id="cf-chans">${chips}</div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:span 7">
+        <div class="dash-chh"><h3>Что зацепило внимание</h3>
+          <span class="tag">${finds.length}</span>
+          <span class="sub">клик — открыть оригинал</span></div>
+        <div class="cf-postlist">${list||'<div class="empty">Дайджест ещё ничего не собрал.</div>'}</div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:span 5">
+        <div class="dash-chh"><h3>Темы из дайджеста</h3><span class="tag">лист ПЛАН</span></div>
+        <div class="cf-postlist">${themes||'<div class="empty">Тем пока нет.</div>'}</div>
+      </section>
+    </div></div>`;
+
+  cfBindTabs(v);
+  v.querySelectorAll("#cf-chans .cf-chip").forEach(b=>{
+    b.onclick=()=>{CF_SRC_CHAN=b.dataset.chan;viewContentSources(v);};
+  });
 }
 
 /** Столбики динамики в выбранном масштабе. */
@@ -6670,19 +6754,35 @@ async function showTestDialog(id){
       const note=h
         ? `<span style="color:#c0392b">⛔ ${h.kind} до ${esc(fmt(h.till))}</span>`
         : `<span class="sub">${esc(age)}</span>`;
+      // Те же бейджи, что в настройках кампании: назначение номера, состоит ли он
+      // в команде ЭТОЙ кампании и не занят ли чужой активной рассылкой. Раньше
+      // здесь был плоский список, и оператор не мог сопоставить его с командой —
+      // тест уходил с номера, который в бою вообще не участвует.
+      const role=a.acc_role?(ACC_ROLE_SHORT[a.acc_role]||""):"";
+      const roleB=role?` <span class="badge" title="назначение номера">${esc(role)}</span>`:"";
+      const teamB=a.in_team
+        ? ` <span class="badge b-active" title="этот номер входит в команду кампании — им пойдёт и боевая рассылка">✓ в команде</span>`
+        : ` <span class="badge" style="opacity:.7" title="в команде кампании его нет: тест уйдёт с него, а бой — нет">не в команде</span>`;
+      const busyB=a.busy_campaign
+        ? ` <span class="badge b-blocked" title="номер уже занят другой активной кампанией — в команду этой его не добавить">занят: ${esc(a.busy_campaign)}</span>`
+        : "";
       return `<label title="${h?esc(h.why):""}" style="display:flex;align-items:center;gap:8px;padding:3px 0;${h?"opacity:.65;cursor:not-allowed":"cursor:pointer"}">
         <input type="checkbox" class="tst-acc-cb" value="${a.id}"${h?" disabled":""}
-          ${(!h&&String(a.id)===String(opts.main_account_id))?" checked":""}>
-        <span>${nm}${ph} ${note}</span></label>`;
+          ${(!h&&(a.in_team||String(a.id)===String(opts.main_account_id)))?" checked":""}>
+        <span>${nm}${ph}${roleB}${teamB}${busyB} ${note}</span></label>`;
     };
     const grp=(title,list,color)=>list.length
       ? `<div class="sub" style="margin:6px 0 2px;font-weight:600${color?";color:"+color:""}">${title}</div>${list.map(row).join("")}`
       : "";
     const free=accs.filter(a=>!held(a)), blocked=accs.filter(held);
+    // Команда кампании — отдельной группой сверху: тест имеет смысл гонять тем же
+    // составом, каким пойдёт бой, иначе проверяешь одно, а отправляешь другим.
+    const inTeam=free.filter(a=>a.in_team), rest=free.filter(a=>!a.in_team);
     accSel.innerHTML=
-      grp("прогретые — готовы слать", free.filter(a=>a.status==="active"))+
-      grp("на прогреве — для теста годятся", free.filter(a=>a.status==="warming"))+
-      grp("прочие", free.filter(a=>a.status!=="active"&&a.status!=="warming"))+
+      grp("🎯 команда этой кампании — ими пойдёт бой", inTeam, "var(--green)")+
+      grp("прогретые — готовы слать", rest.filter(a=>a.status==="active"))+
+      grp("на прогреве — для теста годятся", rest.filter(a=>a.status==="warming"))+
+      grp("прочие", rest.filter(a=>a.status!=="active"&&a.status!=="warming"))+
       grp("⛔ придержаны Telegram — сейчас не отправят", blocked, "#c0392b");
     // Подсказка под списком: сколько выбрано и чем это обернётся. Предупреждение о
     // протухшей сессии осталось — но теперь оно про КОНКРЕТНЫЕ отмеченные номера.

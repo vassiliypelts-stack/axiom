@@ -50,6 +50,8 @@ async def main():
         title = getattr(f, "title", None)
         if title is None:
             continue  # "All Chats" псевдо-папка — пропускаем
+        # в новых слоях API title приходит как TextWithEntities, а не str
+        title = getattr(title, "text", title)
         chats = []
         for peer in getattr(f, "include_peers", []):
             peer_id = (getattr(peer, "channel_id", None)

@@ -128,6 +128,69 @@ def _daily(posts: list[dict], now: datetime, days: int = 30) -> list[dict]:
     return [buckets[k] for k in sorted(buckets)]
 
 
+def sources() -> dict:
+    """
+    Что дайджест нашёл в чужих каналах, и какие темы из этого выросли.
+
+    В бот уходит только верхушка дня и она там теряется. Здесь лежит вся
+    накопленная БАЗА-ТЕМ со ссылками на оригиналы — чтобы можно было зайти
+    и прочитать то, что зацепило внимание, а не только заголовок из сводки.
+    """
+    book = _book()
+
+    finds = []
+    try:
+        rows = book.worksheet("БАЗА-ТЕМ").get_all_values()
+    except Exception:
+        rows = []
+    for r in rows[1:]:
+        r = r + [""] * (11 - len(r))
+        if not (r[3] or r[4]):
+            continue
+        finds.append({
+            "date": r[1],
+            "channel": r[2],
+            "title": r[3] or _first_line(r[4]),
+            "text": (r[4] or "")[:600],
+            "views": _to_int(r[5]),
+            "reactions": _to_int(r[6]),
+            "forwards": _to_int(r[7]),
+            "weight": _to_int(r[8]),
+            "link": _abs_link(r[9]),
+            "used": bool((r[10] or "").strip()),
+        })
+    finds.sort(key=lambda f: f["date"], reverse=True)
+
+    themes = []
+    try:
+        rows = book.worksheet("ПЛАН").get_all_values()
+    except Exception:
+        rows = []
+    for r in rows[1:]:
+        r = r + [""] * (9 - len(r))
+        if not r[1]:
+            continue
+        themes.append({
+            "theme": r[1],
+            "type": r[2],
+            "status": r[8],
+            "from_digest": "дайджест" in (r[8] or "").lower(),
+        })
+
+    channels = {}
+    for f in finds:
+        c = channels.setdefault(f["channel"], {"channel": f["channel"], "count": 0, "views": 0})
+        c["count"] += 1
+        c["views"] += f["views"]
+
+    return {
+        "finds": finds[:200],
+        "themes": themes[-40:],
+        "channels": sorted(channels.values(), key=lambda c: c["count"], reverse=True),
+        "total_finds": len(finds),
+    }
+
+
 def summary() -> dict:
     book = _book()
     queue_rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()

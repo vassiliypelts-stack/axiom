@@ -28,6 +28,16 @@ def content_text_summary() -> JSONResponse:
         return JSONResponse({"error": f"Не удалось прочитать таблицу: {e}"}, status_code=502)
 
 
+@router.get("/api/content/text/sources")
+def content_text_sources() -> JSONResponse:
+    try:
+        return JSONResponse(content_sheet.sources())
+    except content_sheet.ContentSheetError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"Не удалось прочитать таблицу: {e}"}, status_code=502)
+
+
 @router.get("/api/content/video/summary")
 def content_video_summary() -> JSONResponse:
     return JSONResponse({"not_configured": True,

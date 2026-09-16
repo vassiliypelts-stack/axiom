@@ -22,7 +22,8 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 Q_ID, Q_DATE, Q_PLATFORMS, Q_TYPE, Q_TEXT, Q_LEN, Q_STATUS, Q_LINK_THREADS, Q_LINK_VK, Q_LINK_TG = range(10)
 # индексы колонок листа МЕТРИКИ (с 0)
 M_DATE, M_PLATFORM, M_ID, M_TYPE, M_FIRSTLINE, M_VIEWS, M_LIKES, M_REPLIES, M_REPOSTS, M_QUOTES, M_RATE = range(11)
-M_LINK = 15
+# 11-13 — «Написали в личку», «Аудиты», «Продажи»; ссылка идёт следом
+M_LINK = 14
 
 
 class ContentSheetError(RuntimeError):
@@ -54,6 +55,19 @@ def _to_int(raw: str) -> int:
         return 0
 
 
+def _abs_link(raw: str) -> str:
+    """Телеграм в таблице лежит как «@channel/52» — без схемы такая ссылка
+    считается относительной и ведёт на сам пульт, а не на пост."""
+    link = (raw or "").strip()
+    if not link or link.startswith(("http://", "https://")):
+        return link
+    if link.startswith("@"):
+        return f"https://t.me/{link[1:]}"
+    if link.startswith("t.me/"):
+        return f"https://{link}"
+    return link
+
+
 def threads_posts(rows: list[list[str]]) -> list[dict]:
     out = []
     for r in rows[1:]:
@@ -61,6 +75,7 @@ def threads_posts(rows: list[list[str]]) -> list[dict]:
             continue
         r = r + [""] * (16 - len(r))
         out.append({
+            "platform": "threads",
             "date": r[M_DATE],
             "first_line": r[M_FIRSTLINE] or "(без текста)",
             "views": _to_int(r[M_VIEWS]),
@@ -68,7 +83,7 @@ def threads_posts(rows: list[list[str]]) -> list[dict]:
             "replies": _to_int(r[M_REPLIES]),
             "reposts": _to_int(r[M_REPOSTS]),
             "rate": _to_float(r[M_RATE]),
-            "link": r[M_LINK],
+            "link": _abs_link(r[M_LINK]),
         })
     out.sort(key=lambda p: p["date"], reverse=True)
     return out
@@ -85,11 +100,32 @@ def platform_queue_posts(rows: list[list[str]], platform: str, link_col: int) ->
         if platform not in platforms or not link:
             continue
         out.append({
+            "platform": platform,
+            "date": (r[Q_DATE] or "").strip()[:10],
             "type": r[Q_TYPE],
             "first_line": _first_line(r[Q_TEXT]),
-            "link": link,
+            "link": _abs_link(link),
         })
+    out.sort(key=lambda p: p["date"], reverse=True)
     return out
+
+
+def _daily(posts: list[dict], now: datetime, days: int = 30) -> list[dict]:
+    """Просмотры/посты по дням — для переключателя периода в динамике."""
+    buckets: dict[str, dict] = {}
+    edge = (now - timedelta(days=days)).date()
+    for p in posts:
+        try:
+            d = datetime.strptime(p["date"], "%Y-%m-%d").date()
+        except (ValueError, KeyError):
+            continue
+        if d < edge:
+            continue
+        b = buckets.setdefault(p["date"], {"label": p["date"], "posts": 0, "views": 0, "replies": 0})
+        b["posts"] += 1
+        b["views"] += p["views"]
+        b["replies"] += p["replies"]
+    return [buckets[k] for k in sorted(buckets)]
 
 
 def summary() -> dict:
@@ -142,6 +178,16 @@ def summary() -> dict:
             "rate": _to_float(r[5]) if len(r) > 5 else 0.0,
         })
 
+    vk_posts = platform_queue_posts(queue_rows, "vk", Q_LINK_VK)
+    tg_posts = platform_queue_posts(queue_rows, "tg", Q_LINK_TG)
+
+    # Единая лента для таблицы с фильтрами: у VK/TG метрик нет, поля идут нулями.
+    all_posts = threads + [
+        {**p, "views": 0, "likes": 0, "replies": 0, "reposts": 0, "rate": 0.0}
+        for p in vk_posts + tg_posts
+    ]
+    all_posts.sort(key=lambda p: p.get("date") or "", reverse=True)
+
     return {
         "today": {"posts": len(today), "views": total(today, "views"), "replies": total(today, "replies")},
         "week": {"posts": len(week), "views": week_views, "replies": week_replies, "rate": rate},
@@ -149,7 +195,9 @@ def summary() -> dict:
         "best_week": best,
         "pending": pending,
         "threads_posts": threads[:20],
-        "vk_posts": platform_queue_posts(queue_rows, "vk", Q_LINK_VK),
-        "tg_posts": platform_queue_posts(queue_rows, "tg", Q_LINK_TG),
+        "vk_posts": vk_posts,
+        "tg_posts": tg_posts,
+        "posts": all_posts,
+        "daily": _daily(threads, now),
         "weeks": weeks[-8:],
     }

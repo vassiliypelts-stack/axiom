@@ -245,6 +245,30 @@
   .cf-week-bar{width:28px;border-radius:5px 5px 0 0;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 40%,transparent));}
   .cf-week-v{font-size:11px;color:var(--text);}
   .cf-week-l{font-size:10px;text-align:center;}
+  /* ── Контент-завод: фильтры, общая таблица, иконка перехода на пост ── */
+  .cf-filters{display:flex;flex-wrap:wrap;gap:18px;align-items:center;}
+  .cf-fgroup{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .cf-chip{padding:5px 11px;border-radius:999px;border:1px solid var(--border);background:var(--panel2);
+    color:var(--muted);font-size:12px;cursor:pointer;transition:.15s;font-family:inherit;}
+  .cf-chip:hover{border-color:var(--accent);color:var(--text);}
+  .cf-chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink);font-weight:600;}
+  .cf-date{padding:5px 9px;border-radius:9px;border:1px solid var(--border);background:var(--panel2);
+    color:var(--text);font-size:12px;font-family:inherit;}
+  .cf-chart-switch{display:flex;gap:6px;margin-left:auto;}
+  .cf-tablewrap{overflow-x:auto;margin-top:10px;}
+  .cf-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  .cf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
+    font-weight:600;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .cf-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent);vertical-align:middle;}
+  .cf-table tbody tr:hover{background:color-mix(in srgb,var(--panel2) 60%,transparent);}
+  .cf-table .right{text-align:right;}
+  .cf-td-text{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .cf-open{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:none;
+    border-radius:7px;border:1px solid var(--border);color:var(--muted);transition:.15s;}
+  .cf-open svg{width:13px;height:13px;}
+  .cf-open:hover{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-soft);}
+  .cf-open-off{opacity:.35;cursor:default;font-size:11px;}
+  .cf-open-off:hover{border-color:var(--border);color:var(--muted);background:none;}
   .dash-empty .big{font-family:'JetBrains Mono';font-weight:800;font-size:46px;color:var(--muted);opacity:.6;}
   .dash-empty .txt{font-size:12.5px;color:var(--muted);max-width:210px;line-height:1.5;}
   .dash-empty .mini{display:flex;gap:20px;} .dash-empty .mini div{font-family:'JetBrains Mono';font-size:12px;color:var(--muted);} .dash-empty .mini b{display:block;font-size:22px;color:var(--text);margin-bottom:3px;}
@@ -2827,8 +2851,21 @@ function cfRatePill(rate){
   const cls=rate>=1?"lime":"";
   return `<span class="tag ${cls}">${rate?rate.toFixed(2).replace('.',',')+'%':'—'}</span>`;
 }
+const CF_PLATFORMS={threads:{label:"Threads",ic:"📘"},vk:{label:"VK",ic:"🔵"},tg:{label:"Telegram",ic:"✈️"}};
+// Состояние фильтров живёт между перерисовками таблицы и переживает переход по разделам.
+let CF_FILTER={platforms:new Set(["threads","vk","tg"]),period:"30",from:"",to:""};
+let CF_CHART="week"; // день / неделя / месяц — масштаб графика динамики
+
+// Ссылка на пост открывается отдельной иконкой, а не кликом по всей строке:
+// строка — это данные, которые можно выделить и скопировать.
+function cfOpenIcon(link){
+  if(!link)return `<span class="cf-open cf-open-off" title="Ссылки на пост нет в таблице">—</span>`;
+  return `<a class="cf-open" href="${esc(link)}" target="_blank" rel="noopener" title="Открыть пост"
+     onclick="event.stopPropagation()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+     stroke-linecap="round"><path d="M8 4H5a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1v-3"/><path d="M12 3h5v5"/><path d="M17 3l-7 7"/></svg></a>`;
+}
 function cfPostRow(p){
-  return `<a class="cf-post" href="${esc(p.link)}" target="_blank" rel="noopener">
+  return `<div class="cf-post">
       <span class="cf-post-date mono">${esc((p.date||"").slice(5))}</span>
       <span class="cf-post-text">${esc(p.first_line)}</span>
       <span class="cf-post-stats">
@@ -2836,15 +2873,74 @@ function cfPostRow(p){
         <b class="mono">${p.replies}</b><i>отв.</i>
         ${cfRatePill(p.rate)}
       </span>
-    </a>`;
+      ${cfOpenIcon(p.link)}
+    </div>`;
 }
 function cfPlatformList(posts,emptyHint){
   if(!posts.length)return `<div class="empty">Пока нет опубликованных постов.</div>`;
-  const rows=posts.map(p=>`<a class="cf-plain-post" href="${esc(p.link)}" target="_blank" rel="noopener">
+  const rows=posts.map(p=>`<div class="cf-plain-post">
       <span class="cf-post-text">${esc(p.first_line)}</span>
       <span class="sub">${esc(p.type||"")}</span>
-    </a>`).join("");
+      ${cfOpenIcon(p.link)}
+    </div>`).join("");
   return rows+`<div class="cf-note">${esc(emptyHint)}</div>`;
+}
+
+/** Отбор постов по выбранным платформам и датам. */
+function cfApplyFilter(posts){
+  const f=CF_FILTER;
+  let from=f.from,to=f.to;
+  if(f.period!=="custom"&&f.period!=="all"){
+    const d=new Date();d.setDate(d.getDate()-Number(f.period));
+    from=d.toISOString().slice(0,10);to="";
+  }
+  if(f.period==="all"){from="";to="";}
+  return posts.filter(p=>{
+    if(!f.platforms.has(p.platform))return false;
+    const d=p.date||"";
+    if(from&&d&&d<from)return false;
+    if(to&&d&&d>to)return false;
+    return true;
+  });
+}
+
+/** Панель фильтров: чипы платформ + период + произвольные даты. */
+function cfFilterBar(){
+  const f=CF_FILTER;
+  const chips=Object.entries(CF_PLATFORMS).map(([k,v])=>
+    `<button class="cf-chip${f.platforms.has(k)?" on":""}" data-pf="${k}">${v.ic} ${esc(v.label)}</button>`).join("");
+  const periods=[["7","7 дней"],["30","30 дней"],["90","90 дней"],["all","всё время"]].map(([k,l])=>
+    `<button class="cf-chip${f.period===k?" on":""}" data-period="${k}">${esc(l)}</button>`).join("");
+  return `<section class="dash-glass dash-card cf-filters" style="grid-column:1/-1">
+    <div class="cf-fgroup"><span class="sub">Площадки:</span>${chips}</div>
+    <div class="cf-fgroup"><span class="sub">Период:</span>${periods}</div>
+    <div class="cf-fgroup"><span class="sub">С:</span>
+      <input type="date" class="cf-date" id="cf-from" value="${esc(f.from)}">
+      <span class="sub">по</span>
+      <input type="date" class="cf-date" id="cf-to" value="${esc(f.to)}">
+    </div>
+  </section>`;
+}
+
+/** Общая таблица постов всех площадок — то, что фильтруется чипами. */
+function cfPostsTable(posts){
+  if(!posts.length)return `<div class="empty">Под фильтр ничего не попало.</div>`;
+  const rows=posts.map(p=>{
+    const pf=CF_PLATFORMS[p.platform]||{label:p.platform,ic:""};
+    const hasMetrics=p.platform==="threads";
+    return `<tr>
+      <td class="mono sub">${esc(p.date||"—")}</td>
+      <td><span class="tag">${pf.ic} ${esc(pf.label)}</span></td>
+      <td class="cf-td-text">${esc(p.first_line)}</td>
+      <td class="mono right">${hasMetrics?p.views.toLocaleString('ru-RU'):'<span class="sub">—</span>'}</td>
+      <td class="mono right">${hasMetrics?p.replies:'<span class="sub">—</span>'}</td>
+      <td class="right">${hasMetrics?cfRatePill(p.rate):'<span class="sub">—</span>'}</td>
+      <td class="right">${cfOpenIcon(p.link)}</td>
+    </tr>`;}).join("");
+  return `<div class="cf-tablewrap"><table class="cf-table">
+    <thead><tr><th>Дата</th><th>Площадка</th><th>Текст</th>
+      <th class="right">Просм.</th><th class="right">Отв.</th><th class="right">Rate</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
 }
 async function viewContentText(v){
   v.innerHTML=`<div class="empty">Загружаю сводку из Google-таблицы…</div>`;
@@ -2853,8 +2949,9 @@ async function viewContentText(v){
   catch(e){ v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`; return; }
   if(s.error){ v.innerHTML=`<div class="empty">⚠️ ${esc(s.error)}</div>`; return; }
 
+  const filtered=cfApplyFilter(s.posts||[]);
   const best=s.best_week;
-  const bestBlock=best?`<div class="cf-best">🏆 Лучший пост недели (${best.replies} ответов) — <a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.first_line)}</a></div>`:"";
+  const bestBlock=best?`<div class="cf-best">🏆 Лучший пост недели (${best.replies} ответов) — ${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.first_line)}</a>`:esc(best.first_line)}</div>`:"";
   const pendingWarn=s.pending<=2?`<span class="tag" style="border-color:var(--red);color:var(--red)">⚠️ пора пополнить очередь</span>`:"";
 
   v.innerHTML=`<div class="dash">
@@ -2873,33 +2970,74 @@ async function viewContentText(v){
         ${bestBlock}
       </section>
 
+      ${cfFilterBar()}
+
       <section class="dash-glass dash-card" style="grid-column:1/-1">
-        <div class="dash-chh"><span class="ic">📘</span><h3>Threads</h3><span class="tag">метрики из API</span></div>
-        <div class="cf-postlist">${s.threads_posts.length?s.threads_posts.map(cfPostRow).join(""):'<div class="empty">Нет данных за период.</div>'}</div>
-      </section>
-
-      <section class="dash-glass dash-card" style="grid-column:span 6">
-        <div class="dash-chh"><span class="ic">🔵</span><h3>VK</h3><span class="tag">${s.vk_posts.length} постов</span></div>
-        <div class="cf-postlist">${cfPlatformList(s.vk_posts,"Охваты по VK автосбором не тянутся — смотреть вручную в группе.")}</div>
-      </section>
-
-      <section class="dash-glass dash-card" style="grid-column:span 6">
-        <div class="dash-chh"><span class="ic">✈️</span><h3>Telegram</h3><span class="tag">${s.tg_posts.length} постов</span></div>
-        <div class="cf-postlist">${cfPlatformList(s.tg_posts,"Просмотры по Telegram автосбором не тянутся — смотреть вручную в канале.")}</div>
+        <div class="dash-chh"><h3>Все посты</h3>
+          <span class="tag">${filtered.length} из ${(s.posts||[]).length}</span>
+          <span class="sub">метрики есть только у Threads</span></div>
+        ${cfPostsTable(filtered)}
       </section>
 
       <section class="dash-glass dash-card" style="grid-column:1/-1">
-        <div class="dash-chh"><h3>Динамика по неделям</h3><span class="tag">Threads</span></div>
-        <div class="cf-weeks">
-          ${s.weeks.map(w=>`<div class="cf-week">
-              <div class="cf-week-bar" style="height:${Math.max(6,Math.round(w.views/Math.max(1,Math.max(...s.weeks.map(x=>x.views)))*100))}px"></div>
-              <div class="cf-week-v mono">${w.views.toLocaleString('ru-RU')}</div>
-              <div class="cf-week-l sub">${esc(w.label)}</div>
-            </div>`).join("")}
+        <div class="dash-chh"><h3>Динамика</h3><span class="tag">Threads</span>
+          <span class="cf-chart-switch">
+            ${[["day","по дням"],["week","по неделям"],["month","по месяцам"]].map(([k,l])=>
+              `<button class="cf-chip${CF_CHART===k?" on":""}" data-chart="${k}">${esc(l)}</button>`).join("")}
+          </span>
         </div>
+        <div class="cf-weeks" id="cf-chart">${cfChartBars(s)}</div>
       </section>
     </div>
   </div>`;
+
+  wireContentText(v,s);
+}
+
+/** Столбики динамики в выбранном масштабе. */
+function cfChartBars(s){
+  let data;
+  if(CF_CHART==="day"){
+    data=(s.daily||[]).slice(-14).map(d=>({label:d.label.slice(5),views:d.views}));
+  }else if(CF_CHART==="month"){
+    const by={};
+    for(const d of (s.daily||[])){const m=d.label.slice(0,7);by[m]=(by[m]||0)+d.views;}
+    data=Object.entries(by).map(([label,views])=>({label,views}));
+  }else{
+    data=(s.weeks||[]).map(w=>({label:w.label,views:w.views}));
+  }
+  if(!data.length)return `<div class="empty">Нет данных за период.</div>`;
+  const max=Math.max(1,...data.map(x=>x.views));
+  return data.map(w=>`<div class="cf-week">
+      <div class="cf-week-bar" style="height:${Math.max(6,Math.round(w.views/max*100))}px"></div>
+      <div class="cf-week-v mono">${w.views.toLocaleString('ru-RU')}</div>
+      <div class="cf-week-l sub">${esc(w.label)}</div>
+    </div>`).join("");
+}
+
+/** Обработчики фильтров и переключателя графика. */
+function wireContentText(v,s){
+  v.querySelectorAll("[data-pf]").forEach(b=>b.onclick=()=>{
+    const k=b.dataset.pf;
+    // последнюю включённую площадку не выключаем — иначе таблица пустеет молча
+    if(CF_FILTER.platforms.has(k)){ if(CF_FILTER.platforms.size>1)CF_FILTER.platforms.delete(k); }
+    else CF_FILTER.platforms.add(k);
+    viewContentText(v);
+  });
+  v.querySelectorAll("[data-period]").forEach(b=>b.onclick=()=>{
+    CF_FILTER.period=b.dataset.period;CF_FILTER.from="";CF_FILTER.to="";
+    viewContentText(v);
+  });
+  const from=v.querySelector("#cf-from"),to=v.querySelector("#cf-to");
+  const onDate=()=>{CF_FILTER.from=from.value;CF_FILTER.to=to.value;CF_FILTER.period="custom";viewContentText(v);};
+  if(from)from.onchange=onDate;
+  if(to)to.onchange=onDate;
+  v.querySelectorAll("[data-chart]").forEach(b=>b.onclick=()=>{
+    CF_CHART=b.dataset.chart;
+    const mount=v.querySelector("#cf-chart");
+    if(mount)mount.innerHTML=cfChartBars(s);
+    v.querySelectorAll("[data-chart]").forEach(x=>x.classList.toggle("on",x.dataset.chart===CF_CHART));
+  });
 }
 
 async function viewContentVideo(v){

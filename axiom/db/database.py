@@ -24,6 +24,9 @@ def get_conn() -> sqlite3.Connection:
 
 # Поля обогащения добавляем миграцией (ALTER), чтобы не ломать существующую БД.
 _EXTRA_CONTACT_COLS = {
+    # Selected personal contacts belong only to the campaign chosen at import.
+    # NULL preserves the existing shared-audience behavior for older contacts.
+    "outreach_campaign_id": "INTEGER",
     # Кем человек был в спарсенном чате: creator|admin|member|active. Владельца и
     # админов видно в CRM отдельным полем, а не растворённым в тексте тега: это ЛПР,
     # и писать им надо иначе, чем рядовому участнику.
@@ -197,6 +200,11 @@ DEFAULT_STAGES = [
 # Поля кампаний, добавляемые миграцией (промпт ИИ-агента и т.п.).
 _EXTRA_CAMPAIGN_COLS = {
     "agent_prompt": "TEXT",
+    # Снимки в момент первого реального запуска: отчёт не должен менять историю,
+    # если позднее перетасовали команду или пополнили базу.
+    "initial_audience_count": "INTEGER",
+    "start_accounts_count": "INTEGER",
+    "start_account_ids": "TEXT",
     "project_id": "INTEGER",   # к какому проекту относится кампания
     "kp_file": "TEXT",         # имя прикреплённого файла КП (data/kp/...), агент шлёт файлом
     # --- экономика/ROI кампании ---

@@ -28,8 +28,9 @@ from channels.antiban import classify_error
 from channels.telegram import build_client, _send_parts, _resolve_entity
 from db import database
 
-# Пауза перед ЕЩЁ следующей строкой (если после этой снова есть остаток).
-NEXT_LINE_MIN = (1 * 60, 3 * 60)  # секунды: 1–3 минуты (живой темп переписки)
+# Третье и последнее касание — только через сутки после второго. После него
+# контакт без ответа получает статус «ignored», чтобы больше не попасть в дожим.
+NEXT_LINE_MIN = (24 * 60 * 60, 24 * 60 * 60)
 
 
 def _due_rows(conn) -> list[dict]:
@@ -159,6 +160,13 @@ async def _send_next_line(row: dict) -> None:
                         (json.dumps(rest, ensure_ascii=False), next_at, row["id"]))
         else:
             conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
+            database.set_status(conn, row["contact_id"], "ignored")
+            database.add_event(
+                conn, "ignored", f"🔕 Не ответил: контакт {row['contact_id']}",
+                "Ушли все три касания, ответа нет. Автоматизация больше не пишет этому человеку.",
+                level="info", contact_id=row["contact_id"], campaign_id=row.get("campaign_id"),
+                account_id=acc["id"],
+            )
     print(f"[{label}] -> контакт {row['contact_id']}: строка отправлена"
           + (f" (ещё {len(rest)} впереди)" if rest else " (опенер закрыт)"))
     try:

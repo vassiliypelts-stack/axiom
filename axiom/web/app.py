@@ -42,6 +42,10 @@ FUNNEL = [
 FUNNEL_KEYS = [k for k, _ in FUNNEL]
 
 app = FastAPI(title="AXIOM Dashboard")
+from web.google_contacts import router as google_contacts_router
+app.include_router(google_contacts_router)
+from web.content_factory import router as content_factory_router
+app.include_router(content_factory_router)
 
 # --------------------------------------------------------------------------- #
 #  Вход по паролю (закрытый доступ на сервере).                                #
@@ -569,6 +573,17 @@ def accounts_list() -> JSONResponse:
     with database.get_conn() as conn:
         _seed_accounts(conn)
         rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+        # Назначение на ИДУЩИЕ кампании. Отдаём его вместе с аккаунтом, чтобы
+        # оператор не поставил один номер в две одновременные рассылки.
+        assigned_campaigns: dict[int, list[dict]] = {}
+        for x in conn.execute(
+            "SELECT ca.account_id, c.id, c.name, c.status "
+            "FROM campaign_accounts ca JOIN campaigns c ON c.id=ca.campaign_id "
+            "WHERE c.status='running' ORDER BY c.id"
+        ):
+            assigned_campaigns.setdefault(x["account_id"], []).append({
+                "id": x["id"], "name": x["name"], "status": x["status"],
+            })
         # сколько чатов «держит»/слушает каждый аккаунт (по инвентаризации, joined_by)
         chats_by = {r["aid"]: r["c"] for r in conn.execute(
             "SELECT joined_by aid, COUNT(*) c FROM chats WHERE joined_by IS NOT NULL "
@@ -607,6 +622,8 @@ def accounts_list() -> JSONResponse:
         code = d.get("country") or phone_geo.detect(d.get("phone"))
         d["country_label"] = phone_geo.label(code) if code else ""
         d["days_alive"] = _days_since(d.get("bought_at") or d.get("created_at"))
+        d["active_campaigns"] = assigned_campaigns.get(d["id"], [])
+        d["campaign_available"] = not bool(d["active_campaigns"])
         out.append(d)
     return JSONResponse(out)
 
@@ -3095,8 +3112,7 @@ def _hot_lead_scheduler() -> None:
     """АНТИРИСК по горячему лиду: человек согласился, что с ним свяжется представитель,
     а владелец так и не написал. Через HOT_LEAD_RECHECK_HOURS часов:
       1) бот спрашивает, дошло ли сообщение, и просит проверить личку;
-      2) дублирует презентацию файлом — на случай, если человек её не получил;
-      3) владельцу уходит громкий аларм в ЛС (notify.notify_hot_stale).
+      2) владельцу уходит громкий аларм в ЛС (notify.notify_hot_stale).
 
     ЧТО БЫЛО РАНЬШЕ И ПОЧЕМУ ИЗМЕНИЛОСЬ. Тик ждал 10 минут и писал «спасибо, до связи)»
     — мягко закрывал разговор. Для прежнего сценария (агент сам вёл к КЭВ) это годилось,
@@ -3143,14 +3159,6 @@ def _hot_lead_scheduler() -> None:
                         "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
                         "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (r["id"],)
                     ).fetchone()
-                    # ВСЕ материалы кампании, а не первый попавшийся: у «Крыма» их два
-                    # (презентация «7 источников дохода» и бизнес-план), и человек,
-                    # который так и не дождался владельца, должен получить оба.
-                    kps = conn.execute(
-                        "SELECT kp_file, kp_text FROM campaign_kps WHERE campaign_id=? "
-                        "AND kp_file IS NOT NULL AND kp_file<>'' ORDER BY id",
-                        (r["campaign_id"],),
-                    ).fetchall() if r["campaign_id"] else []
                     # Метку снимаем ДО отправки: что бы дальше ни случилось, второй
                     # раз этого человека не дёрнем.
                     conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (r["id"],))
@@ -3171,30 +3179,17 @@ def _hot_lead_scheduler() -> None:
                                  f"проекта, он всё расскажет и ответит на вопросы.")
                 else:
                     parts.append("Если нет — напишу ему, чтобы он с вами связался.")
-                parts.append("А пока прикладываю материалы по проекту — презентацию "
-                             "и подробный бизнес-план усадьбы.")
                 sent_ids = listener.send_via_listener(acc["account_id"], int(r["tg_user_id"]), parts)
                 if sent_ids:
                     with database.get_conn() as conn:
                         database.add_message(conn, r["id"], "out", "\n".join(parts), intent=None,
                                              account_id=acc["account_id"], tg_msg_ids=sent_ids)
-                # Файлы — отдельно и НЕ обязательны: пока владелец не загрузил
-                # презентации в кампанию (Кампания → КП → файл), шлём только текстом.
-                if kps:
-                    from channels.telegram import _kp_path
-                    for kp in kps:
-                        path = _kp_path(kp["kp_file"])
-                        if path is None:
-                            continue
-                        listener.send_file_via_listener(
-                            acc["account_id"], int(r["tg_user_id"]), str(path))
-                        time.sleep(3)        # два файла подряд без паузы — почерк бота
                 with database.get_conn() as conn:
                     database.add_event(
                         conn, "lead", f"⚠️ Лид ждал {HOT_LEAD_RECHECK_HOURS} ч без ответа",
                         "Человек согласился на контакт с представителем, но владелец ему "
-                        "так и не написал. Бот напомнил проверить личку и продублировал "
-                        "презентацию; владельцу ушёл аларм.",
+                        "так и не написал. Бот напомнил проверить личку; владельцу ушёл аларм. "
+                        "Материалы бот не отправляет — их высылает только представитель вручную.",
                         level="warn", contact_id=r["id"], campaign_id=r["campaign_id"])
                 try:
                     from channels import notify
@@ -6441,11 +6436,16 @@ def hit_to_lead(hid: int, payload: dict = Body(default={})) -> JSONResponse:
         if not h:
             return JSONResponse({"error": "не найдено"}, status_code=404)
         niche = conn.execute("SELECT name FROM niches WHERE id=?", (h["niche_id"],)).fetchone()
-        tag = f"Ниша: {niche['name']}" if niche else (f"Ключ: {h['keyword']}")
+        niche_name = (niche["name"] or "").strip() if niche else ""
+        tag = f"Ниша: {niche_name}" if niche_name else (f"Ключ: {h['keyword']}")
+        # Источник должен различать запуски парсинга. Раньше все находки, вне
+        # зависимости от ниши, попадали в CRM как `tg_keyword`, и в конструкторе
+        # кампании невозможно было выбрать только Крым, а не весь TG-парсинг.
+        source = f"tg_keyword: {niche_name}" if niche_name else "tg_keyword"
         note = f"[{h['chat_title']}] «{h['keyword']}»: {h['text']}"
         from channels.ru_names import gender_of
         cid = database.upsert_contact(
-            conn, source="tg_keyword", username=h["username"], tg_user_id=h["tg_user_id"],
+            conn, source=source, username=h["username"], tg_user_id=h["tg_user_id"],
             name=h["name"], tags=tag, notes=note, gender=gender_of(h["name"]),
         )
         conn.execute("UPDATE contacts SET has_tg='yes' WHERE id=?", (cid,))
@@ -7711,6 +7711,30 @@ def _sync_campaign_accounts(conn, cid: int, account_ids, account_limits: dict | 
         )
 
 
+def _busy_campaign_accounts(conn, account_ids, current_campaign_id: int | None = None) -> list[dict]:
+    """An account may be in drafts, but not in two running campaigns."""
+    ids = []
+    for aid in account_ids or []:
+        try:
+            ids.append(int(aid))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return []
+    sql = (
+        "SELECT a.id AS account_id, COALESCE(a.label,a.phone,'#' || a.id) AS account, "
+        "c.id AS campaign_id, c.name AS campaign "
+        "FROM campaign_accounts ca JOIN campaigns c ON c.id=ca.campaign_id "
+        "JOIN accounts a ON a.id=ca.account_id "
+        "WHERE c.status='running' AND ca.account_id IN ({})"
+    ).format(",".join("?" * len(ids)))
+    params = list(ids)
+    if current_campaign_id is not None:
+        sql += " AND c.id<>?"
+        params.append(current_campaign_id)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
 def _channel_clause(channel: str | None) -> str:
     """SQL-условие «контакт достижим хотя бы по одному из выбранных каналов».
     channel может быть 'telegram', 'whatsapp' или 'telegram,whatsapp'."""
@@ -7735,9 +7759,11 @@ def _audience_where(cid, tag, channel, channel_clause: str | None = None,
     channel_clause — подменить канальное условие (preflight меряет ТОЛЬКО TG-достижимость).
     """
     # На паузе — не в счёт "в очереди": они пока не уйдут, пока не снимут паузу.
-    where = ("status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
+    where = ("status='new' AND deleted_at IS NULL "
+             "AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?) "
+             "AND (username IS NOT NULL OR phone IS NOT NULL) "
              "AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)")
-    params: list = [cid]
+    params: list = [cid, cid]
     cc = _channel_clause(channel) if channel_clause is None else channel_clause
     if cc:
         where += " AND " + cc
@@ -7817,6 +7843,8 @@ _CAMP_FIELDS = ("name", "product", "audience_tag", "channel", "message_template"
 def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
     f = {k: (payload.get(k) or None) for k in _CAMP_FIELDS}
     f["channel"] = f["channel"] or "telegram"
+    if not (f["audience_tag"] or "").strip():
+        return JSONResponse({"error": "Выберите сегмент аудитории: кампания без сегмента могла бы взять всю базу."}, status_code=400)
     account_id = payload.get("account_id") or None
     daily_limit = int(payload.get("daily_limit") or 15)
     if not f["name"]:
@@ -7828,6 +7856,10 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
     # с резолва сотен непробитых номеров прямо во время рассылки.
     vonly = 1 if payload.get("tg_verified_only", True) else 0
     with database.get_conn() as conn:
+        busy = _busy_campaign_accounts(conn, account_ids)
+        if busy:
+            names = ", ".join(f"{x['account']} → «{x['campaign']}»" for x in busy)
+            return JSONResponse({"error": f"Аккаунты уже заняты активной кампанией: {names}"}, status_code=409)
         cur = conn.execute(
             "INSERT INTO campaigns (name, product, audience_tag, channel, account_id, daily_limit, "
             "message_template, agent_prompt, kp_text, project_id, tg_verified_only, status) "
@@ -7861,6 +7893,8 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
 def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
     f = {k: (payload.get(k) or None) for k in _CAMP_FIELDS}
     f["channel"] = f["channel"] or "telegram"
+    if not (f["audience_tag"] or "").strip():
+        return JSONResponse({"error": "Выберите сегмент аудитории: кампания без сегмента могла бы взять всю базу."}, status_code=400)
     account_id = payload.get("account_id") or None
     daily_limit = int(payload.get("daily_limit") or 15)
     if not f["name"]:
@@ -7869,6 +7903,11 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
     account_ids = payload.get("account_ids")
     account_limits = payload.get("account_limits") or {}
     with database.get_conn() as conn:
+        if account_ids is not None:
+            busy = _busy_campaign_accounts(conn, account_ids, cid)
+            if busy:
+                names = ", ".join(f"{x['account']} → «{x['campaign']}»" for x in busy)
+                return JSONResponse({"error": f"Аккаунты уже заняты активной кампанией: {names}"}, status_code=409)
         row = conn.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
@@ -9323,10 +9362,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         camp = dict(camp)
         tag = (camp.get("audience_tag") or "").strip()
-        where = "1=1"
-        params: list = []
+        where = "(outreach_campaign_id IS NULL OR outreach_campaign_id=?)"
+        params: list = [cid]
         if tag:
-            where = "tags LIKE ?"
+            where += " AND tags LIKE ?"
             params.append(f"%{tag}%")
         rows = conn.execute(
             f"SELECT id, COALESCE(person_name, name) AS who, username, phone, status, "

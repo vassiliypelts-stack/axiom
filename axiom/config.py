@@ -96,7 +96,7 @@ INBOX_BOT_OWNER = os.getenv("INBOX_BOT_OWNER", "")   # ТВОЙ telegram user id
 
 # Публичный адрес пульта — для ссылок на карточку контакта в уведомлениях (channels/notify.py),
 # которые уходят человеку в личку и должны открываться сразу, без ручного набора IP:порта.
-PUBLIC_URL = os.getenv("AXIOM_PUBLIC_URL", "http://34.16.12.181:8000")
+PUBLIC_URL = os.getenv("AXIOM_PUBLIC_URL", "http://34.12.128.70:8000")
 
 # --- hero-sms.com: SMS-активация для саморегистрации TG-номеров (см. ТЗ_саморегистрация_TG_hero-sms.md) ---
 HERO_SMS_API_KEY = os.getenv("HERO_SMS_API_KEY", "")
@@ -132,6 +132,13 @@ ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
 # --- Proxy6.net (автопокупка/подбор прокси по стране аккаунта) ---
 # Ключ — в личном кабинете proxy6.net → API. Пусто = кнопки покупки покажут понятную ошибку.
 PROXY6_API_KEY = os.getenv("PROXY6_API_KEY", "")
+
+# --- Контент-завод (текстовые посты Threads/VK/Telegram) ---
+# Читает ту же Google-таблицу «Контент-завод», что ведёт autopost/ в проекте
+# Kontent-zavod-traffic-machine — раздел в Axiom только показывает эти данные,
+# не пишет в таблицу и не хранит собственную копию.
+CONTENT_SHEET_ID = os.getenv("CONTENT_SHEET_ID", "")
+CONTENT_GOOGLE_KEY_FILE = os.getenv("CONTENT_GOOGLE_KEY_FILE") or str(BASE_DIR / "content_google_service.json")
 
 # --- Авто-фото профиля (channels/avatar_gen.py): сток + ИИ-лицо микс ---
 # Pexels — бесплатный ключ на pexels.com/api (лицензия разрешает коммерческое

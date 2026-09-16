@@ -11,6 +11,10 @@ twoFA.txt
 tdata/
 axiom/google_credentials.json
 axiom/google_token.json
+axiom/google_contacts_token.json
+# service-account для Google-таблицы контент-завода — СЕКРЕТ, переносится руками
+axiom/content_google_service.json
+client_secret_*.json
 # Купленные TG-аккаунты (tdata, .json с api/proxy, 2FA, .exe) — СЕКРЕТЫ
 ТГ Аккуанты(portable)/
 АККАУНТ ТГ 2025новые_08_07/

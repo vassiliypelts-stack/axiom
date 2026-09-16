@@ -140,7 +140,7 @@ def outreach(limit: int = 0) -> JSONResponse:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM contacts "
-            "WHERE status = 'new' AND phone IS NOT NULL AND wa_jid IS NULL "
+            "WHERE status = 'new' AND outreach_campaign_id IS NULL AND phone IS NOT NULL AND wa_jid IS NULL "
             "AND has_wa IN ('yes','unknown') "
             "ORDER BY id LIMIT ?",
             (cap,),
@@ -177,6 +177,11 @@ def incoming(msg: Incoming) -> JSONResponse:
         contact_id = contact["id"]
         if not contact["wa_jid"]:
             database.set_wa_jid(conn, contact_id, msg.jid)
+        if contact["status"] == "refused":
+            # Отказ сохраняем в историю, но больше не вступаем в автоматический
+            # диалог и не возвращаем карточку в рабочие статусы.
+            database.add_message(conn, contact_id, "in", msg.text, intent="not_interested")
+            return JSONResponse({"ignore": True, "reason": "contact refused"})
         opener, history = _history_for_agent(database.get_history(conn, contact_id))
         contact_info = _contact_dict(contact)
         camp = database.get_contact_campaign(conn, contact_id)
@@ -210,7 +215,14 @@ def incoming(msg: Incoming) -> JSONResponse:
                 zoom_link=meeting.zoom_link, calendar_event_id=meeting.calendar_event_id,
             )
         elif reply.intent == "not_interested":
-            database.set_status(conn, contact_id, "nurture")
+            database.set_status(conn, contact_id, "refused")
+            conn.execute("DELETE FROM opener_queue WHERE contact_id=?", (contact_id,))
+            who = contact_info.get("name") or contact_info.get("person_name") or contact_id
+            database.add_event(
+                conn, "refused", f"🚫 Отказ: {who}",
+                (msg.text or "").strip()[:160] or "Человек сообщил, что предложение не интересно.",
+                level="info", contact_id=contact_id, campaign_id=camp["id"] if camp else None,
+            )
         else:
             database.set_status(conn, contact_id, "in_dialog")
 

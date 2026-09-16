@@ -223,6 +223,28 @@
   .dchip{font-family:'JetBrains Mono';font-size:11px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);color:var(--muted);}
   .dchip b{font-weight:800;margin-right:4px;}
   .dash-empty{display:grid;place-items:center;text-align:center;padding:18px 10px;gap:10px;min-height:160px;}
+  /* Контент завод: лента постов read-only, без выделения/удаления smartTable —
+     обычные строки-ссылки, стилистика тех же карточек, что и дашборд. */
+  .cf-postlist{display:flex;flex-direction:column;gap:6px;margin-top:6px;}
+  .cf-post,.cf-plain-post{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:11px;
+    border:1px solid transparent;text-decoration:none;color:var(--text);transition:background .15s,border-color .15s;}
+  .cf-post:hover,.cf-plain-post:hover{background:color-mix(in srgb,var(--panel2) 70%,transparent);border-color:var(--border);}
+  .cf-post-date{color:var(--muted);font-size:11px;flex:none;width:42px;}
+  .cf-post-text,.cf-plain-post .cf-post-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;}
+  .cf-plain-post{justify-content:space-between;}
+  .cf-plain-post .sub{flex:none;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
+  .cf-post-stats{display:flex;align-items:center;gap:6px;flex:none;font-size:11px;color:var(--muted);}
+  .cf-post-stats b{color:var(--text);font-size:12px;}
+  .cf-post-stats i{font-style:normal;margin-right:4px;}
+  .cf-note{padding:10px 12px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--border);margin-top:4px;}
+  .cf-best{margin-top:14px;padding:10px 14px;border-radius:11px;background:var(--accent-soft);
+    border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);font-size:12.5px;}
+  .cf-best a{color:var(--accent-ink);text-decoration:underline;}
+  .cf-weeks{display:flex;align-items:flex-end;gap:14px;margin-top:10px;padding:0 4px 4px;min-height:140px;overflow-x:auto;}
+  .cf-week{display:flex;flex-direction:column;align-items:center;gap:6px;flex:none;width:74px;}
+  .cf-week-bar{width:28px;border-radius:5px 5px 0 0;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 40%,transparent));}
+  .cf-week-v{font-size:11px;color:var(--text);}
+  .cf-week-l{font-size:10px;text-align:center;}
   .dash-empty .big{font-family:'JetBrains Mono';font-weight:800;font-size:46px;color:var(--muted);opacity:.6;}
   .dash-empty .txt{font-size:12.5px;color:var(--muted);max-width:210px;line-height:1.5;}
   .dash-empty .mini{display:flex;gap:20px;} .dash-empty .mini div{font-family:'JetBrains Mono';font-size:12px;color:var(--muted);} .dash-empty .mini b{display:block;font-size:22px;color:var(--text);margin-bottom:3px;}
@@ -819,6 +841,10 @@ const NAV_GROUPS=[
     {id:"deals",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="6" width="16" height="12" rx="2"/><path d="M7 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>',label:"Сделки"},
     {id:"contacts",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10" cy="6" r="3.5"/><path d="M3 18c0-4 3.1-6 7-6s7 2 7 6"/></svg>',label:"Контакты"},
     {id:"companies",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="8" width="6" height="10"/><rect x="12" y="4" width="6" height="14"/><line x1="4" y1="11" x2="6" y2="11"/><line x1="4" y1="14" x2="6" y2="14"/><line x1="14" y1="7" x2="16" y2="7"/><line x1="14" y1="10" x2="16" y2="10"/><line x1="14" y1="13" x2="16" y2="13"/><line x1="14" y1="16" x2="16" y2="16"/></svg>',label:"Компании"},
+  ]},
+  {title:"Контент завод",collapsible:true,items:[
+    {id:"content-text",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="1.5"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="9.5" x2="14" y2="9.5"/><line x1="6" y1="13" x2="11" y2="13"/></svg>',label:"Текстовой контент завод"},
+    {id:"content-video",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="12" height="12" rx="1.5"/><path d="M14 8l4-2.5v9L14 12"/></svg>',label:"Видео контент завод"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
@@ -2789,6 +2815,109 @@ let ORG_ROOT_NAME="Компания";        // подпись корневой 
 // Палитра веток. Первый цвет — фирменный акцент, дальше — по кругу.
 const ORG_COLORS=["#00B4D8","#4AA3FF","#A78BFA","#3EE08A","#F4B740","#FF5D73","#7CC800","#2DD4BF"];
 
+// ------------------------------------------------------------- контент завод
+// Текстовой контент завод: читает Google-таблицу «Контент-завод» проекта
+// Kontent-zavod-traffic-machine (см. integrations/content_sheet.py). Это
+// витрина — публикация и генерация постов остаются в том проекте, здесь
+// только показываем цифры и даём кликнуть на реальный пост.
+function cfTile(value,label,cls){
+  return `<div class="dtile ${cls||''}"><div class="v">${esc(String(value))}</div><div class="k">${esc(label)}</div></div>`;
+}
+function cfRatePill(rate){
+  const cls=rate>=1?"lime":"";
+  return `<span class="tag ${cls}">${rate?rate.toFixed(2).replace('.',',')+'%':'—'}</span>`;
+}
+function cfPostRow(p){
+  return `<a class="cf-post" href="${esc(p.link)}" target="_blank" rel="noopener">
+      <span class="cf-post-date mono">${esc((p.date||"").slice(5))}</span>
+      <span class="cf-post-text">${esc(p.first_line)}</span>
+      <span class="cf-post-stats">
+        <b class="mono">${p.views.toLocaleString('ru-RU')}</b><i>просм.</i>
+        <b class="mono">${p.replies}</b><i>отв.</i>
+        ${cfRatePill(p.rate)}
+      </span>
+    </a>`;
+}
+function cfPlatformList(posts,emptyHint){
+  if(!posts.length)return `<div class="empty">Пока нет опубликованных постов.</div>`;
+  const rows=posts.map(p=>`<a class="cf-plain-post" href="${esc(p.link)}" target="_blank" rel="noopener">
+      <span class="cf-post-text">${esc(p.first_line)}</span>
+      <span class="sub">${esc(p.type||"")}</span>
+    </a>`).join("");
+  return rows+`<div class="cf-note">${esc(emptyHint)}</div>`;
+}
+async function viewContentText(v){
+  v.innerHTML=`<div class="empty">Загружаю сводку из Google-таблицы…</div>`;
+  let s;
+  try{ s=await api("/api/content/text/summary"); }
+  catch(e){ v.innerHTML=`<div class="empty">Ошибка: ${esc(e.message)}</div>`; return; }
+  if(s.error){ v.innerHTML=`<div class="empty">⚠️ ${esc(s.error)}</div>`; return; }
+
+  const best=s.best_week;
+  const bestBlock=best?`<div class="cf-best">🏆 Лучший пост недели (${best.replies} ответов) — <a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.first_line)}</a></div>`:"";
+  const pendingWarn=s.pending<=2?`<span class="tag" style="border-color:var(--red);color:var(--red)">⚠️ пора пополнить очередь</span>`:"";
+
+  v.innerHTML=`<div class="dash">
+    <div class="dash-grid">
+      <section class="dash-glass dash-card" style="grid-column:1/-1">
+        <div class="dash-chh"><h3>Сводка · Threads / VK / Telegram</h3>
+          <span class="tag">в очереди: ${s.pending}</span>${pendingWarn}</div>
+        <div class="dash-tiles">
+          ${cfTile(s.today.posts,"постов сегодня")}
+          ${cfTile(s.today.views.toLocaleString('ru-RU'),"охват сегодня")}
+          ${cfTile(s.week.posts,"постов за неделю","accent")}
+          ${cfTile(s.week.views.toLocaleString('ru-RU'),"охват за неделю","accent")}
+          ${cfTile(s.week.rate.toFixed(2).replace('.',',')+'%',"ответы/охват",s.week.rate>=1?"lime":"")}
+          ${cfTile(s.month.posts,"постов за месяц")}
+        </div>
+        ${bestBlock}
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:1/-1">
+        <div class="dash-chh"><span class="ic">📘</span><h3>Threads</h3><span class="tag">метрики из API</span></div>
+        <div class="cf-postlist">${s.threads_posts.length?s.threads_posts.map(cfPostRow).join(""):'<div class="empty">Нет данных за период.</div>'}</div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:span 6">
+        <div class="dash-chh"><span class="ic">🔵</span><h3>VK</h3><span class="tag">${s.vk_posts.length} постов</span></div>
+        <div class="cf-postlist">${cfPlatformList(s.vk_posts,"Охваты по VK автосбором не тянутся — смотреть вручную в группе.")}</div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:span 6">
+        <div class="dash-chh"><span class="ic">✈️</span><h3>Telegram</h3><span class="tag">${s.tg_posts.length} постов</span></div>
+        <div class="cf-postlist">${cfPlatformList(s.tg_posts,"Просмотры по Telegram автосбором не тянутся — смотреть вручную в канале.")}</div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:1/-1">
+        <div class="dash-chh"><h3>Динамика по неделям</h3><span class="tag">Threads</span></div>
+        <div class="cf-weeks">
+          ${s.weeks.map(w=>`<div class="cf-week">
+              <div class="cf-week-bar" style="height:${Math.max(6,Math.round(w.views/Math.max(1,Math.max(...s.weeks.map(x=>x.views)))*100))}px"></div>
+              <div class="cf-week-v mono">${w.views.toLocaleString('ru-RU')}</div>
+              <div class="cf-week-l sub">${esc(w.label)}</div>
+            </div>`).join("")}
+        </div>
+      </section>
+    </div>
+  </div>`;
+}
+
+async function viewContentVideo(v){
+  v.innerHTML=`<div class="empty">Загружаю…</div>`;
+  const s=await api("/api/content/video/summary");
+  v.innerHTML=`<div class="dash">
+    <section class="dash-glass dash-card" style="text-align:center;padding:48px 24px">
+      <div style="font-size:40px;margin-bottom:10px">🎬</div>
+      <h3 style="margin-bottom:8px">Видео контент завод — в разработке</h3>
+      <p class="sub" style="max-width:520px;margin:0 auto">
+        ${esc(s.message||"Раздел пока не подключен к источнику данных.")}
+        Планируется по образцу: хранилище хуков, аналитика Reels, трекер конкурентов,
+        планировщик публикаций и лента трендов — см. ROADMAP.md, волна «Контент завод».
+      </p>
+    </section>
+  </div>`;
+}
+
 function orgLoadState(){
   try{
     const s=JSON.parse(localStorage.getItem("axiom_org")||"{}");
@@ -4002,6 +4131,7 @@ async function viewContacts(v){
   v.innerHTML=`<div class="ttoolbar">
       <button class="primary" id="ct-new">Контакт</button>
       <button id="ct-imp">⬆ Импорт</button>
+      <button id="ct-google">Google Контакты</button>
       <button id="ct-resolve-tg" title="пробить номера в Telegram — узнать tg_user_id, username, аватар, bio">📡 Пробив TG</button>
       <button id="ct-enrich" title="обогатить пачку контактов: DaData (ИНН/директор) + AI-досье">🧠 Обогатить пачку</button>
       <button id="ct-seg" title="разложить базу по сферам (недвижимость / маркетинг / IT…): сначала бесплатные правила по тегам, остаток — дешёвой моделью">🗂 Сегментировать</button>
@@ -4049,7 +4179,9 @@ async function viewContacts(v){
         • <b>выгрузка юрлиц</b> — «Наименование», «ИНН», «ФИО руководителя», «Телефон директора» и др.<br>
         Колонка «Чем занимается» важна: на ней держится заход «вы тоже по этой теме?». Контакт с @ником уходит в рассылку сразу, без пробива номера. Дубли обновляются, а не задваиваются.</div>
     </div>
+    <div id="ct-google-panel" class="card" style="display:none;margin-bottom:12px"></div>
     <div id="ct-body"></div>`;
+  $("#ct-google").onclick=()=>window.showGoogleContacts($("#ct-google-panel"));
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
@@ -5922,7 +6054,8 @@ async function viewCampaigns(v){
       <div class="row2"><div class="field"><label>Название</label><input id="c-name" placeholder="Агентства Сочи — Фонд доступного жилья"></div>
         <div class="field"><label>Продукт</label><input id="c-product" placeholder="Фонд доступного жилья"></div></div>
       <div class="row2"><div class="field"><label>Проект</label><select id="c-project">${projOpts}</select></div>
-        <div class="field"><label>Аудитория — тег (пусто = вся база)</label><input id="c-tag" value="Агентства недвижимости"></div></div>
+        <div class="field"><label>Аудитория — обязательный сегмент</label><input id="c-tag" value="Агентства недвижимости" required>
+          <div class="hint">Только контакты с этим тегом попадут в кампанию. Пустой сегмент сохранить нельзя.</div></div></div>
       <label class="field" style="display:flex;align-items:flex-start;gap:9px;background:var(--green-soft);
              border:1px solid color-mix(in srgb,var(--green) 35%,transparent);border-radius:10px;padding:10px 12px">
         <input type="checkbox" id="c-verified" checked style="margin-top:3px;flex-shrink:0">
@@ -5965,10 +6098,10 @@ async function viewCampaigns(v){
             <label style="margin-right:18px;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" class="c-chan-chk" value="telegram" checked> Telegram</label>
             <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" class="c-chan-chk" value="whatsapp"> WhatsApp</label></div>
           <div class="hint">Оба → каждому контакту шлём в доступный мессенджер. WhatsApp-отправка заработает с Baileys-мостом; Telegram работает уже сейчас.</div></div>
-        <div class="field"><label>Основной аккаунт-отправитель</label>
+        <div class="field"><label>Распределение отправок</label>
           <div id="c-main-acc" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);min-height:38px"></div>
-          <div class="hint" style="margin-top:4px">Отметь ⭐ нужный в справочнике ниже — он первым в очереди получает контакты, пока не выберет свой дневной лимит.</div></div></div>
-      <div class="field"><label>👥 Команда агентов — справочник аккаунтов (фильтруй, ✓ в команду, ⭐ основной)</label>
+          <div class="hint" style="margin-top:4px">Строго по кругу: 1 → 2 → 3 → … → 1. Каждый аккаунт получает не больше своего лимита за сутки.</div></div></div>
+      <div class="field"><label>👥 Команда агентов — справочник аккаунтов (фильтруй, ✓ в команду)</label>
         <div class="ttoolbar" style="gap:8px;flex-wrap:wrap;margin:4px 0">
           <input id="c-acc-q" placeholder="поиск: номер / @username / ярлык" style="flex:1;min-width:140px">
           <select id="c-acc-fchan"><option value="">любой канал</option><option value="tg">TG подключён</option><option value="wa">WA подключён</option></select>
@@ -6028,12 +6161,13 @@ async function viewCampaigns(v){
   const form=$("#c-form");
   const teamSet=new Set();
   const teamLimits={};   // {account_id: лимит/день ИМЕННО в этой кампании; пусто = общий лимит аккаунта}
-  let mainAcc="";
   const renderMain=()=>{
     const box=$("#c-main-acc");if(!box)return;
-    const a=accounts.find(x=>String(x.id)===String(mainAcc));
-    box.innerHTML=a?`⭐ <b>${esc(a.label||a.username||("#"+a.id))}</b>${a.phone?(' <span class="hint">'+esc(a.phone)+'</span>'):""} <span class="hint">· каналы: ${accChan(a)} · ${accStatusTxt(a)}</span>`
-      :'<span class="hint">не выбран — отметь ⭐ в справочнике ниже</span>';
+    const order=[...teamSet].sort((a,b)=>a-b).map((id,i)=>{
+      const a=accounts.find(x=>x.id===id);
+      return a?`${i+1}. ${esc(a.label||a.username||("#"+a.id))}`:"";
+    }).filter(Boolean);
+    box.innerHTML=order.length?`🔄 <b>${order.join(" → ")}</b>`:'<span class="hint">выберите аккаунты в справочнике ниже</span>';
   };
   const renderTeam=()=>{
     const box=$("#c-team-box");if(!box)return;
@@ -6059,31 +6193,33 @@ async function viewCampaigns(v){
     }
     box.innerHTML=list.length?list.map(a=>{
       const ch=accChan(a);const spam=a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"";
-      const isMain=String(a.id)===String(mainAcc);
       const ready=isAccReady(a);
+      const otherCampaigns=(a.active_campaigns||[]).filter(x=>String(x.id)!==String(form.dataset.edit||""));
+      const busy=otherCampaigns.length>0;
+      const assignment=busy
+        ? `<span class="badge b-stop" title="Занят в активной кампании">занят: ${esc(otherCampaigns.map(x=>x.name||('#'+x.id)).join(', '))}</span>`
+        : '<span class="badge b-active" title="Не привязан к активной кампании">свободен</span>';
       const dot=`<span class="sdot ${ready?'g':(a.status==='banned'?'r':'gy')}" title="${ready?'реально жив':(a.status==='banned'?'бан':'не готов — проверь сессию/прокси')}"></span>`;
       const lim=teamLimits[a.id];
       return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border);${ready?'':'opacity:.6'}">
-        <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""}>
+        <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""} ${busy&&!teamSet.has(a.id)?"disabled":""}>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${dot}${esc(a.label||a.username||("#"+a.id))}${a.protected?' <span class="badge b-active" title="Родной — личный номер, автоматика его не трогает без явного включения в команду">🏠 родной</span>':""} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
-          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam}</div>
+          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam} ${assignment}</div>
         </div>
         <input type="number" min="0" class="c-acc-lim mono" data-id="${a.id}" value="${lim!=null?lim:''}"
           placeholder="${a.daily_limit||15}" title="лимит/день ИМЕННО в этой кампании — пусто = общий лимит аккаунта (${a.daily_limit||15}/день)"
           style="width:64px;text-align:center">
-        <button type="button" class="c-acc-star" data-id="${a.id}" title="сделать основным отправителем" style="border:none;background:none;cursor:pointer;font-size:18px;line-height:1">${isMain?"⭐":"☆"}</button></div>`;
+        </div>`;
     }).join(""):'<div class="no" style="padding:10px">нет аккаунтов по фильтру — заведи в «Мои агенты»</div>';
     box.querySelectorAll(".c-acc-chk").forEach(cb=>cb.onchange=()=>{
       const id=+cb.value;if(cb.checked)teamSet.add(id);else teamSet.delete(id);
-      if(!cb.checked&&String(id)===String(mainAcc)){mainAcc="";renderMain();}
+      renderMain();
       const t=$("#c-team-msg");if(t)t.textContent="выбрано: "+teamSet.size;});
     box.querySelectorAll(".c-acc-lim").forEach(inp=>inp.onchange=()=>{
       const id=+inp.dataset.id,v=inp.value.trim();
       if(v==="")delete teamLimits[id];else teamLimits[id]=Math.max(0,parseInt(v,10)||0);
       renderTeam();});
-    box.querySelectorAll(".c-acc-star").forEach(b=>b.onclick=()=>{
-      mainAcc=b.dataset.id;teamSet.add(+mainAcc);renderMain();renderTeam();});
   };
   ["#c-acc-q","#c-acc-fchan","#c-acc-fst","#c-acc-fprot"].forEach(s=>{const el=$(s);if(el){el.oninput=renderTeam;el.onchange=renderTeam;}});
   const c_selready=$("#c-acc-selready");if(c_selready)c_selready.onclick=()=>{
@@ -6100,10 +6236,10 @@ async function viewCampaigns(v){
       return true;
     });
     teamSet.clear();
-    list.filter(isAccReady).forEach(a=>teamSet.add(a.id));
+    list.filter(a=>isAccReady(a)&&!(a.active_campaigns||[]).length).forEach(a=>teamSet.add(a.id));
     renderTeam();
   };
-  const c_selnone=$("#c-acc-selnone");if(c_selnone)c_selnone.onclick=()=>{teamSet.clear();mainAcc="";renderMain();renderTeam();};
+  const c_selnone=$("#c-acc-selnone");if(c_selnone)c_selnone.onclick=()=>{teamSet.clear();renderMain();renderTeam();};
   const fill=(c)=>{
     $("#c-name").value=c.name||"";$("#c-product").value=c.product||"";
     $("#c-tag").value=c.audience_tag!=null?c.audience_tag:"Агентства недвижимости";
@@ -6115,7 +6251,6 @@ async function viewCampaigns(v){
       : "";
     const chans=new Set((c.channel||"telegram").split(",").map(x=>x.trim()).filter(Boolean));
     document.querySelectorAll(".c-chan-chk").forEach(ch=>{ch.checked=chans.has(ch.value);});
-    mainAcc=c.account_id?String(c.account_id):"";
     $("#c-project").value=c.project_id||(PROJECT_SEL?PROJECT_SEL.id:"");
     $("#c-limit").value=c.daily_limit||15;$("#c-msg").value=c.message_template||"";
     $("#c-wh-tz").value=c.work_hours_tz||"";
@@ -6139,8 +6274,7 @@ async function viewCampaigns(v){
     // Новая кампания (нет ни сохранённой команды, ни id) — по умолчанию берём
     // реально живых, а не всех подряд: раньше форма открывалась пустой и оператор
     // либо вручную ставил все галки, либо забывал — и в команду попадали банченые.
-    if(!c.id&&!(c.accounts||[]).length)accounts.filter(isAccReady).forEach(a=>teamSet.add(a.id));
-    if(mainAcc)teamSet.add(+mainAcc);
+    if(!c.id&&!(c.accounts||[]).length)accounts.filter(a=>isAccReady(a)&&!(a.active_campaigns||[]).length).slice(0,10).forEach(a=>teamSet.add(a.id));
     Object.keys(teamLimits).forEach(k=>delete teamLimits[k]);
     Object.entries(c.account_limits||{}).forEach(([id,v])=>teamLimits[+id]=+v);
     // Свои номера для теста — подставляем сохранённые (localStorage), чтобы не
@@ -6260,10 +6394,13 @@ async function viewCampaigns(v){
   $("#c-save").onclick=async()=>{
     const team=[...teamSet];
     const chans=[...document.querySelectorAll(".c-chan-chk:checked")].map(ch=>ch.value);
+    if(!$("#c-tag").value.trim()){alert("Выбери сегмент: без него кампания могла бы взять всю базу.");return;}
     if(!chans.length){alert("выбери хотя бы один канал (Telegram или WhatsApp)");return;}
     const limits={};team.forEach(id=>{if(teamLimits[id]!=null)limits[id]=teamLimits[id];});
     const body={name:$("#c-name").value,product:$("#c-product").value,audience_tag:$("#c-tag").value,
-      channel:chans.join(","),account_id:mainAcc||"",project_id:$("#c-project").value||null,
+      // account_id не задаём: команда всегда работает по кругу. Поле в БД остаётся
+      // лишь для совместимости со старыми кампаниями без команды.
+      channel:chans.join(","),account_id:"",project_id:$("#c-project").value||null,
       account_ids:team,account_limits:limits,daily_limit:$("#c-limit").value,
       tg_verified_only:$("#c-verified").checked,
       meeting_url:$("#c-meeting-url").value.trim(),
@@ -8308,7 +8445,7 @@ async function viewLifecycle(v){
     <b style="font-size:14px">Последние смерти</b>
     <div style="border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:400px">
       <table style="width:100%;border-collapse:collapse"><tr><th>#</th><th>Аккаунт</th><th>Куплен</th><th>Умер</th><th>Прожил</th><th>Причина</th></tr>
-      ${d.dead_accounts.length?d.dead_accounts.map(x=>`<tr><td class="mono">#${x.id}</td><td>${esc(x.label||x.phone||"")}</td>
+      ${d.dead_accounts.length?d.dead_accounts.map(x=>`<tr><td class="mono">#${x.id}</td><td><a href="#agents/${x.id}" title="Открыть аккаунт в разделе «Аккаунты»" style="font-weight:600">${esc(x.label||x.phone||("#"+x.id))}</a>${x.phone?`<div class="mono sub" style="font-size:11px;margin-top:2px">${esc(x.phone)}</div>`:""}</td>
         <td class="sub">${esc(x.bought_at||"—")}</td><td class="sub">${esc(x.died_at||"—")}</td>
         <td class="mono">${x.age_days!=null?x.age_days+" дн":"—"}</td>
         <td title="${esc(x.reason_raw)}">${LC_CAUSE_LABEL[x.cause]||esc(x.cause)}</td></tr>`).join(""):'<tr><td colspan="6" class="sub">умерших нет</td></tr>'}
@@ -8734,7 +8871,7 @@ async function viewBusinessMap(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle};
+const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 
@@ -8823,7 +8960,8 @@ async function showAudiencePicker(d,onApplied){
     <div style="padding:12px 20px;border-bottom:1px solid var(--border)">
       <div class="ttoolbar" style="gap:8px;flex-wrap:wrap">
         <input id="ap-q" placeholder="поиск: имя / агентство / @username" style="flex:1;min-width:160px">
-        <select id="ap-source"></select><select id="ap-city"></select>
+        <select id="ap-source" aria-label="Источник импорта" title="Источник импорта" style="min-width:150px"><option value="">загрузка источников…</option></select>
+        <select id="ap-city" aria-label="Город" title="Город" style="min-width:130px"><option value="">загрузка городов…</option></select>
         <select id="ap-chan"><option value="">любой канал</option><option value="tg">есть TG</option><option value="wa">есть WA</option></select>
         <select id="ap-status"><option value="">любой статус</option><option value="new">новые</option><option value="messaged">написано</option><option value="meeting_set">встреча</option><option value="lost">потеряны</option></select>
         <label class="hint" style="display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="ap-enr"> только обогащённые</label>
@@ -8844,12 +8982,31 @@ async function showAudiencePicker(d,onApplied){
   $m(".ap-close").onclick=()=>modal.remove();
   modal.onclick=e=>{if(e.target===modal)modal.remove();};
   let all=[];const sel=new Set();
-  try{all=await api("/api/contacts");}catch(e){$m("#ap-list").innerHTML='<div class="empty" style="padding:20px">ошибка загрузки</div>';return;}
-  if(!Array.isArray(all))all=[];
-  const sources=[...new Set(all.map(c=>c.source).filter(Boolean))].sort();
+  // Источники загружаем отдельной ручкой: раньше выпадайка строилась только из
+  // /api/contacts и при пустом/оборвавшемся ответе превращалась в две безымянные
+  // стрелки. Теперь оператор сразу видит, какие импорты есть в CRM.
+  let sourceRows=[];
+  try{
+    const loaded=await Promise.all([api("/api/contacts"),api("/api/import/sources")]);
+    all=loaded[0];sourceRows=loaded[1];
+  }catch(e){
+    $m("#ap-source").innerHTML='<option value="">источники не загрузились</option>';
+    $m("#ap-city").innerHTML='<option value="">города не загрузились</option>';
+    $m("#ap-list").innerHTML='<div class="empty" style="padding:20px">Не удалось загрузить CRM. Обновите страницу и попробуйте снова.</div>';
+    return;
+  }
+  if(!Array.isArray(all)){
+    const err=all&&all.error?`: ${esc(all.error)}`:"";
+    $m("#ap-list").innerHTML='<div class="empty" style="padding:20px">CRM не вернула список контактов'+err+'.</div>';
+    all=[];
+  }
+  if(!Array.isArray(sourceRows))sourceRows=[];
+  const sources=[...new Set([...sourceRows.map(x=>x&&x.name),...all.map(c=>c.source)].filter(Boolean))].sort();
   const cities=[...new Set(all.map(c=>c.city).filter(Boolean))].sort();
-  $m("#ap-source").innerHTML='<option value="">любой источник</option>'+sources.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
-  $m("#ap-city").innerHTML='<option value="">любой город</option>'+cities.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
+  // В этом окне выбираются именно контакты, поэтому счётчик не смешиваем с компаниями.
+  const sourceCount=new Map(sourceRows.map(x=>[x.name,+x.contacts||0]));
+  $m("#ap-source").innerHTML='<option value="">все источники</option>'+sources.map(s=>`<option value="${esc(s)}">${esc(s)}${sourceCount.has(s)?` (${sourceCount.get(s)})`:""}</option>`).join("");
+  $m("#ap-city").innerHTML='<option value="">все города</option>'+cities.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("");
   function filtered(){
     const q=($m("#ap-q").value||"").toLowerCase().trim();
     const src=$m("#ap-source").value,city=$m("#ap-city").value,chan=$m("#ap-chan").value,st=$m("#ap-status").value,enr=$m("#ap-enr").checked;
@@ -8965,7 +9122,7 @@ function renderWizard(){
     body=wzField("wz-funnel","Воронка (стадии)",d.funnel,"Новые → Написано → В диалоге → Встреча → Сделка",3)
       +wzField("wz-kev","КЭВ — ключевой этап (созвон): что это и цель",d.kev,"Zoom 20 мин: показать как Фонд возвращает сорвавшиеся сделки",2)+wzCopilotBlock("funnel");
   }else if(step.k==="offer"){
-    body=wzField("wz-offer","Первое сообщение — уйдёт человеку ДОСЛОВНО (каждая строка = отдельное сообщение в Telegram)",d.offer,"{name}, добрый день\nменя зовут {sender}, помогаю…\nодин короткий вопрос про вашу ситуацию?",5)
+    body=wzField("wz-offer","Три касания: каждая строка уйдёт отдельным сообщением",d.offer,"{name}, добрый вечер! Увидел вас в комментариях в крымских каналах — получается, мы с вами по одной теме 🙂\nА если бы у вас появилась возможность иметь свою землю 1–2 га у моря в Крыму, например с миндальным садом — где можно самому жить или отдыхать, когда захочется, и при этом он ещё приносит доход как актив, от 1,5 до 10 млн в год — это было бы вам интересно?\nИ сразу важное: понимать что-то в сельском хозяйстве и жить в Крыму для этого не нужно, и приезжать лично ухаживать за садом — тоже. Всё делает на месте представитель сообщества. Мы в «Городе Гениев» — уже больше 25 семей развивают усадьбы у моря в Крыму и растят миндальные сады. Если интересно, пришлите «да» или «+» — наш участник свяжется с вами лично, пришлёт презентацию и бизнес-план.",3)
       +`<div class="hint" style="margin:6px 0">Сюда — только сами реплики. Инструкции для ИИ («формат вывода», «правила», «важно») пиши на следующем шаге, иначе они уйдут получателю отдельными сообщениями.</div>`+wzCopilotBlock("offer");
   }else if(step.k==="prompt"){
     body=wzField("wz-prompt","Промпт ИИ-агента (характер, ведение диалога, КЭВ)",d.prompt,"как агент общается, отрабатывает возражения, ведёт на созвон",7)
@@ -9162,7 +9319,7 @@ const SKELS={
   orgchart:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel skel-row" style="width:60%"></div><div class="skel-grid"><div class="skel skel-card" style="height:120px"></div><div class="skel skel-card" style="height:120px;width:70%"></div></div></div>',
   default:'<div class="skel-wrap"><div class="skel skel-hdr"></div><div class="skel-grid"><div class="skel skel-card"></div><div class="skel skel-card"></div></div><div class="skel skel-row"></div><div class="skel skel-row" style="width:60%"></div></div>',
 };
-// Прямые ссылки на сущности (как в Битрикс): #dossier/295, #deals/12, #contacts/7, #chats/295
+// Прямые ссылки на сущности (как в Битрикс): #dossier/295, #deals/12, #contacts/7, #chats/295, #agents/12
 function openEntityDeep(section,id){
   id=+id; if(!id)return;
   setTimeout(()=>{
@@ -9170,6 +9327,9 @@ function openEntityDeep(section,id){
       if(section==="dossier"||section==="contacts"||section==="leads")openDossier(id);
       else if(section==="deals")openDeal(id);
       else if(section==="companies")openCompany(id);
+      // #agents/{id} — из «Жизненного цикла»: открываем карточку погибшего
+      // номера, чтобы сразу увидеть номер, сессию, прокси и историю.
+      else if(section==="agents")openAgent(id);
       // #chats/{id} — сразу открыть переписку с контактом, а не карточку CRM. Нужен
       // отдельный раздел от dossier: ссылка «договорились о встрече» (channels/notify.py)
       // ведёт СЮДА — оператору важно увидеть, о чём именно был разговор, а не полезть
@@ -9268,5 +9428,6 @@ window.addEventListener("hashchange",()=>_navSet(false));
 route();
 setInterval(refreshNotif,60000);
 </script>
+<script src="/assets/google-contacts.js"></script>
 </body>
 </html>

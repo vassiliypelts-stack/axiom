@@ -38,18 +38,10 @@ class OpenerIsPromptError(RuntimeError):
     Раз каждая строка шаблона уходит человеку отдельным сообщением (см. _parts),
     такой «опенер» нельзя слать вообще ни по одному каналу."""
 
-# Темп опенера. Живой человек здоровается и представляется ОДНОЙ очередью, за
-# несколько секунд — а потом ждёт ответа. Раньше каждая строка шла с паузой 1-3 минуты,
-# и «Владимир Васильевич, добрый день» / «Правильно обращаюсь?» / «Меня зовут Василий»
-# растягивались на десять минут: собеседник успевал ответить в середине приветствия
-# и получал продолжение монолога поверх своего ответа.
-# Внутри залпа паузу держит _send_parts (PART_PAUSE, 1.2-3.5 с) — как будто человек
-# дописывает следующую фразу.
-OPENER_BURST = 2                       # сколько первых строк уходит сразу, подряд
-# Пауза перед СЛЕДУЮЩЕЙ строкой после залпа: тут уже ждём реакции, а не печатаем.
-# Если за это время статус контакта ушёл от 'messaged' (ответил/потерян) — остаток
-# не шлём, см. channels/opener_queue.py.
-OPENER_NEXT_LINE_MIN = (3 * 60, 10 * 60)  # секунды: 3–10 минут
+# Простой сценарий: первое касание → короткая пауза → второе, если человек молчит →
+# третье ровно через сутки. После третьего молчуна отмечаем «игнор» и не дожимаем.
+OPENER_SECOND_PAUSE = (15.0, 30.0)
+MAX_OPENER_PARTS = 3
 
 
 # Сколько ждать, прежде чем считать лок брошенным (процесс убит, сервис перезапущен).
@@ -171,12 +163,17 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     Telegram нет — это промах. Промахов у нас 38% от проверенных, а серия промахов
     подряд с одного аккаунта — самый явный признак спамера. Пробив делает отдельный
     дозированный phone_resolve (25/аккаунт в сутки, контакт удаляется сразу)."""
+    # Боевая кампания без сегмента никогда не означает «вся база». Старые записи с
+    # пустым тегом тоже безопасно остановятся, пока оператор не назначит сегмент.
+    if not test and not (tag or "").strip():
+        return []
     # deleted_at — контакт в корзине (web/app.py contacts_bulk_delete). Карточка ещё
     # жива и восстановима, но писать ей нельзя: выделенный по ошибке и удалённый
     # человек не должен получить сообщение только потому, что рассылка не знает о
     # корзине.
-    where = "status='new' AND deleted_at IS NULL AND (username IS NOT NULL OR phone IS NOT NULL)"
-    params: list = []
+    where = ("status='new' AND deleted_at IS NULL AND (username IS NOT NULL OR phone IS NOT NULL) "
+             "AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)")
+    params: list = [cid]
     if exclude_paused:
         where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"
         params.append(cid)
@@ -238,8 +235,8 @@ def _audience_report(cid: int, camp: dict) -> str:
     разбор, чтобы решение («жди пробива» / «сними галочку» / «залей ники») было
     видно сразу, без похода в SQL."""
     tag = (camp.get("audience_tag") or "").strip()
-    where = "COALESCE(is_test,0)=0"
-    params: list = []
+    where = "COALESCE(is_test,0)=0 AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)"
+    params: list = [cid]
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")
@@ -692,13 +689,40 @@ async def run(cid: int, limit: int, test: bool = False,
             print(f"[ТЕСТ] команда кампании без живого выхода в сеть — беру любой живой: "
                   f"{fallback.get('label') or fallback['id']}")
             team = [fallback]
+    # Первый боевой запуск фиксирует размер базы и состав отправителей. Эти значения
+    # потом идут в отчёт кампании и не меняются, когда базу/команду редактируют.
+    if not test:
+        start_ids = [int(a["id"]) for a in team if a.get("id")]
+        with database.get_conn() as conn:
+            tag = (camp.get("audience_tag") or "").strip()
+            base = conn.execute(
+                "SELECT COUNT(*) c FROM contacts WHERE deleted_at IS NULL "
+                "AND COALESCE(is_test,0)=0 AND tags LIKE ?",
+                (f"%{tag}%",),
+            ).fetchone()["c"] if tag else 0
+            conn.execute(
+                "UPDATE campaigns SET initial_audience_count=COALESCE(initial_audience_count, ?), "
+                "start_accounts_count=COALESCE(start_accounts_count, ?), "
+                "start_account_ids=COALESCE(start_account_ids, ?) WHERE id=?",
+                (base, len(start_ids), json.dumps(start_ids), cid),
+            )
     senders: list[dict] = []
     if team:
-        # «Основной» (⭐, campaigns.account_id) — первый в очереди ротации: ему
-        # достаются контакты раньше остальных, пока не кончится его дневной лимит.
-        main_id = camp.get("account_id")
-        if main_id:
-            team = sorted(team, key=lambda a: 0 if str(a["id"]) == str(main_id) else 1)
+        # Команду не приоритизируем: холодные контакты распределяются строго по
+        # кругу в порядке аккаунтов (1 → 2 → … → 1), а не «основному» до его
+        # лимита. campaigns.account_id остаётся только legacy-фолбэком для
+        # кампаний без команды.
+        sent_today_by_account: dict[int, int] = {}
+        account_ids = [int(a["id"]) for a in team]
+        if not test and account_ids:
+            marks = ",".join("?" for _ in account_ids)
+            with database.get_conn() as conn:
+                for row in conn.execute(
+                    f"SELECT account_id, COUNT(*) AS n FROM campaign_contacts "
+                    f"WHERE account_id IN ({marks}) AND date(sent_at)=date('now') "
+                    "GROUP BY account_id", account_ids
+                ):
+                    sent_today_by_account[int(row["account_id"])] = int(row["n"])
         for acc in team:
             label = acc["label"] or acc["username"] or acc["phone"] or f"#{acc['id']}"
             try:
@@ -713,7 +737,11 @@ async def run(cid: int, limit: int, test: bool = False,
             senders.append({
                 "id": acc["id"], "acc": acc, "label": label,
                 "client": client,
-                "remaining": max(0, int(acc["cap"] or cap)),
+                # Лимит аккаунта — именно на сутки, в том числе если кампанию
+                # запускали несколько раз. Не даём второму заходу превратить
+                # «3/день» в 3 сообщения каждый час.
+                "remaining": max(0, int(acc["cap"] or cap)
+                                 - sent_today_by_account.get(int(acc["id"]), 0)),
             })
     else:
         senders.append({
@@ -823,7 +851,8 @@ async def run(cid: int, limit: int, test: bool = False,
         with database.get_conn() as conn:
             claimed = conn.execute(
                 "UPDATE contacts SET status='messaged', updated_at=datetime('now') "
-                "WHERE id=? AND status='new'", (row["id"],)
+                "WHERE id=? AND status='new' "
+                "AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)", (row["id"], cid)
             ).rowcount
         if not claimed:
             print(f"[skip] contact {row['id']}: уже занят другим заходом/аккаунтом — дубль не шлём")
@@ -835,7 +864,7 @@ async def run(cid: int, limit: int, test: bool = False,
         # «меня зовут {sender}» вместо зашитого в текст чужого имени.
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
                        _decision_phrase(row), sender=_sender_name(s["acc"]),
-                       spec=_spec_of(row))
+                       spec=_spec_of(row))[:MAX_OPENER_PARTS]
         try:
             entity = await _resolve_entity(s["client"], row)
             # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а
@@ -881,12 +910,26 @@ async def run(cid: int, limit: int, test: bool = False,
                 ))
             except Exception:
                 pass  # не критично — книжка не блокирует отправку
-            # только первая строка — без «портянки»; но очередь остатка (opener_queue) привязана
-            # к реальному accounts.id, поэтому у «основного (.env)»-отправителя (id=None) шлём
-            # опенер целиком сразу — очередь на потом ставить некому.
-            sent_ids = await _send_parts(s["client"], entity,
-                              parts if s["id"] is None else parts[:OPENER_BURST],
-                              fast=test)
+            # Первое касание уходит сейчас. Второе шлём этим же процессом РОВНО
+            # через 15–30 секунд (фоновый тик раз в минуту для такой паузы неточен).
+            # Третье затем уйдёт из очереди через 24 часа.
+            sent_ids = await _send_parts(s["client"], entity, parts[:1], fast=test)
+            burst = parts[:1]
+            rest = parts[1:]
+            if rest:
+                await asyncio.sleep(random.uniform(*OPENER_SECOND_PAUSE))
+                with database.get_conn() as conn:
+                    answered = conn.execute(
+                        "SELECT 1 FROM messages WHERE contact_id=? AND direction='in' LIMIT 1",
+                        (row["id"],),
+                    ).fetchone() is not None
+                if not answered:
+                    second_ids = await _send_parts(s["client"], entity, rest[:1], fast=test)
+                    sent_ids += second_ids
+                    burst = parts[:2]
+                    rest = parts[2:]
+                else:
+                    rest = []
         except FloodWaitError as e:
             hrs = round(e.seconds / 3600, 1)
             print(f"[{s['label']}] floodwait {e.seconds}с (~{hrs}ч) — вывожу из ротации на этот заход")
@@ -989,10 +1032,6 @@ async def run(cid: int, limit: int, test: bool = False,
                 database.set_status(conn, row["id"], "lost")
             continue
 
-        # Залпом ушло OPENER_BURST строк (приветствие+представление), остальное —
-        # с паузой и с проверкой, не ответил ли человек (см. opener_queue).
-        burst = parts[:OPENER_BURST] if s["id"] is not None else parts
-        rest = parts[len(burst):]
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(entity.id))
             for i, p in enumerate(burst):
@@ -1005,9 +1044,10 @@ async def run(cid: int, limit: int, test: bool = False,
                 "INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) VALUES (?,?,?)",
                 (cid, row["id"], s["id"]),
             )
-            if rest and s["id"] is not None:  # очередь возможна только у реального accounts.id
+            if rest and s["id"] is not None:
                 next_at = (datetime.utcnow()
-                           + timedelta(seconds=random.uniform(*OPENER_NEXT_LINE_MIN))).isoformat(sep=" ", timespec="seconds")
+                           + timedelta(hours=24)).isoformat(
+                               sep=" ", timespec="seconds")
                 conn.execute(
                     "INSERT INTO opener_queue (contact_id, account_id, campaign_id, parts_json, next_at) "
                     "VALUES (?,?,?,?,?)",

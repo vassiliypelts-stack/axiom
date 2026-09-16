@@ -35,6 +35,9 @@ from integrations import meetings
 
 # Папка с файлами КП (коммерческих предложений), прикреплёнными к кампаниям.
 KP_DIR = config.DB_PATH.parent / "kp"
+# Презентацию и бизнес-план отправляет только человек вручную. Даже если файл
+# прикреплён к кампании, агенту запрещено высылать его автоматически.
+AUTO_SEND_KP = False
 
 
 def _kp_path(kp_file: str | None):
@@ -61,7 +64,7 @@ REPLY_DELAY = (4, 18)
 # Человекоподобная отправка по частям (B1):
 TYPING_CPS = (12, 22)     # «скорость печати» — знаков/сек, время набора ∝ длине сообщения
 MAX_TYPING_SEC = 9.0      # потолок имитации набора одного сообщения
-PART_PAUSE = (5.0, 15.0)  # пауза между соседними сообщениями
+PART_PAUSE = (5.0, 15.0)  # обычная пауза между соседними сообщениями
 # Человекоподобная РЕАКЦИЯ на входящее (как реальный человек, не бот-молния):
 # диапазон настраивается в пульте (Аккаунты → «⏱ скорость ответа»), см. _reply_delay_range().
 # По умолчанию 30-60с — быстро для лида (не теряет теплоту диалога), но не мгновенно.
@@ -372,7 +375,8 @@ async def _humanize_before_reply(client, peer, fast: bool = False) -> None:
                                          else _reply_delay_range())))
 
 
-async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> list[int]:
+async def _send_parts(client, peer, parts: list[str], fast: bool = False,
+                      part_pauses: list[tuple[float, float] | None] | None = None) -> list[int]:
     """Шлёт сообщения по очереди как живой человек: показывает «печатает…»,
     держит паузу пропорционально длине текста, паузит между сообщениями.
 
@@ -382,7 +386,13 @@ async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> lis
 
     Возвращает id отправленных в Telegram сообщений (по одному на часть) — нужны,
     чтобы потом можно было адресно удалить конкретную реплику «для всех» (см.
-    tg_msg_id в messages и /api/contact/{id}/message/{msg_id}/delete)."""
+    tg_msg_id в messages и /api/contact/{id}/message/{msg_id}/delete).
+
+    ``part_pauses`` задаёт паузу после каждой реплики. Это нужно для сценарных
+    опенеров: например, после основного оффера выдерживают 15–30 секунд, а не
+    обычный разговорный интервал. Если список короче числа границ или не передан,
+    применяется ``PART_PAUSE``.
+    """
     clean = [_strip_md(p.strip()) for p in parts if p and p.strip()]
     sent_ids: list[int] = []
     for i, part in enumerate(clean):
@@ -397,8 +407,12 @@ async def _send_parts(client, peer, parts: list[str], fast: bool = False) -> lis
         if i < len(clean) - 1:
             # fast — тест на свои номера: его ждут у экрана, и боевые 5-15 сек между
             # строками превращают проверку текста в долгое «ничего не приходит».
-            await asyncio.sleep(random.uniform(1.5, 3.0) if fast
-                                else random.uniform(*PART_PAUSE))
+            custom_pause = part_pauses[i] if part_pauses and i < len(part_pauses) else None
+            pause = custom_pause or PART_PAUSE
+            # В тесте ускоряем только обычные границы. Явно заданная сценарная
+            # пауза (например 15–30 с после оффера) проверяется в реальном темпе.
+            await asyncio.sleep(random.uniform(1.5, 3.0) if fast and custom_pause is None
+                                else random.uniform(*pause))
     return sent_ids
 
 
@@ -484,7 +498,7 @@ async def run_outreach(client: TelegramClient, limit: int | None = None) -> int:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM contacts "
-            "WHERE status = 'new' AND has_tg IN ('yes','unknown') "
+            "WHERE status = 'new' AND outreach_campaign_id IS NULL AND has_tg IN ('yes','unknown') "
             "AND (username IS NOT NULL OR phone IS NOT NULL) "
             "ORDER BY id LIMIT ?",
             (cap,),
@@ -615,6 +629,13 @@ async def _agent_reply(event, contact_id: int, username: str | None,
                 "WHERE campaign_id=? ORDER BY id", (camp["id"],),
             ).fetchall()]
 
+    # Явный отказ — финальная отметка. Даже если человек потом что-то напишет,
+    # автоматизация не возобновляет диалог и не превращает отказ в новый повод
+    # дожимать. Вернуть контакт в работу может только оператор вручную.
+    if contact and contact["status"] == "refused":
+        print(f"[refused] contact {contact_id}: автоответ отключён")
+        return
+
     kp_path = _kp_path(kp_file)
     if not messages or messages[-1]["role"] != "user":
         return  # нечего отвечать (нет реплики собеседника)
@@ -707,7 +728,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # уходят СРАЗУ два файла — презентация «7 источников дохода» и бизнес-план.
     # Раньше брали только первое совпадение, и второй файл человек не получал.
     chosen_list: list[dict] = []
-    if kps and reply.kp_choice:
+    if AUTO_SEND_KP and kps and reply.kp_choice:
         # ВАЖНО: делить строку по запятой напрямую нельзя — запятая бывает В САМОМ
         # названии («Бизнес-план усадьбы (2 га, миндаль)»), и такое имя рвалось
         # пополам, после чего не совпадало ни с чем. Поэтому ищем названия КП как
@@ -738,7 +759,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             # хотя бы то, что доедет.
             print(f"[KP send error] contact {contact_id} / «{kp.get('name')}»: {e}")
     # Легаси: одно КП файлом на кампании (если набор КП не задан)
-    if not chosen_list and not kps and reply.send_kp and kp_path is not None:
+    if AUTO_SEND_KP and not chosen_list and not kps and reply.send_kp and kp_path is not None:
         try:
             await asyncio.sleep(random.uniform(*kp_pause))
             await event.client.send_file(peer, str(kp_path))
@@ -791,7 +812,16 @@ async def _agent_reply(event, contact_id: int, username: str | None,
                     f"ни Zoom-ссылки, ни напоминания. Проставь дату в карточке руками.",
                     level="warn", contact_id=contact_id)
         elif reply.intent == "not_interested":
-            database.set_status(conn, contact_id, "nurture")
+            # Не «nurture»: отказ не является поводом для будущего дожима. Отдельный
+            # статус исключает человека из любых выборок на рассылку и виден в отчёте.
+            database.set_status(conn, contact_id, "refused")
+            conn.execute("DELETE FROM opener_queue WHERE contact_id=?", (contact_id,))
+            database.add_event(
+                conn, "refused", f"🚫 Отказ: {who}",
+                (text_in or "").strip()[:160] or "Человек сообщил, что предложение не интересно.",
+                level="info", contact_id=contact_id, campaign_id=camp["id"] if camp else None,
+                account_id=account_id,
+            )
         else:
             database.set_status(conn, contact_id, "in_dialog")
             if reply.intent in ("positive", "agreed"):

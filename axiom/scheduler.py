@@ -334,6 +334,15 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
             (camp["id"], c["id"])).fetchone() is not None
         if paused or not database.in_work_hours(camp):
             continue
+        # Стартовая трёхшаговая цепочка управляется opener_queue: второе сообщение
+        # ждёт короткую паузу, третье — сутки. Общий дожим 5/7/24 часа сюда нельзя
+        # подмешивать, иначе человек получит лишние касания между №2 и №3.
+        queued = conn.execute(
+            "SELECT 1 FROM opener_queue WHERE contact_id=? AND campaign_id=?",
+            (c["id"], camp["id"]),
+        ).fetchone()
+        if queued:
+            continue
         extra = _campaign_extra_followup(conn, c["id"])
         # Кампания может добавить СВОЙ последний шаг поверх лесенки — через сутки после
         # третьего пинга. Остальные шаги общие: они намеренно нейтральны и не обещают

@@ -12,11 +12,13 @@ APScheduler>=3.10         # напоминания, дожим
 
 # --- Веб-морда (дашборд + контакты) ---
 fastapi>=0.110
+python-multipart>=0.0.9  # загрузка CSV и файлов подключения через пульт
 uvicorn[standard]>=0.29
 
 # --- Интеграции (дни 5-6) ---
 google-api-python-client>=2.0
 google-auth-oauthlib>=1.0
+gspread>=6.0               # Контент-завод: чтение Google-таблицы очереди/метрик
 # Zoom — через requests (REST), отдельной либы не нужно
 requests>=2.31
 tzdata>=2024.1           # база таймзон для zoneinfo (на Windows системной нет)

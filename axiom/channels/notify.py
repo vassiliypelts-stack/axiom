@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import config
 from channels.telegram import client_for_account
 from db import database
@@ -269,7 +271,8 @@ def campaign_report_text(conn, cid: int) -> str | None:
     за сегодня/неделю/всё время, ответы, КЭВ. Общая для показа на экране кампании
     (см. web/app.py: /api/campaign/{cid}/report) и для отправки в личку (см.
     send_campaign_report) — один расчёт, а не два похожих."""
-    camp = conn.execute("SELECT id, name, audience_tag, channel FROM campaigns WHERE id=?",
+    camp = conn.execute("SELECT id, name, audience_tag, channel, initial_audience_count, "
+                        "start_accounts_count, start_account_ids FROM campaigns WHERE id=?",
                         (cid,)).fetchone()
     if not camp:
         return None
@@ -286,6 +289,10 @@ def campaign_report_text(conn, cid: int) -> str | None:
         "AND sent_at >= date('now','-1 day') AND sent_at < date('now')", (cid,)
     ).fetchone()["c"]
     week = sent_since("date('now','-7 day')")
+
+    # Число «базы на старте» — снапшот первого запуска. Для старых кампаний, где
+    # снимка ещё не было, честный ближайший эквивалент: уже отправленные + оставшаяся
+    # доступная аудитория (ниже left вычисляется по тем же правилам).
 
     def replied_since(period_sql: str | None) -> int:
         """Ответившие — по ПЕРВОМУ входящему в периоде, а не по любому.
@@ -326,6 +333,20 @@ def campaign_report_text(conn, cid: int) -> str | None:
             "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
             f"WHERE c.lead_since IS NOT NULL{where}", (cid,)).fetchone()["n"]
 
+    def refused_since(period_sql: str | None) -> int:
+        """Явные отказы по времени самого входящего сообщения.
+
+        Статус контакта не хранит дату перехода, поэтому считаем по классификации
+        ``not_interested`` в истории. DISTINCT не даёт одному человеку, который
+        повторил отказ, раздуть цифру кампании.
+        """
+        where = f" AND m.ts >= {period_sql}" if period_sql else ""
+        return conn.execute(
+            "SELECT COUNT(DISTINCT m.contact_id) n FROM messages m "
+            "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id AND cc.campaign_id=? "
+            f"WHERE m.direction='in' AND m.intent='not_interested'{where}", (cid,)
+        ).fetchone()["n"]
+
     leads = leads_since(None)
     leads_today = leads_since("date('now')")
     leads_week = leads_since("date('now','-7 day')")
@@ -334,6 +355,11 @@ def campaign_report_text(conn, cid: int) -> str | None:
         "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
         "WHERE c.lead_since >= date('now','-1 day') AND c.lead_since < date('now')",
         (cid,)).fetchone()["n"]
+
+    refused = refused_since(None)
+    refused_today = refused_since("date('now')")
+    refused_week = refused_since("date('now','-7 day')")
+    refused_yest = refused_since("date('now','-1 day') AND m.ts < date('now')")
 
     replied = replied_since(None)
     replied_today = replied_since("date('now')")
@@ -370,9 +396,32 @@ def campaign_report_text(conn, cid: int) -> str | None:
         days = max(1, int(d or 0) + 1)          # день старта тоже считаем рабочим
 
     # Остаток базы — на сколько ещё хватит при текущем темпе.
-    where_left, params_left = _audience_where_for_report(camp_tag, camp_channel)
+    where_left, params_left = _audience_where_for_report(camp_tag, camp_channel, cid)
     left = conn.execute(f"SELECT COUNT(*) c FROM contacts WHERE {where_left}",
                         params_left).fetchone()["c"]
+    initial_base = camp["initial_audience_count"]
+    if initial_base is None:
+        initial_base = total + left
+
+    ignored = conn.execute(
+        "SELECT COUNT(DISTINCT c.id) n FROM contacts c "
+        "JOIN campaign_contacts cc ON cc.contact_id=c.id WHERE cc.campaign_id=? "
+        "AND c.status='ignored'", (cid,)
+    ).fetchone()["n"]
+    try:
+        start_ids = [int(x) for x in json.loads(camp["start_account_ids"] or "[]")]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        start_ids = []
+    started_accounts = camp["start_accounts_count"]
+    if started_accounts is None:
+        started_accounts = len(start_ids)
+    dead_accounts = 0
+    if start_ids:
+        marks = ",".join("?" for _ in start_ids)
+        dead_accounts = conn.execute(
+            f"SELECT COUNT(*) c FROM accounts WHERE id IN ({marks}) "
+            "AND (status='banned' OR session_state IN ('dead','revoked'))", start_ids,
+        ).fetchone()["c"]
 
     # «Работала сегодня» — СТРОГО про отправку. Раньше сюда приплюсовывались ответы,
     # и отчёт писал «работала: да» при нуле отправленных: входящее письмо от
@@ -443,19 +492,24 @@ def campaign_report_text(conn, cid: int) -> str | None:
     if not today and last_at:
         work += f" · последняя отправка: {_d(last_at)}"
     out.append(work)
-    out.append(f"осталось в базе: {left}")
+    out.append(f"база на старте: {initial_base} · отправителей на старте: {started_accounts} · умерло: {dead_accounts}")
+    out.append(f"осталось в базе: {left} · 🔕 игнор: {ignored}")
 
     out.append("")
     out.append("📅 ЗА ВСЁ ВРЕМЯ")
     out.append(f"отправлено: {total}{_undeliv(undeliv_all)}")
     out.append(f"ответили: {replied}{_pct(replied, total)}")
+    out.append(f"🔕 не ответили после 3 касаний: {ignored}{_pct(ignored, total)}")
+    out.append(f"🚫 отказались: {refused}{_pct(refused, total)}")
     out.append(f"🔥 согласились (лиды): {leads}{_pct(leads, total)}")
+    out.append(f"конверсия в лиды: {leads * 100 // total if total else 0}%")
     out.append(f"на КЭВ: {kev}{_pct(kev, replied)}")
 
     out.append("")
     out.append("🗓 ЗА НЕДЕЛЮ")
     out.append(f"отправлено: {week}{_undeliv(undeliv_week)}")
     out.append(f"ответили: {replied_week}{_pct(replied_week, week)}")
+    out.append(f"🚫 отказались: {refused_week}{_pct(refused_week, week)}")
     out.append(f"🔥 согласились (лиды): {leads_week}{_pct(leads_week, week)}")
     out.append(f"на КЭВ: {kev_week}{_pct(kev_week, replied_week)}")
 
@@ -463,6 +517,7 @@ def campaign_report_text(conn, cid: int) -> str | None:
     out.append("☀️ ЗА ВЧЕРА")
     out.append(f"отправлено: {yesterday_only}{_undeliv(undeliv_yest)}")
     out.append(f"ответили: {replied_yest}{_pct(replied_yest, yesterday_only)}")
+    out.append(f"🚫 отказались: {refused_yest}{_pct(refused_yest, yesterday_only)}")
     out.append(f"🔥 согласились (лиды): {leads_yest}{_pct(leads_yest, yesterday_only)}")
     out.append(f"на КЭВ: {kev_yest}{_pct(kev_yest, replied_yest)}")
 
@@ -470,7 +525,7 @@ def campaign_report_text(conn, cid: int) -> str | None:
     # полный блок с нулями незачем, но темп текущего дня видеть нужно.
     out.append("")
     today_line = (f"сегодня: отправлено {today} · ответили {replied_today} · "
-                  f"лиды {leads_today} · КЭВ {kev_today}")
+                  f"отказались {refused_today} · лиды {leads_today} · КЭВ {kev_today}")
     if undeliv_today:
         today_line += f" · ⚠️ не дошло {undeliv_today}"
     out.append(today_line)
@@ -495,11 +550,12 @@ async def send_campaign_report(cid: int) -> dict:
     return {"ok": True}
 
 
-def _audience_where_for_report(tag: str | None, channel: str | None) -> tuple[str, list]:
+def _audience_where_for_report(tag: str | None, channel: str | None, cid: int | None = None) -> tuple[str, list]:
     """Урезанная копия web/app.py:_audience_where — своя, чтобы не тянуть web.app сюда
     (channels/ не должен зависеть от web/, это отдельный слой)."""
-    where = "deleted_at IS NULL AND status='new' AND (username IS NOT NULL OR phone IS NOT NULL)"
-    params: list = []
+    where = ("deleted_at IS NULL AND status='new' AND (username IS NOT NULL OR phone IS NOT NULL) "
+             "AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)")
+    params: list = [cid]
     if tag:
         where += " AND tags LIKE ?"
         params.append(f"%{tag}%")

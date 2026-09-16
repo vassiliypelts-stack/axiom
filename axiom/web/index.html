@@ -261,6 +261,10 @@
   .cf-date{padding:5px 9px;border-radius:9px;border:1px solid var(--border);background:var(--panel2);
     color:var(--text);font-size:12px;font-family:inherit;}
   .cf-chart-switch{display:flex;gap:6px;margin-left:auto;}
+  /* Каналов два десятка: в одну строку не помещаются и уезжают за край экрана. */
+  .cf-chans{display:flex;flex-wrap:wrap;gap:6px;}
+  /* Темы из дайджеста — живые предложения, а не ярлыки: им нужен перенос. */
+  .cf-wrap-text{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5;}
   .cf-tablewrap{overflow-x:auto;margin-top:10px;}
   .cf-table{width:100%;border-collapse:collapse;font-size:12.5px;}
   .cf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
@@ -3048,15 +3052,22 @@ async function viewContentSources(v){
     </a>`).join("");
 
   const themes=s.themes.filter(t=>t.from_digest).slice(-20).reverse()
-    .map(t=>`<div class="cf-plain-post"><span class="cf-post-text">${esc(t.theme)}</span>
-      <span class="sub">${esc(t.status||"")}</span></div>`).join("");
+    .map(t=>{
+      // В статусе лежит «из дайджеста 16.09 — <угол>»: дату выносим меткой,
+      // иначе она повторяется в каждой строке и съедает ширину колонки.
+      const m=(t.status||"").match(/из дайджеста\s+([\d.]+)/i);
+      return `<div class="cf-plain-post" style="align-items:flex-start;gap:8px">
+        ${m?`<span class="tag" style="flex:none">${esc(m[1])}</span>`:""}
+        <span class="cf-post-text cf-wrap-text">${esc(t.theme)}</span>
+      </div>`;
+    }).join("");
 
   v.innerHTML=cfTabs()+`<div class="dash"><div class="dash-grid">
       <section class="dash-glass dash-card" style="grid-column:1/-1">
         <div class="dash-chh"><h3>Каналы</h3>
           <span class="tag">${s.total_finds} находок</span>
           <span class="sub">дайджест собирает раз в сутки</span></div>
-        <div class="cf-chart-switch" id="cf-chans">${chips}</div>
+        <div class="cf-chans" id="cf-chans">${chips}</div>
       </section>
 
       <section class="dash-glass dash-card" style="grid-column:span 7">

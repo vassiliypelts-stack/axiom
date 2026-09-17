@@ -10128,7 +10128,14 @@ def campaign_test(cid: int, payload: dict = Body(default={})) -> JSONResponse:
         conn.execute(
             f"DELETE FROM campaign_contacts WHERE campaign_id=? AND contact_id IN ({qmarks})",
             (cid, *test_ids))
-        conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})", test_ids)
+        # hot_since ТОЖЕ снимаем. Без этого тест был неповторяем: первый удачный прогон
+        # доводил контакт до горячего лида, метка оставалась — а по горячему лиду агент
+        # молчит намеренно (см. listener._should_reply), передавая разговор владельцу.
+        # Дальше сколько ни жми «Тест», опенер уходил, ответ сохранялся, и агент не
+        # отвечал НИКОГДА, с любого аккаунта: 17.09.2026 так сгорело три прогона подряд,
+        # и выглядело это как поломка агента, а не как сработавшая защита.
+        conn.execute(f"UPDATE contacts SET status='new', hot_since=NULL, lead_since=NULL "
+                     f"WHERE id IN ({qmarks})", test_ids)
         n_test = len(test_ids)
         skipped: list = []
         note = (f"обнулено и заново запущено {n_test} тестовых контактов: "
@@ -10202,7 +10209,10 @@ def campaign_test_reset_dialogs(cid: int) -> JSONResponse:
         conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", ids)
         conn.execute(f"DELETE FROM campaign_contacts WHERE campaign_id=? AND contact_id IN ({qmarks})",
                     (cid, *ids))
-        conn.execute(f"UPDATE contacts SET status='new' WHERE id IN ({qmarks})", ids)
+        # hot_since/lead_since — как и в campaign_test: иначе «обнулить» не обнуляет
+        # главное, и агент продолжает молчать по метке горячего лида.
+        conn.execute(f"UPDATE contacts SET status='new', hot_since=NULL, lead_since=NULL "
+                     f"WHERE id IN ({qmarks})", ids)
         database.add_event(conn, "campaign_test", f"🔄 Обнулена переписка «{row['name']}»",
                            f"тестовых контактов: {len(ids)} — сообщения, встречи и очередь удалены, "
                            f"статус new", level="good", campaign_id=cid)

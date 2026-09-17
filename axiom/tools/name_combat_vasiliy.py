@@ -26,14 +26,26 @@ from db import database  # noqa: E402
 FIRST = "Василий"
 
 
+# Пула ru_names (≈14 мужских фамилий) на пачку из 30+ не хватает, и «Василий
+# Воробьёв» повторился бы трижды — для боевых аккаунтов это заметный след.
+_EXTRA_SURNAMES = [
+    "Андреев", "Белов", "Гаврилов", "Дорохов", "Ершов", "Жуков", "Зайцев",
+    "Ильин", "Карпов", "Лебедев", "Макаров", "Никитин", "Орлов", "Панкратов",
+    "Романов", "Сафонов", "Тарасов", "Уваров", "Филатов", "Харитонов",
+    "Цветков", "Чернов", "Шилов", "Щербаков", "Юдин", "Яковлев",
+    "Баранов", "Власов", "Гусев", "Демидов", "Емельянов", "Зуев",
+]
+
+
 def surnames_pool() -> list[str]:
-    """Мужские фамилии из пула имён (первые 20 записей — мужские)."""
+    """Мужские фамилии: из пула ru_names (первые 20 записей мужские) + запас."""
     out = []
     for n in NAMES[:20]:
         parts = n.split()
         if len(parts) > 1:
             out.append(parts[-1])
-    return out or ["Петров", "Смирнов", "Кузнецов", "Попов", "Соколов"]
+    out.extend(s for s in _EXTRA_SURNAMES if s not in out)
+    return out
 
 
 def main(write: bool) -> None:
@@ -62,12 +74,27 @@ def main(write: bool) -> None:
         pool = [s for s in surnames_pool() if s not in used] or surnames_pool()
         random.shuffle(pool)
 
+        # Ярлык — опора оператора в таблице, тёзки в ней недопустимы: номера разных
+        # стран дают одинаковые три цифры (…2352097 и …0350097 → оба «Василий097»).
+        # Заняв хвост, берём на цифру больше, и только потом падаем на id.
+        taken = {r["label"] for r in conn.execute(
+            "SELECT label FROM accounts WHERE COALESCE(label,'')<>''")}
+
         for i, acc in enumerate(targets):
             surname = pool[i % len(pool)]
             tg_name = f"{FIRST} {surname}"
-            label = make_label(FIRST, acc["phone"])
-            if not phone_digits(acc["phone"]):
-                label = f"{FIRST}{acc['id']}"   # номера нет — цепляем id, лишь бы не дубль
+            label = ""
+            for n in (3, 4, 5, 6):
+                digits = phone_digits(acc["phone"], n)
+                if not digits:
+                    break
+                cand = f"{FIRST}{digits}"
+                if cand not in taken:
+                    label = cand
+                    break
+            if not label:
+                label = f"{FIRST}{acc['id']}"
+            taken.add(label)
             print(f"  id={acc['id']:<6} {str(acc['label'])[:20]:<20} → {label:<14} «{tg_name}»")
             if write:
                 conn.execute("UPDATE accounts SET tg_name=?, label=? WHERE id=?",

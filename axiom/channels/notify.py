@@ -546,7 +546,7 @@ def campaign_report_text(conn, cid: int) -> str | None:
     # а ради этого отчёт и читают. Горячие первыми: им владелец должен написать лично,
     # агент по ним намеренно молчит (listener._should_reply).
     leads = conn.execute(
-        "SELECT c.name, c.person_name, c.username, c.phone, c.hot_since "
+        "SELECT c.id, c.name, c.person_name, c.username, c.phone, c.hot_since "
         "FROM contacts c JOIN campaign_contacts cc ON cc.contact_id=c.id "
         "WHERE cc.campaign_id=? AND c.lead_since IS NOT NULL AND c.deleted_at IS NULL "
         "ORDER BY (c.hot_since IS NULL), COALESCE(c.hot_since, c.lead_since) DESC "
@@ -554,11 +554,17 @@ def campaign_report_text(conn, cid: int) -> str | None:
     if leads:
         out.append("")
         out.append(f"👥 ЛИДЫ ({len(leads)}):")
+        base = (config.PUBLIC_URL or "").rstrip("/")
         for r in leads:
             who = (r["person_name"] or r["name"] or "без имени").strip()
             handle = f"@{r['username']}" if r["username"] else (r["phone"] or "")
             mark = "🔥" if r["hot_since"] else "💬"
             out.append(f"{mark} {who}" + (f" · {handle}" if handle else ""))
+            # Отчёт читают с телефона, чтобы тут же написать человеку. Без ссылок
+            # приходилось искать его в пульте руками по имени.
+            if base:
+                out.append(f"   💬 диалог: {base}/#chats/{r['id']}")
+                out.append(f"   👤 карточка: {base}/#contacts/{r['id']}")
     return "\n".join(out)
 
 

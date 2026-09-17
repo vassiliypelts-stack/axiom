@@ -272,6 +272,10 @@
   .cf-area{width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:10px;
     padding:11px 13px;color:var(--text);font-family:inherit;font-size:13px;line-height:1.55;resize:vertical;}
   .cf-area:focus{outline:none;border-color:var(--accent);}
+  .cf-origin{font-size:12px;color:var(--muted);line-height:1.55;margin:4px 0 9px;padding:9px 11px;
+    border-left:2px solid var(--accent);background:color-mix(in srgb,var(--panel2) 60%,transparent);
+    border-radius:0 8px 8px 0;white-space:pre-wrap;max-height:220px;overflow:auto;}
+  .cf-chip.on{background:var(--accent-soft);border-color:var(--accent);}
   .cf-draft{border:1px solid var(--border);border-radius:12px;padding:13px;margin-bottom:12px;
     background:color-mix(in srgb,var(--panel2) 45%,transparent);}
   /* Угол — что своего сказать по теме; ниже кусок поста, из которого она выросла. */
@@ -3186,26 +3190,43 @@ async function viewContentWrite(v){
 function cfDraftsHtml(images){
   if(!CF_DRAFTS.length)
     return '<div class="empty">Пока пусто. Отметьте находки или продиктуйте мысль.</div>';
-  const opts=['<option value="">без картинки</option>','<option value="ии">сгенерировать ИИ</option>']
-    .concat(images.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`)).join("");
-  return CF_DRAFTS.map((d,i)=>`<div class="cf-draft">
+  // Загруженное с компьютера фото могло появиться уже после чтения папки —
+  // держим его в списке, иначе выбор слетает при перерисовке.
+  const imgOpts=(cur)=>{
+    const names=images.slice();
+    if(cur && cur!=="ии" && !names.includes(cur))names.unshift(cur);
+    const sel=v=>v===(cur||"")?" selected":"";
+    return `<option value=""${sel("")}>без картинки</option>`
+      + `<option value="ии"${sel("ии")}>сгенерировать ИИ</option>`
+      + names.map(n=>`<option value="${esc(n)}"${sel(n)}>${esc(n)}</option>`).join("");
+  };
+  return CF_DRAFTS.map((d,i)=>{
+    const len=d.text.length, over=len>500;
+    return `<div class="cf-draft">
       <div class="cf-find-head">
         <span class="tag">${esc(d.source||"")}</span>
-        <span class="sub mono" id="cfw-len-${i}">${d.text.length}/500</span>
+        <span class="mono" data-len="${i}" style="${over?"color:var(--red);font-weight:700":"color:var(--muted)"}">${len}/500</span>
+        ${over?`<button class="cf-chip" data-short="${i}">Укоротить</button>`:""}
+        ${d.origin?`<button class="cf-chip" data-orig="${i}">Исходник</button>`:""}
+        ${d.link?`<a class="cf-chip" href="${esc(d.link)}" target="_blank" rel="noopener">Оригинал ↗</a>`:""}
       </div>
-      <textarea class="cf-area" rows="7" data-draft="${i}">${esc(d.text)}</textarea>
+      ${d.origin?`<div class="cf-origin" data-origbox="${i}" hidden>${esc(d.origin)}</div>`:""}
+      <textarea class="cf-area" rows="8" data-draft="${i}">${esc(d.text)}</textarea>
       <div class="ttoolbar" style="margin-top:8px">
         <select class="cf-date" data-kind="${i}">
           <option value="экспертный">экспертный</option>
           <option value="личный">личный</option>
           <option value="продающий">продающий</option>
         </select>
-        <select class="cf-date" data-img="${i}">${opts}</select>
-        <button class="primary" data-queue="${i}">В очередь</button>
+        <select class="cf-date" data-img="${i}">${imgOpts(d.image)}</select>
+        <label class="cf-chip" style="cursor:pointer">📎 Фото с компа
+          <input type="file" accept="image/*" data-upload="${i}" hidden></label>
+        <button class="primary" data-queue="${i}">Утвердить · в очередь</button>
         <button class="ghost" data-drop="${i}">Убрать</button>
         <span class="sub" data-note="${i}"></span>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function wireContentWrite(v,images){
@@ -3264,9 +3285,57 @@ function wireContentWrite(v,images){
     ta.oninput=()=>{
       const i=+ta.dataset.draft;
       CF_DRAFTS[i].text=ta.value;
-      const l=q("#cfw-len-"+i);
-      if(l){ l.textContent=ta.value.length+"/500"; l.style.color=ta.value.length>500?"var(--red)":""; }
+      const l=v.querySelector(`[data-len="${i}"]`);
+      if(l){
+        const over=ta.value.length>500;
+        l.textContent=ta.value.length+"/500";
+        l.style.color=over?"var(--red)":"var(--muted)";
+        l.style.fontWeight=over?"700":"";
+      }
     };
+  });
+
+  // Исходник рядом с черновиком: правя текст, надо видеть, из чего он вырос.
+  v.querySelectorAll("[data-orig]").forEach(b=>{
+    b.onclick=()=>{
+      const box=v.querySelector(`[data-origbox="${b.dataset.orig}"]`);
+      if(box){ box.hidden=!box.hidden; b.classList.toggle("on",!box.hidden); }
+    };
+  });
+
+  // Модели плохо считают знаки и регулярно вылезают за лимит Threads.
+  v.querySelectorAll("[data-short]").forEach(b=>{
+    b.onclick=async()=>{
+      const i=+b.dataset.short, n=v.querySelector(`[data-note="${i}"]`);
+      b.disabled=true; n.textContent="сокращаю…";
+      try{
+        const r=await api("/api/content/text/shorten",{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({text:CF_DRAFTS[i].text})});
+        if(r.error){ n.textContent="⚠️ "+r.error; b.disabled=false; }
+        else{ CF_DRAFTS[i].text=r.text; viewContentWrite(v); }
+      }catch(e){ n.textContent="⚠️ "+e.message; b.disabled=false; }
+    };
+  });
+
+  // Фото с компьютера: класть его руками в папку на сервере неудобно.
+  v.querySelectorAll("[data-upload]").forEach(inp=>{
+    inp.onchange=async()=>{
+      const i=+inp.dataset.upload, n=v.querySelector(`[data-note="${i}"]`);
+      if(!inp.files[0])return;
+      n.textContent="загружаю фото…";
+      try{
+        const fd=new FormData(); fd.append("file",inp.files[0]);
+        const r=await fetch("/api/content/text/upload_image",{method:"POST",body:fd}).then(x=>x.json());
+        if(r.error){ n.textContent="⚠️ "+r.error; return; }
+        CF_DRAFTS[i].image=r.name;
+        n.textContent="фото: "+r.name;
+        viewContentWrite(v);
+      }catch(e){ n.textContent="⚠️ "+e.message; }
+    };
+  });
+  v.querySelectorAll("[data-img]").forEach(sel=>{
+    sel.onchange=()=>{CF_DRAFTS[+sel.dataset.img].image=sel.value;};
   });
   v.querySelectorAll("[data-drop]").forEach(b=>{
     b.onclick=()=>{CF_DRAFTS.splice(+b.dataset.drop,1);viewContentWrite(v);};

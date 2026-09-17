@@ -62,11 +62,27 @@ async def content_text_write(body: dict = Body(...)) -> JSONResponse:
                 content_writer.from_source,
                 (s.get("title") or "").strip(),
                 (s.get("excerpt") or s.get("text") or "").strip(),
-                (s.get("channel") or "").strip(), note))
+                (s.get("channel") or "").strip(), note,
+                (s.get("link") or "").strip()))
         if not drafts:
             return JSONResponse({"error": "Нечего писать: отметьте находки или продиктуйте мысль."},
                                 status_code=400)
         return JSONResponse({"drafts": drafts})
+    except content_writer.WriterError as e:
+        return _fail(e)
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.post("/api/content/text/shorten")
+async def content_text_shorten(body: dict = Body(...)) -> JSONResponse:
+    """Ужать черновик до лимита площадки."""
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "Пустой текст."}, status_code=400)
+    try:
+        return JSONResponse(await run_in_threadpool(
+            content_writer.shorten, text, int(body.get("limit") or 500)))
     except content_writer.WriterError as e:
         return _fail(e)
     except Exception as e:  # noqa: BLE001
@@ -115,6 +131,35 @@ def content_text_images() -> JSONResponse:
                    if p.is_file() and p.suffix.lower() in
                    (".jpg", ".jpeg", ".png", ".webp", ".gif"))
     return JSONResponse({"images": names, "folder": str(folder)})
+
+
+@router.post("/api/content/text/upload_image")
+async def content_text_upload_image(file: UploadFile = File(...)) -> JSONResponse:
+    """Фото с компьютера — сразу в папку картинок контент-завода."""
+    base = os.getenv("CONTENT_FACTORY_DIR", "")
+    if not base:
+        return JSONResponse({"error": "CONTENT_FACTORY_DIR не задан"}, status_code=400)
+    folder = Path(base) / "autopost" / "images"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    name = os.path.basename(file.filename or "")
+    ext = Path(name).suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        return JSONResponse({"error": "Только jpg, png, webp или gif."}, status_code=400)
+
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        return JSONResponse({"error": "Файл больше 15 МБ."}, status_code=400)
+
+    # Одноимённый файл не затираем: та картинка может стоять у поста в очереди.
+    stem = Path(name).stem or "photo"
+    target = folder / f"{stem}{ext}"
+    n = 2
+    while target.exists():
+        target = folder / f"{stem}-{n}{ext}"
+        n += 1
+    target.write_bytes(data)
+    return JSONResponse({"name": target.name})
 
 
 @router.get("/api/content/video/summary")

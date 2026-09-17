@@ -92,7 +92,8 @@ def _ask(user: str, max_tokens: int = 900) -> str:
     return text
 
 
-def from_source(title: str, excerpt: str, channel: str = "", note: str = "") -> dict:
+def from_source(title: str, excerpt: str, channel: str = "", note: str = "",
+                link: str = "") -> dict:
     """Пост по следам чужой публикации: свой угол, а не пересказ."""
     user = (
         "Ниже чужой пост из Telegram-канала. Напиши по его следам пост Василия.\n\n"
@@ -104,7 +105,26 @@ def from_source(title: str, excerpt: str, channel: str = "", note: str = "") -> 
     )
     if note:
         user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
-    return {"text": _ask(user), "source": channel, "title": title}
+    # Исходник едет вместе с черновиком: правя текст, надо видеть, из чего он
+    # вырос, — иначе не поймать, где агент переврал чужую мысль.
+    return {"text": _ask(user), "source": channel, "title": title,
+            "origin": excerpt[:800], "link": link}
+
+
+def shorten(text: str, limit: int = 500) -> dict:
+    """Ужать до лимита площадки, не потеряв голос.
+
+    Модели плохо считают знаки и регулярно превышают 500 — а пост длиннее
+    лимита Threads просто не примет.
+    """
+    user = (
+        f"Сократи пост до {limit} знаков. Сейчас в нём {len(text)}.\n\n"
+        "Режь целыми предложениями и абзацами, а не отдельными словами. "
+        "Что обязано остаться: центральная мысль, цифры и конкретика, "
+        "разговорные обороты, финальный вопрос. Голос не приглаживай.\n\n"
+        f"{text}"
+    )
+    return {"text": _ask(user, max_tokens=700)}
 
 
 def from_idea(idea: str, note: str = "") -> dict:
@@ -119,4 +139,5 @@ def from_idea(idea: str, note: str = "") -> dict:
     )
     if note:
         user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
-    return {"text": _ask(user), "source": "своя мысль", "title": idea[:80]}
+    return {"text": _ask(user), "source": "своя мысль", "title": idea[:80],
+            "origin": idea[:800], "link": ""}

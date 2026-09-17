@@ -7293,8 +7293,6 @@ function renderCampList(mount,camps){
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
           <button class="cl-report" data-id="${c.id}" title="Работала ли сегодня/вчера, сколько отправлено за сегодня/неделю/всё время, ответы, КЭВ">📋 Отчёт</button>
-          <button class="cl-leads" data-id="${c.id}" title="Кто сказал «да» в этой кампании — согласился, что с ним свяжется представитель">🔥 Лиды</button>
-          <button class="cl-warm" data-id="${c.id}">Прогрев</button>
           <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает. Прошлый тест обнуляется сам — кнопка в диалоге так и называется «Обнулить и запустить тест»">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" ${isRunning?"disabled":""} title="${isRunning?'Кампания уже работает — жми «Стоп», чтобы снова разрешить запуск':'Запустить рассылку'}">▶ Запустить</button>

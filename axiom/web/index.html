@@ -6702,6 +6702,16 @@ async function viewCampaigns(v){
               <input id="c-wh-end" type="time" value="20:00" style="max-width:120px">
             </div></div>
         </div></div>
+      <div class="field"><label>🔁 Автозапуск — сервер сам гоняет заходы, без ручного «Запустить»</label>
+        <div class="hint" style="margin-bottom:6px">Работает только внутри рабочих часов выше и не обходит ни дневные лимиты аккаунтов, ни гейт прогрева. Кампанию всё равно нужно один раз запустить кнопкой «▶ Запустить» — тумблер лишь разрешает планировщику нажимать её за тебя.</div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:7px;cursor:pointer">
+            <input type="checkbox" id="c-auto-send"> <b>включить автозапуск</b></label>
+          <div style="display:inline-flex;align-items:center;gap:7px">
+            <input id="c-auto-daily" type="number" min="1" max="500" value="3" style="max-width:90px">
+            <span class="hint">новых контактов в день — система сама растянет их по рабочим часам</span>
+          </div>
+        </div></div>
       <div class="field"><label>📨 Первое сообщение — уйдёт получателю ДОСЛОВНО, каждая строка = отдельное сообщение. {name} = имя контакта, {sender} = имя аккаунта-отправителя (команда ротируется — не вписывай имя руками)</label>
         <textarea id="c-msg" rows="5" placeholder="Здравствуйте, {name}!&#10;Меня зовут Василий, я из Фонда доступного жилья.&#10;Бывает, что клиент выбрал объект, но срывается — банк отказал или не хватает взноса?"></textarea></div>
       <div class="field"><label>🧠 Модель, которая ведёт диалоги ЭТОЙ кампании</label>
@@ -6819,6 +6829,8 @@ async function viewCampaigns(v){
     $("#c-wh-tz").value=c.work_hours_tz||"";
     $("#c-wh-start").value=c.work_hours_start||"09:00";
     $("#c-wh-end").value=c.work_hours_end||"20:00";
+    $("#c-auto-send").checked=!!c.auto_send;
+    $("#c-auto-daily").value=c.auto_daily||c.daily_limit||3;
     $("#c-prompt").value=c.agent_prompt||"";$("#c-kp").value=c.kp_text||"";
     // модель диалогов этой кампании (пусто = общая из «Аккаунтов»)
     api("/api/settings/agent_model").then(s=>{
@@ -6996,7 +7008,17 @@ async function viewCampaigns(v){
     const eid=form.dataset.edit;
     const r=await api(eid?`/api/campaign/${eid}/update`:"/api/campaigns",
       {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(r.error){alert(r.error);return;}route();
+    if(r.error){alert(r.error);return;}
+    // Автозапуск живёт в своей ручке: она держит daily_limit равным объёму, чтобы
+    // ручной «Запустить» не обходил заданный темп. Поэтому шлём вторым запросом,
+    // уже зная id (у новой кампании он приходит в ответе).
+    const cid=eid||r.id;
+    if(cid){
+      const ar=await api(`/api/campaign/${cid}/autosend`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({enabled:$("#c-auto-send").checked,daily:+$("#c-auto-daily").value||3})});
+      if(ar&&ar.warn)alert(ar.warn);
+    }
+    route();
   };
   window.__campEdit=async(id)=>{
     const c=await api(`/api/campaign/${id}`);

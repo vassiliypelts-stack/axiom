@@ -308,6 +308,9 @@ _EXTRA_ACCOUNT_COLS = {
     "spam_status": "TEXT",                # вердикт @SpamBot: ok|limited|banned|unknown
     "spam_checked_at": "TEXT",
     "avatar": "TEXT",                     # имя файла аватара (data/avatars/...)
+    # Какое лицо из data/faces занято этим аккаунтом — чтобы пул не выдал одно и
+    # то же лицо двум «разным» людям (пул 14 лиц на полсотни боевых).
+    "avatar_src": "TEXT",
     "description": "TEXT",                # описание профиля агента (для команды)
     "api_id": "INTEGER",                  # собственные api_id/api_hash аккаунта (для купленных
     "api_hash": "TEXT",                   # сессий — используем их, а не глобальные из .env)

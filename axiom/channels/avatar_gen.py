@@ -46,45 +46,45 @@ def _avatars_dir() -> Path:
     return d
 
 
-# Курируемый пул реальных лиц (отобраны вручную Василием, data/faces/{male,female}).
-# Приоритетнее стока/ИИ: ставим ОДНО правдоподобное лицо под пол, а не случайного из
-# Pexels. Так у аккаунта постоянное лицо, и оно заведомо годное (без водяных знаков).
-_FACES_DIR = Path(config.DB_PATH).parent / "faces"
-
-
-def _from_pool(gender: str) -> bytes | None:
-    d = _FACES_DIR / gender
-    if not d.exists():
-        return None
-    files = [p for p in d.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
-    if not files:
-        return None
-    p = random.choice(files)
-    try:
-        return _crop_top_square(p.read_bytes())   # квадрат под аватар Telegram
-    except Exception:  # noqa: BLE001
-        return p.read_bytes()
-
-
 # Куратор-пул реальных лиц, отобранных вручную (data/faces/male|female). Приоритетнее
-# стока/ИИ: ставим ОДНО правдоподобное лицо, а не случайного разного человека каждый раз.
+# стока/ИИ: лицо заведомо годное, без водяных знаков и артефактов генерации.
 _FACES_DIR = Path(config.DB_PATH).parent / "faces"
 
 
-def _from_pool(gender: str) -> bytes | None:
-    """Случайное лицо нужного пола из курируемого пула (или None, если пула нет)."""
+def _pool_files(gender: str) -> list[Path]:
     d = _FACES_DIR / gender
     if not d.exists():
-        return None
-    files = [p for p in d.iterdir()
-             if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
+        return []
+    return sorted(p for p in d.iterdir()
+                  if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"))
+
+
+def _pool_used(gender: str) -> set[str]:
+    """Какие лица пула уже стоят у аккаунтов — чтобы не выдать одно и то же дважды."""
+    try:
+        with database.get_conn() as conn:
+            return {r["avatar_src"] for r in conn.execute(
+                "SELECT avatar_src FROM accounts WHERE COALESCE(avatar_src,'')<>''")}
+    except Exception:  # noqa: BLE001 — колонки может не быть на старой базе
+        return set()
+
+
+def _from_pool(gender: str) -> tuple[bytes, str] | None:
+    """Ещё не занятое лицо нужного пола из пула. None — пула нет или все разобраны
+    (тогда вызывающий уходит на сток/ИИ: одинаковые лица у пачки «разных» людей
+    читаются как ферма ботов быстрее, чем любое сгенерированное лицо)."""
+    files = _pool_files(gender)
     if not files:
         return None
-    p = random.choice(files)
+    used = _pool_used(gender)
+    free = [p for p in files if p.name not in used]
+    if not free:
+        return None
+    p = random.choice(free)
     try:
-        return _crop_top_square(p.read_bytes())   # квадрат под аватар, как у стока
+        return _crop_top_square(p.read_bytes()), p.name
     except Exception:  # noqa: BLE001 — не JPEG/битый: отдаём как есть
-        return p.read_bytes()
+        return p.read_bytes(), p.name
 
 
 def _crop_top_square(data: bytes) -> bytes:
@@ -203,10 +203,14 @@ def _from_gemini(gender: str) -> bytes | None:
 
 
 def generate_photo(gender: str) -> tuple[bytes, str] | None:
-    """Приоритет — курируемый пул лиц (data/faces); иначе сток/ИИ (какой ключ задан)."""
+    """Приоритет — курируемый пул лиц (data/faces); иначе сток/ИИ (какой ключ задан).
+
+    Третий элемент — имя файла пула (для avatar_src), у сгенерированных пусто.
+    """
     pool = _from_pool(gender)
     if pool:
-        return pool, "пул лиц"
+        data, src = pool
+        return data, "пул лиц", src
     sources: list[tuple[str, "callable"]] = []
     if config.PEXELS_API_KEY:
         sources.append(("сток", _from_pexels))
@@ -218,7 +222,7 @@ def generate_photo(gender: str) -> tuple[bytes, str] | None:
     for label, fn in sources:
         data = fn(gender)
         if data:
-            return data, label
+            return data, label, ""
     return None
 
 
@@ -245,12 +249,13 @@ def ensure_avatar(acc: dict) -> str | None:
     result = generate_photo(gender)
     if not result:
         return have                            # не смогли сгенерить — оставляем что было
-    data, source = result
+    data, source, src_name = result
     fname = f"gen_{acc['id']}_{gender}_{uuid.uuid4().hex[:8]}.jpg"
     (_avatars_dir() / fname).write_bytes(data)
     try:
         with database.get_conn() as conn:
-            conn.execute("UPDATE accounts SET avatar=? WHERE id=?", (fname, acc["id"]))
+            conn.execute("UPDATE accounts SET avatar=?, avatar_src=? WHERE id=?",
+                         (fname, src_name or None, acc["id"]))
     except Exception as e:  # noqa: BLE001 — файл уже на диске; не роняем весь пакетный прогон
         print(f"  [avatar/db] не записал avatar в базу для #{acc['id']}: {e}")
         return None

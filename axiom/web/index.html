@@ -1298,6 +1298,7 @@ async function openAudience(cid){
         <span class="grow"></span>
         <button id="aud-selall" title="поставить галочки на все строки текущего фильтра, кому это ещё разрешено (не выпавшие по другой причине)">☑ выделить все</button>
         <button id="aud-selnone" title="снять со всех строк текущего фильтра — контакт пропускается ИМЕННО в этой кампании">☐ снять все</button>
+        <button id="aud-add" title="Дотянуть людей из CRM прямо сюда: фильтры по источнику, городу, каналу и статусу. Выбранные получают тег этой кампании и попадают в рассылку — в настройки кампании ходить не нужно.">➕ добавить из CRM</button>
         <span class="hint">${rows.length} строк</span>
       </div>
       <div id="aud-tbl"></div>
@@ -1394,6 +1395,22 @@ async function openAudience(cid){
     const selAllBtn=inner.querySelector("#aud-selall"),selNoneBtn=inner.querySelector("#aud-selnone");
     if(selAllBtn)selAllBtn.onclick=()=>bulkSet(true);
     if(selNoneBtn)selNoneBtn.onclick=()=>bulkSet(false);
+    // Добор аудитории не выходя из окна: тот же пикер CRM, что в мастере кампании,
+    // но тег подставлен из этой кампании — выбранные сразу попадают в её рассылку.
+    // Раньше за этим приходилось идти в настройки кампании и возвращаться обратно.
+    const addBtn=inner.querySelector("#aud-add");
+    if(addBtn)addBtn.onclick=()=>{
+      if(!d.tag){
+        const m=inner.querySelector("#aud-msg");
+        if(m)m.innerHTML='<span style="color:#c0392b">У кампании не задан тег сегмента — добавлять некуда. Задай его в настройках кампании.</span>';
+        return;
+      }
+      showAudiencePicker({audience_tag:d.tag},async(updated)=>{
+        await draw();   // список пересобираем: добавленные уже должны быть видны
+        const m=inner.querySelector("#aud-msg");
+        if(m)m.innerHTML=`<span style="color:#2e7d32">✅ добавлено в сегмент «${esc(d.tag)}»: ${updated}</span>`;
+      });
+    };
   };
   await draw();
 }

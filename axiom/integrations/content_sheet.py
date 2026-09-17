@@ -204,6 +204,31 @@ def sources() -> dict:
     }
 
 
+def add_to_queue(text: str, kind: str = "", platforms: str = "threads,vk,tg",
+                 image: str = "") -> dict:
+    """
+    Дописать пост в лист ОЧЕРЕДЬ со статусом «ждёт».
+
+    Публикатор заберёт его сам по расписанию, поэтому пишем только то, что
+    Василий уже одобрил глазами: правка после записи means правка в таблице.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ContentSheetError("Пустой текст — нечего ставить в очередь.")
+
+    ws = _book().worksheet("ОЧЕРЕДЬ")
+    rows = ws.get_all_values()
+
+    next_id = 1
+    for r in rows[1:]:
+        if r and r[0].strip().isdigit():
+            next_id = max(next_id, int(r[0].strip()) + 1)
+
+    ws.append_row([str(next_id), "", platforms, kind, text, str(len(text)),
+                   "ждёт", "", "", "", image])
+    return {"id": next_id, "len": len(text)}
+
+
 def summary() -> dict:
     book = _book()
     queue_rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()

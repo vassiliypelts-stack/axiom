@@ -1,0 +1,119 @@
+"""Черновик поста голосом Василия — из находки дайджеста или своей мысли.
+
+Полный скилл `/post` живёт в Claude Code: он читает десяток файлов, лист
+ПАМЯТЬ и правит текст в диалоге. Здесь задача уже: дать быстрый черновик
+прямо в пульте, чтобы не переключаться. Чистовик по-прежнему доводится в
+Claude Code — поэтому черновик всегда показывается на правку, а не уходит
+в очередь сам.
+
+Голос берётся из файлов контент-завода: tone-of-voice, стоп-слова,
+аудитория и живые посты Василия. Дублировать их сюда нельзя — правка в
+одном месте разошлась бы с другим.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import config
+from agent import llm
+
+# Материалы голоса лежат в соседнем проекте (Kontent-zavod-traffic-machine).
+# Путь настраивается: на сервере и на рабочей машине он разный.
+CONTENT_DIR = os.getenv("CONTENT_FACTORY_DIR", "")
+
+VOICE_FILES = [
+    "tone-of-voice.md",
+    "03-STOP-WORDS.md",
+    "11-AUDIENCE.md",
+    "posts-draft.md",
+]
+
+MAX_FILE = 12000
+
+
+class WriterError(RuntimeError):
+    pass
+
+
+def _voice() -> str:
+    """Голос, стоп-слова, аудитория и живые посты — одним куском."""
+    if not CONTENT_DIR:
+        raise WriterError(
+            "CONTENT_FACTORY_DIR не задан в .env — не знаю, где лежат материалы голоса.")
+    base = Path(CONTENT_DIR)
+    if not base.exists():
+        raise WriterError(f"Папка контент-завода не найдена: {CONTENT_DIR}")
+
+    parts = []
+    for name in VOICE_FILES:
+        p = base / name
+        if p.exists():
+            parts.append(f"=== {name} ===\n{p.read_text(encoding='utf-8')[:MAX_FILE]}")
+    if not parts:
+        raise WriterError(f"В {CONTENT_DIR} нет файлов голоса — проверьте путь.")
+    return "\n\n".join(parts)
+
+
+SYSTEM = """Ты пишешь посты голосом Василия Пельца — не своим.
+
+Ниже его материалы: голос, стоп-слова, аудитория и посты, написанные им
+самим. Живые посты важнее правил: правила описывают голос словами, а посты
+его показывают. Копируй их приёмы — арифметику, доведённую до денег,
+признание своего провала, резкие короткие добивания отдельной строкой,
+перечисления «тут… там… здесь…», разговорные обороты.
+
+Жёсткие ограничения:
+- до 500 знаков (лимит Threads), считай перед выдачей
+- одна мысль, один слой БМПХС
+- финал — вопрос или наблюдение, НЕ призыв
+- 0-1 эмодзи
+- никаких выдуманных цифр, кейсов и имён клиентов
+- ни религии, ни политики
+
+Отдай ТОЛЬКО текст поста. Без заголовков, без пояснений, без кавычек."""
+
+
+def _ask(user: str, max_tokens: int = 900) -> str:
+    spec = config.AGENT_MODEL or config.MODEL
+    system = [{"type": "text", "text": SYSTEM},
+              {"type": "text", "text": _voice()}]
+    try:
+        out = llm.text(spec, system, [{"role": "user", "content": user}],
+                       max_tokens=max_tokens, timeout=120)
+    except Exception as e:  # noqa: BLE001
+        raise WriterError(f"Модель не ответила: {str(e)[:150]}") from e
+    text = (out or "").strip().strip('"').strip()
+    if not text:
+        raise WriterError("Модель вернула пустой ответ.")
+    return text
+
+
+def from_source(title: str, excerpt: str, channel: str = "", note: str = "") -> dict:
+    """Пост по следам чужой публикации: свой угол, а не пересказ."""
+    user = (
+        "Ниже чужой пост из Telegram-канала. Напиши по его следам пост Василия.\n\n"
+        "Это НЕ пересказ: нужен свой угол — спор, собственный опыт, изнанка "
+        "процесса. Читатель не должен догадаться, что был источник.\n\n"
+        f"Канал: {channel or 'не указан'}\n"
+        f"Заголовок: {title}\n"
+        f"Текст: {excerpt[:1500]}\n"
+    )
+    if note:
+        user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
+    return {"text": _ask(user), "source": channel, "title": title}
+
+
+def from_idea(idea: str, note: str = "") -> dict:
+    """Пост из своей мысли — надиктованной или написанной."""
+    user = (
+        "Ниже сырая мысль Василия — надиктованная или набранная наспех. "
+        "Найди в ней центральную мысль и конкретику, выкинь лишнее и "
+        "напиши пост.\n\n"
+        "Факты бери только отсюда и из его материалов. Ничего не досочиняй: "
+        "если конкретики не хватает, лучше короче.\n\n"
+        f"Мысль: {idea[:4000]}\n"
+    )
+    if note:
+        user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
+    return {"text": _ask(user), "source": "своя мысль", "title": idea[:80]}

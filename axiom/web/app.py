@@ -625,6 +625,11 @@ def accounts_list() -> JSONResponse:
         d["active_campaigns"] = assigned_campaigns.get(d["id"], [])
         d["campaign_available"] = not bool(d["active_campaigns"])
         out.append(d)
+    # Родные сверху, за ними служебные, боевые в конце: родных и служебных единицы,
+    # и искать их среди полусотни боевых по id — основной источник путаницы.
+    # Сортируем здесь, а не в SQL: acc_role у старых записей вычисляется выше.
+    role_order = {"own": 0, "service": 1, "combat": 2}
+    out.sort(key=lambda a: (role_order.get(a.get("acc_role"), 2), a["id"]))
     return JSONResponse(out)
 
 

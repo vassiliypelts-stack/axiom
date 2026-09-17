@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import random
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, UploadFile
@@ -53,17 +54,25 @@ async def content_text_write(body: dict = Body(...)) -> JSONResponse:
     idea = (body.get("idea") or "").strip()
     picked = body.get("sources") or []
 
+    # Форму назначаем снаружи и разную: пачку постов модель иначе пишет под
+    # копирку — одна длина, одна структура, и лента читается как робот.
+    forms = random.sample(content_writer.FORMS, k=len(content_writer.FORMS))
+    nth = 0
+
     try:
         drafts = []
         if idea:
-            drafts.append(await run_in_threadpool(content_writer.from_idea, idea, note))
+            drafts.append(await run_in_threadpool(
+                content_writer.from_idea, idea, note, forms[nth % len(forms)]))
+            nth += 1
         for s in picked[:5]:          # больше пяти за раз — это уже не черновик, а поток
             drafts.append(await run_in_threadpool(
                 content_writer.from_source,
                 (s.get("title") or "").strip(),
                 (s.get("excerpt") or s.get("text") or "").strip(),
                 (s.get("channel") or "").strip(), note,
-                (s.get("link") or "").strip()))
+                (s.get("link") or "").strip(), forms[nth % len(forms)]))
+            nth += 1
         if not drafts:
             return JSONResponse({"error": "Нечего писать: отметьте находки или продиктуйте мысль."},
                                 status_code=400)

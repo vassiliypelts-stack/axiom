@@ -529,6 +529,24 @@ def campaign_report_text(conn, cid: int) -> str | None:
     if undeliv_today:
         today_line += f" · ⚠️ не дошло {undeliv_today}"
     out.append(today_line)
+
+    # ПОИМЁННО, КТО ЛИД. Проценты отвечают «сколько», но не «кому писать прямо сейчас»,
+    # а ради этого отчёт и читают. Горячие первыми: им владелец должен написать лично,
+    # агент по ним намеренно молчит (listener._should_reply).
+    leads = conn.execute(
+        "SELECT c.name, c.person_name, c.username, c.phone, c.hot_since "
+        "FROM contacts c JOIN campaign_contacts cc ON cc.contact_id=c.id "
+        "WHERE cc.campaign_id=? AND c.lead_since IS NOT NULL AND c.deleted_at IS NULL "
+        "ORDER BY (c.hot_since IS NULL), COALESCE(c.hot_since, c.lead_since) DESC "
+        "LIMIT 20", (cid,)).fetchall()
+    if leads:
+        out.append("")
+        out.append(f"👥 ЛИДЫ ({len(leads)}):")
+        for r in leads:
+            who = (r["person_name"] or r["name"] or "без имени").strip()
+            handle = f"@{r['username']}" if r["username"] else (r["phone"] or "")
+            mark = "🔥" if r["hot_since"] else "💬"
+            out.append(f"{mark} {who}" + (f" · {handle}" if handle else ""))
     return "\n".join(out)
 
 

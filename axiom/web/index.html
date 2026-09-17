@@ -265,6 +265,10 @@
   .cf-chans{display:flex;flex-wrap:wrap;gap:6px;}
   /* Темы из дайджеста — живые предложения, а не ярлыки: им нужен перенос. */
   .cf-wrap-text{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5;}
+  /* Угол — что своего сказать по теме; ниже кусок поста, из которого она выросла. */
+  .cf-theme-angle{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.45;}
+  .cf-theme-src{font-size:11.5px;color:var(--muted);margin-top:7px;padding-left:9px;
+    border-left:2px solid var(--border);line-height:1.5;opacity:.85;}
   .cf-tablewrap{overflow-x:auto;margin-top:10px;}
   .cf-table{width:100%;border-collapse:collapse;font-size:12.5px;}
   .cf-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);
@@ -3056,10 +3060,17 @@ async function viewContentSources(v){
       // В статусе лежит «из дайджеста 16.09 — <угол>»: дату выносим меткой,
       // иначе она повторяется в каждой строке и съедает ширину колонки.
       const m=(t.status||"").match(/из дайджеста\s+([\d.]+)/i);
-      return `<div class="cf-plain-post" style="align-items:flex-start;gap:8px">
-        ${m?`<span class="tag" style="flex:none">${esc(m[1])}</span>`:""}
-        <span class="cf-post-text cf-wrap-text">${esc(t.theme)}</span>
-      </div>`;
+      const head=`<div class="cf-find-head">
+          ${m?`<span class="tag">${esc(m[1])}</span>`:""}
+          ${t.source?`<span class="sub">${esc(t.source)}</span>`:""}
+        </div>`;
+      const body=`<div class="cf-find-title">${esc(t.theme)}</div>
+        ${t.angle?`<div class="cf-theme-angle">${esc(t.angle)}</div>`:""}
+        ${t.excerpt?`<div class="cf-theme-src">${esc(t.excerpt)}…</div>`:""}`;
+      // Есть ссылка на исходный пост — вся карточка открывает его.
+      return t.link
+        ? `<a class="cf-find" href="${esc(t.link)}" target="_blank" rel="noopener">${head}${body}</a>`
+        : `<div class="cf-find" style="cursor:default">${head}${body}</div>`;
     }).join("");
 
   v.innerHTML=cfTabs()+`<div class="dash"><div class="dash-grid">

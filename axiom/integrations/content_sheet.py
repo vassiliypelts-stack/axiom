@@ -166,15 +166,28 @@ def sources() -> dict:
         rows = book.worksheet("ПЛАН").get_all_values()
     except Exception:
         rows = []
+    # Из чего выросла тема: находка по её ссылке. Без куска исходного поста
+    # тема — голая формулировка, и не видно, что именно в источнике зацепило.
+    finds_by_link = {f["link"]: f for f in finds if f["link"]}
+
     for r in rows[1:]:
-        r = r + [""] * (9 - len(r))
+        r = r + [""] * (11 - len(r))
         if not r[1]:
             continue
+        status = r[8] or ""
+        link = _abs_link(r[10])
+        src = finds_by_link.get(link)
+        # «из дайджеста 16.09 — <угол>»: угол объясняет, что своего сказать.
+        angle = status.split("—", 1)[1].strip() if "—" in status else ""
         themes.append({
             "theme": r[1],
             "type": r[2],
-            "status": r[8],
-            "from_digest": "дайджест" in (r[8] or "").lower(),
+            "status": status,
+            "angle": angle,
+            "source": r[9] or (src["channel"] if src else ""),
+            "link": link,
+            "excerpt": (src["text"][:220] if src else ""),
+            "from_digest": "дайджест" in status.lower(),
         })
 
     channels = {}

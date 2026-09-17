@@ -9425,8 +9425,14 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         ).fetchall()
         paused = {r["contact_id"] for r in conn.execute(
             "SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?", (cid,)).fetchall()}
-        sent = {r["contact_id"] for r in conn.execute(
-            "SELECT contact_id FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchall()}
+        # Не просто «написали ли», а когда и с какого аккаунта: это весь смысл
+        # отдельной вкладки «Прогресс», и здесь ему место — решение «кому писать
+        # дальше» принимается в этом же списке.
+        sent_rows = {r["contact_id"]: r for r in conn.execute(
+            "SELECT cc.contact_id, cc.sent_at, COALESCE(a.label, a.phone, '') AS account "
+            "FROM campaign_contacts cc LEFT JOIN accounts a ON a.id=cc.account_id "
+            "WHERE cc.campaign_id=?", (cid,)).fetchall()}
+        sent = set(sent_rows)
 
     is_tg = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
     items, reasons, sources = [], {}, {}
@@ -9450,6 +9456,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # результат, а не только «кому ещё не писали».
         d["is_lead"] = bool(d.get("lead_since"))
         d["is_hot"] = bool(d.get("hot_since"))
+        sr = sent_rows.get(d["id"])
+        d["sent"] = bool(sr)
+        d["sent_at"] = sr["sent_at"] if sr else None
+        d["sent_by"] = (sr["account"] if sr else "") or ""
         if why:
             reasons[why] = reasons.get(why, 0) + 1
         items.append(d)

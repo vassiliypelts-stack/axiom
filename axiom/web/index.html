@@ -1325,7 +1325,18 @@ async function openAudience(cid){
         {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
         {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
         {key:"status",label:"Статус",cls:"sub",render:r=>esc(r.status||"")},
+        // Прогресс отправки прямо здесь: раньше ради «ушло / не ушло» открывали
+        // отдельную вкладку «Прогресс» с тем же списком людей.
+        {key:"sent",label:"Ушло",render:r=>r.sent
+          ?`<span style="color:var(--green);font-weight:700" title="Отправлено ${esc(r.sent_at||"")}${r.sent_by?" · с аккаунта "+esc(r.sent_by):""}">✓</span>`
+          :'<span class="no" title="ещё в очереди">○</span>'},
+        {key:"sent_at",label:"Когда",cls:"sub",render:r=>r.sent?esc(fmt(r.sent_at)):""},
+        {key:"sent_by",label:"Отправитель",cls:"sub",render:r=>esc(r.sent_by||"")},
         {key:"blocked_by",label:"Почему не пойдёт",cls:"sub",render:r=>r.blocked_by?esc(r.blocked_by):""},
+        // Из списка — сразу в карточку или в переписку с человеком.
+        {key:"__go",label:"",render:r=>
+          `<a href="/#contacts/${r.id}" target="_blank" rel="noopener" title="Карточка контакта" style="text-decoration:none;margin-right:6px">👁</a>`+
+          (r.is_lead||r.sent?`<a href="/#chats/${r.id}" target="_blank" rel="noopener" title="Открыть диалог" style="text-decoration:none">💬</a>`:"")},
       ],
       emptyText:"Пусто по текущему фильтру.",
     });
@@ -7278,15 +7289,13 @@ function renderCampList(mount,camps){
           <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
           <button class="cl-wiz" data-id="${c.id}" title="пройти по шагам визарда, проверить и поправить">🔁 В визард</button>
           <button class="cl-pre" data-id="${c.id}" title="что готово/мешает запуску">🚦 Готовность</button>
-          <button class="cl-prog" data-id="${c.id}">Прогресс</button>
           <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
           <button class="cl-report" data-id="${c.id}" title="Работала ли сегодня/вчера, сколько отправлено за сегодня/неделю/всё время, ответы, КЭВ">📋 Отчёт</button>
           <button class="cl-leads" data-id="${c.id}" title="Кто сказал «да» в этой кампании — согласился, что с ним свяжется представитель">🔥 Лиды</button>
           <button class="cl-warm" data-id="${c.id}">Прогрев</button>
-          <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает">🧪 Тест</button>
-          <button class="cl-test-reset" data-id="${c.id}" title="удалить переписку, встречи и очередь у СВОИХ тестовых номеров этой кампании — начать тест с нуля, не путая со вчерашним диалогом. Живых лидов не трогает">🔄 Обнулить тест</button>
+          <button class="cl-test" data-id="${c.id}" title="проверить скрипт живьём: шлёт ТОЛЬКО на свои тест-номера, боевую базу не трогает. Прошлый тест обнуляется сам — кнопка в диалоге так и называется «Обнулить и запустить тест»">🧪 Тест</button>
           <input type="number" value="3" id="cl-${c.id}" style="max-width:72px" title="сколько отправить в этот заход">
           <button class="primary cl-go${isActive?' running':''}" data-id="${c.id}" ${isRunning?"disabled":""} title="${isRunning?'Кампания уже работает — жми «Стоп», чтобы снова разрешить запуск':'Запустить рассылку'}">▶ Запустить</button>
           ${isRunning?`<button class="cl-stop" data-id="${c.id}" title="Остановить кампанию — новые заходы запускаться не будут, текущий отправляющийся процесс доработает до конца. После стопа «Запустить» снова станет активной">⏸ Стоп</button>`:""}
@@ -7631,7 +7640,6 @@ function renderCampList(mount,camps){
   mount.querySelectorAll(".cl-test").forEach(b=>b.onclick=()=>showTestDialog(b.dataset.id));
   // «Обнулить тест» ведёт в тот же диалог: обнуление предыдущего прогона теперь
   // делает сам тест при каждом запуске, отдельная кнопка осталась привычным входом.
-  mount.querySelectorAll(".cl-test-reset").forEach(b=>b.onclick=()=>showTestDialog(b.dataset.id));
   mount.querySelectorAll(".cl-aud").forEach(b=>b.onclick=()=>openAudience(+b.dataset.id));
   mount.querySelectorAll(".cl-openbatch").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,n=+(document.getElementById("cl-batch-"+id).value||3);

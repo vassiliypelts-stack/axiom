@@ -257,7 +257,14 @@ def _listenable() -> list[dict]:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM accounts WHERE tg_session IS NOT NULL AND tg_session<>'' "
-            "AND status IN ('active','warming','paused')"
+            "AND status IN ('active','warming','paused') "
+            # Сессию, которую Telegram уже отозвал, переподключать нечем: круг идёт
+            # раз в 30 сек, и эти попытки не просто шумели в логе — они совпадали с
+            # ручным входом оператора и давали второй коннект на тот же ключ,
+            # отчего свежий логин сгорал через пару минут (AuthKeyDuplicatedError).
+            # Оживает аккаунт повторным входом в «Аккаунтах»: тот пишет новую
+            # сессию и сбрасывает session_state, и мы снова его берём.
+            "AND COALESCE(session_state,'') NOT IN ('revoked','dead','banned')"
         ).fetchall()
     return [dict(r) for r in rows]
 

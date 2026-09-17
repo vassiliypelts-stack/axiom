@@ -1098,8 +1098,13 @@ def get_account(conn: sqlite3.Connection, acc_id: int) -> sqlite3.Row | None:
 
 
 def save_account_session(conn: sqlite3.Connection, acc_id: int, session: str, username: str | None = None) -> None:
+    # Новая сессия = аккаунт снова живой. Без сброса session_state в карточке
+    # оставалось прежнее 'revoked', и слушатель (он пропускает отозванные, чтобы
+    # не жечь их повторными коннектами) больше никогда не брал бы этот аккаунт
+    # в работу — свежий вход выглядел бы успешным, но ничего не слушал.
     conn.execute(
-        "UPDATE accounts SET tg_session=?, username=COALESCE(?,username) WHERE id=?",
+        "UPDATE accounts SET tg_session=?, username=COALESCE(?,username), "
+        "session_state='alive', session_checked_at=CURRENT_TIMESTAMP WHERE id=?",
         (session, username, acc_id),
     )
 

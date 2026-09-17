@@ -7513,9 +7513,14 @@ function renderCampList(mount,camps){
       const who=esc(l.name||l.username||l.phone||("#"+l.id));
       const contact=l.username?`@${esc(l.username)}`:esc(l.phone||"");
       const isHotNow=!!l.hot_since;
+      // Имя — ссылка прямо в переписку (#chats/{id}), а @ник — в сам Telegram. Раньше
+      // список говорил, КТО согласился, но чтобы ответить, приходилось идти в «Диалоги»
+      // и искать человека там руками — при том что пишут этим лидам сразу после чтения.
+      const link=`<a href="#chats/${l.id}" style="color:inherit;text-decoration:underline dotted" title="Открыть переписку с этим лидом">${who}</a>`;
+      const tg=l.username?` <a class="ext" href="https://t.me/${esc(l.username)}" target="_blank" title="Написать в Telegram">↗</a>`:"";
       return `<tr>
-        <td>${who}${isHotNow?' <span class="badge b-active" title="владелец ещё не написал">🔥 ждёт</span>':''}</td>
-        <td class="sub">${contact}</td>
+        <td>${link}${isHotNow?' <span class="badge b-active" title="владелец ещё не написал">🔥 ждёт</span>':''}</td>
+        <td class="sub">${contact}${tg}</td>
         <td class="sub">${l.lead_since?esc(l.lead_since):"—"}</td>
         <td class="sub" style="max-width:320px;white-space:normal">${l.last_in?esc(l.last_in.slice(0,160)):"—"}</td>
       </tr>`;

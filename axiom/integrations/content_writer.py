@@ -75,7 +75,10 @@ SYSTEM = """Ты пишешь посты голосом Василия Пель�
 
 
 def _ask(user: str, max_tokens: int = 900) -> str:
-    spec = config.AGENT_MODEL or config.MODEL
+    # Своя модель: голос Василия Claude держит заметно лучше, но у черновиков
+    # своя экономика — их пишут пачками и половину выбрасывают. Пусто —
+    # берём общую модель пульта.
+    spec = os.getenv("CONTENT_WRITER_MODEL", "") or config.AGENT_MODEL or config.MODEL
     system = [{"type": "text", "text": SYSTEM},
               {"type": "text", "text": _voice()}]
     try:

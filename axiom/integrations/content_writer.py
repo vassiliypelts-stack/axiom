@@ -93,6 +93,25 @@ SYSTEM = """Ты пишешь посты голосом Василия Пель�
 Отдай ТОЛЬКО текст поста. Без заголовков, без пояснений, без кавычек."""
 
 
+LIMIT = 500
+
+
+def _fit(text: str) -> str:
+    """Ужать до лимита площадки, если модель его превысила.
+
+    Считать знаки модели не умеют: черновики стабильно выходят на 550-700 при
+    лимите Threads в 500. Просить «покороче» в промпте бесполезно — проверяем
+    после и переписываем отдельным заходом.
+    """
+    if len(text) <= LIMIT:
+        return text
+    try:
+        out = shorten(text, LIMIT)["text"]
+    except WriterError:
+        return text               # не ужалось — отдаём как есть, правится руками
+    return out if len(out) < len(text) else text
+
+
 def _ask(user: str, max_tokens: int = 900) -> str:
     # Своя модель: голос Василия Claude держит заметно лучше, но у черновиков
     # своя экономика — их пишут пачками и половину выбрасывают. Пусто —
@@ -140,7 +159,7 @@ def from_source(title: str, excerpt: str, channel: str = "", note: str = "",
         user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
     # Исходник едет вместе с черновиком: правя текст, надо видеть, из чего он
     # вырос, — иначе не поймать, где агент переврал чужую мысль.
-    return {"text": _ask(user), "source": channel, "title": title,
+    return {"text": _fit(_ask(user)), "source": channel, "title": title,
             "origin": excerpt[:800], "link": link}
 
 
@@ -174,5 +193,5 @@ def from_idea(idea: str, note: str = "", form: str = "") -> dict:
         user += f"\nФорма этого поста: {form}\n"
     if note:
         user += f"\nПожелание Василия, оно важнее прочего: {note}\n"
-    return {"text": _ask(user), "source": "своя мысль", "title": idea[:80],
+    return {"text": _fit(_ask(user)), "source": "своя мысль", "title": idea[:80],
             "origin": idea[:800], "link": ""}

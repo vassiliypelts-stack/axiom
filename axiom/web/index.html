@@ -3050,7 +3050,7 @@ async function viewContentText(v){
 }
 
 /** Источники: что дайджест нашёл в чужих каналах и во что это выросло. */
-let CF_SRC_CHAN="";
+let CF_SRC_CHAN="", CF_SRC_PAIN="";
 async function viewContentSources(v){
   v.innerHTML=cfTabs()+`<div class="empty">Загружаю находки дайджеста…</div>`;
   cfBindTabs(v);
@@ -3059,7 +3059,9 @@ async function viewContentSources(v){
   catch(e){ v.innerHTML=cfTabs()+`<div class="empty">Ошибка: ${esc(e.message)}</div>`; cfBindTabs(v); return; }
   if(s.error){ v.innerHTML=cfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`; cfBindTabs(v); return; }
 
-  const finds=CF_SRC_CHAN?s.finds.filter(f=>f.channel===CF_SRC_CHAN):s.finds;
+  let finds=CF_SRC_CHAN?s.finds.filter(f=>f.channel===CF_SRC_CHAN):s.finds;
+  if(CF_SRC_PAIN==="__any")finds=finds.filter(f=>f.pain);
+  else if(CF_SRC_PAIN)finds=finds.filter(f=>f.pain===CF_SRC_PAIN);
 
   const chips=[`<button class="cf-chip${CF_SRC_CHAN?"":" on"}" data-chan="">все</button>`]
     .concat(s.channels.map(c=>
@@ -3076,9 +3078,11 @@ async function viewContentSources(v){
           <span class="tag">${esc(f.channel)}</span>
           <span class="sub mono">${esc((f.date||"").slice(0,10))}</span>
           <span class="sub mono">${f.views.toLocaleString("ru-RU")} просм · ${f.reactions} реакц</span>
+          ${f.pain?`<span class="tag" style="border-color:var(--accent2);color:var(--accent2)">🎯 ${esc(f.pain)}</span>`:""}
           ${f.used?'<span class="tag" style="border-color:var(--green);color:var(--green)">взято</span>':""}
         </div>
         <div class="cf-find-title">${esc(f.title)}</div>
+        ${f.pain_why?`<div class="cf-theme-angle">${esc(f.pain_why)}</div>`:""}
       </div>
       <a class="cf-open" href="${esc(f.link)}" target="_blank" rel="noopener" title="открыть оригинал">↗</a>
     </div>`).join("");
@@ -3103,6 +3107,17 @@ async function viewContentSources(v){
 
   v.innerHTML=cfTabs()+`<div class="dash"><div class="dash-grid">
       <section class="dash-glass dash-card" style="grid-column:1/-1">
+        <div class="dash-chh"><h3>Боли клиентов</h3>
+          <span class="tag">${s.total_pains||0} из ${s.total_finds}</span>
+          <span class="sub">эти темы конвертируются в посты</span></div>
+        <div class="cf-chans" id="cf-pains">
+          <button class="cf-chip${CF_SRC_PAIN?"":" on"}" data-pain="">все находки</button>
+          <button class="cf-chip${CF_SRC_PAIN==="__any"?" on":""}" data-pain="__any">🎯 только с болью</button>
+          ${(s.pains||[]).map(p=>`<button class="cf-chip${CF_SRC_PAIN===p.pain?" on":""}" data-pain="${esc(p.pain)}">${esc(p.pain)} · ${p.count}</button>`).join("")}
+        </div>
+      </section>
+
+      <section class="dash-glass dash-card" style="grid-column:1/-1">
         <div class="dash-chh"><h3>Каналы</h3>
           <span class="tag">${s.total_finds} находок</span>
           <span class="sub">дайджест собирает раз в сутки</span></div>
@@ -3125,6 +3140,9 @@ async function viewContentSources(v){
   cfBindTabs(v);
   v.querySelectorAll("#cf-chans .cf-chip").forEach(b=>{
     b.onclick=()=>{CF_SRC_CHAN=b.dataset.chan;viewContentSources(v);};
+  });
+  v.querySelectorAll("#cf-pains .cf-chip").forEach(b=>{
+    b.onclick=()=>{CF_SRC_PAIN=b.dataset.pain;viewContentSources(v);};
   });
   v.querySelectorAll("[data-pick]").forEach(cb=>{
     cb.onchange=()=>{

@@ -144,7 +144,7 @@ def sources() -> dict:
     except Exception:
         rows = []
     for r in rows[1:]:
-        r = r + [""] * (11 - len(r))
+        r = r + [""] * (13 - len(r))
         if not (r[3] or r[4]):
             continue
         finds.append({
@@ -158,6 +158,10 @@ def sources() -> dict:
             "weight": _to_int(r[8]),
             "link": _abs_link(r[9]),
             "used": bool((r[10] or "").strip()),
+            # Какую боль клиента задевает — размечает дайджест (autopost/pains.py).
+            # По ней отбираются темы, которые вообще стоит превращать в посты.
+            "pain": (r[11] or "").strip(),
+            "pain_why": (r[12] or "").strip(),
         })
     finds.sort(key=lambda f: f["date"], reverse=True)
 
@@ -196,11 +200,19 @@ def sources() -> dict:
         c["count"] += 1
         c["views"] += f["views"]
 
+    pains = {}
+    for f in finds:
+        if f["pain"]:
+            pains[f["pain"]] = pains.get(f["pain"], 0) + 1
+
     return {
         "finds": finds[:200],
         "themes": themes[-40:],
         "channels": sorted(channels.values(), key=lambda c: c["count"], reverse=True),
         "total_finds": len(finds),
+        "pains": sorted(({"pain": k, "count": v} for k, v in pains.items()),
+                        key=lambda p: p["count"], reverse=True),
+        "total_pains": sum(pains.values()),
     }
 
 

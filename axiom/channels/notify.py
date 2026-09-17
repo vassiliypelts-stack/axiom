@@ -118,18 +118,30 @@ def _sender_candidates(conn, preferred_id) -> list[int]:
     строчка в лог, который никто не читает. 24.08.2026 из-за этого пропущена живая
     встреча с Олегом Дьяконовым: агент договорился, а оператор не узнал.
 
-    Резерв — любые живые аккаунты; «родные» (protected) в приоритете, потому что
-    уведомление в личку владельцу с личного номера выглядит естественно, а не как
-    служебная рассылка с рабочего."""
+    ПОРЯДОК: назначенный → явные резервные (настройка notify_backup_ids, оператор
+    выбирает их сам) → служебные и родные → все прочие живые.
+
+    Явный резерв нужен, потому что «любой живой» — это и боевой рассыльщик: уведомление
+    владельцу уходило бы с номера, который в эту же минуту шлёт холодные сообщения
+    незнакомым людям. Такой номер первым попадает под PeerFlood, и уведомление о лиде
+    умирает вместе с ним. Служебные (acc_role='service') для того и заведены: они вне
+    кампаний, их никто не жжёт рассылкой."""
     out: list[int] = []
     if preferred_id:
         try:
             out.append(int(preferred_id))
         except (TypeError, ValueError):
             pass
+    for raw in (database.get_setting(conn, "notify_backup_ids", "") or "").split(","):
+        raw = raw.strip()
+        if raw.isdigit() and int(raw) not in out:
+            out.append(int(raw))
     rows = conn.execute(
         "SELECT id FROM accounts WHERE session_alive=1 AND tg_session IS NOT NULL "
-        "AND tg_session<>'' ORDER BY COALESCE(protected,0) DESC, id"
+        "AND tg_session<>'' "
+        # служебные и родные вперёд боевых: см. docstring
+        "ORDER BY CASE WHEN COALESCE(acc_role,'')='service' THEN 0 "
+        "              WHEN COALESCE(protected,0)=1 THEN 1 ELSE 2 END, id"
     ).fetchall()
     for r in rows:
         if r["id"] not in out:

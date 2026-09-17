@@ -676,6 +676,8 @@ def settings_notify_get() -> JSONResponse:
         return JSONResponse({
             "sender_account_id": database.get_setting(conn, "notify_sender_account_id", "") or None,
             "target": database.get_setting(conn, "notify_owner_target", "") or "",
+            "backup_ids": [int(x) for x in (database.get_setting(conn, "notify_backup_ids", "") or "")
+                           .split(",") if x.strip().isdigit()],
         })
 
 
@@ -693,6 +695,31 @@ def settings_notify_sender(payload: dict = Body(...)) -> JSONResponse:
         else:
             database.set_setting(conn, "notify_sender_account_id", "")
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/settings/notify_backup")
+def settings_notify_backup(payload: dict = Body(...)) -> JSONResponse:
+    """Резервные отправители уведомлений: если основной не отправит (сессия умерла,
+    Telegram придержал номер) — пробуем этих по очереди.
+
+    Без явного списка резервом служил «любой живой аккаунт», а это и боевой
+    рассыльщик: уведомление о лиде уходило бы с номера, который прямо сейчас шлёт
+    холодные сообщения и первым попадает под PeerFlood. Оператор выбирает 2-3
+    служебных — они вне кампаний, их рассылкой не жжёт."""
+    ids = payload.get("account_ids") or []
+    clean: list[int] = []
+    with database.get_conn() as conn:
+        for raw in ids:
+            try:
+                acc_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if not conn.execute("SELECT 1 FROM accounts WHERE id=?", (acc_id,)).fetchone():
+                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
+            if acc_id not in clean:
+                clean.append(acc_id)
+        database.set_setting(conn, "notify_backup_ids", ",".join(str(i) for i in clean))
+    return JSONResponse({"ok": True, "account_ids": clean})
 
 
 @app.post("/api/settings/notify_target")

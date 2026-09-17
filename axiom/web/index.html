@@ -6624,6 +6624,9 @@ async function viewCampaigns(v){
         <div class="field"><label>С какого аккаунта отправить это уведомление</label>
           <select id="c-notify-acc"></select>
           <div class="hint">Обычно «родной» номер — тогда уведомление выглядит как обычная личка. Без отправителя И получателя уведомление не уходит, на саму встречу это не влияет.</div></div>
+        <div class="field"><label>🛟 Резервные отправители — если основной отвалился</label>
+          <div id="c-notify-backup" class="card" style="background:var(--panel2);padding:8px 10px;max-height:150px;overflow:auto"></div>
+          <div class="hint">Отметь 2-3 <b>служебных</b> номера. Если основной не отправит (сессия умерла, Telegram придержал номер) — уведомление уйдёт со следующего по списку. Служебные вне кампаний, их не жжёт рассылка; боевой рассыльщик для этого плохо годится — он первым попадает под PeerFlood.</div></div>
       </div>
       <div class="field"><label>🧪 Свои номера для теста (встают первыми в очереди — без отдельной тестовой кампании). Формат строки: номер/@username, потом через пробел — как обращаться (необязательно)</label>
         <div class="hint" style="margin-bottom:6px">По строке: номер (+79991234567) или @username. Заход с лимитом 2 сначала уйдёт им; после проверки увеличь лимит и жми «▶ Запустить» ещё раз — он сам продолжит реальной аудиторией (тестовые уже получат статус «отправлено» и не задвоятся). Кнопка «💾 Запомнить» сохранит текущий список в браузере — он сам подставится в каждой новой кампании, дописывай к нему что нужно вручную.</div>
@@ -6813,6 +6816,25 @@ async function viewCampaigns(v){
     $("#c-notify-acc").innerHTML='<option value="">— как в общих настройках —</option>'
       +accounts.map(a=>`<option value="${a.id}">${esc(a.label||a.phone||a.username||("#"+a.id))}</option>`).join("");
     $("#c-notify-acc").value=c.notify_account_id?String(c.notify_account_id):"";
+    // Резервные отправители — общая настройка пульта (не у кампании): резерв нужен
+    // на случай смерти отправителя, и держать его отдельно для каждой кампании значит
+    // чинить одно и то же в пяти местах. Служебные наверху — они для этого и заведены.
+    api("/api/settings/notify").then(s=>{
+      const box=$("#c-notify-backup");if(!box)return;
+      const picked=new Set((s.backup_ids||[]).map(String));
+      const ord=a=>a.acc_role==="service"?0:a.protected?1:2;
+      box.innerHTML=accounts.slice().sort((a,b)=>ord(a)-ord(b)||a.id-b.id).map(a=>{
+        const role=a.acc_role==="service"?" 🛠 служебный":a.protected?" 🏠 родной":"";
+        const dead=a.session_state&&a.session_state!=="alive"?' <span style="color:#c0392b">(сессия мертва)</span>':"";
+        return `<label style="display:flex;align-items:center;gap:7px;padding:2px 0;cursor:pointer">
+          <input type="checkbox" class="nb-chk" value="${a.id}"${picked.has(String(a.id))?" checked":""}>
+          <span>${esc(a.label||a.phone||("#"+a.id))}<span class="sub">${role}</span>${dead}</span></label>`;}).join("");
+      box.onchange=async()=>{
+        const ids=[...box.querySelectorAll(".nb-chk:checked")].map(i=>+i.value);
+        await api("/api/settings/notify_backup",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({account_ids:ids})});
+      };
+    });
     teamSet.clear();(c.accounts||[]).forEach(id=>teamSet.add(+id));
     // Новая кампания (нет ни сохранённой команды, ни id) — по умолчанию берём
     // реально живых, а не всех подряд: раньше форма открывалась пустой и оператор

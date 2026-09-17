@@ -3149,13 +3149,13 @@ async function viewContentWrite(v){
       <section class="dash-glass dash-card" style="grid-column:span 5">
         <div class="dash-chh"><h3>Своя мысль</h3>
           <span class="sub">голосом или текстом</span></div>
-        <textarea id="cf-idea" class="cf-area" rows="7"
+        <textarea id="cfw-idea" class="cf-area" rows="7"
           placeholder="Накидайте мысль как есть — с оговорками и без порядка. Агент найдёт в ней главное."></textarea>
         <div class="ttoolbar" style="margin-top:8px">
-          <button id="cf-rec" class="ghost">🎤 Надиктовать</button>
+          <button id="cfw-rec" class="ghost">🎤 Надиктовать</button>
           <label class="ghost" style="cursor:pointer;display:inline-flex;align-items:center;padding:5px 11px;border:1px solid var(--border);border-radius:8px">
-            📎 Файл записи<input type="file" id="cf-audio" accept="audio/*" hidden></label>
-          <span class="sub" id="cf-rec-note"></span>
+            📎 Файл записи<input type="file" id="cfw-audio" accept="audio/*" hidden></label>
+          <span class="sub" id="cfw-rec-note"></span>
         </div>
 
         <div class="dash-chh" style="margin-top:18px"><h3>Отмечено из дайджеста</h3>
@@ -3163,19 +3163,19 @@ async function viewContentWrite(v){
         <div class="cf-postlist">${picked||'<div class="empty">Ничего не отмечено — галочки на вкладке «Источники».</div>'}</div>
 
         <div class="dash-chh" style="margin-top:18px"><h3>Пожелание</h3></div>
-        <input id="cf-note" class="cf-date" style="width:100%"
+        <input id="cfw-note" class="cf-date" style="width:100%"
           placeholder="Например: жёстче, с цифрами, про делегирование">
 
         <div class="ttoolbar" style="margin-top:14px">
-          <button id="cf-go" class="primary">Написать черновики</button>
-          <span class="sub" id="cf-go-note"></span>
+          <button id="cfw-go" class="primary">Написать черновики</button>
+          <span class="sub" id="cfw-go-note"></span>
         </div>
       </section>
 
       <section class="dash-glass dash-card" style="grid-column:span 7">
         <div class="dash-chh"><h3>Черновики</h3>
           <span class="sub">правьте прямо здесь, потом — в очередь</span></div>
-        <div id="cf-drafts">${cfDraftsHtml(imgs.images||[])}</div>
+        <div id="cfw-drafts">${cfDraftsHtml(imgs.images||[])}</div>
       </section>
     </div></div>`;
 
@@ -3191,7 +3191,7 @@ function cfDraftsHtml(images){
   return CF_DRAFTS.map((d,i)=>`<div class="cf-draft">
       <div class="cf-find-head">
         <span class="tag">${esc(d.source||"")}</span>
-        <span class="sub mono" id="cf-len-${i}">${d.text.length}/500</span>
+        <span class="sub mono" id="cfw-len-${i}">${d.text.length}/500</span>
       </div>
       <textarea class="cf-area" rows="7" data-draft="${i}">${esc(d.text)}</textarea>
       <div class="ttoolbar" style="margin-top:8px">
@@ -3209,7 +3209,11 @@ function cfDraftsHtml(images){
 }
 
 function wireContentWrite(v,images){
-  const idea=$("#cf-idea"), note=$("#cf-note");
+  // Ищем внутри своего контейнера, а не по всему документу: id в пульте
+  // неуникальны — «cf-note» уже занят разделом прокси, и $("#cf-note")
+  // брал чужое поле: кнопка падала до запроса, а на экране висело «пишу…».
+  const q=s=>v.querySelector(s);
+  const idea=q("#cfw-idea"), note=q("#cfw-note");
 
   v.querySelectorAll("[data-unpick]").forEach(b=>{
     b.onclick=()=>{CF_PICKED.splice(+b.dataset.unpick,1);viewContentWrite(v);};
@@ -3217,7 +3221,7 @@ function wireContentWrite(v,images){
 
   // Запись с микрофона: браузер даёт его только на HTTPS, поэтому рядом
   // всегда есть файл — надиктовал в телефон, приложил.
-  const recBtn=$("#cf-rec"), recNote=$("#cf-rec-note");
+  const recBtn=q("#cfw-rec"), recNote=q("#cfw-rec-note");
   recBtn.onclick=async()=>{
     if(CF_REC){ CF_REC.stop(); return; }
     if(!navigator.mediaDevices||!window.MediaRecorder){
@@ -3239,12 +3243,12 @@ function wireContentWrite(v,images){
     }catch(e){ recNote.textContent="микрофон недоступен: "+e.message; }
   };
 
-  $("#cf-audio").onchange=async e=>{
+  q("#cfw-audio").onchange=async e=>{
     if(e.target.files[0])await cfSendAudio(e.target.files[0],idea,recNote);
   };
 
-  $("#cf-go").onclick=async()=>{
-    const go=$("#cf-go"), gn=$("#cf-go-note");
+  q("#cfw-go").onclick=async()=>{
+    const go=q("#cfw-go"), gn=q("#cfw-go-note");
     go.disabled=true; gn.textContent="пишу, это занимает до минуты…";
     try{
       const r=await api("/api/content/text/write",{method:"POST",
@@ -3260,7 +3264,7 @@ function wireContentWrite(v,images){
     ta.oninput=()=>{
       const i=+ta.dataset.draft;
       CF_DRAFTS[i].text=ta.value;
-      const l=$("#cf-len-"+i);
+      const l=q("#cfw-len-"+i);
       if(l){ l.textContent=ta.value.length+"/500"; l.style.color=ta.value.length>500?"var(--red)":""; }
     };
   });

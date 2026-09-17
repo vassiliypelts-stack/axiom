@@ -9374,7 +9374,11 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             params.append(f"%{tag}%")
         rows = conn.execute(
             f"SELECT id, COALESCE(person_name, name) AS who, username, phone, status, "
-            f"has_tg, has_wa, tg_checked_at, checked_at, tags, agency, city, source "
+            f"has_tg, has_wa, tg_checked_at, checked_at, tags, agency, city, source, "
+            # Лид виден прямо в списке рассылки: кто ответил и кто уже горячий. Раньше
+            # эти люди ничем не отличались от неотвеченных — оператор искал их в
+            # «Диалогах» отдельно, хотя решение «кому писать дальше» принимается здесь.
+            f"lead_since, hot_since "
             f"FROM contacts WHERE {where} "
             f"ORDER BY (status='new') DESC, id LIMIT ?", (*params, max(1, min(limit, 5000)))
         ).fetchall()
@@ -9401,6 +9405,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         d["blocked_by"] = why
         d["in_queue"] = why is None
         d["paused"] = d["id"] in paused
+        # Лид и горячий лид — отдельными флагами, чтобы список рассылки сразу показывал
+        # результат, а не только «кому ещё не писали».
+        d["is_lead"] = bool(d.get("lead_since"))
+        d["is_hot"] = bool(d.get("hot_since"))
         if why:
             reasons[why] = reasons.get(why, 0) + 1
         items.append(d)
@@ -9408,6 +9416,9 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         "campaign": camp.get("name"), "tag": tag, "channel": camp.get("channel"),
         "total": len(items),
         "in_queue": sum(1 for i in items if i["in_queue"]),
+        # Результат кампании прямо в шапке списка: сколько ответили и сколько горячих.
+        "leads": sum(1 for i in items if i["is_lead"]),
+        "hot": sum(1 for i in items if i["is_hot"]),
         "reasons": reasons,          # почему остальные не пойдут, с количеством
         "sources": sources,          # источник → сколько контактов из него в этой аудитории
         # Сколько ещё не проверено: пока номер не пробит, рассылка резолвит его прямо

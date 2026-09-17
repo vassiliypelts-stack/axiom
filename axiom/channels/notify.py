@@ -596,6 +596,16 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
             lines.append(f"Последнее сообщение: {last_message.strip()[:300]}")
         lines.append(_chat_link(row["id"]))
         text = "\n".join(lines)
+        # В КОЛОКОЛЬЧИК — ТОЖЕ. Личка владельцу уходит с боевого аккаунта и может не
+        # дойти (сессия умерла, Telegram придержал номер) — тогда о лиде не узнавал
+        # никто: в ленте пульта горячих лидов не было вовсе, только служебные события
+        # вроде «упаковки» и «написал незнакомец». Событие в ленте — второй, независимый
+        # канал: оно переживает смерть любого отправителя и остаётся историей по лиду.
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "hot_lead", f"🔥 Горячий лид: {who}",
+                "\n".join(lines[1:]) or "Готов действовать сейчас — звони, пока не остыл.",
+                level="good", contact_id=contact_id, campaign_id=campaign_id)
         await _send_to_owner(sender_id, target, text, "горячий лид", contact_id)
     except Exception as e:  # noqa: BLE001
         print(f"[notify] сбой отправки о горячем лиде: {e}")

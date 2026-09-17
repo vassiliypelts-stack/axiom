@@ -1253,7 +1253,8 @@ async function openAudience(cid){
     // показываем пустой список.
     if(AUD_SRC&&!(d.sources||{})[AUD_SRC])AUD_SRC="";
     const rows=d.items.filter(r=>
-      (AUD_ONLY==="queue"?r.in_queue:AUD_ONLY==="blocked"?!r.in_queue:true)
+      (AUD_ONLY==="queue"?r.in_queue:AUD_ONLY==="blocked"?!r.in_queue
+       :AUD_ONLY==="leads"?r.is_lead:AUD_ONLY==="hot"?r.is_hot:true)
       &&(AUD_SRC?((r.source||"").trim()||"(без источника)")===AUD_SRC:true));
     const reasons=Object.entries(d.reasons||{}).map(([k,v])=>`${esc(k)}: <b>${v}</b>`).join(" · ");
     // Источники — тем же принципом, что и в «Контактах»: откуда пришли ЭТИ конкретные
@@ -1266,6 +1267,10 @@ async function openAudience(cid){
       <div class="hint" style="margin-bottom:10px">тег аудитории: ${d.tag?esc(d.tag):"<i>не задан (вся база)</i>"} · канал: ${esc(d.channel||"")}</div>
       <div class="card" style="background:var(--panel2);padding:9px 11px;margin-bottom:10px">
         <b>${d.in_queue}</b> из <b>${d.total}</b> пойдут в рассылку.
+        ${(d.leads||d.hot)?`<div style="margin-top:6px">
+          ${d.leads?`<span class="badge b-new" title="ответили на рассылку">💬 лидов: <b>${d.leads}</b></span> `:""}
+          ${d.hot?`<span class="badge b-active" title="готовы действовать — им нужно написать лично">🔥 горячих: <b>${d.hot}</b></span>`:""}
+        </div>`:""}
         ${reasons?`<div class="hint" style="margin-top:4px">Остальные не пойдут — ${reasons}</div>`:""}
         ${(()=>{
           // Раньше здесь было «не проверено: Telegram у 0, WhatsApp у 1000» — фраза про
@@ -1286,7 +1291,8 @@ async function openAudience(cid){
           <span class="hint" id="aud-tgmsg"></span></div>`:""}
       </div>
       <div class="ttoolbar" style="margin:0 0 8px">
-        ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"]].map(([k,l])=>
+        ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"],
+           ["leads","💬 лиды"],["hot","🔥 горячие"]].map(([k,l])=>
           `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}</button>`).join("")}
         <select id="aud-src" title="источник — откуда пришли контакты этой аудитории"><option value="">все источники (${d.total})</option>${srcOpts}</select>
         <span class="grow"></span>
@@ -1309,6 +1315,12 @@ async function openAudience(cid){
       columns:[
         {key:"in_queue",label:"Шлём",render:r=>`<input type="checkbox" class="aud-chk" data-id="${r.id}" ${r.paused?"":"checked"} ${(!r.in_queue&&!r.paused)?"disabled title='не пойдёт по другой причине'":""}>`},
         {key:"who",label:"Кто",cls:"name",render:r=>`<b>${esc(r.who||("#"+r.id))}</b>${r.username?` <span class="tg">@${esc(r.username)}</span>`:""}${r.phone?` <span class="hint">${esc(r.phone)}</span>`:""}`},
+        // Результат рассылки виден здесь же: кто ответил и кто уже горячий. Иначе за
+        // лидами приходилось идти в «Диалоги», хотя решение «кому писать дальше»
+        // принимается в этом списке.
+        {key:"is_lead",label:"Лид",render:r=>r.is_hot
+          ?`<span class="badge b-active" title="Горячий лид — с ${esc(r.hot_since||"")}">🔥 горячий</span>`
+          :(r.is_lead?`<span class="badge b-new" title="Ответил — лид с ${esc(r.lead_since||"")}">💬 лид</span>`:"")},
         {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
         {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
         {key:"status",label:"Статус",cls:"sub",render:r=>esc(r.status||"")},

@@ -980,8 +980,43 @@ async def run(cid: int, limit: int, test: bool = False,
         parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
                        _decision_phrase(row), sender=_sender_name(s["acc"]),
                        spec=_spec_of(row))[:MAX_OPENER_PARTS]
+        # РЕЗОЛВ — В ОТДЕЛЬНОМ try, НЕ ВМЕСТЕ С ОТПРАВКОЙ.
+        #
+        # Раньше поиск человека (_resolve_entity: get_entity по @нику, а при неудаче
+        # ImportContactsRequest по телефону) стоял в одном try с _send_parts. Telegram
+        # лимитирует РЕЗОЛВ отдельно от отправки и отвечает на него тем же PeerFlood —
+        # и общий except ловил это как «слишком много ЛС незнакомцам». Аккаунт получал
+        # растущую паузу и на третьем флуде вылетал из команды кампании, НЕ ОТПРАВИВ
+        # НИ ОДНОГО СООБЩЕНИЯ: на 18.09 так наказаны 13 из 21 номера (#9324 — 7 флудов
+        # при нуле отправок, #9342 вылетел из 9407 после одного письма за всю жизнь).
+        # Система молча выбивала собственную команду и показывала «отправлено 0».
+        #
+        # Теперь флуд на резолве — это проблема КОНТАКТА в этом заходе, а не улика
+        # против аккаунта: контакт возвращаем в 'new' (достанется другому заходу),
+        # аккаунту даём короткую передышку без счётчика spam_flood_count.
         try:
             entity = await _resolve_entity(s["client"], row)
+        except FloodWaitError:
+            raise           # обрабатывается общим except FloodWaitError ниже
+        except Exception as e:  # noqa: BLE001
+            cat = classify_error(e)
+            if cat in ("ban", "session_revoked"):
+                raise       # это про аккаунт, а не про контакт — пусть решает общий except
+            with database.get_conn() as conn:
+                conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'",
+                             (row["id"],))
+            if cat == "spam":
+                # Telegram придержал ПОИСК людей с этого номера. Сообщений не было —
+                # счётчик спама не трогаем и из команды аккаунт не выводим. Просто
+                # больше не дёргаем его в этом заходе: следующий резолв прилетит в ту
+                # же стену, а лишние попытки копят отказы на номере.
+                print(f"[{s['label']}] ⏸ Telegram придержал ПОИСК контактов (не отправку) — "
+                      f"аккаунт выведен из этого захода, счётчик спама не трогаю")
+                s["remaining"] = 0
+            else:
+                print(f"[{s['label']}] ⏭ контакт {row['id']}: не нашёл в Telegram ({e})")
+            continue
+        try:
             # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а
             # ники приходят выгрузкой со стороннего сайта, где имя с ником разъезжаются:
             # карточка «Дмитрий Иванович Норка», ник @Anna_Dobrokhodskaya. Без сверки
@@ -1106,6 +1141,27 @@ async def run(cid: int, limit: int, test: bool = False,
                 # ЭТОТ номер за холодные ЛС незнакомцам, то есть сигнал риска бана
                 # приближается, а не рядовая помеха — прятать его в логе нельзя.
                 print(f"[{s['label']}] ⚠ PeerFlood (много ЛС незнакомцам) — пауза аккаунта на заход")
+                # ВТОРОЙ РУБЕЖ ЗАЩИТЫ (первый — отдельный try вокруг резолва выше).
+                # Счётчик spam_flood_count наказывает номер за холодные ЛС, поэтому
+                # растить его можно ТОЛЬКО если этот номер реально хоть раз отправлял.
+                # Иначе повторяется история 08-09.2026: #9324 накрутил 7 флудов при нуле
+                # отправок, #9335/#9337/#9340/#9341 — по 4-5, и все они были выведены из
+                # рассылки ни за что. Если отправок нет — это лимит на служебные вызовы,
+                # а не на рассылку: даём паузу до конца захода и идём дальше.
+                ever_sent = 0
+                if s["id"] and not test:
+                    with database.get_conn() as conn:
+                        ever_sent = conn.execute(
+                            "SELECT COUNT(*) c FROM campaign_contacts WHERE account_id=?",
+                            (s["id"],)).fetchone()["c"]
+                if s["id"] and not ever_sent and not test:
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'",
+                                     (row["id"],))
+                    print(f"[{s['label']}] ⏸ …но этот номер НИ РАЗУ не отправлял — "
+                          f"счётчик спама не трогаю, вывожу только из захода")
+                    s["remaining"] = 0
+                    continue
                 if s["id"]:
                     with database.get_conn() as conn:
                         conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))

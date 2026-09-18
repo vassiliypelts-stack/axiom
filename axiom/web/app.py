@@ -6305,6 +6305,53 @@ def leads_segment(payload: dict = Body(default={})) -> JSONResponse:
                          "output": res.get("output")})
 
 
+@app.post("/api/maintenance/spam_reset")
+def maintenance_spam_reset(payload: dict = Body(default={})) -> JSONResponse:
+    """Снять НЕЗАСЛУЖЕННЫЕ автопаузы PeerFlood с номеров, которые ни разу не отправляли.
+
+    ЗАЧЕМ. До 18.09.2026 резолв контакта (_resolve_entity: поиск человека по @нику)
+    стоял в одном try с самой отправкой. Telegram лимитирует ПОИСК отдельно и отвечает
+    на него тем же PeerFlood — код считал это «слишком много ЛС незнакомцам», крутил
+    spam_flood_count, вешал растущую паузу (1→7 дней), а на третьем флуде удалял номер
+    из команд всех кампаний. Номера наказывались за письма, которых не отправляли:
+    #9324 набрал 7 флудов при НУЛЕ отправок, #9335/#9337/#9340/#9341 — по 4-5. Кампания
+    9407 показывала «отправлено 0», потому что система сама выбила собственную команду.
+
+    Причина устранена в channels/campaign_send.py (резолв в своём try + счётчик не
+    растёт у номера без отправок), но накопленные метки надо снять — иначе номера
+    остаются придержанными за несуществующий проступок.
+
+    Трогаем ТОЛЬКО тех, у кого в campaign_contacts нет ни одной отправки: у кого
+    отправки были, флуд мог быть настоящим — их метки не трогаем, это защита от бана.
+    """
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, COALESCE(spam_flood_count,0) fl FROM accounts "
+            "WHERE COALESCE(spam_flood_count,0)>0 "
+            "AND (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.account_id=accounts.id)=0"
+        ).fetchall()
+        if not rows:
+            return JSONResponse({"ok": True, "cleared": 0,
+                                 "note": "незаслуженных автопауз нет"})
+        if payload.get("dry"):
+            return JSONResponse({"ok": True, "dry": True, "would_clear": len(rows),
+                                 "accounts": [{"id": r["id"], "label": r["label"],
+                                               "floods": r["fl"]} for r in rows]})
+        ids = [r["id"] for r in rows]
+        marks = ",".join("?" for _ in ids)
+        conn.execute(f"UPDATE accounts SET spam_flood_count=0, spam_pause_until=NULL "
+                     f"WHERE id IN ({marks})", ids)
+        database.add_event(
+            conn, "maintenance", f"♻ Снято {len(rows)} незаслуженных автопауз PeerFlood",
+            "Номера были придержаны за флуд на ПОИСКЕ контактов, хотя не отправили ни "
+            "одного сообщения (баг: резолв и отправка в одном try). Причина исправлена, "
+            "метки сняты: " + ", ".join(f"{r['label']} ({r['fl']})" for r in rows),
+            level="ok")
+    return JSONResponse({"ok": True, "cleared": len(rows),
+                         "accounts": [{"id": r["id"], "label": r["label"],
+                                       "floods": r["fl"]} for r in rows]})
+
+
 @app.post("/api/maintenance/backfill")
 def maintenance_backfill(payload: dict = Body(default={})) -> JSONResponse:
     """Бэкфилл старых записей (channels.backfill): tg_chat_id у чатов (чинит связку

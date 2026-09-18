@@ -80,11 +80,18 @@ def _from_pool(gender: str) -> tuple[bytes, str] | None:
     free = [p for p in files if p.name not in used]
     if not free:
         return None
-    p = random.choice(free)
-    try:
-        return _crop_top_square(p.read_bytes()), p.name
-    except Exception:  # noqa: BLE001 — не JPEG/битый: отдаём как есть
-        return p.read_bytes(), p.name
+    # Берём первое лицо, которое удалось привести к квадратному JPEG. Раньше при
+    # сбое кропа отдавали исходник «как есть» — и в Telegram уходил вертикальный
+    # кадр 1920x2880 (а то и WEBP под именем .jpg), который тот отвергает с
+    # «Photo is too small»: 18.09.2026 так осталась без фото половина партии.
+    # Лучше пропустить лицо, чем записать в карточку заведомо непринимаемое фото.
+    random.shuffle(free)
+    for p in free:
+        try:
+            return _crop_top_square(p.read_bytes()), p.name
+        except Exception as e:  # noqa: BLE001 — битый/неподдерживаемый файл
+            print(f"  [avatar/pool] {p.name} пропущен: {e}")
+    return None
 
 
 def _crop_top_square(data: bytes) -> bytes:
@@ -98,6 +105,12 @@ def _crop_top_square(data: bytes) -> bytes:
     left = (w - side) // 2
     top = (h - side) // 2
     im = im.crop((left, top, left + side, top + side))
+    # Telegram отклоняет слишком мелкое фото профиля («Photo is too small»),
+    # а очень крупное зря раздувает аплоад. Держим сторону в разумных рамках.
+    if side < 320:
+        im = im.resize((320, 320), Image.LANCZOS)
+    elif side > 1280:
+        im = im.resize((1280, 1280), Image.LANCZOS)
     out = BytesIO()
     im.save(out, format="JPEG", quality=90)
     return out.getvalue()

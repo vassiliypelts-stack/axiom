@@ -7289,7 +7289,6 @@ function renderCampList(mount,camps){
           <button class="cl-edit" data-id="${c.id}">⚙ Настроить</button>
           <button class="cl-wiz" data-id="${c.id}" title="пройти по шагам визарда, проверить и поправить">🔁 В визард</button>
           <button class="cl-pre" data-id="${c.id}" title="что готово/мешает запуску">🚦 Готовность</button>
-          <button class="cl-segadd" data-id="${c.id}" title="Добавить ещё контактов из CRM в аудиторию этой кампании">➕ Сегмент из CRM</button>
           <button class="cl-aud" data-id="${c.id}" title="Поимённо: кто пойдёт в рассылку, кто выпал и почему. Там же снимаются галочки с ненужных">👥 Кто в рассылке</button>
           <button class="cl-econ" data-id="${c.id}">📊 Аналитика</button>
           <button class="cl-report" data-id="${c.id}" title="Работала ли сегодня/вчера, сколько отправлено за сегодня/неделю/всё время, ответы, КЭВ">📋 Отчёт</button>
@@ -7318,14 +7317,6 @@ function renderCampList(mount,camps){
   }).join("");
   mount.querySelectorAll(".cl-edit").forEach(b=>b.onclick=()=>window.__campEdit(+b.dataset.id));
   mount.querySelectorAll(".cl-wiz").forEach(b=>b.onclick=()=>startWizardEdit(+b.dataset.id));
-  mount.querySelectorAll(".cl-segadd").forEach(b=>b.onclick=async()=>{
-    const id=b.dataset.id;
-    const c=await api(`/api/campaign/${id}`);
-    showAudiencePicker({audience_tag:c.audience_tag||""},(updated,tag)=>{
-      alert(`Добавлено в сегмент «${tag}»: ${updated}. Обновляю очередь…`);
-      route();
-    });
-  });
   mount.querySelectorAll(".cl-pre").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.id,box=document.getElementById("pre-"+id);
     if(box.dataset.open==="1"){box.innerHTML="";box.dataset.open="";return;}

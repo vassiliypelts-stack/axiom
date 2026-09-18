@@ -8583,7 +8583,8 @@ def _listener_released(active: bool = True):
                 # «выключен из пульта» — выглядит как осознанное действие оператора.
                 database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
             paused = True
-            _t.sleep(7)   # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+            # Ждём подтверждения, а не фиксированной паузы (см. _wait_listener_drained).
+            _wait_listener_drained()
     try:
         yield
     finally:
@@ -8608,6 +8609,47 @@ def _listener_released(active: bool = True):
 _SEND_LOCK = threading.Lock()
 _SENDS_ACTIVE = 0
 _SENDS_WAS_ON = False     # был ли слушатель включён ДО первого захода серии
+
+
+# Сколько ждать, пока слушатель реально отпустит сессии, прежде чем к ним
+# подключится кто-то ещё. Раньше тут стоял слепой sleep(7), и это сожгло 13
+# аккаунтов 18.09.2026: тумблер слушатель проверяет раз в POLL_SEC(=5), а потом
+# ПОСЛЕДОВАТЕЛЬНО отключает всех клиентов — на 75 аккаунтах это десятки секунд.
+# Рассылка стартовала на 3-й секунде, когда половина сессий ещё висела в эфире,
+# и Telegram жёг ключ как «один аккаунт с двух IP» (AuthKeyDuplicatedError).
+# Поэтому ждём не «столько-то секунд», а ПОДТВЕРЖДЕНИЯ, что клиентов не осталось.
+LISTENER_DRAIN_MAX = 90      # потолок ожидания, сек
+LISTENER_DRAIN_TAIL = 3      # запас после того, как список опустел
+
+
+def _wait_listener_drained(timeout: int = LISTENER_DRAIN_MAX) -> bool:
+    """Дождаться, пока слушатель отпустит ВСЕ сессии. True — отпустил.
+
+    Смотрим на listener.STATUS["accounts"]: он очищается в _disconnect_all()
+    сразу после того, как все клиенты реально отключены. Это надёжнее любой
+    фиксированной паузы — на 5 аккаунтах ждать секунды, на 75 почти минуту.
+    """
+    import time as _t
+    try:
+        from channels import listener
+    except Exception:  # noqa: BLE001 — нет модуля: ведём себя как раньше
+        _t.sleep(7)
+        return False
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        try:
+            left = len(listener.STATUS.get("accounts") or {})
+            clients = len(getattr(listener, "CLIENTS", {}) or {})
+        except Exception:  # noqa: BLE001
+            left = clients = 0
+        if left == 0 and clients == 0:
+            # Telegram закрывает соединение не мгновенно — небольшой хвост.
+            _t.sleep(LISTENER_DRAIN_TAIL)
+            return True
+        _t.sleep(1)
+    print(f"[listener] за {timeout}с слушатель не отпустил сессии — "
+          f"заход НЕ начинаю, иначе сожгу ключи")
+    return False
 
 
 def _listener_hold() -> bool:
@@ -8691,8 +8733,19 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
     env["PYTHONIOENCODING"] = "utf-8"
 
     was_on = _listener_hold()
-    if was_on:
-        _t.sleep(7)          # POLL_SEC=5 на обнаружение + запас на отключение клиентов
+    if was_on and not _wait_listener_drained():
+        # Слушатель не подтвердил, что отпустил сессии. Раньше мы всё равно шли
+        # подключаться — и жгли ключи. Лучше пропустить заход: он повторится по
+        # расписанию через 15 минут, а сожжённый аккаунт не восстановить.
+        _listener_release(f"campaign #{cid}")
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "info", "⚠️ Заход отменён: слушатель не отпустил сессии",
+                "Слушатель не успел отключить аккаунты за отведённое время. Заход "
+                "пропущен намеренно: подключаться к сессии, которая ещё в эфире, "
+                "значит сжечь её навсегда (AuthKeyDuplicatedError). Повтор — по "
+                "расписанию.", level="warn", campaign_id=cid)
+        return
 
     proc = subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env)
 

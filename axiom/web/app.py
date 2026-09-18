@@ -9567,7 +9567,21 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             # «Диалогах» отдельно, хотя решение «кому писать дальше» принимается здесь.
             f"lead_since, hot_since "
             f"FROM contacts WHERE {where} "
-            f"ORDER BY (status='new') DESC, id LIMIT ?", (*params, max(1, min(limit, 5000)))
+            # Те, КОМУ УЖЕ ПИСАЛИ, идут первыми — иначе их не видно вовсе.
+            #
+            # Раньше сортировка была (status='new') DESC: сначала неотправленные. При
+            # тысяче контактов в выборке и лимите в 1000 это выталкивало всех, кому
+            # письмо ушло, за границу выдачи — и список показывал «отправлено 0,
+            # прочитано 0, ответили 0» при реально отправленных письмах и живых
+            # ответах. Результат кампании был не просто не виден, а показан нулём,
+            # что читается как «рассылка не работает».
+            #
+            # Ставим вперёд тех, по кому есть что показать (отправлено/ответ/лид):
+            # очередь и так понятна по счётчику «N из M пойдут в рассылку», а вот
+            # результат нужно видеть поимённо.
+            f"ORDER BY (id IN (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) DESC, "
+            f"(lead_since IS NOT NULL) DESC, (status='new') DESC, id LIMIT ?",
+            (*params, cid, max(1, min(limit, 5000)))
         ).fetchall()
         paused = {r["contact_id"] for r in conn.execute(
             "SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?", (cid,)).fetchall()}
@@ -9594,6 +9608,20 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # (отдельного статуса, как в WhatsApp, здесь нет). «Прочитано» —
         # read_outbox_max_id собеседника. Разница между ними и отвечает на вопрос
         # «текст не цепляет или письмо вообще не открывают».
+        # Итоги воронки — одним запросом по всей кампании (не по странице списка).
+        f_row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=?) AS sent, "
+            "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='out' "
+            " AND delivered_at IS NOT NULL AND contact_id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS delivered, "
+            "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='out' "
+            " AND read_at IS NOT NULL AND contact_id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS read, "
+            "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='in' "
+            " AND contact_id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS replied",
+            (cid, cid, cid, cid)).fetchone()
+        funnel = {k: int(f_row[k] or 0) for k in ("sent", "delivered", "read", "replied")}
         read_rows = {r["contact_id"]: r for r in conn.execute(
             "SELECT contact_id, MAX(delivered_at) AS delivered_at, MAX(read_at) AS read_at "
             "FROM messages WHERE direction='out' AND contact_id IN "
@@ -9643,10 +9671,11 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         "in_queue": sum(1 for i in items if i["in_queue"]),
         # Воронка целиком, а не только «сколько осталось»: отправлено → ответили →
         # лиды → горячие. Оператор видит не факт работы рассылки, а её результат.
-        "sent": sum(1 for i in items if i["sent"]),
-        "delivered": sum(1 for i in items if i["delivered"]),
-        "read": sum(1 for i in items if i["read"]),
-        "replied": sum(1 for i in items if i["replied"]),
+        # Воронку считаем ПО ВСЕЙ кампании, а не по показанной странице: items
+        # урезан лимитом (1000), и при большой базе счётчики врали бы в меньшую
+        # сторону — ровно та ошибка, из-за которой список показывал «отправлено 0»
+        # при реально ушедших письмах.
+        **funnel,
         # Результат кампании прямо в шапке списка: сколько ответили и сколько горячих.
         "leads": sum(1 for i in items if i["is_lead"]),
         "hot": sum(1 for i in items if i["is_hot"]),

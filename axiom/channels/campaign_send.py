@@ -488,6 +488,69 @@ def _account_by_id(acc_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _team_blocked_reason(cid: int) -> str:
+    """Почему в команде кампании НЕТ ни одного готового отправителя.
+
+    ЗАЧЕМ. _team() возвращает пустой список сразу по нескольким причинам (автопауза
+    после PeerFlood, незакрытый прогрев, FloodWait, нет сессии, бан). Дальше по коду
+    пустая команда молча уходила в ветку «основной (.env)», тот стартовал без сессии
+    и падал с «EOF when reading a line» — и в пульт приезжала ровно эта строка.
+    Оператор видел загадочный EOF вместо «все 13 номеров придержал Telegram до 19-20
+    числа». Здесь собираем настоящую причину по каждому аккаунту команды.
+    """
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.label, a.username, a.phone, a.status, "
+            "a.spam_pause_until, a.flood_wait_until, a.tg_session, "
+            "COALESCE(a.acc_role,'') AS acc_role, "
+            "COALESCE(a.spam_flood_count,0) AS spam_flood_count "
+            "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
+            "WHERE ca.campaign_id = ? ORDER BY a.id", (cid,)).fetchall()
+    if not rows:
+        return ("в команде кампании нет ни одного аккаунта — добавь отправителей "
+                "в «Кто в рассылке»")
+    paused, warming, flood, no_sess, banned, service = [], [], [], [], [], []
+    for r in rows:
+        who = r["label"] or r["username"] or r["phone"] or f"#{r['id']}"
+        if r["status"] == "banned":
+            banned.append(who)
+        elif r["acc_role"] == "service":
+            service.append(who)
+        elif r["status"] == "warming":
+            warming.append(who)
+        elif (r["spam_pause_until"] or "") > _now_sql():
+            paused.append(f"{who} — до {str(r['spam_pause_until'])[:16]} "
+                          f"(PeerFlood {r['spam_flood_count']}-й раз)")
+        elif (r["flood_wait_until"] or "") > _now_sql():
+            flood.append(f"{who} — до {str(r['flood_wait_until'])[:16]}")
+        elif not (r["tg_session"] or "").strip():
+            no_sess.append(who)
+    parts = []
+    if paused:
+        parts.append("НА АВТОПАУЗЕ ПОСЛЕ PeerFlood (Telegram придержал номера за холодные "
+                     "ЛС незнакомцам), снимется само:\n  • " + "\n  • ".join(paused))
+    if flood:
+        parts.append("FloodWait от Telegram:\n  • " + "\n  • ".join(flood))
+    if warming:
+        parts.append("ещё в прогреве (холодную с них не шлём): " + ", ".join(warming))
+    if no_sess:
+        parts.append("без TG-сессии (нужен вход в «Аккаунтах»): " + ", ".join(no_sess))
+    if banned:
+        parts.append("забанены: " + ", ".join(banned))
+    if service:
+        parts.append("служебные, в холодную рассылку не идут: " + ", ".join(service))
+    head = (f"ни один из {len(rows)} аккаунтов команды сейчас не может слать холодную.")
+    if not parts:
+        return head
+    return head + "\n\n" + "\n\n".join(parts)
+
+
+def _now_sql() -> str:
+    """Текущее UTC-время в том же формате, что datetime('now') в SQLite."""
+    import datetime as _d
+    return _d.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _team(cid: int) -> list[dict]:
     """Аккаунты кампании с ЖИВОЙ сессией (для мультиаккаунт-рассылки).
     Берём из campaign_accounts, исключаем забаненных и без сессии. Лимит на аккаунт —
@@ -497,7 +560,10 @@ def _team(cid: int) -> list[dict]:
             "SELECT a.id, a.label, a.username, a.phone, a.tg_session, a.proxy, "
             "a.api_id, a.api_hash, a.description, a.avatar, a.status, a.tg_name, "
             "COALESCE(a.protected,0) AS protected, "
-            "COALESCE(ca.daily_limit, a.daily_limit) AS cap "
+            "COALESCE(ca.daily_limit, a.daily_limit) AS cap, "
+            # Возраст номера нужен, чтобы срезать дневную норму молодым (см. _age_cap).
+            "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
+            "     AS INTEGER) AS days_alive "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
             # Аккаунт на прогреве ещё не готов к холодным ЛС незнакомцам — ловит PeerFlood
@@ -521,6 +587,32 @@ def _team(cid: int) -> list[dict]:
             (cid,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Потолок холодных ЛС в сутки по возрасту номера. Telegram смотрит на аккаунт не
+# «сколько ему выставил оператор», а «сколько незнакомцев он пишет, и давно ли он
+# вообще существует». Молодой номер с 15 холодными в день — это почерк, за который
+# прилетает PeerFlood: 17.09 по кампании 9407 (ГГКрым) так встали ВСЕ 13 боевых
+# номеров возрастом 8-23 дня, у семи из них лимит в кампании даже не был задан и
+# брался accounts.daily_limit = 15. Кампания встала на двое суток.
+# Ступени намеренно консервативные: недельный номер — 2 ЛС, месячный — выходит на
+# операторский лимит. Это ПОТОЛОК, а не цель: заданный лимит ниже — он и работает.
+AGE_CAP_STEPS = ((7, 2), (14, 4), (21, 6), (30, 10))
+
+
+def _age_cap(days_alive, cap: int) -> tuple[int, str | None]:
+    """(разрешённая норма, пояснение-если-срезали) для номера возрастом days_alive."""
+    try:
+        d = int(days_alive)
+    except (TypeError, ValueError):
+        return cap, None          # возраст неизвестен — не гадаем, оставляем как есть
+    for days, allowed in AGE_CAP_STEPS:
+        if d < days:
+            if allowed < cap:
+                return allowed, (f"номеру {d} дн. — холодных не больше {allowed}/сут "
+                                 f"(вместо {cap}), иначе PeerFlood")
+            return cap, None
+    return cap, None
 
 
 def _pick(live: list[dict], rr: int) -> dict | None:
@@ -654,6 +746,22 @@ async def run(cid: int, limit: int, test: bool = False,
     # Команда кампании (мультиаккаунт). Если команда не задана/без сессий —
     # откатываемся на основной аккаунт из .env (старое поведение, ничего не ломаем).
     team = _team(cid)
+    if not team and not test:
+        # БОЕВОЙ заход с пустой командой раньше проваливался в ветку «основной (.env)»:
+        # тот аккаунт на сервере без сессии, Telethon просил код со stdin и падал
+        # «EOF when reading a line». Кампания 9407 (ГГКрым) так простояла с 17.09: все
+        # 13 боевых номеров ушли в автопаузу после PeerFlood, планировщик исправно брал
+        # по 3 контакта каждые 15 минут, и каждый заход умирал об EOF. В пульте вместо
+        # причины висела строка про EOF, а контакты оставались нетронутыми.
+        # Теперь боевой заход с пустой командой останавливается здесь и называет причину.
+        why = _team_blocked_reason(cid)
+        msg = "отправлять некому: " + why
+        print(msg)
+        with database.get_conn() as conn:
+            database.add_event(
+                conn, "info", f"⚠️ Кампания «{camp['name']}»: отправлять некому",
+                msg, level="warn", campaign_id=cid)
+        return
     if test and test_account:
         # Оператор явно выбрал, С КАКОГО аккаунта идёт тест — команда кампании и
         # ротация тут не при чём: шлём ровно с него. Требования те же, что к любому
@@ -734,13 +842,20 @@ async def run(cid: int, limit: int, test: bool = False,
                 # кампании — остальная команда работает, а этот пропускаем с причиной.
                 print(f"[{label}] ⏭ пропуск: {e}")
                 continue
+            # Возрастной потолок: молодой номер физически не тянет операторский
+            # лимит по холодным ЛС. На тесте не режем — тест уходит на свои номера.
+            acc_cap = int(acc["cap"] or cap)
+            if not test:
+                acc_cap, why_cut = _age_cap(acc.get("days_alive"), acc_cap)
+                if why_cut:
+                    print(f"[{label}] ⏬ {why_cut}")
             senders.append({
                 "id": acc["id"], "acc": acc, "label": label,
                 "client": client,
                 # Лимит аккаунта — именно на сутки, в том числе если кампанию
                 # запускали несколько раз. Не даём второму заходу превратить
                 # «3/день» в 3 сообщения каждый час.
-                "remaining": max(0, int(acc["cap"] or cap)
+                "remaining": max(0, acc_cap
                                  - sent_today_by_account.get(int(acc["id"]), 0)),
             })
     else:

@@ -3272,7 +3272,6 @@ def _hot_lead_scheduler() -> None:
             print(f"[hot lead scheduler] {e}")
 
 
-@app.on_event("startup")
 def _read_status_scheduler() -> None:
     """Раз в 10 минут спрашивает Telegram, дочитаны ли наши сообщения.
 
@@ -3295,6 +3294,7 @@ def _read_status_scheduler() -> None:
             print(f"[read status] {e}")
 
 
+@app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
     database.init_db()

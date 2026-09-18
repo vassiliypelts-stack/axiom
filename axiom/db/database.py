@@ -281,6 +281,10 @@ _EXTRA_ACCOUNT_COLS = {
     # словить PeerFlood снова назавтра же (так и вышло с #9324/#9332 два раза за
     # день). NULL/дата в прошлом = не на паузе.
     "spam_pause_until": "TEXT",
+    # Когда номер последний раз участвовал в поддерживающем прогреве.
+    # По нему строится очередь: первыми идут те, кого дольше всех не трогали,
+    # чтобы аккаунт выходил на связь раз в несколько дней, а не каждый прогон.
+    "last_upkeep_at": "TEXT",
     "spam_flood_count": "INTEGER DEFAULT 0",  # сколько раз подряд ловил PeerFlood — по нему растёт пауза
     # FloodWait: Telegram назвал ТОЧНОЕ время, до которого отправка с номера запрещена
     # (e.seconds у FloodWaitError). Раньше это нигде не сохранялось — аккаунт выводился
@@ -1195,6 +1199,27 @@ def warm_anchors(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     чтобы ты видел активность. Плюс к взаимному прогреву между аккаунтами."""
     return conn.execute(
         "SELECT * FROM accounts WHERE status='active' AND (username IS NOT NULL OR phone IS NOT NULL)"
+    ).fetchall()
+
+
+def upkeep_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Боевые (active) аккаунты для ПОДДЕРЖИВАЮЩЕГО прогрева.
+
+    ЗАЧЕМ. warming_accounts() берёт только status='warming', поэтому вся «живость»
+    (чтение ленты, лайки, сторис, переписка со своими) обрывалась ровно в тот день,
+    когда номер становился боевым. Для Telegram это выглядит так: две недели человек
+    общался со знакомыми и читал каналы, а потом резко перестал и начал писать
+    ТОЛЬКО незнакомцам. Это ухудшает профиль именно в момент максимального риска —
+    и по кампании 9407 все 13 боевых номеров словили PeerFlood за двое суток.
+
+    Здесь берём боевых, которым поддержка нужнее всего: исключаем «родных»
+    (protected) и служебных, требуем живую сессию и не-мёртвый прокси.
+    """
+    return conn.execute(
+        "SELECT * FROM accounts WHERE status='active' "
+        "AND tg_session IS NOT NULL AND tg_session<>'' "
+        "AND COALESCE(protected,0)=0 AND COALESCE(acc_role,'') <> 'service' "
+        "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
     ).fetchall()
 
 

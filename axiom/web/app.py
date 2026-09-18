@@ -2339,6 +2339,29 @@ def _proxy_scheduler() -> None:
                 _log_run("warmup_scheduler", res)
         except Exception as e:  # noqa: BLE001
             print(f"[warmup scheduler] {e}")
+        # --- поддерживающий прогрев БОЕВЫХ номеров ---
+        # Обычный прогрев доводит номер до 14-й стадии и забывает о нём: живость
+        # обрывается ровно в день выхода в бой, дальше номер только пишет незнакомцам.
+        # Telegram видит резкую смену поведения там, где риск максимален — так по
+        # кампании 9407 все 13 боевых словили PeerFlood за двое суток. Поддержка
+        # держит боевых «людьми»: чтение ленты, лайки и живые диалоги между своими.
+        # Расписание своё: раз в сутки берётся лишь часть номеров (очередь по давности).
+        try:
+            with database.get_conn() as conn:
+                uauto = database.get_setting(conn, "upkeep_auto", "on")
+                uint = int(database.get_setting(conn, "upkeep_interval_min", "1440"))
+                ulast = database.get_setting(conn, "upkeep_last_run_ts", "0")
+            if uauto == "on" and (time.time() - float(ulast or 0)) >= uint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "upkeep_last_run_ts", str(time.time()))
+                    database.set_setting(conn, "upkeep_last_run",
+                                         __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"))
+                res = subprocess.run([sys.executable, "-m", "channels.warmup", "--upkeep"],
+                                     cwd=str(BASE_DIR.parent), timeout=3600, env=env,
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace")
+                _log_run("upkeep_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[upkeep scheduler] {e}")
         # --- автозащита новых аккаунтов: 2FA + запасная сессия ---
         # Ручная защита не работает как процесс: аккаунты покупаются пачками, а «зайти и
         # нажать» после каждой покупки никто не будет — в итоге 10 боевых номеров жили

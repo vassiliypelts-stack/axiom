@@ -1120,6 +1120,22 @@ async def run(cid: int, limit: int, test: bool = False,
                             (s["id"],)).fetchone()
                         n = (prev["c"] if prev else 0) + 1
                         pause_days = min(n, 7)   # потолок — неделя, дальше уже решает оператор
+                        # ТРЕТИЙ флуд — номер выводим из команды совсем. Пауза лечит
+                        # разовый всплеск, но номер, ловящий PeerFlood раз за разом,
+                        # уже помечен Telegram: каждый следующий заход приближает бан
+                        # и портит репутацию остальной команды. Раньше система его
+                        # только паузила и исправно возвращала в бой — так Василий4292
+                        # дошёл до трёх флудов, оставаясь в кампании 9407.
+                        if n >= 3:
+                            conn.execute("DELETE FROM campaign_accounts WHERE account_id=?",
+                                         (s["id"],))
+                            database.add_event(
+                                conn, "ban", f"⛔ Номер выведен: «{s['label']}»",
+                                f"{n}-й PeerFlood — номер убран из команд всех кампаний. "
+                                f"Дальше гонять его значит копить отказы и тянуть вниз "
+                                f"репутацию остальных. Сессия и сам аккаунт целы: можно "
+                                f"дать ему отлежаться пару недель и вернуть вручную.",
+                                level="warn", campaign_id=cid, account_id=s["id"])
                         conn.execute(
                             "UPDATE accounts SET spam_flood_count=?, "
                             "spam_pause_until=datetime('now', ?) WHERE id=?",

@@ -63,6 +63,48 @@ WARM_PLAN = {
 }
 READY_STAGE = 14  # ~2 недели плавного прогрева → 'active'
 
+# --------------------------------------------------------------------------- #
+#  ПОДДЕРЖИВАЮЩИЙ ПРОГРЕВ боевых (active) номеров                             #
+# --------------------------------------------------------------------------- #
+# ЗАЧЕМ. Прогрев кончался на 14-й стадии, и живость обрывалась ровно в тот день,
+# когда номер уходил в бой: дальше он ТОЛЬКО писал незнакомцам. Telegram видит
+# резкую смену поведения там, где риск максимален — по кампании 9407 все 13
+# боевых словили PeerFlood за двое суток.
+#
+# КАК ИМЕННО (иначе поддержка сама станет почерком фермы):
+#   • ПАРЫ, а не «все пишут всем». 56 номеров, каждый пишет двум случайным — это
+#     112 ЛС в сутки внутри замкнутой группы, где связан каждый с каждым. Такой
+#     граф читается мгновенно. Поэтому на прогон номер общается с ОДНИМ партнёром.
+#   • ОЧЕРЕДЬ. За прогон берём не всех, а небольшую часть (UPKEEP_SHARE) — тех,
+#     кого дольше всех не трогали (last_upkeep_at). Каждый номер выходит на связь
+#     раз в несколько дней, как обычный человек, а не ежедневно по расписанию.
+#   • ДИАЛОГ, а не пинг. Реплики идут парой «вопрос → ответ» из одного сценария:
+#     партнёр отвечает по смыслу. Старый CHATTER («тест связи», «ты тут?») слали
+#     оба конца вразнобой, и переписка читалась как обмен пингами двух ботов.
+#   • ТИШИНА И ПРОПУСКИ. Живой человек пишет не каждый день: часть прогонов
+#     UPKEEP_SKIP проходит вообще без ЛС — только чтение ленты и лайки.
+UPKEEP_SHARE = 0.25      # какую долю боевых берём за один прогон
+UPKEEP_SKIP = 0.35       # с какой вероятностью номер в этот раз молчит (только пассив)
+UPKEEP_READ = (6, 14)    # сколько постов прочитать
+UPKEEP_REACT = (1, 3)    # сколько лайков поставить
+
+# Короткие бытовые сценарии: (первая реплика, ответ партнёра). Отвечает ПАРТНЁР,
+# поэтому в чате видно нормальную беседу, а не два независимых потока реплик.
+UPKEEP_DIALOGS = [
+    ("привет, как сам?", "да норм, потихоньку) у тебя как?"),
+    ("слушай, ты далеко?", "не, на районе. а что?"),
+    ("видел новости сегодня?", "краем глаза) а что там"),
+    ("ты на выходных свободен?", "вроде да, а что планируешь"),
+    ("как погода у вас?", "с утра лил дождь, сейчас норм"),
+    ("привет) давно не списывались", "и не говори, закрутился совсем"),
+    ("ты кофе пьёшь по утрам?", "литрами) без него никак"),
+    ("как на работе, завал?", "та как обычно, к вечеру разгребу"),
+    ("с наступающими выходными)", "спасибо) и тебя"),
+    ("ты фильм тот смотрел?", "ещё нет, всё руки не доходят"),
+    ("отдыхал куда-нибудь летом?", "на море выбрался ненадолго, а ты"),
+    ("привет, всё в силе?", "да, конечно) договорились"),
+]
+
 
 async def _resolve_target(client: TelegramClient, target: str):
     """@username или телефон → сущность Telegram."""
@@ -494,6 +536,135 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
     # disconnect делает обёртка _warm_one (finally) — здесь он больше не нужен
 
 
+async def _upkeep_pair(a: dict, b: dict) -> int:
+    """Живой диалог между двумя своими номерами: a спрашивает, b отвечает.
+
+    Отправку ведут ОБА клиента, поэтому в чате остаётся нормальная переписка.
+    Холодных ЛС здесь нет: собеседник — свой же аккаунт, контакт уже знакомый,
+    и PeerFlood такой трафик не считает.
+    """
+    from channels.telegram import build_client
+    from telethon.sessions import StringSession
+    ask, reply = random.choice(UPKEEP_DIALOGS)
+    ca = build_client(StringSession(a["tg_session"]), a["proxy"],
+                      a.get("api_id"), a.get("api_hash"))
+    cb = build_client(StringSession(b["tg_session"]), b["proxy"],
+                      b.get("api_id"), b.get("api_hash"))
+    na = a.get("label") or f"#{a['id']}"
+    nb = b.get("label") or f"#{b['id']}"
+    sent = 0
+    try:
+        await ca.start()
+        await cb.start()
+        peer_b = b["username"] or b["phone"]
+        peer_a = a["username"] or a["phone"]
+        if not (peer_a and peer_b):
+            return 0
+        ent_b = await _resolve_target(ca, peer_b)
+        async with ca.action(ent_b, "typing"):
+            await asyncio.sleep(random.uniform(1.5, 4.0))
+        await ca.send_message(ent_b, ask)
+        sent += 1
+        print(f"  {na} -> {nb}: {ask}")
+        # Пауза «человек прочитал и печатает ответ».
+        await asyncio.sleep(random.uniform(20, 90))
+        ent_a = await _resolve_target(cb, peer_a)
+        async with cb.action(ent_a, "typing"):
+            await asyncio.sleep(random.uniform(1.5, 4.0))
+        await cb.send_message(ent_a, reply)
+        sent += 1
+        print(f"  {nb} -> {na}: {reply}")
+    except FloodWaitError as e:
+        print(f"  [floodwait] {e.seconds}с — пару пропускаю")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [пара {na}/{nb}] {e}")
+    finally:
+        for c in (ca, cb):
+            try:
+                await c.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+    return sent
+
+
+async def _upkeep_passive(acc: dict) -> None:
+    """Пассивная живость номера: онлайн, чтение ленты, лайки, сторис. Без ЛС."""
+    from channels.telegram import build_client
+    from telethon.sessions import StringSession
+    client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
+                          acc.get("api_id"), acc.get("api_hash"))
+    who = acc.get("label") or f"#{acc['id']}"
+    try:
+        await client.start()
+        await _go_online(client)
+        reads = await _read_feed(client, random.randint(*UPKEEP_READ))
+        reacts = await _react_feed(client, random.randint(*UPKEEP_REACT))
+        stories = await _view_stories(client, random.randint(1, 2))
+        print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  [{who}] пассив: {e}")
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def run_upkeep(only_id: int | None = None) -> None:
+    """Поддерживающий прогрев боевых номеров: очередь, пары, диалоги.
+
+    Обычный run() трогает только status='warming' и, дойдя до 14-й стадии,
+    забывает про аккаунт навсегда — этим и держится живость уже боевых.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        accs = [dict(a) for a in database.upkeep_accounts(conn)]
+    if only_id is not None:
+        accs = [a for a in accs if a["id"] == only_id]
+        if not accs:
+            print(f"аккаунт #{only_id} не годится: нужен active + сессия + живой прокси")
+            return
+    if not accs:
+        print("нет боевых аккаунтов для поддержки (нужен active + сессия + живой прокси)")
+        return
+
+    # Очередь: первыми идут те, кого дольше всех не трогали. Так каждый номер
+    # выходит на связь раз в несколько дней, а не каждый прогон.
+    accs.sort(key=lambda a: (a.get("last_upkeep_at") or ""))
+    take = max(2, int(len(accs) * UPKEEP_SHARE)) if only_id is None else len(accs)
+    batch = accs[:take]
+    print(f"поддержка: {len(batch)} из {len(accs)} боевых "
+          f"(очередь по давности, доля {int(UPKEEP_SHARE * 100)}%)")
+
+    # Разбиваем на пары для диалогов; кому пары не хватило — только пассив.
+    pool = [a for a in batch if not (random.random() < UPKEEP_SKIP)]
+    silent = [a for a in batch if a not in pool]
+    random.shuffle(pool)
+    pairs = [(pool[i], pool[i + 1]) for i in range(0, len(pool) - 1, 2)]
+    if len(pool) % 2:
+        silent.append(pool[-1])
+
+    for a, b in pairs:
+        # Обе стороны сначала ведут себя как люди: полистали ленту, полайкали.
+        await _upkeep_passive(a)
+        await _upkeep_passive(b)
+        await _upkeep_pair(a, b)
+        with database.get_conn() as conn:
+            conn.execute("UPDATE accounts SET last_upkeep_at=datetime('now') "
+                         "WHERE id IN (?,?)", (a["id"], b["id"]))
+        await asyncio.sleep(random.uniform(60, 240))
+
+    for acc in silent:
+        await _upkeep_passive(acc)
+        with database.get_conn() as conn:
+            conn.execute("UPDATE accounts SET last_upkeep_at=datetime('now') WHERE id=?",
+                         (acc["id"],))
+        await asyncio.sleep(random.uniform(30, 120))
+
+    print(f"поддержка закончена: диалогов {len(pairs)}, "
+          f"только пассив {len(silent)}")
+
+
 async def run(only_id: int | None = None) -> None:
     database.init_db()
     # само-лечение прокси: проверяем прокси прогреваемых и битые заменяем на живые
@@ -553,10 +724,14 @@ def main() -> None:
     p.add_argument("--n", type=int, default=3, help="сколько сообщений на цель в режиме --ping")
     p.add_argument("--run", action="store_true", help="полный прогрев аккаунтов в статусе 'warming'")
     p.add_argument("--id", type=int, help="прогреть только один аккаунт по id (для теста из пульта)")
+    p.add_argument("--upkeep", action="store_true",
+                   help="поддерживающий прогрев БОЕВЫХ (active) номеров: пары, диалоги, живость")
     args = p.parse_args()
     if args.ping:
         targets = [t.strip() for t in args.ping.split(",") if t.strip()]
         asyncio.run(ping(targets, args.n))
+    elif args.upkeep:
+        asyncio.run(run_upkeep(only_id=args.id))
     elif args.run or args.id:
         asyncio.run(run(only_id=args.id))
     else:

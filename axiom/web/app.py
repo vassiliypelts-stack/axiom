@@ -3273,6 +3273,28 @@ def _hot_lead_scheduler() -> None:
 
 
 @app.on_event("startup")
+def _read_status_scheduler() -> None:
+    """Раз в 10 минут спрашивает Telegram, дочитаны ли наши сообщения.
+
+    Прочтение — вторая половина воронки: «ушло» говорит лишь, что рассылка работает,
+    а «прочитано» отличает «текст не цепляет» от «письмо вообще не открывают» (см.
+    channels/read_status). Ходит через клиентов слушателя, своих сессий не поднимает,
+    поэтому AuthKeyDuplicated ему не грозит; аккаунты, которых слушатель сейчас не
+    держит, просто ждут следующего круга.
+    """
+    import time
+    while True:
+        time.sleep(600)
+        try:
+            from channels import read_status
+            res = read_status.run(days=2)
+            if res.get("read"):
+                print(f"[read status] прочитано новых: {res['read']} "
+                      f"(из {res['checked']} проверенных)")
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[read status] {e}")
+
+
 def _start_scheduler() -> None:
     import threading
     database.init_db()
@@ -3287,6 +3309,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_campaign_scheduler, daemon=True).start()
     threading.Thread(target=_session_check_scheduler, daemon=True).start()
     threading.Thread(target=_listener_watchdog, daemon=True).start()
+    threading.Thread(target=_read_status_scheduler, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:
@@ -9556,6 +9579,26 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             "FROM campaign_contacts cc LEFT JOIN accounts a ON a.id=cc.account_id "
             "WHERE cc.campaign_id=?", (cid,)).fetchall()}
         sent = set(sent_rows)
+        # ОТВЕТИЛ ЛИ ЧЕЛОВЕК. Без этого список показывал только «ушло/не ушло»: видно,
+        # что рассылка работает, но не видно, есть ли с неё хоть какой-то отклик —
+        # а это и есть единственный смысл кампании. Берём входящие из messages
+        # (direction='in') — тот же источник, по которому считается «Не ответил» в
+        # дожиме, поэтому цифры в списке и в ленте сходятся.
+        replied_rows = {r["contact_id"]: r for r in conn.execute(
+            "SELECT contact_id, COUNT(*) AS n, MAX(ts) AS last_ts FROM messages "
+            "WHERE direction='in' AND contact_id IN "
+            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?) "
+            "GROUP BY contact_id", (cid,)).fetchall()}
+        # ДОСТАВЛЕНО и ПРОЧИТАНО по нашим исходящим (channels/read_status).
+        # «Доставлено» в Telegram = сообщение принято сервером и лежит в диалоге
+        # (отдельного статуса, как в WhatsApp, здесь нет). «Прочитано» —
+        # read_outbox_max_id собеседника. Разница между ними и отвечает на вопрос
+        # «текст не цепляет или письмо вообще не открывают».
+        read_rows = {r["contact_id"]: r for r in conn.execute(
+            "SELECT contact_id, MAX(delivered_at) AS delivered_at, MAX(read_at) AS read_at "
+            "FROM messages WHERE direction='out' AND contact_id IN "
+            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?) "
+            "GROUP BY contact_id", (cid,)).fetchall()}
 
     is_tg = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
     items, reasons, sources = [], {}, {}
@@ -9583,6 +9626,14 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         d["sent"] = bool(sr)
         d["sent_at"] = sr["sent_at"] if sr else None
         d["sent_by"] = (sr["account"] if sr else "") or ""
+        dr = read_rows.get(d["id"])
+        d["delivered"] = bool(dr and dr["delivered_at"])
+        d["read"] = bool(dr and dr["read_at"])
+        d["read_at"] = dr["read_at"] if dr else None
+        rr = replied_rows.get(d["id"])
+        d["replied"] = bool(rr)
+        d["replies"] = int(rr["n"]) if rr else 0
+        d["replied_at"] = rr["last_ts"] if rr else None
         if why:
             reasons[why] = reasons.get(why, 0) + 1
         items.append(d)
@@ -9590,6 +9641,12 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         "campaign": camp.get("name"), "tag": tag, "channel": camp.get("channel"),
         "total": len(items),
         "in_queue": sum(1 for i in items if i["in_queue"]),
+        # Воронка целиком, а не только «сколько осталось»: отправлено → ответили →
+        # лиды → горячие. Оператор видит не факт работы рассылки, а её результат.
+        "sent": sum(1 for i in items if i["sent"]),
+        "delivered": sum(1 for i in items if i["delivered"]),
+        "read": sum(1 for i in items if i["read"]),
+        "replied": sum(1 for i in items if i["replied"]),
         # Результат кампании прямо в шапке списка: сколько ответили и сколько горячих.
         "leads": sum(1 for i in items if i["is_lead"]),
         "hot": sum(1 for i in items if i["is_hot"]),

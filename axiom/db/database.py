@@ -568,6 +568,20 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     # нечем адресовать, какое именно сообщение стирать.
     if msg and "tg_msg_id" not in msg:
         conn.execute("ALTER TABLE messages ADD COLUMN tg_msg_id TEXT")
+    # ПРОЧИТАНО ЛИ НАШЕ СООБЩЕНИЕ. Без этого воронка кампании обрывалась на
+    # «отправлено»: оператор видел, что письмо ушло, но не мог отличить «человек
+    # прочитал и молчит» (текст не цепляет — надо менять оффер) от «не открывал
+    # вовсе» (аккаунт в спаме или человек неактивен — надо менять отправителя).
+    # Это разные болезни с разным лечением, а выглядели они одинаково.
+    #
+    # Заполняется channels/read_status.py по tg_msg_id: Telegram отдаёт по диалогу
+    # read_outbox_max_id — «до какого номера собеседник дочитал». Доставку Telegram
+    # отдельно не отдаёт (в отличие от WhatsApp): само наличие сообщения в диалоге
+    # и означает доставку, поэтому delivered_at ставится в момент успешной отправки.
+    if msg and "delivered_at" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN delivered_at TEXT")
+    if msg and "read_at" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
 
 
 def _repair_unverified_has_tg(conn: sqlite3.Connection) -> None:
@@ -1009,9 +1023,15 @@ def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text:
                 intent: str | None = None, account_id: int | None = None,
                 tg_msg_ids: list[int] | None = None) -> None:
     tg_msg_id = ",".join(str(i) for i in tg_msg_ids) if tg_msg_ids else None
+    # Доставку Telegram отдельным статусом не отдаёт (в отличие от WhatsApp): если
+    # send_message вернул id сообщения, оно уже лежит в диалоге собеседника. Поэтому
+    # исходящее с tg_msg_id считается доставленным в момент записи, а «прочитано»
+    # доспрашивается позже (channels/read_status.py) — это разные вещи, и именно их
+    # разница показывает, дело в тексте оффера или в том, что письмо не открывают.
+    delivered = "datetime('now')" if (direction == "out" and tg_msg_id) else "NULL"
     conn.execute(
-        "INSERT INTO messages (contact_id, direction, text, intent, account_id, tg_msg_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (contact_id, direction, text, intent, account_id, tg_msg_id, "
+        f"delivered_at) VALUES (?, ?, ?, ?, ?, ?, {delivered})",
         (contact_id, direction, text, intent, account_id, tg_msg_id),
     )
 

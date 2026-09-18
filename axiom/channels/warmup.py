@@ -292,14 +292,47 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
                     print("  профиль: поставил аватар")
     except Exception as e:  # noqa: BLE001
         print(f"  [avatar] {e}")
-    # приватность (спрятать номер + защита от репортов) — всегда безопасно спрятать
-    # номер, даже без явного «оформить сейчас»: это защита, а не косметика.
-    try:
-        from channels.privacy import apply_privacy
-        if await apply_privacy(client):
-            done.append("🔒 приватность (номер спрятан)")
-    except Exception as e:  # noqa: BLE001
-        print(f"  [privacy] {e}")
+    # Приватность (спрятать номер + защита от репортов) — ставим ОДИН РАЗ на аккаунт,
+    # а не при каждом подключении.
+    #
+    # Раньше apply_privacy вызывался безусловно, а это 5 запросов SetPrivacy. Перед
+    # КАЖДЫМ заходом рассылки _setup_profile вызывается для каждого отправителя — и
+    # восемь номеров тратили 40 служебных обращений к Telegram ещё до первого письма.
+    # Telegram считает не письма, а действия: отсюда PeerFlood на первом же контакте
+    # (18.09, кампания 9407 — Антон419 словил флуд, отправив одно сообщение).
+    #
+    # Настройки приватности в Telegram постоянны: выставленные однажды, они не
+    # слетают. Повторная установка тех же значений ничего не меняет, но расходует
+    # лимит. Отмечаем в accounts.notes факт установки и больше не трогаем; кнопка
+    # «оформить сейчас» (force=True) по-прежнему применяет их принудительно.
+    acc_id = acc.get("id")
+    already = False
+    if acc_id and not force:
+        try:
+            from db import database as _db
+            with _db.get_conn() as _c:
+                r = _c.execute("SELECT COALESCE(notes,'') n FROM accounts WHERE id=?",
+                               (acc_id,)).fetchone()
+            already = bool(r and "[privacy-set]" in (r["n"] or ""))
+        except Exception:  # noqa: BLE001 — не смогли прочитать: ставим, как раньше
+            already = False
+    if not already:
+        try:
+            from channels.privacy import apply_privacy
+            if await apply_privacy(client):
+                done.append("🔒 приватность (номер спрятан)")
+                if acc_id:
+                    try:
+                        from db import database as _db
+                        with _db.get_conn() as _c:
+                            _c.execute(
+                                "UPDATE accounts SET notes=COALESCE(notes,'')||' [privacy-set]' "
+                                "WHERE id=? AND COALESCE(notes,'') NOT LIKE '%[privacy-set]%'",
+                                (acc_id,))
+                    except Exception:  # noqa: BLE001 — отметка не критична
+                        pass
+        except Exception as e:  # noqa: BLE001
+            print(f"  [privacy] {e}")
     return done
 
 

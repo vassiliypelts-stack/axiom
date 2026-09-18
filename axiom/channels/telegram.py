@@ -433,18 +433,18 @@ async def _resolve_entity(client: TelegramClient, row):
     if row["username"]:
         try:
             entity = await client.get_entity(row["username"].lstrip("@"))
-            # Добавляем в записную книжку аккаунта (антибан)
-            if hasattr(entity, "id"):
-                try:
-                    await client(AddContactRequest(
-                        id=InputUser(entity.id, entity.access_hash or 0),
-                        first_name=(row["name"] or entity.first_name or "").split()[0] if (row["name"] or entity.first_name or "") else "lead",
-                        last_name=" ".join((row["name"] or "").split()[1:]) if row["name"] and len(row["name"].split()) > 1 else (entity.last_name or ""),
-                        phone=entity.phone or "",
-                        add_phone_privacy_exception=False,
-                    ))
-                except Exception:  # noqa: BLE001
-                    pass  # не критично если не добавилось
+            # ДОБАВЛЕНИЕ В КНИЖКУ УБРАНО (было помечено «антибан», работало наоборот).
+            #
+            # AddContactRequest — это «действие с незнакомцем», которое Telegram
+            # лимитирует наравне с холодным ЛС. Вызывая его на КАЖДЫЙ резолв, мы
+            # удваивали нагрузку на номер, ничего не выигрывая: контакт в книжке не
+            # делает холодное письмо легитимным — получатель всё равно видит незнакомца,
+            # а лимит расходуется дважды.
+            #
+            # 18.09 по кампании 9407 это стоило команды: Антон419 после ОДНОГО письма
+            # (17:37) получил PeerFlood в 17:52, потому что по действиям сделал четыре
+            # операции вместо одной — резолв, AddContact здесь, AddContact в
+            # campaign_send (дубль, тоже убран) и лишь затем отправку.
             return entity
         except Exception:  # noqa: BLE001
             if not row["phone"] and not _col(row, "tg_user_id"):

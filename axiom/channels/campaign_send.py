@@ -1047,19 +1047,18 @@ async def run(cid: int, limit: int, test: bool = False,
                         level="warn", contact_id=row["id"], campaign_id=cid)
                 print(f"[{s['label']}] ⛔ {row['name']} → @{row['username']} это «{tg_name}» ({why}) — не шлю")
                 continue
-            # антибан: добавить контакт в книжку перед первым сообщением
-            try:
-                await s["client"](AddContactRequest(
-                    add_phone_privacy_exception=False,
-                    add_contact=[InputPhoneContact(
-                        client_id=row["id"],
-                        phone=row.get("phone") or "",
-                        first_name=name.split()[0] if name.split() else name,
-                        last_name=" ".join(name.split()[1:]) if len(name.split()) > 1 else "",
-                    )]
-                ))
-            except Exception:
-                pass  # не критично — книжка не блокирует отправку
+            # ЗДЕСЬ БЫЛО ВТОРОЕ ДОБАВЛЕНИЕ КОНТАКТА В КНИЖКУ — УБРАНО.
+            #
+            # Тот же контакт уже добавлен внутри _resolve_entity (telegram.py), сразу
+            # после get_entity. Дубль означал, что на ОДНО письмо номер делал четыре
+            # обращения к Telegram: резолв ника, AddContact, ещё раз AddContact, и лишь
+            # потом send_message. AddContactRequest — это «действие с незнакомцем», его
+            # Telegram лимитирует наравне с холодными ЛС, поэтому счёт шёл не по числу
+            # писем, а по числу касаний: четыре вместо одного.
+            #
+            # Так и выходило 18.09 по 9407: Антон419 отправил ОДНО сообщение в 17:37 и
+            # уже в 17:52 словил PeerFlood — по действиям это была не одна операция, а
+            # четыре. Комментарий у дубля гласил «антибан», но работал он ровно наоборот.
             # Первое касание уходит сейчас. Второе шлём этим же процессом РОВНО
             # через 15–30 секунд (фоновый тик раз в минуту для такой паузы неточен).
             # Третье затем уйдёт из очереди через 24 часа.

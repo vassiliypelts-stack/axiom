@@ -705,6 +705,14 @@
 
   .org-mform-wrap{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
   .org-mform-inner{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%;max-height:85vh;overflow-y:auto}
+  /* Окно «Кто в рассылке»: широкое и высокое — таблица с воронкой (ушло/прочитал/
+     ответил/когда/отправитель) на узком окне уезжала в горизонтальную прокрутку.
+     Колонки ужимаем по содержимому и разрешаем перенос в «Кто», чтобы длинные имена
+     не раздвигали строку. */
+  .aud-modal{max-height:92vh;padding:18px 20px}
+  .aud-modal table{width:100%;table-layout:auto}
+  .aud-modal td,.aud-modal th{padding:7px 9px;white-space:nowrap}
+  .aud-modal td.name,.aud-modal th:nth-child(2){white-space:normal}
 
   /* ---- Business roadmap ---- */
   .business-map{max-width:1060px;margin:0 auto;padding-bottom:30px;}
@@ -1234,7 +1242,12 @@ const MSG_MARK={yes:'<span class="badge b-active" title="проверено — 
   unknown:'<span class="badge b-nurture" title="ещё не проверяли">?</span>'};
 async function openAudience(cid){
   const wrap=document.createElement("div");wrap.className="org-mform-wrap";
-  wrap.innerHTML='<div class="org-mform-inner" style="max-width:900px">гружу список…</div>';
+  // Окно во всю ширину экрана (с полями): в таблице 12 колонок — «Кто», статус,
+  // ушло/прочитал/ответил, когда, отправитель, — и на 900px они не помещались, из-за
+  // чего правая половина уезжала в горизонтальную прокрутку и читать список было
+  // неудобно. Ограничение сверху оставляем, чтобы на широком мониторе строки не
+  // растягивались на два метра.
+  wrap.innerHTML='<div class="org-mform-inner aud-modal" style="max-width:min(1600px,96vw);width:96vw">гружу список…</div>';
   document.body.appendChild(wrap);
   const close=()=>wrap.remove();
   wrap.onclick=e=>{if(e.target===wrap)close();};

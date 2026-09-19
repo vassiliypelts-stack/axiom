@@ -503,13 +503,16 @@ def _team_blocked_reason(cid: int) -> str:
             "SELECT a.id, a.label, a.username, a.phone, a.status, "
             "a.spam_pause_until, a.flood_wait_until, a.tg_session, "
             "COALESCE(a.acc_role,'') AS acc_role, "
-            "COALESCE(a.spam_flood_count,0) AS spam_flood_count "
+            "COALESCE(a.spam_flood_count,0) AS spam_flood_count, "
+            "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
+            "     AS INTEGER) AS days_alive "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? ORDER BY a.id", (cid,)).fetchall()
     if not rows:
         return ("в команде кампании нет ни одного аккаунта — добавь отправителей "
                 "в «Кто в рассылке»")
     paused, warming, flood, no_sess, banned, service = [], [], [], [], [], []
+    young: list[str] = []      # моложе MIN_COMBAT_AGE_DAYS — дозревают в прогреве
     for r in rows:
         who = r["label"] or r["username"] or r["phone"] or f"#{r['id']}"
         if r["status"] == "banned":
@@ -518,6 +521,9 @@ def _team_blocked_reason(cid: int) -> str:
             service.append(who)
         elif r["status"] == "warming":
             warming.append(who)
+        elif (r["days_alive"] is not None
+              and int(r["days_alive"]) < MIN_COMBAT_AGE_DAYS):
+            young.append(f"{who} — {int(r['days_alive'])} дн.")
         elif (r["spam_pause_until"] or "") > _now_sql():
             paused.append(f"{who} — до {str(r['spam_pause_until'])[:16]} "
                           f"(PeerFlood {r['spam_flood_count']}-й раз)")
@@ -533,6 +539,10 @@ def _team_blocked_reason(cid: int) -> str:
         parts.append("FloodWait от Telegram:\n  • " + "\n  • ".join(flood))
     if warming:
         parts.append("ещё в прогреве (холодную с них не шлём): " + ", ".join(warming))
+    if young:
+        parts.append(f"моложе {MIN_COMBAT_AGE_DAYS} дн. — в холодную не пускаем, "
+                     f"Telegram отбивает их на первом же контакте: "
+                     + ", ".join(young))
     if no_sess:
         parts.append("без TG-сессии (нужен вход в «Аккаунтах»): " + ", ".join(no_sess))
     if banned:
@@ -598,6 +608,18 @@ def _team(cid: int) -> list[dict]:
 # Ступени намеренно консервативные: недельный номер — 2 ЛС, месячный — выходит на
 # операторский лимит. Это ПОТОЛОК, а не цель: заданный лимит ниже — он и работает.
 AGE_CAP_STEPS = ((7, 2), (14, 4), (21, 6), (30, 10))
+
+# МЛАДШЕ ЭТОГО ВОЗРАСТА В ХОЛОДНУЮ РАССЫЛКУ НЕ ПУСКАЕМ ВООБЩЕ.
+#
+# Ступени выше дают молодому номеру маленький, но НЕНУЛЕВОЙ лимит — и он всё равно
+# идёт в бой, просто с квотой 2-4. Практика 18-19.09 по кампании 9407 показала, что
+# для 8-9-дневных номеров это фикция: Telegram отбивает их PeerFlood'ом на ПЕРВОМ
+# же контакте, шесть таких номеров за сутки не отправили ни одного письма, зато
+# накопили десятки отказов — каждый заход планировщика заново.
+#
+# Отказ на молодом номере ничего не даёт и портит сам номер, поэтому до 14 дней его
+# место в прогреве, а не в рассылке. Взрослые (14+) работают как работали.
+MIN_COMBAT_AGE_DAYS = 14
 
 
 def _age_cap(days_alive, cap: int) -> tuple[int, str | None]:
@@ -842,6 +864,22 @@ async def run(cid: int, limit: int, test: bool = False,
                 # кампании — остальная команда работает, а этот пропускаем с причиной.
                 print(f"[{label}] ⏭ пропуск: {e}")
                 continue
+            # Слишком молодой для боя — в заход не берём вообще (см. MIN_COMBAT_AGE_DAYS).
+            # Маленькая квота таким номерам не помогает: Telegram отбивает их на первом
+            # контакте, отправок ноль, а отказы копятся. Их место в прогреве.
+            if not test:
+                try:
+                    days = int(acc.get("days_alive"))
+                except (TypeError, ValueError):
+                    days = None          # возраст неизвестен — не гадаем, пускаем
+                if days is not None and days < MIN_COMBAT_AGE_DAYS:
+                    print(f"[{label}] ⏳ пропуск: номеру {days} дн., в холодную пускаем "
+                          f"с {MIN_COMBAT_AGE_DAYS} — пусть дозревает в прогреве")
+                    try:
+                        await client.disconnect()
+                    except Exception:  # noqa: BLE001 — не подключались, отключать нечего
+                        pass
+                    continue
             # Возрастной потолок: молодой номер физически не тянет операторский
             # лимит по холодным ЛС. На тесте не режем — тест уходит на свои номера.
             acc_cap = int(acc["cap"] or cap)
@@ -1157,8 +1195,26 @@ async def run(cid: int, limit: int, test: bool = False,
                     with database.get_conn() as conn:
                         conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'",
                                      (row["id"],))
+                        # ПЕРЕДЫШКА, А НЕ ВЫХОД ТОЛЬКО ИЗ ЗАХОДА.
+                        #
+                        # Вывод из одного захода не помогал: планировщик заходит раз в
+                        # 15 минут, и номер, которому Telegram отказал, получал отказ
+                        # снова и снова. 19.09 по кампании 9407 шесть 9-дневных номеров
+                        # так ловили PeerFlood по кругу всё утро — ноль отправок и
+                        # растущий счёт отказов на молодых номерах, то есть чистый вред.
+                        #
+                        # Отказ на номере БЕЗ ЕДИНОЙ ОТПРАВКИ означает «этот аккаунт
+                        # Telegram сейчас не пускает вообще» — такое не меняется за
+                        # четверть часа. Даём ему отлежаться до конца дня и пробуем
+                        # завтра. Это НЕ наказание: spam_flood_count по-прежнему не
+                        # трогаем, из команды не выводим, при следующем прогоне номер
+                        # снова полноправный участник.
+                        conn.execute(
+                            "UPDATE accounts SET spam_pause_until=datetime('now','+8 hour') "
+                            "WHERE id=?", (s["id"],))
                     print(f"[{s['label']}] ⏸ …но этот номер НИ РАЗУ не отправлял — "
-                          f"счётчик спама не трогаю, вывожу только из захода")
+                          f"счётчик спама не трогаю; Telegram его сейчас не пускает, "
+                          f"даю отлежаться 8 ч вместо попыток каждые 15 мин")
                     s["remaining"] = 0
                     continue
                 if s["id"]:

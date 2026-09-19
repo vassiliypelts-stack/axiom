@@ -13,7 +13,8 @@ import requests
 
 from .base import Connector
 
-API_BASE = "https://platform-api.max.ru"
+# Current official endpoint.  The old platform-api.max.ru domain was retired.
+API_BASE = "https://platform-api2.max.ru"
 
 
 class MaxConnector(Connector):
@@ -25,8 +26,15 @@ class MaxConnector(Connector):
             raise ValueError("нет токена MAX-бота")
         return token
 
+    def _headers(self) -> dict[str, str]:
+        """Do not put a bot token in the URL: URLs commonly reach access logs."""
+        return {
+            "Authorization": self._token(),
+            "Content-Type": "application/json",
+        }
+
     def test_connection(self) -> dict[str, Any]:
-        r = requests.get(f"{API_BASE}/me", params={"access_token": self._token()}, timeout=15)
+        r = requests.get(f"{API_BASE}/me", headers=self._headers(), timeout=15)
         if r.status_code != 200:
             return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
         data = r.json()
@@ -35,7 +43,8 @@ class MaxConnector(Connector):
     def send_message(self, chat_id: str, text: str) -> dict[str, Any]:
         r = requests.post(
             f"{API_BASE}/messages",
-            params={"access_token": self._token(), "chat_id": chat_id},
+            params={"chat_id": chat_id},
+            headers=self._headers(),
             json={"text": text},
             timeout=15,
         )

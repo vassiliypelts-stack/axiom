@@ -6638,6 +6638,32 @@ function kpCard(eid,k){
     <div class="ttoolbar" style="margin:0"><button type="button" class="kp-save" data-id="${k.id}">сохранить</button><button type="button" class="kp-del" data-id="${k.id}">удалить</button> ${fileBox} <span class="hint kp-msg" data-id="${k.id}"></span></div>
   </div>`;
 }
+function voiceCard(eid,v){
+  // Плеер даём всегда, когда файл есть: оператор обязан СЛЫШАТЬ то, что уйдёт людям.
+  // Прочитать текст заготовки мало — в голосе слышно и настроение, и посторонний шум.
+  const dur=v.duration?`${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,"0")}`:"";
+  const player=v.file&&!v.file_missing
+    ? `<audio controls preload="none" src="/api/campaign/${eid}/voices/${v.id}/file" style="height:32px;vertical-align:middle"></audio> <span class="hint">${dur}</span>`
+    : (v.file_missing?`<span class="badge b-bad">файл пропал с диска — залей заново</span>`:`<span class="hint">записи ещё нет</span>`);
+  const sent=v.sent_count?`<span class="hint">отправлено ${v.sent_count} раз</span>`:"";
+  return `<div class="card" data-voice="${v.id}" style="background:var(--panel2);padding:10px;margin-bottom:8px">
+    <div class="row2">
+      <div class="field"><label>Название заготовки</label><input class="vc-name" data-id="${v.id}" value="${esc(v.name||'')}" placeholder="Знакомство"></div>
+      <div class="field"><label>Когда уместна (подсказка агенту)</label><input class="vc-when" data-id="${v.id}" value="${esc(v.when_to_use||'')}" placeholder="если спросил, что за проект"></div></div>
+    <div class="field"><label>Что сказано голосом (расшифровка — агент учитывает её, а ты видишь в «Диалогах»)</label>
+      <textarea class="vc-text" data-id="${v.id}" rows="2" placeholder="Привет! Это Василий, коротко голосом расскажу…">${esc(v.transcript||'')}</textarea></div>
+    <div class="ttoolbar" style="margin:0 0 6px">${player} ${sent}</div>
+    <div class="ttoolbar" style="margin:0">
+      <label class="hint" style="margin-right:8px"><input type="checkbox" class="vc-on" data-id="${v.id}" ${v.enabled?"checked":""}> включена</label>
+      <input type="number" class="vc-ord" data-id="${v.id}" value="${v.sort_order||0}" style="width:64px" title="порядок отправки">
+      <button type="button" class="vc-save" data-id="${v.id}">сохранить</button>
+      <button type="button" class="vc-del" data-id="${v.id}">удалить</button>
+      запись: <input type="file" class="vc-file" data-id="${v.id}" accept="audio/*,video/mp4">
+      <button type="button" class="vc-up" data-id="${v.id}">загрузить</button>
+      <span class="hint vc-msg" data-id="${v.id}"></span>
+    </div>
+  </div>`;
+}
 const PROMPT_PH="Ты пишешь от лица Василия из Фонда доступного жилья директорам агентств недвижимости в личке. Цель диалога — договориться о созвоне на 10-15 минут (НЕ продать в переписке).\n\nПродукт: дополнительный финансовый маршрут для клиентов агентства, которым банк отказал или не хватает первоначального взноса. Агентству +3% с каждой сделки (1% руководителю, 2% риелтору), обучение и сопровождение берём на себя. Работу агентства не меняем — добавляется одно действие: передать короткую анкету.\n\nОтрабатывай возражения: «нет таких клиентов» → у каждого агентства есть сорванные из-за банка сделки; «это развод» → объясни структуру (объект сразу на клиента, всё по договору); «нет времени» → созвон всего 10-15 минут.\n\nНЕЛЬЗЯ: обещать «одобрение всем», выдавать Фонд за банк, скрывать платежи. Говори «дополнительный финансовый маршрут».";
 async function viewCampaigns(v){
   const url=PROJECT_SEL?`/api/campaigns?project_id=${PROJECT_SEL.id}`:"/api/campaigns";
@@ -6786,6 +6812,9 @@ async function viewCampaigns(v){
       <div class="field"><label>📚 Несколько КП под типы ЦА (брокеры / застройщики / АН) — агент сам выберет уместное</label>
         <div class="hint" style="margin-bottom:6px">Если база смешанная: добавь по КП на тип, опиши «кому подходит» — агент по ходу диалога определит тип собеседника и пришлёт нужное. Когда здесь есть КП, агент использует их вместо «общего» выше.</div>
         <div id="c-kps-box"></div></div>
+      <div class="field"><label>🎤 Голосовые — твои записи, уходят живым голосом следом за текстом</label>
+        <div class="hint" style="margin-bottom:6px">Запиши голосовое на телефон и залей сюда (m4a/ogg/mp3/wav — приведём к формату Telegram сами). В диалоге оно придёт НАСТОЯЩИМ голосовым: кружок с волной, скорость 2×, а не файлом. Холодным первым касанием голос не уходит никогда — только после того, как человек ответил. Одному человеку одна и та же запись дважды не отправляется.</div>
+        <div id="c-voices-box"></div></div>
       <div class="ttoolbar" style="margin:0"><button class="primary" id="c-save">Сохранить</button><button id="c-cancel">Отмена</button>
         <button id="c-prompt-ex" title="вставить пример промпта">↳ пример промпта</button></div>
     </div>
@@ -6992,6 +7021,7 @@ async function viewCampaigns(v){
     renderMain();renderTeam();
     renderKpBox(c);
     renderKpsBox(c);
+    renderVoicesBox();
   };
   const renderKpsBox=(c)=>{
     const box=$("#c-kps-box");if(!box)return;
@@ -7009,6 +7039,50 @@ async function viewCampaigns(v){
     box.querySelectorAll(".kp-file-up").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;const inp=box.querySelector(`.kp-file[data-id="${id}"]`);if(!inp||!inp.files.length){alert("выбери файл");return;}
       const fd=new FormData();fd.append("file",inp.files[0]);const r=await fetch(`/api/campaign/${eid}/kps/${id}/file`,{method:"POST",body:fd}).then(x=>x.json());
       if(r.error){alert(r.error);return;}reload();});
+  };
+  const renderVoicesBox=async()=>{
+    const box=$("#c-voices-box");if(!box)return;
+    const eid=form.dataset.edit;
+    if(!eid){box.innerHTML='<span class="hint">Сначала создай и сохрани кампанию, затем открой её — и залей голосовые.</span>';return;}
+    const d=await api(`/api/campaign/${eid}/voices`);
+    const items=d.items||[];
+    // Порог «после какого ответа» — единственная настройка, определяющая момент.
+    // Ноль = выключено: это же и способ быстро остановить голосовые, не удаляя записи.
+    const opts=[0,1,2,3].map(n=>`<option value="${n}" ${(+d.after_reply===n)?"selected":""}>${n===0?"не отправлять":(n===1?"после 1-го ответа человека":`после ${n}-го ответа человека`)}</option>`).join("");
+    const noFf=d.ffmpeg?"":`<div class="hint" style="color:var(--bad)">⚠ На сервере нет ffmpeg — записи не конвертируются в голосовые. Установи: sudo apt install -y ffmpeg</div>`;
+    box.innerHTML=`${noFf}
+      <div class="ttoolbar" style="margin:0 0 8px">
+        <label class="hint">Когда слать: <select id="c-voice-after">${opts}</select></label>
+        <label class="hint" style="margin-left:10px"><input type="checkbox" id="c-voice-warm" ${d.only_interested?"checked":""}> только заинтересованным (не слать вдогонку отказу)</label>
+        <span class="hint" id="c-voice-msg"></span>
+      </div>
+      ${items.map(v=>voiceCard(eid,v)).join("")}
+      <button type="button" id="c-voice-add">Добавить голосовое</button>`;
+    const msg=t=>{const m=box.querySelector("#c-voice-msg");if(m)m.textContent=t;};
+    const saveSettings=async()=>{
+      const r=await api(`/api/campaign/${eid}/voices/settings`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({after_reply:+box.querySelector("#c-voice-after").value,only_interested:box.querySelector("#c-voice-warm").checked})});
+      msg(r.ok?"✅ сохранено":(r.error||"ошибка"));};
+    box.querySelector("#c-voice-after").onchange=saveSettings;
+    box.querySelector("#c-voice-warm").onchange=saveSettings;
+    box.querySelector("#c-voice-add").onclick=async()=>{
+      await api(`/api/campaign/${eid}/voices`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Новая заготовка",sort_order:items.length+1})});
+      renderVoicesBox();};
+    box.querySelectorAll(".vc-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
+      const g=cls=>{const el=box.querySelector(`.${cls}[data-id="${id}"]`);return el?el.value:"";};
+      const r=await api(`/api/campaign/${eid}/voices`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id:+id,name:g("vc-name"),when_to_use:g("vc-when"),transcript:g("vc-text"),
+          sort_order:+g("vc-ord")||0,enabled:box.querySelector(`.vc-on[data-id="${id}"]`).checked})});
+      const m=box.querySelector(`.vc-msg[data-id="${id}"]`);if(m)m.textContent=r.ok?"✅ сохранено":(r.error||"ошибка");});
+    box.querySelectorAll(".vc-del").forEach(b=>b.onclick=async()=>{
+      if(!confirm("Удалить эту голосовую заготовку вместе с записью?"))return;
+      await api(`/api/campaign/${eid}/voices/${b.dataset.id}/delete`,{method:"POST"});renderVoicesBox();});
+    box.querySelectorAll(".vc-up").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
+      const inp=box.querySelector(`.vc-file[data-id="${id}"]`);if(!inp||!inp.files.length){alert("выбери файл записи");return;}
+      const m=box.querySelector(`.vc-msg[data-id="${id}"]`);if(m)m.textContent="конвертирую…";
+      const fd=new FormData();fd.append("file",inp.files[0]);
+      const r=await fetch(`/api/campaign/${eid}/voices/${id}/file`,{method:"POST",body:fd}).then(x=>x.json());
+      if(r.error){if(m)m.textContent="";alert(r.error);return;}renderVoicesBox();});
   };
   const renderKpBox=(c)=>{
     const box=$("#c-kpfile-box");if(!box)return;

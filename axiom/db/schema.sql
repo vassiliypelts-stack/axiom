@@ -129,6 +129,31 @@ CREATE TABLE IF NOT EXISTS campaign_kps (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+-- Голосовые заготовки кампании: записанные оператором ogg/opus, которые агент
+-- отправляет НАТИВНЫМ голосовым сообщением после того, как человек ответил.
+-- Синтеза речи здесь нет принципиально: доверие даёт именно живой голос, а TTS
+-- ухо ловит быстрее, чем глаз ловит шаблонный текст.
+CREATE TABLE IF NOT EXISTS campaign_voices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    name        TEXT,                          -- как оператор назвал заготовку
+    when_to_use TEXT,                          -- кому и когда уместна (подсказка агенту)
+    file        TEXT,                          -- имя файла в data/voice
+    duration    INTEGER DEFAULT 0,             -- длительность, сек (для полосы в TG)
+    transcript  TEXT,                          -- расшифровка: что там сказано голосом
+    enabled     INTEGER DEFAULT 1,
+    sort_order  INTEGER DEFAULT 0,             -- порядок, в котором расходуются заготовки
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Какие голосовые уже ушли контакту: одну и ту же запись человеку дважды не шлём.
+CREATE TABLE IF NOT EXISTS voice_sent (
+    contact_id  INTEGER NOT NULL,
+    voice_id    INTEGER NOT NULL,
+    sent_at     TEXT DEFAULT (datetime('now')),
+    UNIQUE(contact_id, voice_id)
+);
+
 -- Связь кампания ↔ контакт (кому в рамках кампании уже отправлено)
 CREATE TABLE IF NOT EXISTS campaign_contacts (
     campaign_id INTEGER NOT NULL,

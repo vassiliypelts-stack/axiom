@@ -8403,6 +8403,151 @@ def campaign_kps_delete(cid: int, kp_id: int) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# ---- Голосовые заготовки кампании (записывает оператор, шлёт агент) ---- #
+@app.get("/api/campaign/{cid}/voices")
+def campaign_voices_list(cid: int) -> JSONResponse:
+    """Список заготовок + техготовность сервера. ffmpeg проверяем здесь, а не в
+    момент отправки: узнать, что конвертера нет, оператор должен при настройке
+    кампании, а не по молчаливо не ушедшему голосовому в живом диалоге."""
+    from channels import voice_notes
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT v.id, v.name, v.when_to_use, v.file, v.duration, v.transcript, "
+            "       v.enabled, v.sort_order, "
+            "       (SELECT COUNT(*) FROM voice_sent s WHERE s.voice_id=v.id) sent_count "
+            "FROM campaign_voices v WHERE v.campaign_id=? "
+            "ORDER BY COALESCE(v.sort_order,0), v.id", (cid,),
+        ).fetchall()
+        camp = conn.execute(
+            "SELECT COALESCE(voice_after_reply,0) a, COALESCE(voice_only_interested,1) i "
+            "FROM campaigns WHERE id=?", (cid,)).fetchone()
+    items = [dict(r) for r in rows]
+    for it in items:
+        it["file_missing"] = bool(it.get("file")) and voice_notes.path_of(it["file"]) is None
+    return JSONResponse({
+        "items": items,
+        "after_reply": camp["a"] if camp else 0,
+        "only_interested": bool(camp["i"]) if camp else True,
+        "ffmpeg": bool(voice_notes.ffmpeg_bin()),
+    })
+
+
+@app.post("/api/campaign/{cid}/voices/settings")
+def campaign_voices_settings(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Когда слать голосовое: после какого по счёту ответа человека и только ли
+    заинтересованным. 0 — выключено."""
+    try:
+        after = max(0, min(int(payload.get("after_reply") or 0), 10))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "after_reply — число от 0 до 10"}, status_code=400)
+    only = 1 if payload.get("only_interested", True) else 0
+    with database.get_conn() as conn:
+        conn.execute("UPDATE campaigns SET voice_after_reply=?, voice_only_interested=? "
+                     "WHERE id=?", (after, only, cid))
+    return JSONResponse({"ok": True, "after_reply": after, "only_interested": bool(only)})
+
+
+@app.post("/api/campaign/{cid}/voices")
+def campaign_voices_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Создать/обновить карточку заготовки (без самого файла — он грузится отдельно)."""
+    database.init_db()
+    vid = payload.get("id")
+    name = (payload.get("name") or "").strip() or None
+    when_to_use = (payload.get("when_to_use") or "").strip() or None
+    transcript = (payload.get("transcript") or "").strip() or None
+    enabled = 0 if payload.get("enabled") is False else 1
+    try:
+        order = int(payload.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        order = 0
+    with database.get_conn() as conn:
+        if vid:
+            conn.execute(
+                "UPDATE campaign_voices SET name=?, when_to_use=?, transcript=?, "
+                "enabled=?, sort_order=? WHERE id=? AND campaign_id=?",
+                (name, when_to_use, transcript, enabled, order, int(vid), cid))
+            new_id = int(vid)
+        else:
+            cur = conn.execute(
+                "INSERT INTO campaign_voices (campaign_id, name, when_to_use, transcript, "
+                "enabled, sort_order) VALUES (?,?,?,?,?,?)",
+                (cid, name, when_to_use, transcript, enabled, order))
+            new_id = cur.lastrowid
+    return JSONResponse({"ok": True, "id": new_id})
+
+
+@app.post("/api/campaign/{cid}/voices/{vid}/file")
+async def campaign_voices_file(cid: int, vid: int, file: UploadFile = File(...)) -> JSONResponse:
+    """Залить запись. Приводим к ogg/opus сразу при загрузке, а не при отправке:
+    ошибку конвертации оператор должен увидеть здесь и сейчас, с файлом в руках."""
+    from channels import voice_notes
+    from starlette.concurrency import run_in_threadpool
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT id, file FROM campaign_voices WHERE id=? AND campaign_id=?",
+                           (vid, cid)).fetchone()
+        if not row:
+            return JSONResponse({"error": "заготовка не найдена"}, status_code=404)
+        old = row["file"]
+    raw = await file.read()
+    if not raw:
+        return JSONResponse({"error": "пустой файл"}, status_code=400)
+    if len(raw) > voice_notes.MAX_BYTES:
+        return JSONResponse({"error": "запись больше 20 МБ — это не голосовое"},
+                            status_code=400)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext and ext not in voice_notes.ALLOWED_EXT:
+        return JSONResponse({"error": f"формат {ext} не поддерживается"}, status_code=400)
+    try:
+        data, duration = await run_in_threadpool(
+            voice_notes.ensure_voice_ogg, raw, file.filename or "voice")
+    except voice_notes.VoiceError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    voice_notes.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"c{cid}_v{vid}.ogg"
+    (voice_notes.VOICE_DIR / name).write_bytes(data)
+    if old and old != name:
+        try:
+            (voice_notes.VOICE_DIR / old).unlink(missing_ok=True)
+        except OSError:
+            pass
+    with database.get_conn() as conn:
+        conn.execute("UPDATE campaign_voices SET file=?, duration=? WHERE id=?",
+                     (name, duration, vid))
+    return JSONResponse({"ok": True, "file": name, "duration": duration,
+                         "size": len(data)})
+
+
+@app.get("/api/campaign/{cid}/voices/{vid}/file")
+def campaign_voices_file_get(cid: int, vid: int):
+    """Прослушать заготовку в пульте — оператор обязан слышать то, что уйдёт людям."""
+    from channels import voice_notes
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT file FROM campaign_voices WHERE id=? AND campaign_id=?",
+                           (vid, cid)).fetchone()
+    p = voice_notes.path_of(row["file"] if row else None)
+    if p is None:
+        return JSONResponse({"error": "запись не приложена"}, status_code=404)
+    return FileResponse(p, media_type="audio/ogg", filename=p.name)
+
+
+@app.post("/api/campaign/{cid}/voices/{vid}/delete")
+def campaign_voices_delete(cid: int, vid: int) -> JSONResponse:
+    from channels import voice_notes
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT file FROM campaign_voices WHERE id=? AND campaign_id=?",
+                           (vid, cid)).fetchone()
+        name = row["file"] if row else None
+        conn.execute("DELETE FROM campaign_voices WHERE id=? AND campaign_id=?", (vid, cid))
+        conn.execute("DELETE FROM voice_sent WHERE voice_id=?", (vid,))
+    if name:
+        try:
+            (voice_notes.VOICE_DIR / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/campaign/{cid}")
 def campaign_detail(cid: int) -> JSONResponse:
     database.init_db()

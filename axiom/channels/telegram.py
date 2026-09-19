@@ -29,7 +29,7 @@ from telethon.tl.types import InputPhoneContact, InputUser, PeerUser
 
 import config
 from agent.agent import generate_reply
-from channels import antiban
+from channels import antiban, voice_notes
 from db import database
 from integrations import meetings
 
@@ -356,6 +356,20 @@ def _strip_md(text: str) -> str:
     return out
 
 
+def _reply_no(messages: list[dict]) -> int:
+    """Какой по счёту ответ человека мы сейчас обрабатываем (1 — первый).
+
+    Считаем реплики 'user' в истории: именно они означают «человек заговорил с
+    нами», и по ним кампания решает, пора ли слать голосовое. Дробные реплики
+    («здрась» → «что хотели?») дают +2 к счёту, и это правильно: два сообщения
+    подряд — признак вовлечённости, а не безразличия.
+
+    Историю берём ту же, что уходит модели, а не отдельный COUNT по messages:
+    лишний поход в базу на каждую реплику диалога здесь ничего не уточняет.
+    """
+    return sum(1 for m in (messages or []) if m.get("role") == "user")
+
+
 async def _humanize_before_reply(client, peer, fast: bool = False) -> None:
     """Ведёт себя как живой человек ПЕРЕД ответом на входящее:
     1) отмечает сообщение прочитанным (собеседник видит галочки «прочитано»);
@@ -623,10 +637,20 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         kp_file = (camp["kp_file"] if camp and "kp_file" in camp.keys() else None)
         extra_context = contact["agent_context"] if "agent_context" in contact.keys() else None
         kps = []
+        voices = []
         if camp:
             kps = [dict(r) for r in conn.execute(
                 "SELECT id, name, when_to_use, kp_text, kp_file FROM campaign_kps "
                 "WHERE campaign_id=? ORDER BY id", (camp["id"],),
+            ).fetchall()]
+            # Только те заготовки, что ЭТОМУ человеку ещё не уходили: иначе агент
+            # выберет по смыслу уже отправленную, и человек получит ту же запись
+            # второй раз — это выдаёт автоматизацию вернее шаблонного текста.
+            voices = [dict(r) for r in conn.execute(
+                "SELECT id, name, when_to_use, file, transcript FROM campaign_voices "
+                "WHERE campaign_id=? AND COALESCE(enabled,1)=1 AND file IS NOT NULL "
+                "  AND id NOT IN (SELECT voice_id FROM voice_sent WHERE contact_id=?) "
+                "ORDER BY COALESCE(sort_order,0), id", (camp["id"], contact_id),
             ).fetchall()]
 
     # Явный отказ — финальная отметка. Даже если человек потом что-то напишет,
@@ -671,6 +695,12 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         reply = await asyncio.to_thread(
             generate_reply, messages, _default_slots(), contact_info, opener, campaign_prompt,
             extra_context, bool(kp_path), kps, camp["id"] if camp else None,
+            # Список голосовых показываем агенту, только когда порог кампании уже
+            # пройден: иначе это лишние токены в каждой реплике диалога. Намерение
+            # собеседника здесь ещё неизвестно (его определит сама модель), поэтому
+            # проверяем только счётчик — окончательное «слать или нет» решается
+            # после ответа, в should_send с фактическим intent.
+            voices if voice_notes.reached(camp, _reply_no(messages)) else None,
         )
     except Exception as e:
         print(f"[agent error] contact {contact_id}: {e}")
@@ -722,6 +752,50 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     # боевых 5-15: сценарий проверяют у экрана, а спамить себе нельзя по определению.
     reply_ids = await _send_parts(event.client, peer, reply.reply_parts, fast=is_test)
     reply_text = "\n".join(p.strip() for p in reply.reply_parts if p.strip())
+
+    # ГОЛОСОВОЕ СЛЕДОМ ЗА ТЕКСТОМ. Порядок именно такой и не случайный: человек
+    # сначала читает ответ, понимает, о чём речь, и уже потом получает голос — как в
+    # живой переписке, где голосовым ДОПОЛНЯЮТ написанное, а не заменяют его.
+    # Голосовое первым и вместо текста читается как «лень печатать», и его часто
+    # просто не слушают.
+    #
+    # Порог задаёт кампания (voice_after_reply): холодным первым касанием голос не
+    # уходит никогда — незнакомцу это агрессивно, а номеру стоит PeerFlood.
+    # Ошибка отправки голосового НЕ должна ронять диалог: текст уже доставлен, и
+    # человек не должен остаться без ответа из-за того, что на сервере нет ffmpeg.
+    if camp and voice_notes.should_send(camp, _reply_no(messages), reply.intent):
+        try:
+            with database.get_conn() as conn:
+                vn = voice_notes.pick(conn, camp["id"], contact_id,
+                                      getattr(reply, "voice_choice", None))
+            vpath = voice_notes.path_of(vn["file"]) if vn else None
+            if vpath is not None:
+                # Пауза перед записью: человек дописал текст, задумался и только
+                # потом потянулся к микрофону.
+                await asyncio.sleep(random.uniform(1.5, 4.0) if is_test
+                                    else random.uniform(*REPLY_DELAY))
+                vid = await voice_notes.send_voice(event.client, peer, vpath,
+                                                   int(vn.get("duration") or 0))
+                reply_ids.append(vid)
+                # В книжку кладём расшифровку, а не «[голосовое]»: оператор в
+                # «Диалогах» должен видеть, ЧТО человеку наговорили, иначе половина
+                # переписки для него пустая и следующий шаг он выбирает вслепую.
+                said = (vn.get("transcript") or "").strip()
+                title = str(vn.get("name") or vn["file"])
+                reply_text += f"\n[голосовое «{title}»" + (f": {said}]" if said else "]")
+                with database.get_conn() as conn:
+                    voice_notes.mark_sent(conn, contact_id, vn["id"])
+                print(f"[voice «{title}» -> {contact_info.get('name', contact_id)}]")
+        except Exception as e:  # noqa: BLE001
+            print(f"[voice send error] contact {contact_id}: {e}")
+            with database.get_conn() as conn:
+                database.add_event(
+                    conn, "agent_error", "🎤 Голосовое не ушло",
+                    f"Текстовый ответ доставлен, а голосовое отправить не удалось: {str(e)[:200]}. "
+                    f"Частая причина — на сервере не установлен ffmpeg "
+                    f"(sudo apt install -y ffmpeg) или файл заготовки удалён из data/voice.",
+                    level="warn", contact_id=contact_id,
+                    campaign_id=camp["id"] if camp else None)
 
     # КП: если в кампании НЕСКОЛЬКО КП — агент выбрал нужные (kp_choice по названию).
     # Названий может быть несколько через запятую: в сценарии «Крым» при согласии

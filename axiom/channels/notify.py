@@ -704,3 +704,74 @@ if __name__ == "__main__":
         result = asyncio.run(send_campaign_report(args.campaign_report))
         if not result.get("ok"):
             print(f"[campaign report] {result.get('error')}")
+
+
+SENDING_RESUMED_FLAG = "sending_resumed_notified"
+
+
+async def notify_sending_resumed(campaign_id: int) -> None:
+    """Сообщить в личку, что по кампании РЕАЛЬНО пошли отправки.
+
+    ЗАЧЕМ. «Кампания запущена» и «сообщения уходят» — разные вещи: 17-19.09 по 9407
+    кампания стояла в статусе running трое суток, а писем не уходило (все номера
+    были в автопаузах, часть — по ошибочному расчёту в сутках). Владелец узнавал об
+    этом, только открыв пульт и пересчитав строки глазами.
+
+    Шлём ОДИН раз на кампанию за сутки — по факту первой успешной отправки, с тем,
+    что уже известно: сколько ушло, доставлено, прочитано, ответили. Флаг в
+    app_settings держит обещание «один раз»: тик планировщика проходит часто, и без
+    него сообщение дублировалось бы на каждой новой отправке.
+    """
+    try:
+        with database.get_conn() as conn:
+            today = _date_key()
+            flag = f"{SENDING_RESUMED_FLAG}:{campaign_id}"
+            if (database.get_setting(conn, flag, "") or "") == today:
+                return                      # за сегодня уже отчитались
+            sender_id = database.get_setting(conn, NOTIFY_SENDER_SETTING)
+            target = database.get_setting(conn, NOTIFY_TARGET_SETTING, "@neiro_0001")
+            if not sender_id or not target:
+                return
+            row = conn.execute("SELECT name FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+            if not row:
+                return
+            sent = conn.execute(
+                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+                "AND date(sent_at)=date('now')", (campaign_id,)).fetchone()["c"]
+            if not sent:
+                return                      # отправок сегодня ещё нет — отчитываться не о чем
+            total = conn.execute(
+                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?",
+                (campaign_id,)).fetchone()["c"]
+            read = conn.execute(
+                "SELECT COUNT(DISTINCT contact_id) c FROM messages WHERE direction='out' "
+                "AND read_at IS NOT NULL AND contact_id IN "
+                "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)",
+                (campaign_id,)).fetchone()["c"]
+            replied = conn.execute(
+                "SELECT COUNT(DISTINCT contact_id) c FROM messages WHERE direction='in' "
+                "AND contact_id IN "
+                "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)",
+                (campaign_id,)).fetchone()["c"]
+            who = conn.execute(
+                "SELECT COALESCE(a.label, a.phone, '#'||a.id) AS who, COUNT(*) n "
+                "FROM campaign_contacts cc JOIN accounts a ON a.id=cc.account_id "
+                "WHERE cc.campaign_id=? AND date(cc.sent_at)=date('now') "
+                "GROUP BY cc.account_id ORDER BY n DESC", (campaign_id,)).fetchall()
+        lines = [f"✅ Пошла рассылка: «{row['name']}»",
+                 f"Сегодня отправлено: {sent}"]
+        if who:
+            lines.append("С аккаунтов: " + ", ".join(f"{r['who']} ({r['n']})" for r in who))
+        lines.append(f"Всего по кампании: {total} · прочитали {read} · ответили {replied}")
+        await _send_to_owner(sender_id, target, "\n".join(lines),
+                             "старт отправок", 0)
+        with database.get_conn() as conn:
+            database.set_setting(conn, flag, today)
+    except Exception as e:  # noqa: BLE001 — уведомление не должно ронять рассылку
+        print(f"[notify sending] {e}")
+
+
+def _date_key() -> str:
+    """Сегодняшняя дата по Москве — один отчёт в сутки считаем по рабочему дню."""
+    from channels.antiban import msk_now
+    return msk_now().strftime("%Y-%m-%d")

@@ -6375,6 +6375,63 @@ def maintenance_spam_reset(payload: dict = Body(default={})) -> JSONResponse:
                                        "floods": r["fl"]} for r in rows]})
 
 
+@app.post("/api/maintenance/pause_recalc")
+def maintenance_pause_recalc(payload: dict = Body(default={})) -> JSONResponse:
+    """Пересчитать висящие автопаузы PeerFlood по действующей формуле (часы, не сутки).
+
+    ЗАЧЕМ. Паузы ставились как min(n, 7) ДНЕЙ от момента флуда: второй PeerFlood
+    выключал номер на двое суток, третий — на трое. 19.09 из-за этого стояла вся
+    живая команда 9407: четыре номера не отправляли с 17 сентября, а паузы висели
+    до вечера 19-го и до 20-го — шесть боевых аккаунтов, ноль отправок.
+
+    Формула исправлена на 4 → 8 → 12 … часов (потолок сутки), но УЖЕ ЗАПИСАННЫЕ в
+    базу даты от этого не меняются: номер продолжает стоять по старому расчёту.
+    Здесь пересчитываем их от времени последней отправки аккаунта — то есть от
+    события, за которое пауза и была назначена.
+
+    Счётчик spam_flood_count НЕ трогаем: это память о настоящих флудах, она нужна
+    для роста паузы и для вывода номера из команды на третьем.
+    """
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, label, COALESCE(spam_flood_count,1) fl, spam_pause_until, "
+            "  datetime((SELECT MAX(sent_at) FROM campaign_contacts cc "
+            "            WHERE cc.account_id=accounts.id), "
+            "           '+' || MIN(4*COALESCE(spam_flood_count,1),24) || ' hour') AS new_until "
+            "FROM accounts WHERE spam_pause_until IS NOT NULL "
+            "AND spam_pause_until > datetime('now')"
+        ).fetchall()
+        # Оставляем только те, кому новая формула даёт более раннее снятие.
+        fix = [r for r in rows if r["new_until"] and r["new_until"] < r["spam_pause_until"]]
+        if not fix:
+            return JSONResponse({"ok": True, "updated": 0,
+                                 "note": "висящих пауз по старой формуле нет"})
+        if payload.get("dry"):
+            return JSONResponse({"ok": True, "dry": True, "would_update": len(fix),
+                                 "accounts": [{"id": r["id"], "label": r["label"],
+                                               "was": r["spam_pause_until"],
+                                               "now": r["new_until"]} for r in fix]})
+        freed = 0
+        for r in fix:
+            # Пауза уже истекла по новой формуле — снимаем совсем; иначе переносим.
+            if r["new_until"] <= _dtmod.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"):
+                conn.execute("UPDATE accounts SET spam_pause_until=NULL WHERE id=?", (r["id"],))
+                freed += 1
+            else:
+                conn.execute("UPDATE accounts SET spam_pause_until=? WHERE id=?",
+                             (r["new_until"], r["id"]))
+        database.add_event(
+            conn, "maintenance", f"♻ Пересчитано {len(fix)} автопауз PeerFlood",
+            f"Паузы стояли в сутках по старой формуле (до 7 дней) — номера простаивали "
+            f"днями при живой команде. Пересчитаны в часы (4→8→12, потолок сутки) от "
+            f"времени последней отправки; снято совсем: {freed}. Затронуты: "
+            + ", ".join(r["label"] or f"#{r['id']}" for r in fix), level="ok")
+    return JSONResponse({"ok": True, "updated": len(fix), "freed": freed,
+                         "accounts": [{"id": r["id"], "label": r["label"],
+                                       "was": r["spam_pause_until"],
+                                       "now": r["new_until"]} for r in fix]})
+
+
 @app.post("/api/maintenance/backfill")
 def maintenance_backfill(payload: dict = Body(default={})) -> JSONResponse:
     """Бэкфилл старых записей (channels.backfill): tg_chat_id у чатов (чинит связку

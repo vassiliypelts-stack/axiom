@@ -1358,6 +1358,16 @@ async def run(cid: int, limit: int, test: bool = False,
                                level="warn", campaign_id=cid)
     accs = ", ".join(s["label"] for s in live)
     print(f"кампания #{cid}: отправлено {sent} (аккаунты: {accs})")
+    # Первая за сутки успешная отправка — сообщаем владельцу в личку. «Кампания
+    # запущена» и «письма уходят» — разные вещи: 17-19.09 по 9407 статус был
+    # running трое суток при нуле отправок, и узнать об этом можно было только
+    # открыв пульт. Внутри стоит защита от повтора: одно сообщение на кампанию в день.
+    if sent and not test:
+        try:
+            from channels import notify as _notify
+            await _notify.notify_sending_resumed(cid)
+        except Exception as e:  # noqa: BLE001 — уведомление не должно ронять заход
+            print(f"[notify] старт отправок не отправился: {e}")
     for s in live:
         try:
             await s["client"].disconnect()

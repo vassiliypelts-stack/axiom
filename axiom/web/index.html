@@ -6719,7 +6719,9 @@ async function viewCampaigns(v){
           </select>
           <button type="button" id="c-acc-selready" title="Отметить только реально живых (подключён + сессия жива + прокси жив + не бан) из текущего фильтра, остальных снять">Выделить живых</button>
           <button type="button" id="c-acc-selnone" title="Снять всё выделение">Снять всё</button>
+          <button type="button" id="c-acc-agelim" title="Проставить каждому выбранному номеру лимит по его возрасту: моложе 14 дней — 0 (в холодную не идут), до 7 дней — 2, до 14 — 4, до 21 — 6, до 30 — 10, старше — общий лимит аккаунта. Перезапишет вручную выставленные числа.">📅 Лимиты по возрасту</button>
           <span class="hint" id="c-team-msg">выбрано: 0</span></div>
+        <div class="hint" style="margin:4px 0 6px;font-size:11px">Лимит подставляется по возрасту номера автоматически — его же применяет сервер. Поле справа можно поправить вручную: меньше потолка работает как заданное, больше — будет срезано.</div>
         <div id="c-team-box" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div></div>
       <div class="field"><label>Лимит контактов в день (на аккаунт)</label><input id="c-limit" type="number" value="15" style="max-width:160px"></div>
       <div class="field"><label>🕐 Рабочие часы — когда агент может писать и отвечать (пусто = без ограничений)</label>
@@ -6777,6 +6779,31 @@ async function viewCampaigns(v){
   const form=$("#c-form");
   const teamSet=new Set();
   const teamLimits={};   // {account_id: лимит/день ИМЕННО в этой кампании; пусто = общий лимит аккаунта}
+
+  // ВОЗРАСТНЫЕ ПРАВИЛА ХОЛОДНОЙ РАССЫЛКИ — та же лесенка, что применяет сервер
+  // (channels/campaign_send: MIN_COMBAT_AGE_DAYS и AGE_CAP_STEPS). Дублируется здесь
+  // НАМЕРЕННО: оператор должен видеть потолок в момент выбора команды, а не узнавать
+  // о нём из «отправлено 0» в логе. Сервер остаётся источником истины и срежет лимит
+  // сам, даже если тут выставить больше.
+  const AGE_MIN_COMBAT=14;                       // младше — в холодную не пускаем вовсе
+  const AGE_STEPS=[[7,2],[14,4],[21,6],[30,10]]; // [младше скольких дней, потолок/сутки]
+  const ageCap=d=>{ if(d==null||isNaN(d))return null;
+    for(const [days,cap] of AGE_STEPS) if(d<days) return cap;
+    return null; };                              // 30+ дней — потолка нет, решает оператор
+  // Что показать оператору про этот номер: сколько дней и сколько ему можно.
+  const ageHint=a=>{
+    const d=a.days_alive;
+    if(d==null||isNaN(d))return {txt:"возраст неизвестен",cls:"",cap:null,blocked:false};
+    if(d<AGE_MIN_COMBAT)
+      return {txt:`${d} дн. — в бой с ${AGE_MIN_COMBAT}`,cls:"b-stop",cap:0,blocked:true};
+    const cap=ageCap(d);
+    return {txt: cap!=null?`${d} дн. — до ${cap}/сут`:`${d} дн. — без ограничений`,
+            cls:"", cap:cap, blocked:false};
+  };
+  // Лимит по умолчанию: возрастной потолок, а для зрелых — общий лимит аккаунта.
+  const defaultLim=a=>{ const h=ageHint(a);
+    if(h.blocked)return 0;
+    return h.cap!=null?h.cap:(a.daily_limit||15); };
   const renderMain=()=>{
     const box=$("#c-main-acc");if(!box)return;
     const order=[...teamSet].sort((a,b)=>a-b).map((id,i)=>{
@@ -6801,11 +6828,19 @@ async function viewCampaigns(v){
     }).sort((a,b)=>(isAccReady(b)-isAccReady(a)));   // живые — всегда сверху, без прокрутки
     const tm=$("#c-team-msg");
     if(tm){
+      // Ёмкость — по тому, что РЕАЛЬНО уйдёт: заданный лимит, срезанный возрастным
+      // потолком. Раньше складывались общие лимиты аккаунтов (15 по умолчанию), и
+      // оператор видел «до 180/день» там, где сервер отправил бы 12.
+      let blocked=0;
       const cap=[...teamSet].reduce((sum,id)=>{
-        const a=accounts.find(x=>x.id===id);
-        return sum+(teamLimits[id]!=null?teamLimits[id]:(a?(a.daily_limit||15):15));
+        const a=accounts.find(x=>x.id===id); if(!a)return sum;
+        const h=ageHint(a);
+        if(h.blocked){blocked++;return sum;}
+        const want=teamLimits[id]!=null?teamLimits[id]:defaultLim(a);
+        return sum+(h.cap!=null?Math.min(want,h.cap):want);
       },0);
-      tm.innerHTML=`выбрано: ${teamSet.size} · суммарно до <b>${cap}</b>/день на всю команду`;
+      tm.innerHTML=`выбрано: ${teamSet.size} · суммарно до <b>${cap}</b>/день на всю команду`
+        +(blocked?` · <span class="badge b-stop" title="Номера моложе ${AGE_MIN_COMBAT} дней в холодную рассылку не идут — они в команде, но отправлять начнут, когда дозреют">${blocked} ещё дозревают</span>`:"");
     }
     box.innerHTML=list.length?list.map(a=>{
       const ch=accChan(a);const spam=a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"";
@@ -6817,27 +6852,46 @@ async function viewCampaigns(v){
         : '<span class="badge b-active" title="Не привязан к активной кампании">свободен</span>';
       const dot=`<span class="sdot ${ready?'g':(a.status==='banned'?'r':'gy')}" title="${ready?'реально жив':(a.status==='banned'?'бан':'не готов — проверь сессию/прокси')}"></span>`;
       const lim=teamLimits[a.id];
+      // Возраст и потолок — рядом с именем: решение «брать/не брать и сколько давать»
+      // принимается здесь, и цифра возраста тут важнее, чем в карточке аккаунта.
+      const ah=ageHint(a);
+      const dflt=defaultLim(a);
+      const ageBadge=`<span class="badge ${ah.cls}" title="Потолок холодных ЛС по возрасту номера. Его применяет сервер: младше ${AGE_MIN_COMBAT} дней в холодную рассылку не идут вообще, дальше ступени 2/4/6/10 в сутки. Лимит ниже потолка работает как заданный, выше — будет срезан.">${ah.txt}</span>`;
       return `<div style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--border);${ready?'':'opacity:.6'}">
         <input type="checkbox" class="c-acc-chk" value="${a.id}" ${teamSet.has(a.id)?"checked":""} ${busy&&!teamSet.has(a.id)?"disabled":""}>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${dot}${esc(a.label||a.username||("#"+a.id))}${a.protected?' <span class="badge b-active" title="Родной — личный номер, автоматика его не трогает без явного включения в команду">🏠 родной</span>':""} ${a.phone?('<span class="hint" style="font-weight:400">'+esc(a.phone)+'</span>'):""}</div>
-          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam} ${assignment}</div>
+          <div class="hint" style="font-size:11px">${a.username?("@"+esc(a.username)+" · "):""}каналы: ${ch} · ${accStatusTxt(a)}${spam} ${assignment} ${ageBadge}</div>
         </div>
         <input type="number" min="0" class="c-acc-lim mono" data-id="${a.id}" value="${lim!=null?lim:''}"
-          placeholder="${a.daily_limit||15}" title="лимит/день ИМЕННО в этой кампании — пусто = общий лимит аккаунта (${a.daily_limit||15}/день)"
-          style="width:64px;text-align:center">
+          placeholder="${dflt}" title="Лимит/день ИМЕННО в этой кампании. Пусто = по возрасту номера (${dflt}/день)${ah.blocked?' — этот номер моложе '+AGE_MIN_COMBAT+' дней, в холодную не пойдёт при любом лимите':''}. Можно поставить своё число: меньше потолка — работает как заданное, больше — сервер срежет."
+          style="width:64px;text-align:center${ah.blocked?';opacity:.5':''}">
         </div>`;
     }).join(""):'<div class="no" style="padding:10px">нет аккаунтов по фильтру — заведи в «Мои агенты»</div>';
     box.querySelectorAll(".c-acc-chk").forEach(cb=>cb.onchange=()=>{
-      const id=+cb.value;if(cb.checked)teamSet.add(id);else teamSet.delete(id);
-      renderMain();
-      const t=$("#c-team-msg");if(t)t.textContent="выбрано: "+teamSet.size;});
+      const id=+cb.value;
+      if(cb.checked){
+        teamSet.add(id);
+        // Лимит по возрасту подставляем СРАЗУ при добавлении в команду: иначе пустое
+        // поле означало «общий лимит аккаунта» (15), и восьмидневный номер уходил в
+        // бой с квотой 15 — ровно то, за что 17.09 вся команда 9407 словила PeerFlood.
+        const a=accounts.find(x=>x.id===id);
+        if(a&&teamLimits[id]==null)teamLimits[id]=defaultLim(a);
+      } else { teamSet.delete(id); delete teamLimits[id]; }
+      renderTeam(); renderMain();});
     box.querySelectorAll(".c-acc-lim").forEach(inp=>inp.onchange=()=>{
       const id=+inp.dataset.id,v=inp.value.trim();
       if(v==="")delete teamLimits[id];else teamLimits[id]=Math.max(0,parseInt(v,10)||0);
       renderTeam();});
   };
   ["#c-acc-q","#c-acc-fchan","#c-acc-fst","#c-acc-fprot"].forEach(s=>{const el=$(s);if(el){el.oninput=renderTeam;el.onchange=renderTeam;}});
+  const c_agelim=$("#c-acc-agelim");if(c_agelim)c_agelim.onclick=()=>{
+    // Массово выровнять команду по возрасту — нужно после добавления партии номеров
+    // или когда лимиты правились вручную и разъехались.
+    [...teamSet].forEach(id=>{const a=accounts.find(x=>x.id===id);if(a)teamLimits[id]=defaultLim(a);});
+    renderTeam();
+    const t=$("#c-team-msg");if(t)t.insertAdjacentHTML("beforeend",' <span style="color:var(--green)">· лимиты выровнены по возрасту</span>');
+  };
   const c_selready=$("#c-acc-selready");if(c_selready)c_selready.onclick=()=>{
     const q=(($("#c-acc-q")||{}).value||"").toLowerCase().trim();
     const fchan=(($("#c-acc-fchan")||{}).value)||"";

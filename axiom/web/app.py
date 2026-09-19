@@ -8128,6 +8128,13 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
             acc = payload.get("notify_account_id")
             conn.execute("UPDATE campaigns SET notify_account_id=? WHERE id=?",
                          (int(acc) if acc else None, cid))
+        # Свой текст дожима кампании. Без сохранения здесь поле можно было задать
+        # только прямым запросом в базу, а планировщик без него брал ОБЩУЮ лесенку
+        # про «объединить усилия» — в продающей кампании это сообщение не в тему
+        # (см. scheduler.collect_due и инцидент 17-18.09 по 9407).
+        if "extra_followup_template" in payload:
+            conn.execute("UPDATE campaigns SET extra_followup_template=? WHERE id=?",
+                         ((payload.get("extra_followup_template") or "").strip() or None, cid))
         for key in ("work_hours_tz", "work_hours_start", "work_hours_end"):
             if key in payload:
                 conn.execute(f"UPDATE campaigns SET {key}=? WHERE id=?",

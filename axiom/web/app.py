@@ -597,6 +597,9 @@ def accounts_list() -> JSONResponse:
     out = []
     for r in rows:
         d = dict(r)
+        # Рассчитываем до удаления tg_session из ответа: браузеру нужен только
+        # безопасный итог, а не сама строка авторизации.
+        d["cold_outreach"] = _cold_outreach_state(d)
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
         # Запасная сессия — тоже полноценный доступ к аккаунту. В браузер отдаём только
         # факт наличия: строку не показываем даже оператору, ей нечего делать в UI.
@@ -3022,6 +3025,20 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
     return min(take, 3), f"план {due_by_now}, отправлено {sent_today}/{daily}"
 
 
+def _campaign_has_cold_sender(conn, cid: int) -> bool:
+    """Есть ли хотя бы один отправитель, которого campaign_send сможет взять сейчас.
+
+    Без этой проверки планировщик создавал процесс каждые 15 минут даже при 0/13
+    доступных аккаунтах. Процесс ничего не отправлял, но в пульте это выглядело как
+    работа кампании. Состояние кампании не меняем: она сама продолжит после снятия
+    временной Telegram-паузы.
+    """
+    rows = conn.execute(
+        "SELECT a.* FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
+        "WHERE ca.campaign_id=?", (cid,)).fetchall()
+    return any(_cold_outreach_state(dict(row))["eligible"] for row in rows)
+
+
 LISTENER_STUCK_MIN = 20   # дольше этого «служебная» пауза слушателя не бывает
 
 
@@ -3141,6 +3158,15 @@ def _campaign_scheduler() -> None:
                         continue
                     batch = max(1, min(int(camp["auto_batch"] or 3), 50))
                 with database.get_conn() as conn:
+                    if not _campaign_has_cold_sender(conn, camp["id"]):
+                        # Не создаём пустой дочерний процесс и не выключаем слушатель.
+                        # Метка сохраняет обычную 15-минутную паузу между проверками;
+                        # когда Telegram снимет ограничение, следующий заход стартует сам.
+                        conn.execute("UPDATE campaigns SET auto_last_run_ts=? WHERE id=?",
+                                     (now, camp["id"]))
+                        print(f"[campaign scheduler] «{camp['name']}»: жду доступного отправителя")
+                        continue
+                with database.get_conn() as conn:
                     # Метку ставим ДО запуска: если процесс упадёт, следующий заход
                     # будет по расписанию, а не мгновенным повтором по кругу.
                     conn.execute("UPDATE campaigns SET auto_last_run_ts=? WHERE id=?",
@@ -3175,6 +3201,53 @@ def _owner_tg_handle() -> str | None:
         if p.startswith("@") and len(p) > 1:
             return p
     return None
+
+
+# Единственный источник правды для зелёной метки «можно слать холодное ЛС».
+# «Активен», «сессия есть» и «прогрев 14/14» сами по себе НЕ означают, что
+# Telegram-рассылка сейчас допустима: номер может быть слишком молодым или
+# стоять на передышке после PeerFlood. Держим это рядом с API аккаунтов, чтобы
+# пульт и пред-полётная проверка не обещали то, чего sender потом не сделает.
+_MIN_COLD_OUTREACH_AGE_DAYS = 14
+
+
+def _cold_outreach_state(a: dict) -> dict:
+    """Статус допуска к первому холодному сообщению, без секретов сессии."""
+    from datetime import datetime
+
+    def blocked(code: str, text: str) -> dict:
+        return {"eligible": False, "code": code, "text": text}
+
+    status = (a.get("status") or "").strip()
+    if status == "archived":
+        return blocked("archived", "в архиве")
+    if status == "banned":
+        return blocked("banned", "аккаунт забанен")
+    if a.get("protected"):
+        return blocked("protected", "родной/защищённый — автоматика не использует")
+    if (a.get("acc_role") or "").strip() == "service":
+        return blocked("service", "служебный — холодная рассылка запрещена")
+    if not (a.get("tg_session") or "").strip():
+        return blocked("no_session", "нет Telegram-сессии")
+    if a.get("session_alive") != 1 or (a.get("session_state") or "") not in ("", "alive"):
+        return blocked("session", "сессия не подтверждена живой")
+    if not (a.get("proxy") or "").strip() or a.get("proxy_alive") == 0:
+        return blocked("proxy", "нет живого прокси")
+    if status == "warming":
+        return blocked("warming", "ещё на прогреве")
+    if status != "active":
+        return blocked("inactive", "не активен для рассылки")
+    age = _days_since(a.get("bought_at") or a.get("created_at"))
+    if age is not None and age < _MIN_COLD_OUTREACH_AGE_DAYS:
+        return blocked("young", f"дозревает: {age}/{_MIN_COLD_OUTREACH_AGE_DAYS} дн.")
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    pause = a.get("spam_pause_until") or ""
+    if pause > now:
+        return blocked("peerflood", f"пауза PeerFlood до {pause[:16]}")
+    flood = a.get("flood_wait_until") or ""
+    if flood > now:
+        return blocked("floodwait", f"FloodWait до {flood[:16]}")
+    return {"eligible": True, "code": "ready", "text": "можно слать холодное ЛС"}
 
 
 def _hot_lead_scheduler() -> None:
@@ -8588,10 +8661,13 @@ def campaign_preflight(cid: int) -> JSONResponse:
         kps = conn.execute("SELECT COUNT(*) c FROM campaign_kps WHERE campaign_id=?", (cid,)).fetchone()["c"]
         has_main = bool(config.TG_STRING_SESSION)
 
+    for t in team:
+        t["cold_outreach"] = _cold_outreach_state(t)
     connected = [t for t in team if t.get("tg_session")]
     no_proxy = [t for t in connected if not (t.get("proxy") or "").strip()]
     banned = [t for t in team if t.get("status") == "banned"]
     usable = [t for t in connected if t.get("status") != "banned"]
+    cold_ready = [t for t in team if t["cold_outreach"]["eligible"]]
 
     checks = []
     def add(ok, level, text):
@@ -8614,6 +8690,15 @@ def campaign_preflight(cid: int) -> JSONResponse:
 
     if team:
         add(True, "ok", f"Команда отправителей: {len(team)} акк.")
+        if cold_ready:
+            add(True, "ok", f"Холодную рассылку могут начать сейчас: {len(cold_ready)} из {len(team)}")
+        else:
+            reasons: dict[str, int] = {}
+            for t in team:
+                reason = t["cold_outreach"]["text"]
+                reasons[reason] = reasons.get(reason, 0) + 1
+            brief = "; ".join(f"{n} — {why}" for why, n in reasons.items())
+            add(False, "fail", "Нет доступных отправителей для холодного ЛС: " + brief)
         add(len(usable) > 0, "fail",
             f"Подключены (TG✓), не в бане: {len(usable)} из {len(team)}" if usable
             else "Ни один отправитель не подключён/живой — подключи и прогрей")
@@ -8623,9 +8708,10 @@ def campaign_preflight(cid: int) -> JSONResponse:
         if banned:
             add(False, "warn", f"В бане: {len(banned)} акк. — выведи из кампании")
         # реальная суммарная ёмкость: только живые не-забаненные, с их персональным (или общим) лимитом
-        usable_ids = {t["id"] for t in usable}
-        total_cap = sum(int(t.get("cap") or 15) for t in team if t["id"] in usable_ids)
-        add(True, "info", f"Суммарно готовы слать до {total_cap}/день на всю команду (при текущих лимитах)")
+        total_cap = sum(int(t.get("cap") or 15) for t in cold_ready)
+        add(bool(cold_ready), "info",
+            f"Реальная ёмкость сейчас: до {total_cap}/день на доступных отправителях"
+            if cold_ready else "Реальная ёмкость сейчас: 0/день — сначала дождись снятия пауз или добавь зрелые аккаунты")
     else:
         add(has_main, "warn",
             "Команда не назначена — пойдёт с основного аккаунта (.env)" if has_main
@@ -8680,6 +8766,7 @@ def campaign_preflight(cid: int) -> JSONResponse:
 
     ready = all(c["ok"] for c in checks if c["level"] == "fail")
     return JSONResponse({"ready": ready, "checks": checks, "audience": aud, "team": len(team),
+                         "cold_ready": len(cold_ready) if team else 0,
                          "reachable": confirmed, "unresolved": blind})
 
 

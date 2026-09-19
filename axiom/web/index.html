@@ -2291,9 +2291,17 @@ async function viewAgents(v){
         // вечно застывшим: выглядело как сломанный прогрев, хотя это ровно то
         // поведение, которого мы и хотим. Говорим прямо, что он не греется.
         if(r.protected)return '<span class="badge b-own" title="Родной номер: автоматика его не греет и не рассылает с него">🏠 не греется</span>';
-        if(r.status!=='warming')return r.status==='active'?'<span class="badge b-active">✅ готов</span>':'<span class="no">—</span>';
+        // «active» у девятидневного номера означает лишь что сессия и профиль
+        // готовы. В холодную рассылку он попадёт только после 14 дней; раньше тут
+        // стояло «✅ готов», из-за чего пульт противоречил реальному sender.
+        const cold=r.cold_outreach||{};
+        if(r.status!=='warming'){
+          if(cold.code==='young')return `<span class="badge b-nurture" title="${esc(cold.text||'дозревает')}">⏳ ${esc(cold.text||'дозревает')}</span>`;
+          if(cold.code==='peerflood'||cold.code==='floodwait')return `<span class="badge b-stop" title="${esc(cold.text||'временная пауза Telegram')}">⏸ ${esc(cold.text||'пауза')}</span>`;
+          return cold.eligible?'<span class="badge b-active">✅ холодная рассылка доступна</span>':'<span class="no" title="'+esc(cold.text||'недоступен для холодной рассылки')+'">—</span>';
+        }
         const st=r.warm_stage||0,pct=Math.round(st/14*100);
-        return `<span class="warmb" title="Прогрев ${st} из 14 дней"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">прогрев ${st}/14 дн</span></span>`;}},
+        return `<span class="warmb" title="Прогрев ${st} из 14 ступеней; холодная рассылка станет доступна не раньше 14-го дня"><span class="wb-fill" style="width:${pct}%"></span><span class="wb-txt">прогрев ${st}/14</span></span>`;}},
       {key:"proxy",label:"Прокси",cls:"sub",render:r=>{
         const pc=r.proxy_checked_at;
         // Красный значок и «нет» — не приговор, а кнопка: жмёшь → AXIOM сам подбирает
@@ -6669,11 +6677,13 @@ async function viewCampaigns(v){
   const url=PROJECT_SEL?`/api/campaigns?project_id=${PROJECT_SEL.id}`:"/api/campaigns";
   const [camps,accounts,projects]=await Promise.all([api(url),api("/api/accounts"),api("/api/projects")]);
   const accChan=a=>{const b=[];if(a.tg_connected)b.push("TG");if(a.wa_authed)b.push("WA");return b.length?b.join("/"):"—";};
-  const accStatusTxt=a=>a.status==="active"?"✅ готов":(a.status==="warming"?("прогрев"+(a.warm_stage?(" ст."+a.warm_stage):"")):(a.status==="banned"?"бан":(a.status||"")));
-  // «Реально живой» — тот же критерий, что подсветка row-ready в разделе «Аккаунты»:
-  // подключён + сессия жива + прокси жив + не забанен. Просто status='active' не значит,
-  // что аккаунтом можно писать прямо сейчас.
-  const isAccReady=a=>!!(a.tg_connected&&a.session_state==='alive'&&a.proxy_alive===1&&a.status!=='banned');
+  // Не называем «готовым» номер, который sender всё равно отсечёт. API считает
+  // cold_outreach теми же гейтами: возраст, PeerFlood/FloodWait, сессия, прокси.
+  const accStatusTxt=a=>a.cold_outreach
+    ? (a.cold_outreach.eligible?"✅ холодная рассылка доступна":`⛔ ${a.cold_outreach.text}`)
+    : (a.status==="warming"?("прогрев"+(a.warm_stage?(" ст."+a.warm_stage):"")):(a.status||""));
+  const isAccReady=a=>!!(a.cold_outreach?a.cold_outreach.eligible:
+    (a.tg_connected&&a.session_state==='alive'&&a.proxy_alive===1&&a.status==='active'));
   const projOpts=`<option value="">— без проекта —</option>`+projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
   v.innerHTML=`
     <div class="ttoolbar"><button class="primary" id="c-wizard-btn">🚀 Мастер запуска (визард)</button>

@@ -1310,10 +1310,11 @@ async function openAudience(cid){
           <span class="hint" id="aud-tgmsg"></span></div>`:""}
       </div>
       <div class="ttoolbar" style="margin:0 0 8px">
-        ${[["","все"],["queue","только кто пойдёт"],["blocked","только выпавшие"],
-           ["sent","📨 отправлено"],["read","👁 прочитали"],["replied","↩️ ответили"],
-           ["leads","💬 лиды"],["hot","🔥 горячие"]].map(([k,l])=>
-          `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}</button>`).join("")}
+        ${[["","все",null],["queue","только кто пойдёт",null],["blocked","только выпавшие",null],
+           ["sent","📨 отправлено",d.sent],["read","👁 прочитали",d.read],
+           ["replied","↩️ ответили",d.replied],
+           ["leads","💬 лиды",d.leads],["hot","🔥 горячие",d.hot]].map(([k,l,n])=>
+          `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}${n?` <b>${n}</b>`:""}</button>`).join("")}
         <select id="aud-src" title="источник — откуда пришли контакты этой аудитории"><option value="">все источники (${d.total})</option>${srcOpts}</select>
         <span class="grow"></span>
         <button id="aud-selall" title="поставить галочки на все строки текущего фильтра, кому это ещё разрешено (не выпавшие по другой причине)">☑ выделить все</button>
@@ -1335,7 +1336,16 @@ async function openAudience(cid){
       rows,searchKeys:["who","username","phone","status","blocked_by"],
       columns:[
         {key:"in_queue",label:"Шлём",render:r=>`<input type="checkbox" class="aud-chk" data-id="${r.id}" ${r.paused?"":"checked"} ${(!r.in_queue&&!r.paused)?"disabled title='не пойдёт по другой причине'":""}>`},
-        {key:"who",label:"Кто",cls:"name",render:r=>`<b>${esc(r.who||("#"+r.id))}</b>${r.username?` <span class="tg">@${esc(r.username)}</span>`:""}${r.phone?` <span class="hint">${esc(r.phone)}</span>`:""}`},
+        {key:"who",label:"Кто",cls:"name",render:r=>{
+          // У ответившего имя ведёт прямо в переписку: глазами ищут именно его,
+          // а не строку «открыть» в дальней колонке.
+          const nm=`<b>${esc(r.who||("#"+r.id))}</b>`;
+          const head=r.replied
+            ? `<a href="/#chats/${r.id}" target="_blank" rel="noopener" style="text-decoration:none" title="Открыть переписку">${nm}</a>`
+            : nm;
+          return head+(r.username?` <span class="tg">@${esc(r.username)}</span>`:"")
+                     +(r.phone?` <span class="hint">${esc(r.phone)}</span>`:"");
+        }},
         // Результат рассылки виден здесь же: кто ответил и кто уже горячий. Иначе за
         // лидами приходилось идти в «Диалоги», хотя решение «кому писать дальше»
         // принимается в этом списке.
@@ -1359,8 +1369,12 @@ async function openAudience(cid){
           ?`<span style="color:var(--green);font-weight:700" title="Прочитано ${esc(r.read_at||"")}">👁 да</span>`
           :(r.delivered?'<span class="no" title="доставлено, но ещё не открыл">✓ доставлено</span>'
                        :'<span class="no" title="статус пока неизвестен">—</span>')},
+        // Ответ — это и есть результат рассылки, поэтому он КЛИКАБЕЛЕН: из списка
+        // сразу в переписку, без поиска человека в «Диалогах» руками.
         {key:"replied",label:"Ответил",render:r=>r.replied
-          ?`<span style="color:var(--green);font-weight:700" title="Ответов: ${r.replies||1}${r.replied_at?" · последний "+esc(r.replied_at):""}">↩️ ${r.replies||1}</span>`
+          ?`<a href="/#chats/${r.id}" target="_blank" rel="noopener" class="badge b-active"
+              style="text-decoration:none;font-weight:700;white-space:nowrap"
+              title="Ответов: ${r.replies||1}${r.replied_at?" · последний "+esc(r.replied_at):""} — открыть переписку">↩️ ${r.replies||1} · открыть</a>`
           :(r.sent?'<span class="no" title="написали, ответа пока нет">—</span>':"")},
         {key:"sent_at",label:"Когда",cls:"sub",render:r=>r.sent?esc(fmt(r.sent_at)):""},
         {key:"sent_by",label:"Отправитель",cls:"sub",render:r=>esc(r.sent_by||"")},
@@ -1368,7 +1382,7 @@ async function openAudience(cid){
         // Из списка — сразу в карточку или в переписку с человеком.
         {key:"__go",label:"",render:r=>
           `<a href="/#contacts/${r.id}" target="_blank" rel="noopener" title="Карточка контакта" style="text-decoration:none;margin-right:6px">👁</a>`+
-          (r.is_lead||r.sent?`<a href="/#chats/${r.id}" target="_blank" rel="noopener" title="Открыть диалог" style="text-decoration:none">💬</a>`:"")},
+          (r.is_lead||r.sent?`<a href="/#chats/${r.id}" target="_blank" rel="noopener" title="Открыть диалог в «Диалогах»" style="text-decoration:none;${r.replied?'font-size:16px':''}">💬</a>`:"")},
       ],
       emptyText:"Пусто по текущему фильтру.",
     });

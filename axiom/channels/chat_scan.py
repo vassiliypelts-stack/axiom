@@ -121,7 +121,7 @@ async def members_access(client, entity, members: int | None) -> tuple[str, str]
     return "открыт", "да"
 
 
-async def _activity(client, entity) -> tuple[str | None, list[str]]:
+async def _activity(client, entity, limit: int = 80) -> tuple[str | None, list[str]]:
     """Грубая оценка активности + выборка текстов сообщений (для AI-обогащения темы чата).
 
     Возвращает ("~N сообщений/день" | None, [тексты сообщений]). Один проход по последним
@@ -131,7 +131,7 @@ async def _activity(client, entity) -> tuple[str | None, list[str]]:
         if chat is None:
             return None, []
         dates, sample = [], []
-        async for m in client.iter_messages(chat, limit=80):
+        async for m in client.iter_messages(chat, limit=limit):
             if m.date:
                 dates.append(m.date)
             if m.message and m.message.strip():
@@ -145,7 +145,7 @@ async def _activity(client, entity) -> tuple[str | None, list[str]]:
         return None, []
 
 
-async def scan_one(client, target: str, chat_id: int | None) -> dict:
+async def scan_one(client, target: str, chat_id: int | None, light: bool = False) -> dict:
     """Просканировать ОДИН чат уже готовым клиентом и записать в БД. Клиент не трогаем
     (не подключаем и не рвём) — это забота вызывающего. Вынесено из run(), чтобы
     массовый сканер (chat_scan_all) гонял сотни чатов через один коннект рабочего
@@ -169,14 +169,15 @@ async def scan_one(client, target: str, chat_id: int | None) -> dict:
     # Админы — по возможности: во многих чатах список скрыт (ChatAdminRequiredError).
     # Это НЕ повод терять весь скан: чат живой, участники и активность нам доступны.
     # FloodWait намеренно пропускаем наверх — там решают, сколько ждать.
-    try:
-        admins = await collect_admins(client, entity)
-    except FloodWaitError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        admins = []
-        print(f"[admins] {getattr(entity, 'username', None) or target}: не собрать ({type(e).__name__})")
-    activity, sample = await _activity(client, entity)
+    admins = []
+    if not light:
+        try:
+            admins = await collect_admins(client, entity)
+        except FloodWaitError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[admins] {getattr(entity, 'username', None) or target}: не собрать ({type(e).__name__})")
+    activity, sample = await _activity(client, entity, limit=20 if light else 80)
     cw = can_write(entity)
     access, export_all = await members_access(client, entity, members)
     mv = "да" if access == "открыт" else "нет"   # старое грубое поле — из нового
@@ -211,12 +212,13 @@ async def scan_one(client, target: str, chat_id: int | None) -> dict:
                 (title, username, link, kind, members, activity, cw, mv, access, export_all, tg_id),
             )
             cid = cur.lastrowid
-        conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (cid,))
-        for u in admins:
-            conn.execute(
-                "INSERT OR IGNORE INTO chat_admins (chat_id, tg_user_id, username, name) VALUES (?,?,?,?)",
-                (cid, u.id, u.username, _display_name(u)),
-            )
+        if not light:
+            conn.execute("DELETE FROM chat_admins WHERE chat_id=?", (cid,))
+            for u in admins:
+                conn.execute(
+                    "INSERT OR IGNORE INTO chat_admins (chat_id, tg_user_id, username, name) VALUES (?,?,?,?)",
+                    (cid, u.id, u.username, _display_name(u)),
+                )
 
     # AI-обогащение темы/описания чата (best-effort: нет ключа/сырья → тихо пропускаем).
     topic = summary = ai_err = None

@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import os
 import random
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, UploadFile
@@ -45,6 +49,34 @@ def content_text_sources() -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"Не удалось прочитать таблицу: {e}"}, status_code=502)
+
+
+@router.get("/api/content/text/trends")
+def content_text_trends() -> JSONResponse:
+    try:
+        return JSONResponse(content_sheet.trends())
+    except Exception as e:  # worksheet may not exist before first collector run
+        return _fail(e, 502)
+
+
+@router.get("/api/content/text/plan")
+def content_text_plan(weeks: int = 4) -> JSONResponse:
+    try:
+        return JSONResponse(content_sheet.plan(weeks))
+    except Exception as e:
+        return _fail(e, 502)
+
+
+@router.post("/api/content/text/trends/{trend_id}/take")
+async def content_text_take_trend(trend_id: str, body: dict = Body(...)) -> JSONResponse:
+    """Explicit click: create a draft, then mark this source as taken."""
+    try:
+        draft = await run_in_threadpool(content_writer.from_source, body.get("title", ""),
+            body.get("excerpt", ""), body.get("author", ""), body.get("angle", ""), body.get("link", ""), random.choice(content_writer.FORMS))
+        await run_in_threadpool(content_sheet.mark_trend_taken, trend_id)
+        return JSONResponse({"draft": draft})
+    except Exception as e:
+        return _fail(e, 502)
 
 
 @router.post("/api/content/text/write")
@@ -173,5 +205,113 @@ async def content_text_upload_image(file: UploadFile = File(...)) -> JSONRespons
 
 @router.get("/api/content/video/summary")
 def content_video_summary() -> JSONResponse:
-    return JSONResponse({"not_configured": True,
-                          "message": "Видео контент завод пока не подключен к источнику данных."})
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"not_configured": True, "message": "Задайте VIDEO_FACTORY_DIR в .env Axiom.",
+                             "queue": [], "counts": {}, "deepseek_ready": bool(os.getenv("DEEPSEEK_API_KEY"))})
+    queue = _read_json(base / "data" / "queue-state.json", {"items": []})
+    items = queue.get("items", [])
+    counts: dict[str, int] = {}
+    for item in items:
+        status = str(item.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+    return JSONResponse({"not_configured": False, "base": str(base), "queue": items[-12:][::-1],
+                         "counts": counts, "total": len(items),
+                         "deepseek_ready": bool(os.getenv("DEEPSEEK_API_KEY")),
+                         "editorial_model": os.getenv("DEEPSEEK_EDITORIAL_MODEL", "deepseek-v4-pro")})
+
+
+@router.get("/api/content/video/sources")
+def content_video_sources() -> JSONResponse:
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    sources = _read_json(base / "config" / "sources.json", {"youtube_channels": []})
+    queue = _read_json(base / "data" / "queue-state.json", {"items": []})
+    return JSONResponse({"channels": sources.get("youtube_channels", []), "donors": queue.get("items", [])[::-1]})
+
+
+@router.get("/api/content/video/plan")
+def content_video_plan() -> JSONResponse:
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    plan = _read_json(base / "data" / "editorial-plan.json", {"items": []})
+    return JSONResponse({"items": plan.get("items", [])})
+
+
+@router.post("/api/content/video/plan")
+def content_video_plan_save(body: dict = Body(...)) -> JSONResponse:
+    """Save a manually approved production/publication calendar entry."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    title = str(body.get("title", "")).strip()
+    if not title:
+        return JSONResponse({"error": "Укажите название материала."}, status_code=400)
+    allowed_statuses = {"brief", "production", "review", "scheduled", "published"}
+    status = str(body.get("status", "brief"))
+    if status not in allowed_statuses:
+        return JSONResponse({"error": "Неизвестный статус плана."}, status_code=400)
+    item = {
+        "id": str(body.get("id") or datetime.now(timezone.utc).strftime("video-%Y%m%d-%H%M%S-%f")),
+        "title": title, "platform": str(body.get("platform", "YouTube Shorts")).strip() or "YouTube Shorts",
+        "production_date": str(body.get("production_date", "")).strip(),
+        "publish_date": str(body.get("publish_date", "")).strip(), "status": status,
+        "source_url": str(body.get("source_url", "")).strip(),
+    }
+    path = base / "data" / "editorial-plan.json"
+    plan = _read_json(path, {"items": []})
+    items = [x for x in plan.get("items", []) if str(x.get("id")) != item["id"]]
+    items.append(item)
+    path.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "item": item})
+
+
+@router.post("/api/content/video/editorial-pack")
+def content_video_editorial_pack(body: dict = Body(...)) -> JSONResponse:
+    """Create a local editorial pack. This never calls DeepSeek or publishes a video."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    required = ("topic", "audience", "goal", "format", "cta")
+    brief = {key: str(body.get(key, "")).strip() for key in required}
+    missing = [key for key, value in brief.items() if not value]
+    if missing:
+        return JSONResponse({"error": f"Заполните: {', '.join(missing)}"}, status_code=400)
+    source_url = str(body.get("source_url", "")).strip()
+    if source_url:
+        brief["source_url"] = source_url
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    briefs = base / "intake" / "editorial-briefs"
+    briefs.mkdir(parents=True, exist_ok=True)
+    brief_path = briefs / f"brief-{stamp}.json"
+    brief_path.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "app.spike.cli", "editorial-pack", str(brief_path), "--output", str(base / "artifacts" / "editorial")],
+            cwd=base, capture_output=True, text=True, encoding="utf-8", timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return JSONResponse({"error": f"Не удалось собрать пакет: {exc}"}, status_code=502)
+    if result.returncode != 0:
+        return JSONResponse({"error": result.stderr.strip() or "Сборка пакета завершилась с ошибкой."}, status_code=502)
+    manifest = json.loads(result.stdout)
+    return JSONResponse({"ok": True, "brief": str(brief_path), "manifest": manifest,
+                         "note": "Созданы задания для 11 скиллов. DeepSeek ещё не запускался."})
+
+
+def _video_factory_dir() -> Path | None:
+    value = os.getenv("VIDEO_FACTORY_DIR", "").strip()
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    return path if path.exists() else None
+
+
+def _read_json(path: Path, fallback: dict) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else fallback
+    except (OSError, json.JSONDecodeError):
+        return fallback

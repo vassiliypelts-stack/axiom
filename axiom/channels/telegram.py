@@ -552,7 +552,7 @@ async def run_outreach(client: TelegramClient, limit: int | None = None) -> int:
 #  LISTEN — входящие ответы → ИИ-агент → ответ                                 #
 # --------------------------------------------------------------------------- #
 def _record_incoming(contact_id: int, text_in: str, username: str | None,
-                     account_id: int | None = None) -> str:
+                     account_id: int | None = None, media: dict | None = None) -> str:
     """ВСЕГДА сохраняем входящее сообщение в книжку сразу — чтобы ответ появился
     в разделе «Диалоги» даже если ИИ-агент упадёт или авто-ответ выключен.
     Раньше входящее писалось только вместе с успешным ответом агента — из-за этого
@@ -560,7 +560,10 @@ def _record_incoming(contact_id: int, text_in: str, username: str | None,
     with database.get_conn() as conn:
         row = conn.execute("SELECT status, name, person_name FROM contacts WHERE id=?",
                            (contact_id,)).fetchone()
-        database.add_message(conn, contact_id, "in", text_in, account_id=account_id)
+        database.add_message(conn, contact_id, "in", text_in, account_id=account_id,
+                             media_path=(media or {}).get("path"),
+                             media_name=(media or {}).get("name"),
+                             media_mime=(media or {}).get("mime"))
         # не сбиваем терминальные статусы (встреча/сделка) назад в «диалог»
         if row and (row["status"] or "") in ("new", "messaged", "nurture", "in_dialog", ""):
             database.set_status(conn, contact_id, "in_dialog")

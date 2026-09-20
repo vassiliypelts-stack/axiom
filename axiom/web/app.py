@@ -21,7 +21,7 @@ import time as _t
 import datetime as _dtmod
 from pathlib import Path
 
-from fastapi import FastAPI, Body, UploadFile, File, Form, Request
+from fastapi import FastAPI, Body, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 
 import config
@@ -33,6 +33,7 @@ INDEX_HTML = BASE_DIR / "index.html"
 KP_DIR = config.DB_PATH.parent / "kp"   # файлы КП кампаний (data/kp/)
 AVATAR_DIR = config.DB_PATH.parent / "avatars"   # аватары агентов
 EXPORT_DIR = config.DB_PATH.parent / "exports"  # CSV-выгрузки парсера (data/exports/)
+MESSAGE_MEDIA_DIR = config.DB_PATH.parent / "message_media"
 
 FUNNEL = [
     ("new", "Новые"), ("messaged", "Написано"), ("in_dialog", "В диалоге"),
@@ -1536,6 +1537,9 @@ def account_detail(acc_id: int) -> JSONResponse:
         d["warm_runs"] = [dict(r) for r in conn.execute(
             "SELECT text, ts FROM events WHERE account_id=? AND type='warm_run' "
             "ORDER BY id DESC LIMIT 6", (acc_id,))]
+        d["warm_actions"] = [dict(r) for r in conn.execute(
+            "SELECT text, ts FROM events WHERE account_id=? AND type='warm_action' "
+            "ORDER BY id DESC LIMIT 80", (acc_id,))]
     return JSONResponse(d)
 
 
@@ -3892,6 +3896,7 @@ def contact_detail(contact_id: int) -> JSONResponse:
         # Отдельный запрос здесь, а не правка get_history — её читает и agent/agent.py.
         history = [dict(m) for m in conn.execute(
             "SELECT m.id, m.direction, m.text, m.intent, m.ts, m.account_id, m.tg_msg_id, "
+            "m.media_path, m.media_name, m.media_mime, "
             "COALESCE(a.label, a.username, a.phone) AS account_label "
             "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
             "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
@@ -3942,6 +3947,25 @@ def contact_detail(contact_id: int) -> JSONResponse:
         d["source_chat_link"] = (f"https://t.me/{src['chat_username']}" if src["chat_username"]
                                   else src["chat_link"])
     return JSONResponse(d)
+
+
+@app.get("/api/message-media/{message_id}")
+def message_media(message_id: int, inline: int = 0) -> FileResponse:
+    """Отдать только вложение, принадлежащее известному сообщению из БД."""
+    database.init_db()
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT media_path, media_name, media_mime FROM messages WHERE id=?", (message_id,)).fetchone()
+    if not row or not row["media_path"]:
+        raise HTTPException(status_code=404, detail="вложение не найдено")
+    path = (MESSAGE_MEDIA_DIR / Path(row["media_path"]).name).resolve()
+    try:
+        path.relative_to(MESSAGE_MEDIA_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="вложение не найдено")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="вложение не найдено")
+    return FileResponse(path, media_type=row["media_mime"] or "application/octet-stream",
+                        filename=None if inline else (row["media_name"] or path.name))
 
 
 @app.post("/api/contact/{contact_id}/tags")
@@ -8125,10 +8149,9 @@ def campaigns_create(payload: dict = Body(...)) -> JSONResponse:
     # с резолва сотен непробитых номеров прямо во время рассылки.
     vonly = 1 if payload.get("tg_verified_only", True) else 0
     with database.get_conn() as conn:
-        busy = _busy_campaign_accounts(conn, account_ids)
-        if busy:
-            names = ", ".join(f"{x['account']} → «{x['campaign']}»" for x in busy)
-            return JSONResponse({"error": f"Аккаунты уже заняты активной кампанией: {names}"}, status_code=409)
+        # Новая кампания всегда создаётся черновиком. Аккаунт может состоять
+        # в нескольких черновиках, в том числе в отдельном тестовом сценарии;
+        # конфликт проверяется, когда кампанию реально запускают.
         cur = conn.execute(
             "INSERT INTO campaigns (name, product, audience_tag, channel, account_id, daily_limit, "
             "message_template, agent_prompt, kp_text, project_id, tg_verified_only, status) "
@@ -8172,14 +8195,17 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
     account_ids = payload.get("account_ids")
     account_limits = payload.get("account_limits") or {}
     with database.get_conn() as conn:
-        if account_ids is not None:
+        row = conn.execute("SELECT id, status FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
+        # Команду черновика можно сохранить, даже если отправители участвуют
+        # в активной кампании: это необходимо для теста на своих номерах.
+        # Для запущенной кампании прежняя защита от параллельной рассылки остаётся.
+        if account_ids is not None and row["status"] == "running":
             busy = _busy_campaign_accounts(conn, account_ids, cid)
             if busy:
                 names = ", ".join(f"{x['account']} → «{x['campaign']}»" for x in busy)
                 return JSONResponse({"error": f"Аккаунты уже заняты активной кампанией: {names}"}, status_code=409)
-        row = conn.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
-        if not row:
-            return JSONResponse({"error": "кампания не найдена"}, status_code=404)
         # Флаг шлём только если он реально пришёл: частичные сохранения (из других форм,
         # не содержащих галочку) не должны молча снимать защиту от бана.
         conn.execute(

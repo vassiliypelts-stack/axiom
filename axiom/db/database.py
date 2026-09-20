@@ -451,6 +451,13 @@ _EXTRA_CHAT_COLS = {
     # только вердикт: оператор должен видеть, ПОЧЕМУ чат назван мусорным, иначе
     # доверия к автоматике не будет и он всё равно пойдёт смотреть руками.
     "quality_json": "TEXT",
+    # Очередь полезного read-only исследования. Это не членство и не verdict:
+    # фиксируем, какой аккаунт проверял карточку и чем завершилась задача.
+    "research_status": "TEXT DEFAULT 'new'",  # new|assigned|done|retry|unavailable
+    "research_account_id": "INTEGER",
+    "research_assigned_at": "TEXT",
+    "research_finished_at": "TEXT",
+    "research_error": "TEXT",
     # ─── Инкрементальный парсинг (channels/tg_parser.py, режим active) ───────────
     # Та же идея, что kw_last_id/kw_scanned_at у прослушки по ключам, но отдельная
     # watermark: прослушка идёт непрерывно фоном и по всем нишам разом, а парсинг —
@@ -591,6 +598,15 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE messages ADD COLUMN delivered_at TEXT")
     if msg and "read_at" not in msg:
         conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
+    # Вложения входящих прежде сохранялись только строкой «[фото]»/«[файл]».
+    # Держим локальную копию и её метаданные, чтобы оператор видел именно то, что
+    # прислал клиент, не открывая Telegram наугад.
+    if msg and "media_path" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_path TEXT")
+    if msg and "media_name" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_name TEXT")
+    if msg and "media_mime" not in msg:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_mime TEXT")
 
 
 def _repair_unverified_has_tg(conn: sqlite3.Connection) -> None:
@@ -1030,7 +1046,8 @@ def mark_photos_by_tg(conn: sqlite3.Connection, tg_user_ids) -> None:
 
 def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str,
                 intent: str | None = None, account_id: int | None = None,
-                tg_msg_ids: list[int] | None = None) -> None:
+                tg_msg_ids: list[int] | None = None, media_path: str | None = None,
+                media_name: str | None = None, media_mime: str | None = None) -> None:
     tg_msg_id = ",".join(str(i) for i in tg_msg_ids) if tg_msg_ids else None
     # Доставку Telegram отдельным статусом не отдаёт (в отличие от WhatsApp): если
     # send_message вернул id сообщения, оно уже лежит в диалоге собеседника. Поэтому
@@ -1040,8 +1057,9 @@ def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text:
     delivered = "datetime('now')" if (direction == "out" and tg_msg_id) else "NULL"
     conn.execute(
         "INSERT INTO messages (contact_id, direction, text, intent, account_id, tg_msg_id, "
-        f"delivered_at) VALUES (?, ?, ?, ?, ?, ?, {delivered})",
-        (contact_id, direction, text, intent, account_id, tg_msg_id),
+        f"delivered_at, media_path, media_name, media_mime) VALUES (?, ?, ?, ?, ?, ?, {delivered}, ?, ?, ?)",
+        (contact_id, direction, text, intent, account_id, tg_msg_id,
+         media_path, media_name, media_mime),
     )
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from pathlib import Path
 
 from telethon import events
 from telethon.sessions import StringSession
@@ -34,6 +35,7 @@ from db import database
 logging.getLogger("telethon").setLevel(logging.CRITICAL)
 
 _LOG = config.DB_PATH.parent / "logs" / "listener.log"
+_MEDIA_DIR = config.DB_PATH.parent / "message_media"
 
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
 _LOOP: "asyncio.AbstractEventLoop | None" = None  # event loop потока слушателя (для shutdown)
@@ -330,7 +332,25 @@ async def _handle_private(event, acc_id: int) -> None:
         # невозможно отличить от поломки.
         _unknown_sender_notice(acc_id, sender, username, text_in)
         return
-    _record_incoming(contact["id"], text_in, username, account_id=acc_id)
+    media = None
+    if event.media:
+        # Копия делается пока у нас есть живое подключение слушателя: позднее
+        # открыть второй клиент ради файла опасно для сессии Telegram.
+        try:
+            _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+            doc = getattr(event.message, "document", None)
+            name = next((getattr(a, "file_name", None) for a in (getattr(doc, "attributes", None) or [])
+                         if getattr(a, "file_name", None)), None)
+            suffix = Path(name or getattr(getattr(event.message, "file", None), "ext", "") or "").suffix
+            target = _MEDIA_DIR / f"{acc_id}_{contact['id']}_{event.message.id}{suffix}"
+            saved = await event.download_media(file=str(target))
+            if saved:
+                saved_path = Path(saved)
+                media = {"path": saved_path.name, "name": name or saved_path.name,
+                         "mime": getattr(getattr(event.message, "file", None), "mime_type", None)}
+        except Exception as exc:  # сохранение не должно задержать ответ клиенту
+            _log(f"[#{acc_id}] не сохранил вложение от {username or sender.id}: {exc}")
+    _record_incoming(contact["id"], text_in, username, account_id=acc_id, media=media)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
     # НОЧЬЮ ЖИВЫМ ЛЮДЯМ НЕ ПИШЕМ (09:00–21:30 МСК). Ответ в три часа ночи — это и
     # потерянный лид (утром прочитают вполуха), и явный признак автоматики для

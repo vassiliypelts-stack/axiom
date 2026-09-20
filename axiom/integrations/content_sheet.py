@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -214,6 +215,116 @@ def sources() -> dict:
                         key=lambda p: p["count"], reverse=True),
         "total_pains": sum(pains.values()),
     }
+
+
+def trends() -> dict:
+    """Read-only projection of the ТРЕНДЫ worksheet for the dashboard."""
+    try:
+        rows = _book().worksheet("ТРЕНДЫ").get_all_values()
+    except Exception as e:
+        raise ContentSheetError(f"Не удалось прочитать лист ТРЕНДЫ: {e}") from e
+    out = []
+    for r in rows[1:]:
+        r = r + [""] * (14 - len(r))
+        if not r[0]:
+            continue
+        out.append({"id": r[0], "date": r[1], "platform": r[2], "format": r[3],
+                    "author": r[4], "title": r[5], "spike": _to_float(r[6].replace("×", "")),
+                    "views": _to_int(r[7]), "reactions": _to_int(r[8]), "shares": _to_int(r[9]),
+                    "pain": r[10], "angle": r[11], "link": _abs_link(r[12]), "used": bool(r[13].strip())})
+    return {"trends": sorted(out, key=lambda x: x["spike"], reverse=True)}
+
+
+def mark_trend_taken(trend_id: str) -> None:
+    """The only Trends write, called exclusively after the user's explicit UI action."""
+    ws = _book().worksheet("ТРЕНДЫ")
+    for row, values in enumerate(ws.get_all_values()[1:], start=2):
+        if values and values[0] == str(trend_id):
+            ws.update_cell(row, 14, datetime.now().strftime("%Y-%m-%d"))
+            return
+    raise ContentSheetError("Тренд не найден.")
+
+
+def _queue_date(raw: str) -> datetime | None:
+    """Дата из Sheets: поддерживаем и ISO, и привычную русскую запись."""
+    raw = (raw or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _schedule_slots(raw: str) -> list[tuple[int, int, int]]:
+    days = {"пн": 0, "вт": 1, "ср": 2, "чт": 3, "пт": 4, "сб": 5, "вс": 6}
+    slots = []
+    for day, hour, minute in re.findall(r"(пн|вт|ср|чт|пт|сб|вс)\s+(\d{1,2}):(\d{2})", (raw or "").lower()):
+        h, m = int(hour), int(minute)
+        if h < 24 and m < 60:
+            slots.append((days[day], h, m))
+    return sorted(set(slots))
+
+
+def _next_schedule_slots(schedule: str, now: datetime, count: int) -> list[datetime]:
+    """Ближайшие слоты строго после текущего момента — только прогноз, не запись."""
+    slots = _schedule_slots(schedule)
+    result, day = [], now.date()
+    while slots and len(result) < count:
+        for weekday, hour, minute in slots:
+            moment = datetime.combine(day, datetime.min.time()).replace(hour=hour, minute=minute)
+            if day.weekday() == weekday and moment > now:
+                result.append(moment)
+                if len(result) == count:
+                    break
+        day += timedelta(days=1)
+    return result
+
+
+def plan(weeks: int = 4) -> dict:
+    """Календарь очереди на 1–4 недели. Только читает таблицу."""
+    weeks = max(1, min(int(weeks), 4))
+    book = _book()
+    rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()[1:]
+    try:
+        settings = {r[0]: r[1] for r in book.worksheet("НАСТРОЙКИ").get_all_values()[1:]
+                    if len(r) >= 2 and r[0]}
+    except Exception:
+        settings = {}
+
+    now = datetime.now().replace(second=0, microsecond=0)
+    start = now.date() - timedelta(days=now.weekday())
+    edge = start + timedelta(days=weeks * 7)
+    prepared = []
+    projection_count = 0
+    for r in rows:
+        r = r + [""] * (11 - len(r))
+        if not (r[Q_ID] or r[Q_TEXT]):
+            continue
+        date = _queue_date(r[Q_DATE])
+        status = (r[Q_STATUS] or "").strip().lower()
+        # Без даты прогнозируем только ожидающие посты: опубликованные никогда
+        # не должны внезапно появляться в будущем календаре.
+        if date is None and status in ("ждёт", "ждет", "") and r[Q_TEXT].strip():
+            projection_count += 1
+        prepared.append((r, date))
+
+    projections = iter(_next_schedule_slots(settings.get("График", ""), now, projection_count))
+    posts = []
+    for r, date in prepared:
+        projected = date is None
+        if projected and (r[Q_STATUS] or "").strip().lower() in ("ждёт", "ждет", "") and r[Q_TEXT].strip():
+            date = next(projections, None)
+        if date is None or not (start <= date.date() < edge):
+            continue
+        posts.append({"id": r[Q_ID], "date": date.date().isoformat(), "time": date.strftime("%H:%M"),
+                      "platforms": r[Q_PLATFORMS], "type": r[Q_TYPE], "text": _first_line(r[Q_TEXT]),
+                      "status": r[Q_STATUS], "projected": projected})
+    posts.sort(key=lambda p: (p["date"], p["time"], p["id"]))
+    dates = [(start + timedelta(days=i)).isoformat() for i in range(weeks * 7)]
+    return {"posts": posts, "gaps": [d for d in dates if not any(p["date"] == d for p in posts)],
+            "pending": summary()["pending"], "start": start.isoformat(), "weeks": weeks,
+            "schedule": settings.get("График", "")}
 
 
 def add_to_queue(text: str, kind: str = "", platforms: str = "threads,vk,tg",

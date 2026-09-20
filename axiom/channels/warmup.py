@@ -488,11 +488,17 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
     stage = acc["warm_stage"] or 0
     plan = WARM_PLAN.get(min(stage, max(WARM_PLAN)), WARM_PLAN[max(WARM_PLAN)])
     me = await client.get_me()
+    def audit(text: str) -> None:
+        """Поштучный журнал для пульта: фактическое действие и его время."""
+        with database.get_conn() as conn:
+            database.add_event(conn, "warm_action", f"🔥 {acc.get('label') or acc['id']}",
+                               text, level="info", account_id=acc["id"])
     print(f"[#{acc['id']} @{me.username or me.id}] стадия {stage}: каналы {plan['channels']}, "
           f"ЛС {plan['msgs']}, лайки {plan.get('react', 0)}, чтение {plan.get('read', 0)}")
 
     # 1) заходим в онлайн (живой пользователь открыл приложение)
     await _go_online(client)
+    audit("зашёл в Telegram онлайн")
     await asyncio.sleep(random.uniform(2, 6))
 
     # на старте — оформляем профиль (bio/аватар), если пусто
@@ -507,19 +513,35 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
         try:
             await client(JoinChannelRequest(ch))
             joined += 1
+            audit(f"вступил в канал @{ch}")
             print(f"  вступил в @{ch}")
         except Exception as e:  # noqa: BLE001
             print(f"  [канал @{ch}] {e}")
         await asyncio.sleep(random.uniform(5, 15))
 
-    # 3) читаем ленту (прокрутил, прочитал последние сообщения)
-    reads = await _read_feed(client, plan.get("read", 8))
+    # 3) На стадиях 5–7 один слот чтения заменяем полезной read-only проверкой
+    # одного публичного чата. Это не дополнительная активность; после 7-й стадии
+    # исследования не запускаем, потому что обычный прогрев уже становится насыщеннее.
+    research = None
+    if 5 <= stage <= 7:
+        try:
+            from channels import group_research
+            research = await group_research.run_one(client, acc["id"])
+        except Exception as exc:  # одна карточка не должна срывать весь прогрев
+            print(f"  [исследование] пропущено: {type(exc).__name__}: {exc}")
+    reads = await _read_feed(client, max(0, plan.get("read", 8) - (1 if research else 0)))
+    if reads:
+        audit(f"прочитал ленту: {reads} чатов")
 
     # 4) лайкаем посты (реакции в каналах/группах)
     reacts = await _react_feed(client, plan.get("react", 0))
+    if reacts:
+        audit(f"поставил реакции: {reacts} постов")
 
     # 4b) смотрим сторис из ленты (ещё живее)
     stories = await _view_stories(client, plan.get("react", 1))
+    if stories:
+        audit(f"посмотрел сторис: {stories}")
 
     # 5) лёгкая переписка со «своими» (якоря + другие прогреваемые) — только если по плану есть ЛС
     targets = [a for a in anchors] + [p for p in peers if p["id"] != acc["id"]]
@@ -537,6 +559,8 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
             print(f"  [цель {peer}] {e}")
             continue
         s = await _send_chatter(client, ent, 1, label=peer)
+        if s:
+            audit(f"написал своему аккаунту {peer}")
         left -= s
         sent_total += s
 
@@ -555,6 +579,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
     if reacts:      parts.append(f"лайкнул {reacts}")
     if stories:     parts.append(f"глянул {stories} сторис")
     if sent_total:  parts.append(f"написал {sent_total} сообщ.")
+    if research:    parts.append(f"исследовал чат #{research['chat_id']} ({research['status']})")
     summary = ", ".join(parts) if parts else "зашёл онлайн (без активных действий в этот раз)"
     with database.get_conn() as conn:
         database.bump_warm(conn, acc["id"], new_stage, activate=activate)

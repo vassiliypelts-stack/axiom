@@ -233,6 +233,20 @@ CREATE TABLE IF NOT EXISTS account_chats (
     UNIQUE(account_id, chat_id)
 );
 
+-- История read-only исследования: кто проверил каталог и какой получен результат.
+-- Не заменяет account_chats: участие в чате и ответственность за проверку различны.
+CREATE TABLE IF NOT EXISTS chat_research_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL REFERENCES chats(id),
+    account_id  INTEGER REFERENCES accounts(id),
+    status      TEXT NOT NULL,              -- assigned|done|retry|unavailable
+    result_json TEXT,
+    error       TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_research_runs_chat ON chat_research_runs(chat_id, id DESC);
+
 -- Ниши лидгена: наборы ключевых слов для прослушки чатов (запросы людей).
 CREATE TABLE IF NOT EXISTS niches (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,

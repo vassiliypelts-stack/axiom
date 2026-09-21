@@ -15,10 +15,12 @@ import random
 import json
 import subprocess
 import sys
+import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Body, File, UploadFile
+from fastapi import APIRouter, Body, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -221,6 +223,58 @@ def content_video_summary() -> JSONResponse:
                          "editorial_model": os.getenv("DEEPSEEK_EDITORIAL_MODEL", "deepseek-v4-pro")})
 
 
+@router.post("/api/content/video/upload")
+async def content_video_upload(file: UploadFile = File(...), title: str = Form("")) -> JSONResponse:
+    """Загрузить собственный MP4 в очередь. Публикация здесь невозможна."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    filename = Path(file.filename or "").name
+    if Path(filename).suffix.lower() != ".mp4":
+        return JSONResponse({"error": "Загрузите MP4-файл."}, status_code=400)
+    if file.content_type and file.content_type not in {"video/mp4", "application/octet-stream"}:
+        return JSONResponse({"error": "Поддерживается только видео MP4."}, status_code=400)
+
+    uploads = base / "intake" / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    source_id = f"upload-{uuid.uuid4().hex[:12]}"
+    target = uploads / f"{source_id}.mp4"
+    try:
+        with target.open("wb") as output:
+            shutil.copyfileobj(file.file, output, length=1024 * 1024)
+        size = target.stat().st_size
+        if size == 0:
+            target.unlink(missing_ok=True)
+            return JSONResponse({"error": "Файл пустой."}, status_code=400)
+        if size > 1024 * 1024 * 1024:
+            target.unlink(missing_ok=True)
+            return JSONResponse({"error": "Для первого запуска лимит файла — 1 ГБ."}, status_code=400)
+    finally:
+        await file.close()
+
+    path = base / "data" / "queue-state.json"
+    queue = _read_json(path, {"next_sequence": 1, "items": []})
+    sequence = int(queue.get("next_sequence") or 1)
+    item = {
+        "sequence": sequence,
+        "source": "upload",
+        "channel": "Свой ролик",
+        "source_id": source_id,
+        "source_url": "",
+        "title": (title.strip() or Path(filename).stem),
+        "local_path": str(target.relative_to(base)).replace("\\", "/"),
+        "status": "downloaded",
+        "approved": False,
+        "published": False,
+    }
+    items = queue.get("items", [])
+    items.append(item)
+    queue["items"] = items
+    queue["next_sequence"] = sequence + 1
+    _write_json(path, queue)
+    return JSONResponse({"ok": True, "item": item})
+
+
 @router.get("/api/content/video/sources")
 def content_video_sources() -> JSONResponse:
     base = _video_factory_dir()
@@ -315,3 +369,10 @@ def _read_json(path: Path, fallback: dict) -> dict:
         return data if isinstance(data, dict) else fallback
     except (OSError, json.JSONDecodeError):
         return fallback
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)

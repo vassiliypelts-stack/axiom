@@ -3713,6 +3713,7 @@ async function viewContentVideo(v){
         ${cfTile(s.total||0,"всего роликов")}${cfTile(c.discovered||0,"найдено")}${cfTile(c.rendered||0,"на проверке","accent")}${cfTile(c.approved||0,"одобрено","lime")}${cfTile(c.published||0,"опубликовано")}
       </div>
       <p class="sub" style="margin-bottom:0">Редакционная модель: ${esc(s.editorial_model||"deepseek-v4-pro")}. Публикация всегда только после ручного одобрения.</p>
+      <div class="ttoolbar" style="margin-top:14px"><input id="vc-upload-title" class="cf-date" placeholder="Название ролика (необязательно)"><input id="vc-upload-file" type="file" accept="video/mp4" style="max-width:260px"><button id="vc-upload-go" class="primary">Загрузить свой MP4</button><span class="sub" id="vc-upload-note"></span></div>
     </section>
     <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Очередь видео</h3><span class="tag">${queue.length}</span></div>
       <div class="cf-tablewrap"><table class="cf-table"><thead><tr><th>#</th><th>Донор</th><th>Ролик</th><th>Этап</th><th>ОК</th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="sub">Очередь пока пуста.</td></tr>'}</tbody></table></div>
@@ -3721,6 +3722,7 @@ async function viewContentVideo(v){
       <div class="cf-postlist"><div class="cf-find"><b>1. Источник</b><div class="sub">Разрешённый MP4 или ролик из донора.</div></div><div class="cf-find"><b>2. Редакция</b><div class="sub">11 скиллов создают сценарий, монтажное ТЗ и упаковку.</div></div><div class="cf-find"><b>3. Производство</b><div class="sub">Озвучка, субтитры, reaction-layout и preview.</div></div><div class="cf-find"><b>4. Одобрение</b><div class="sub">Владелец проверяет версию перед публикацией.</div></div></div>
     </section>
   </div></div>`;vcfBindTabs(v);
+  const upload=v.querySelector("#vc-upload-go");if(upload)upload.onclick=async()=>{const input=v.querySelector("#vc-upload-file"),note=v.querySelector("#vc-upload-note");if(!input.files[0]){note.textContent="Выберите MP4-файл.";return;}upload.disabled=true;note.textContent="загружаю…";try{const form=new FormData();form.append("file",input.files[0]);form.append("title",v.querySelector("#vc-upload-title").value.trim());const r=await fetch("/api/content/video/upload",{method:"POST",body:form});const d=await r.json();if(!r.ok||d.error)note.textContent="⚠️ "+(d.error||"Ошибка загрузки");else viewContentVideo(v);}catch(e){note.textContent="⚠️ "+e.message;}finally{upload.disabled=false;}};
 }
 async function viewVideoSources(v){
   v.innerHTML=vcfTabs()+`<div class="empty">Загружаю источники…</div>`;vcfBindTabs(v);

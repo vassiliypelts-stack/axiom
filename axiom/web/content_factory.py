@@ -461,6 +461,34 @@ def content_video_approve(sequence: int) -> JSONResponse:
     return JSONResponse({"error": "Ролик не найден."}, status_code=404)
 
 
+@router.post("/api/content/video/queue/{sequence}/prepare-publish")
+def content_video_prepare_publish(sequence: int) -> JSONResponse:
+    """Create editable publication cards; never uploads to social platforms."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    queue = _read_json(base / "data" / "queue-state.json", {"items": []})
+    video = next((x for x in queue.get("items", []) if int(x.get("sequence", -1)) == sequence), None)
+    if not video or not video.get("approved") or not video.get("local_path"):
+        return JSONResponse({"error": "Нужен одобренный загруженный MP4."}, status_code=400)
+    path = base / "data" / "editorial-plan.json"
+    plan = _read_json(path, {"items": []})
+    title = str(video.get("title") or "Новый ролик")
+    caption = f"{title}\n\nНапиши «КЛУБ» в комментариях — пришлю видео с AI-клубом изнутри."
+    created = []
+    for platform in ("YouTube Shorts", "Instagram Reels"):
+        if any(int(x.get("video_sequence", -1)) == sequence and x.get("platform") == platform for x in plan.get("items", [])):
+            continue
+        card = {"id": f"publish-{uuid.uuid4().hex[:12]}", "video_sequence": sequence, "title": title,
+                "caption": caption, "platform": platform, "production_date": "", "publish_date": "",
+                "status": "scheduled", "source_url": "", "local_path": video["local_path"],
+                "destination": "https://studio.youtube.com/" if platform == "YouTube Shorts" else "https://www.instagram.com/"}
+        plan.setdefault("items", []).append(card)
+        created.append(card)
+    _write_json(path, plan)
+    return JSONResponse({"ok": True, "items": created})
+
+
 def _video_factory_dir() -> Path | None:
     value = os.getenv("VIDEO_FACTORY_DIR", "").strip()
     if not value:

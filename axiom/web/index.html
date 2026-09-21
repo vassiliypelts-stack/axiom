@@ -3705,7 +3705,10 @@ async function viewContentVideo(v){
     </section>`;vcfBindTabs(v);return;
   }
   const c=s.counts||{}, queue=s.queue||[];
-  const rows=queue.map(x=>`<tr><td class="mono">#${x.sequence||"—"}</td><td>${esc(x.channel||"YouTube")}</td><td>${esc(x.title||x.source_id||"Без названия")}</td><td>${vcfStatus(x.status)}</td><td>${x.approved?"✓":"—"}</td></tr>`).join("");
+  const rows=queue.map(x=>`<tr data-vsource="${esc(x.source||"")}" data-vstatus="${esc(x.status||"")}"><td class="mono">#${x.sequence||"—"}</td><td>${esc(x.channel||"Свой ролик")}</td><td>${esc(x.title||x.source_id||"Без названия")}</td><td>${vcfStatus(x.status)}</td><td>${x.approved?"✓":"—"}</td></tr>`).join("");
+  const stages=[["найдено",c.discovered||0,"#4caee8"],["загружено",c.downloaded||0,"#6687da"],["preview",c.rendered||0,"#e3a95d"],["одобрено",c.approved||0,"#77ba6a"],["опубликовано",c.published||0,"#2b9c94"]];
+  const chartMax=Math.max(1,...stages.map(x=>x[1]));
+  const chart=stages.map(([label,value,color])=>`<div style="flex:1;min-width:68px;text-align:center"><div style="height:86px;display:flex;align-items:end;justify-content:center"><div style="width:30px;max-width:70%;height:${Math.max(5,Math.round(value/chartMax*78))}px;background:${color};border-radius:6px 6px 2px 2px"></div></div><b class="mono">${value}</b><div class="sub" style="font-size:10px">${label}</div></div>`).join("");
   v.innerHTML=vcfTabs()+`<div class="dash"><div class="dash-grid">
     <section class="dash-glass dash-card" style="grid-column:1/-1">
       <div class="dash-chh"><h3>Видео контент завод</h3><span class="tag">${s.deepseek_ready?"DeepSeek подключён":"DeepSeek не настроен"}</span></div>
@@ -3715,14 +3718,17 @@ async function viewContentVideo(v){
       <p class="sub" style="margin-bottom:0">Редакционная модель: ${esc(s.editorial_model||"deepseek-v4-pro")}. Публикация всегда только после ручного одобрения.</p>
       <div class="ttoolbar" style="margin-top:14px"><input id="vc-upload-title" class="cf-date" placeholder="Название ролика (необязательно)"><input id="vc-upload-file" type="file" accept="video/mp4" style="max-width:260px"><button id="vc-upload-go" class="primary">Загрузить свой MP4</button><span class="sub" id="vc-upload-note"></span></div>
     </section>
-    <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Очередь видео</h3><span class="tag">${queue.length}</span></div>
-      <div class="cf-tablewrap"><table class="cf-table"><thead><tr><th>#</th><th>Донор</th><th>Ролик</th><th>Этап</th><th>ОК</th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="sub">Очередь пока пуста.</td></tr>'}</tbody></table></div>
+    <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Производственный график</h3><span class="sub">не просмотры, а этапы роликов</span></div><div style="display:flex;align-items:end;gap:12px;min-height:130px;padding:4px 6px">${chart}</div></section>
+    <section class="dash-glass dash-card" style="grid-column:1/-1"><div class="dash-chh"><h3>Все ролики</h3><span class="tag">${queue.length}</span></div>
+      <div class="ttoolbar" style="margin:0 0 10px"><span class="sub">Источник:</span><button class="cf-chip on" data-vsource="">все</button><button class="cf-chip" data-vsource="upload">свои MP4</button><button class="cf-chip" data-vsource="youtube">доноры</button><span class="sub" style="margin-left:8px">Этап:</span><button class="cf-chip on" data-vstatus="">все</button>${stages.map(([label,,])=>`<button class="cf-chip" data-vstatus="${label==='preview'?'rendered':label==='загружено'?'downloaded':label==='найдено'?'discovered':label}">${label}</button>`).join("")}</div>
+      <div class="cf-tablewrap"><table class="cf-table"><thead><tr><th>#</th><th>Источник</th><th>Ролик</th><th>Этап</th><th>ОК</th></tr></thead><tbody id="vcf-video-rows">${rows||'<tr><td colspan="5" class="sub">Очередь пока пуста.</td></tr>'}</tbody></table></div>
     </section>
     <section class="dash-glass dash-card" style="grid-column:span 5"><div class="dash-chh"><h3>Как идёт материал</h3></div>
       <div class="cf-postlist"><div class="cf-find"><b>1. Источник</b><div class="sub">Разрешённый MP4 или ролик из донора.</div></div><div class="cf-find"><b>2. Редакция</b><div class="sub">11 скиллов создают сценарий, монтажное ТЗ и упаковку.</div></div><div class="cf-find"><b>3. Производство</b><div class="sub">Озвучка, субтитры, reaction-layout и preview.</div></div><div class="cf-find"><b>4. Одобрение</b><div class="sub">Владелец проверяет версию перед публикацией.</div></div></div>
     </section>
   </div></div>`;vcfBindTabs(v);
   const upload=v.querySelector("#vc-upload-go");if(upload)upload.onclick=async()=>{const input=v.querySelector("#vc-upload-file"),note=v.querySelector("#vc-upload-note");if(!input.files[0]){note.textContent="Выберите MP4-файл.";return;}upload.disabled=true;note.textContent="загружаю…";try{const form=new FormData();form.append("file",input.files[0]);form.append("title",v.querySelector("#vc-upload-title").value.trim());const r=await fetch("/api/content/video/upload",{method:"POST",body:form});const d=await r.json();if(!r.ok||d.error)note.textContent="⚠️ "+(d.error||"Ошибка загрузки");else viewContentVideo(v);}catch(e){note.textContent="⚠️ "+e.message;}finally{upload.disabled=false;}};
+  let selectedSource="",selectedStatus="";const filterRows=()=>v.querySelectorAll("#vcf-video-rows tr[data-vsource]").forEach(row=>row.style.display=(!selectedSource||row.dataset.vsource===selectedSource)&&(!selectedStatus||row.dataset.vstatus===selectedStatus)?"":"none");v.querySelectorAll("button[data-vsource]").forEach(b=>b.onclick=()=>{selectedSource=b.dataset.vsource;v.querySelectorAll("button[data-vsource]").forEach(x=>x.classList.toggle("on",x.dataset.vsource===selectedSource));filterRows();});v.querySelectorAll("button[data-vstatus]").forEach(b=>b.onclick=()=>{selectedStatus=b.dataset.vstatus;v.querySelectorAll("button[data-vstatus]").forEach(x=>x.classList.toggle("on",x.dataset.vstatus===selectedStatus));filterRows();});
 }
 async function viewVideoSources(v){
   v.innerHTML=vcfTabs()+`<div class="empty">Загружаю источники…</div>`;vcfBindTabs(v);

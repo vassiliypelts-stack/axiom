@@ -516,6 +516,13 @@
     transition:opacity .12s,border-color .12s;}
   .notif .ni:hover .ni-eye{opacity:1;border-color:var(--accent);}
   .notif .ni .ni-eye:focus-visible{opacity:1;border-color:var(--accent);}
+  .notif-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 5px 7px;border-bottom:1px solid var(--border);margin-bottom:4px;}
+  .notif-filter-btn{padding:4px 8px;font-size:12px;white-space:nowrap;}
+  .notif-filter{margin:0 3px 7px;padding:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;}
+  .notif-filter-tools{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  .notif-filter-tools button{padding:2px 5px;font-size:11px;}
+  .notif-filter-list{display:grid;grid-template-columns:1fr 1fr;gap:4px;max-height:180px;overflow:auto;}
+  .notif-filter-list label{display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;min-width:0;}
   /* ---- Skeleton loader ---- */
   @keyframes skel-pulse{0%,100%{opacity:.06}50%{opacity:.15}}
   .skel-wrap{padding:26px 30px;max-width:860px;display:flex;flex-direction:column;gap:16px;}
@@ -10281,10 +10288,16 @@ async function wzLaunch(){
 // ----------------------------------------------------------------- notifications
 let NOTIF=[];
 function notifSeenTs(){return localStorage.getItem("axiom_notif_seen")||"";}
+const NOTIF_KIND_LABEL={msg:"Сообщения",meeting:"Встречи",campaign_start:"Запуск кампании",campaign_done:"Завершение кампании",lead:"Лиды",ban:"Баны",account_banned:"Баны аккаунтов",warm_ready:"Прогрев готов",warm_check:"Проверки прогрева",warm_run:"Действия прогрева",info:"Системные",chat_join:"Вступления в чаты",outreach:"Отправки",hit:"Находки",reply:"Ответы",agent_error:"Ошибки ИИ-агента",campaign_test:"Тесты кампаний",campaign_stop:"Остановка кампании",listener_down:"Слушатель отключён",listener_off:"Слушатель отключён",listener_on:"Слушатель включён",sched_undelivered:"Недоставленные",stuck_reply:"Зависшие ответы",campaign_blocked:"Блокировки кампаний",proxy_heal:"Прокси",proxy_renew:"Прокси",proxy_harvest_down:"Прокси",parse_schedule:"Парсинг",name_mismatch:"Несовпадения имени",account_protected:"Защита аккаунтов"};
+function notifKind(n){return n.type==="event"?`event:${n.event_type||"other"}`:`type:${n.type||"other"}`;}
+function notifKindLabel(key){const raw=key.replace(/^(event:|type:)/,"");return NOTIF_KIND_LABEL[raw]||raw;}
+function notifHiddenKinds(){try{return new Set(JSON.parse(localStorage.getItem("axiom_notif_hidden_kinds")||"[]"));}catch(e){return new Set();}}
+function notifSaveHidden(hidden){localStorage.setItem("axiom_notif_hidden_kinds",JSON.stringify([...hidden]));}
+function shownNotif(){const hidden=notifHiddenKinds();return NOTIF.filter(n=>!hidden.has(notifKind(n)));}
 async function refreshNotif(){
   try{const r=await api("/api/notifications");NOTIF=r.items||[];}catch(e){NOTIF=[];}
   const seen=notifSeenTs();
-  const unseen=NOTIF.filter(n=>(n.type==="msg"||n.type==="event")&&(n.ts||"")>seen).length;
+  const unseen=shownNotif().filter(n=>(n.type==="msg"||n.type==="event")&&(n.ts||"")>seen).length;
   const b=$("#bell-badge");
   if(unseen>0){b.textContent=unseen>99?"99+":unseen;b.style.display="";}else b.style.display="none";
 }
@@ -10295,8 +10308,11 @@ const EVENT_IC={campaign_start:"▶",campaign_done:"✅",lead:"🔥",meeting:"�
   account_protected:"♻️"};
 function renderNotif(){
   const box=$("#notif");
-  if(!NOTIF.length){box.innerHTML='<div class="empty" style="padding:24px">Пока пусто</div>';return;}
-  box.innerHTML=NOTIF.map(n=>{
+  const hidden=notifHiddenKinds(), kinds=[...new Set(NOTIF.map(notifKind))].sort((a,b)=>notifKindLabel(a).localeCompare(notifKindLabel(b),"ru"));
+  const items=shownNotif();
+  const filter=kinds.length?`<div class="notif-head"><b style="font-size:13px">Уведомления</b><button class="notif-filter-btn" id="notif-filter-toggle">⚙ Фильтр</button></div><div class="notif-filter" id="notif-filter" style="display:none"><div class="notif-filter-tools"><button id="notif-filter-all">Все</button><button id="notif-filter-none">Снять все</button><span class="hint">выбор сохраняется</span></div><div class="notif-filter-list">${kinds.map(k=>`<label><input type="checkbox" data-notif-kind="${esc(k)}" ${hidden.has(k)?"":"checked"}> ${esc(notifKindLabel(k))}</label>`).join("")}</div></div>`:"";
+  if(!NOTIF.length){box.innerHTML=filter+'<div class="empty" style="padding:24px">Пока пусто</div>';return;}
+  box.innerHTML=filter+(items.length?items.map(n=>{
     if(n.type==="event"){
       const ic=EVENT_IC[n.event_type]||"•";
       const col=(n.level==="bad"||n.level==="warn")?"#c0392b":(n.level==="good"?"var(--green)":"var(--muted)");
@@ -10315,7 +10331,14 @@ function renderNotif(){
       <span class="ic">${n.type==="meeting"?"📅":"💬"}</span>
       <div class="tx"><div class="who">${esc(n.who||"—")}</div>
         <div class="msg">${n.type==="meeting"?"назначена встреча":esc(n.text)}</div></div>
-      <span class="tm">${fmt(n.ts)}</span></div>`;}).join("");
+      <span class="tm">${fmt(n.ts)}</span></div>`;}).join(""):'<div class="empty" style="padding:24px">По выбранному фильтру событий нет</div>');
+  const fp=box.querySelector("#notif-filter"),ft=box.querySelector("#notif-filter-toggle");
+  if(ft)ft.onclick=e=>{e.stopPropagation();fp.style.display=fp.style.display==="none"?"":"none";};
+  const setKinds=(show)=>{const next=notifHiddenKinds();kinds.forEach(k=>show?next.delete(k):next.add(k));notifSaveHidden(next);renderNotif();refreshNotif();};
+  const all=box.querySelector("#notif-filter-all"),none=box.querySelector("#notif-filter-none");
+  if(all)all.onclick=e=>{e.stopPropagation();setKinds(true);};
+  if(none)none.onclick=e=>{e.stopPropagation();setKinds(false);};
+  box.querySelectorAll("[data-notif-kind]").forEach(input=>input.onchange=e=>{e.stopPropagation();const next=notifHiddenKinds();input.checked?next.delete(input.dataset.notifKind):next.add(input.dataset.notifKind);notifSaveHidden(next);renderNotif();refreshNotif();});
   box.querySelectorAll(".ni-eye").forEach(b=>b.onclick=e=>{
     e.stopPropagation();          // иначе клик по строке уведёт в досье и окно не увидят
     showEvent(+b.dataset.eid);});

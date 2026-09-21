@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from integrations import content_sheet, content_writer, speech
+from agent import llm
 
 router = APIRouter()
 
@@ -393,6 +394,34 @@ def content_video_editorial_pack(body: dict = Body(...)) -> JSONResponse:
     manifest = json.loads(result.stdout)
     return JSONResponse({"ok": True, "brief": str(brief_path), "manifest": manifest,
                          "note": "Созданы задания для 11 скиллов. DeepSeek ещё не запускался."})
+
+
+@router.post("/api/content/video/generate-script")
+def content_video_generate_script(body: dict = Body(...)) -> JSONResponse:
+    """Explicit paid call: generate a reviewable short-video script, never publish."""
+    topic = str(body.get("topic", "")).strip()
+    if not topic:
+        return JSONResponse({"error": "Укажите тему ролика."}, status_code=400)
+    model = os.getenv("DEEPSEEK_EDITORIAL_MODEL", "deepseek:deepseek-chat")
+    if ":" not in model:
+        model = f"deepseek:{model}"
+    if not llm.available(model):
+        return JSONResponse({"error": "DeepSeek не подключён: добавьте ключ в .env Axiom."}, status_code=400)
+    brief = {key: str(body.get(key, "")).strip() for key in ("topic", "audience", "goal", "format", "cta", "source_url")}
+    prompt = f"""Создай оригинальный сценарий вертикального ролика на русском. Не копируй источник буквально.
+Тема: {brief['topic']}
+Аудитория: {brief['audience']}
+Цель: {brief['goal']}
+Формат: {brief['format']}
+CTA: {brief['cta']}
+Верни: 1) хук 0–3 сек, 2) текст озвучки с таймкодами до 45 сек, 3) что показывает AI-аватар, 4) кадры скринкаста, 5) финальный CTA.
+"""
+    try:
+        script = llm.text(model, system="Ты редактор коротких видео. Пиши конкретно, честно и без обещаний результата.",
+                          messages=[{"role": "user", "content": prompt}], max_tokens=1100, timeout=90)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"Не удалось получить сценарий: {exc}"}, status_code=502)
+    return JSONResponse({"ok": True, "script": script, "model": model})
 
 
 def _video_factory_dir() -> Path | None:

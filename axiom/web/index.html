@@ -7239,7 +7239,8 @@ async function viewCampaigns(v){
       const box=$("#c-notify-backup");if(!box)return;
       const picked=new Set((s.backup_ids||[]).map(String));
       const ord=a=>a.acc_role==="service"?0:a.protected?1:2;
-      box.innerHTML=accounts.slice().sort((a,b)=>ord(a)-ord(b)||a.id-b.id).map(a=>{
+      const liveNotifyAccounts=accounts.filter(a=>a.tg_connected&&a.session_alive!==0&&(!a.session_state||a.session_state==="alive"));
+      box.innerHTML=liveNotifyAccounts.slice().sort((a,b)=>ord(a)-ord(b)||a.id-b.id).map(a=>{
         const role=a.acc_role==="service"?" 🛠 служебный":a.protected?" 🏠 родной":"";
         const dead=a.session_state&&a.session_state!=="alive"?' <span style="color:#c0392b">(сессия мертва)</span>':"";
         return `<label style="display:flex;align-items:center;gap:7px;padding:2px 0;cursor:pointer">

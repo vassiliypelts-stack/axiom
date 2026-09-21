@@ -399,6 +399,9 @@ def content_video_editorial_pack(body: dict = Body(...)) -> JSONResponse:
 @router.post("/api/content/video/generate-script")
 def content_video_generate_script(body: dict = Body(...)) -> JSONResponse:
     """Explicit paid call: generate a reviewable short-video script, never publish."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
     topic = str(body.get("topic", "")).strip()
     if not topic:
         return JSONResponse({"error": "Укажите тему ролика."}, status_code=400)
@@ -421,7 +424,41 @@ CTA: {brief['cta']}
                           messages=[{"role": "user", "content": prompt}], max_tokens=1100, timeout=90)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": f"Не удалось получить сценарий: {exc}"}, status_code=502)
-    return JSONResponse({"ok": True, "script": script, "model": model})
+    path = base / "data" / "scripts.json"
+    saved = _read_json(path, {"items": []})
+    item = {"id": f"script-{uuid.uuid4().hex[:12]}", "created_at": datetime.now(timezone.utc).isoformat(),
+            "brief": brief, "script": script, "model": model, "status": "review"}
+    saved.setdefault("items", []).append(item)
+    _write_json(path, saved)
+    return JSONResponse({"ok": True, "item": item, "script": script})
+
+
+@router.get("/api/content/video/scripts")
+def content_video_scripts() -> JSONResponse:
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    scripts = _read_json(base / "data" / "scripts.json", {"items": []})
+    return JSONResponse({"items": scripts.get("items", [])[-20:][::-1]})
+
+
+@router.post("/api/content/video/queue/{sequence}/approve")
+def content_video_approve(sequence: int) -> JSONResponse:
+    """Explicit human approval. It never sends video to a social network."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    path = base / "data" / "queue-state.json"
+    queue = _read_json(path, {"items": []})
+    for item in queue.get("items", []):
+        if int(item.get("sequence", -1)) == sequence:
+            if not item.get("local_path"):
+                return JSONResponse({"error": "Сначала загрузите готовый MP4 ролик."}, status_code=400)
+            item["approved"] = True
+            item["status"] = "approved"
+            _write_json(path, queue)
+            return JSONResponse({"ok": True, "item": item})
+    return JSONResponse({"error": "Ролик не найден."}, status_code=404)
 
 
 def _video_factory_dir() -> Path | None:

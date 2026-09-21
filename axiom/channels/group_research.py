@@ -15,15 +15,18 @@ from telethon.tl.functions.channels import JoinChannelRequest
 
 
 def _daily_budget(account_id: int) -> int:
-    """Стабильная на сутки квота 1--4 вступления для конкретного аккаунта.
+    """Стабильная на сутки квота 1--2 вступления для конкретного аккаунта.
 
     В отличие от random() она не меняется между перезапусками: повторный заход
     не превращает лимит в лотерею и не позволяет случайно выйти за дневной темп.
     """
     with database.get_conn() as conn:
         lo = int(database.get_setting(conn, "research_daily_min", "1") or 1)
-        hi = int(database.get_setting(conn, "research_daily_max", "4") or 4)
-    lo, hi = max(1, min(lo, 4)), max(1, min(hi, 4))
+        hi = int(database.get_setting(conn, "research_daily_max", "2") or 2)
+    # Базовый режим намеренно консервативный: один-два входа выглядят как
+    # обычное пользование Telegram. Ускорение выше двух -- отдельное решение,
+    # а не скрытая смена темпа при обновлении кода.
+    lo, hi = max(1, min(lo, 2)), max(1, min(hi, 2))
     if lo > hi:
         lo, hi = hi, lo
     import hashlib

@@ -655,10 +655,22 @@ async def _upkeep_passive(acc: dict) -> None:
     try:
         await client.start()
         await _go_online(client)
+        # Исследование не заканчивается вместе с 14-й ступенью прогрева: аккаунт
+        # остаётся в уже взятых группах и дальше спокойно пополняет свою долю
+        # каталога. run_one сам держит дневную квоту, поэтому частый upkeep не
+        # ускорит вступления сверх безопасного темпа.
+        research = None
+        try:
+            from channels import group_research
+            research = await group_research.run_one(client, acc["id"])
+        except Exception as exc:  # один проблемный чат не отменяет обычную живость
+            print(f"  [{who}] исследование: {type(exc).__name__}: {exc}")
         reads = await _read_feed(client, random.randint(*UPKEEP_READ))
         reacts = await _react_feed(client, random.randint(*UPKEEP_REACT))
         stories = await _view_stories(client, random.randint(1, 2))
-        print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}")
+        suffix = (f", исследовал #{research['chat_id']} ({research['status']})"
+                  if research else "")
+        print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}{suffix}")
     except Exception as e:  # noqa: BLE001
         print(f"  [{who}] пассив: {e}")
     finally:

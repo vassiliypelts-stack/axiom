@@ -156,6 +156,7 @@ async def scan_one(client, target: str, chat_id: int | None, light: bool = False
     entity = await client.get_entity(target)
 
     title = getattr(entity, "title", None) or target
+    description = getattr(entity, "about", None)
     username = getattr(entity, "username", None)
     kind = _kind(entity)
     members = getattr(entity, "participants_count", None)
@@ -196,20 +197,20 @@ async def scan_one(client, target: str, chat_id: int | None, light: bool = False
             conn.execute(
                 # members_count через COALESCE: скан мог не добыть число (нет прав/сбой) —
                 # тогда сохраняем ранее известное, а не затираем нулём.
-                "UPDATE chats SET title=?, username=COALESCE(?,username), kind=?, "
+                "UPDATE chats SET title=?, username=COALESCE(?,username), description=COALESCE(?,description), kind=?, "
                 "members_count=COALESCE(?,members_count), "
                 "activity=?, can_write=?, members_visible=?, members_access=?, can_export_all=?, "
                 "tg_chat_id=COALESCE(?,tg_chat_id), status='analyzed', scan_error=NULL, "
                 "last_scanned_at=datetime('now') WHERE id=?",
-                (title, username, kind, members, activity, cw, mv, access, export_all, tg_id, cid),
+                (title, username, description, kind, members, activity, cw, mv, access, export_all, tg_id, cid),
             )
         else:
             cur = conn.execute(
-                "INSERT INTO chats (title, username, link, kind, members_count, activity, "
+                "INSERT INTO chats (title, username, link, description, kind, members_count, activity, "
                 "can_write, members_visible, members_access, can_export_all, tg_chat_id, "
                 "status, last_scanned_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'analyzed', datetime('now'))",
-                (title, username, link, kind, members, activity, cw, mv, access, export_all, tg_id),
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'analyzed', datetime('now'))",
+                (title, username, link, description, kind, members, activity, cw, mv, access, export_all, tg_id),
             )
             cid = cur.lastrowid
         if not light:
@@ -228,6 +229,9 @@ async def scan_one(client, target: str, chat_id: int | None, light: bool = False
         prof = enrich_chat(cid, title, sample, members, activity)
         if prof:
             topic, summary = prof.topic, prof.summary
+            with database.get_conn() as conn:
+                conn.execute("UPDATE chats SET topic=?, summary=?, enriched_at=datetime('now') WHERE id=?",
+                             (topic, summary, cid))
     except Exception as e:  # noqa: BLE001
         # Раньше это молча уходило в print, и провал AI (напр. протухший ключ → 401)
         # был не виден в пульте: чат просто оставался без темы. Теперь причина едет

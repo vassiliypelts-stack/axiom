@@ -409,6 +409,7 @@ _EXTRA_NICHE_COLS = {
 }
 
 _EXTRA_CHAT_COLS = {
+    "description": "TEXT",       # описание группы/канала из Telegram
     "can_write": "TEXT",         # да|только админы|ограничено|заблокирован|не вступил
     "members_visible": "TEXT",   # да|нет
     "in_account": "TEXT",        # yes = чат уже в личном аккаунте

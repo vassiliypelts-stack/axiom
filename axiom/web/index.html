@@ -1949,6 +1949,29 @@ async function renderParkHealth(){
   };
 }
 
+// Быстрый журнал из строки аккаунта. По умолчанию только сегодняшний день: именно
+// так оператор проверяет, что прогрев действительно живёт, не выискивая записи
+// среди истории прошлых ступеней.
+async function showWarmLogModal(id){
+  const modal=document.createElement("div");modal.className="org-mform-wrap";
+  modal.innerHTML='<div class="org-mform-inner" style="max-width:760px"><div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><b id="awl-title" style="font-size:17px">🧾 Действия прогрева</b><div class="hint" style="margin-top:4px">Фактические действия с точным временем — не план на будущее.</div></div><button class="awl-close">✕</button></div><div style="display:flex;gap:8px;align-items:center;margin:12px 0 8px"><button class="primary" id="awl-today">Сегодня</button><button id="awl-all">Все последние</button><span class="hint" id="awl-count"></span></div><div id="awl-list">загружаю…</div></div>';
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();modal.querySelector('.awl-close').onclick=close;modal.onclick=e=>{if(e.target===modal)close();};
+  let rows=[], todayOnly=true;
+  const sameDay=ts=>{const d=parseTs(ts),n=new Date();return d&&d.getFullYear()===n.getFullYear()&&d.getMonth()===n.getMonth()&&d.getDate()===n.getDate();};
+  const draw=()=>{const shown=todayOnly?rows.filter(x=>sameDay(x.ts)):rows;
+    modal.querySelector('#awl-count').textContent=shown.length?`${shown.length} действий`:'записей нет';
+    modal.querySelector('#awl-today').classList.toggle('primary',todayOnly);
+    modal.querySelector('#awl-all').classList.toggle('primary',!todayOnly);
+    modal.querySelector('#awl-list').innerHTML=shown.length?shown.map(x=>`<div style="display:grid;grid-template-columns:112px 1fr;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);font-size:13px"><b class="mono">${esc(fmt(x.ts))}</b><span>${esc(x.text||'')}</span></div>`).join(''):`<div class="hint" style="padding:12px 0">${todayOnly?'Сегодня прогрев ещё не выполнял действий.':'Записей пока нет.'}</div>`;};
+  modal.querySelector('#awl-today').onclick=()=>{todayOnly=true;draw();};
+  modal.querySelector('#awl-all').onclick=()=>{todayOnly=false;draw();};
+  try{const a=await api(`/api/account/${id}`);if(a.error)throw new Error(a.error);
+    modal.querySelector('#awl-title').textContent=`🧾 Прогрев: ${a.label||a.username||a.phone||('#'+id)}`;
+    rows=a.warm_actions||[];draw();
+  }catch(err){modal.querySelector('#awl-list').innerHTML='<div style="color:#c0392b">⚠ Не удалось загрузить журнал</div>';}
+}
+
 async function viewAgents(v){
   const a=await api("/api/accounts");
   const accPreset=localStorage.getItem("acc_preset")||"all";
@@ -2288,7 +2311,7 @@ async function viewAgents(v){
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
-      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.status==='warming'?` <button class="acc-warm-log" data-id="${r.id}" title="Открыть журнал действий прогрева">🧾</button>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
+      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}`},
       // Назначение: родной / служебный / боевой. Пустое acc_role сервер выводит сам
       // (по protected и флагам уведомителя), такие помечаем «авто» — видно, что
@@ -2397,6 +2420,7 @@ async function viewAgents(v){
         return `<span class="mono" style="font-size:11px;opacity:.75" title="дата загрузки аккаунта в AXIOM: ${esc(fmt(r.created_at))}">📥 ${d.toLocaleDateString("ru-RU")}</span>`
           +`<br><span style="font-size:11px;opacity:.6">${ago}</span>`;}},
       {key:"daily_limit",label:"Лимит/день",cls:"mono"},
+      {key:"warm_log",label:"Лог прогрева",render:r=>(r.acc_role||"combat")==="combat"?`<button class="acc-warm-log" data-id="${r.id}" title="Открыть журнал фактических действий прогрева">🧾 Лог</button>`:'<span class="no">—</span>'},
       // Раньше тут было удаление насовсем. Купленный аккаунт — это деньги, сессия и
       // история переписок, и стереть его одним промахом мыши нельзя. Теперь кнопка
       // прячет аккаунт в архив: из списка пропал, в БД остался.
@@ -2426,6 +2450,8 @@ async function viewAgents(v){
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
     const eye=e.target.closest(".acc-eye");
     if(eye){e.stopPropagation();showInspectModal(eye.dataset.id,eye.dataset.label);return;}
+    const warmLog=e.target.closest(".acc-warm-log");
+    if(warmLog){e.stopPropagation();showWarmLogModal(warmLog.dataset.id);return;}
     const pfx=e.target.closest(".acc-proxyfix");
     if(pfx){e.stopPropagation();
       const old=pfx.innerHTML;

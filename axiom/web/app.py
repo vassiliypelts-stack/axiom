@@ -1540,6 +1540,19 @@ def account_detail(acc_id: int) -> JSONResponse:
         d["warm_actions"] = [dict(r) for r in conn.execute(
             "SELECT text, ts FROM events WHERE account_id=? AND type='warm_action' "
             "ORDER BY id DESC LIMIT 80", (acc_id,))]
+        # План показываем ДО запуска, а не только ретроспективный лог: оператор
+        # сразу видит ожидаемую нагрузку следующей ступени и исследовательский слот.
+        try:
+            from channels.warmup import WARM_PLAN
+            stage = int(d.get("warm_stage") or 0)
+            plan = dict(WARM_PLAN.get(min(stage, max(WARM_PLAN)), WARM_PLAN[max(WARM_PLAN)]))
+            plan["stage"] = stage
+            plan["research"] = 5 <= stage <= 7
+            if plan["research"]:
+                plan["read"] = max(0, int(plan.get("read") or 0) - 1)
+            d["warm_next_plan"] = plan
+        except Exception:  # карточка не должна сломаться, если модуль недоступен
+            d["warm_next_plan"] = None
     return JSONResponse(d)
 
 
@@ -5891,6 +5904,38 @@ def chatcat_scan_progress() -> JSONResponse:
         return JSONResponse(json.loads(raw))
     except ValueError:
         return JSONResponse({"running": False})
+
+
+@app.get("/api/chatcat/research/summary")
+def chatcat_research_summary() -> JSONResponse:
+    """Очередь и журнал read-only исследования групп.
+
+    Этот endpoint намеренно не запускает Telegram-клиент: исследовательский
+    слот исполняется только внутри обычного прогрева на стадиях 5--7.
+    """
+    database.init_db()
+    with database.get_conn() as conn:
+        totals = conn.execute(
+            "SELECT COALESCE(research_status,'new') status, COUNT(*) count "
+            "FROM chats GROUP BY COALESCE(research_status,'new')"
+        ).fetchall()
+        recent = conn.execute(
+            "SELECT r.id, r.chat_id, r.account_id, r.status, r.error, r.created_at, r.finished_at, "
+            "c.title chat_title, COALESCE(a.label,a.username,a.phone,'#'||r.account_id) account_label "
+            "FROM chat_research_runs r JOIN chats c ON c.id=r.chat_id "
+            "LEFT JOIN accounts a ON a.id=r.account_id ORDER BY r.id DESC LIMIT 12"
+        ).fetchall()
+        assigned = conn.execute(
+            "SELECT c.id, c.title, c.username, c.research_assigned_at, "
+            "COALESCE(a.label,a.username,a.phone,'#'||c.research_account_id) account_label "
+            "FROM chats c LEFT JOIN accounts a ON a.id=c.research_account_id "
+            "WHERE c.research_status='assigned' ORDER BY c.research_assigned_at LIMIT 20"
+        ).fetchall()
+    return JSONResponse({
+        "totals": {r["status"]: r["count"] for r in totals},
+        "assigned": [dict(r) for r in assigned],
+        "recent": [dict(r) for r in recent],
+    })
 
 
 @app.get("/api/chatcat/quality")
@@ -10274,6 +10319,18 @@ def warmup_settings_get() -> JSONResponse:
             "ca_mix": database.get_setting(conn, "warm_ca_mix", "off") == "on",
             "last_run": database.get_setting(conn, "warm_last_run", None),
         })
+
+
+@app.get("/api/warmup/actions")
+def warmup_actions(limit: int = 400) -> JSONResponse:
+    """Единая лента фактических действий прогрева для операторского пульта."""
+    limit = max(1, min(int(limit), 1000))
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT e.account_id, e.text, e.ts, COALESCE(a.label,a.username,a.phone,'#'||e.account_id) account_label "
+            "FROM events e LEFT JOIN accounts a ON a.id=e.account_id WHERE e.type='warm_action' "
+            "ORDER BY e.id DESC LIMIT ?", (limit,)).fetchall()
+    return JSONResponse({"actions": [dict(r) for r in rows]})
 
 
 @app.post("/api/warmup/run_now")

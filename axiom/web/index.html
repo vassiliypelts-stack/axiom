@@ -2068,6 +2068,7 @@ async function viewAgents(v){
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
         <button id="wa-save">сохранить</button>
         <button class="primary" id="wa-run">Прогреть всех сейчас</button>
+        <button id="wa-log">🧾 Журнал всех прогревов</button>
         <button id="wa-stop" title="Остановить текущий фоновый прогрев">⏹ Стоп</button>
         <span class="hint" id="wa-msg"></span>
       </div>
@@ -2243,6 +2244,15 @@ async function viewAgents(v){
     const r=await api("/api/settings/notify_target",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:$("#ntf-target").value.trim()})});
     $("#ntf-msg").textContent=r.target?"✓ сохранено — уведомления пойдут на "+r.target:"✓ сохранено — получатель очищен, уведомления не уходят";};
   // ── автопрогрев: глобальные настройки + запуск всех в фоне ──
+  window.openWarmActionLog=async()=>{
+    const wrap=document.createElement("div");wrap.className="org-mform-wrap";
+    wrap.innerHTML='<div class="org-mform-inner" style="max-width:780px"><div style="display:flex;justify-content:space-between;gap:12px"><b style="font-size:17px">🧾 Журнал всех прогревов</b><button class="wl-close">✕</button></div><div class="hint" style="margin:6px 0 10px">Фактические действия с точным временем. Новые записи появляются во время следующего прогона.</div><select id="wl-account" style="margin-bottom:8px"><option value="">Все аккаунты</option></select><div id="wl-list">загружаю…</div></div>';
+    document.body.appendChild(wrap);const close=()=>wrap.remove();wrap.querySelector('.wl-close').onclick=close;wrap.onclick=e=>{if(e.target===wrap)close();};
+    const d=await api('/api/warmup/actions');const rows=d.actions||[], sel=wrap.querySelector('#wl-account'), list=wrap.querySelector('#wl-list');
+    const accounts=[...new Map(rows.map(x=>[x.account_id,x.account_label])).entries()];sel.insertAdjacentHTML('beforeend',accounts.map(([id,name])=>`<option value="${id}">${esc(name)}</option>`).join(''));
+    const draw=()=>{const id=sel.value, shown=rows.filter(x=>!id||String(x.account_id)===id);list.innerHTML=shown.length?shown.map(x=>`<div style="padding:7px 2px;border-bottom:1px solid var(--border);font-size:13px"><b>${fmt(x.ts)}</b> · <span class="badge b-nurture">${esc(x.account_label)}</span> · ${esc(x.text||'')}</div>`).join(''):'<div class="hint">Записей пока нет.</div>';};sel.onchange=draw;draw();
+  };
+  const wl=$("#wa-log");if(wl)wl.onclick=()=>openWarmActionLog();
   api("/api/warmup/settings").then(s=>{const c=$("#wa-auto"),i=$("#wa-int"),m=$("#wa-msg");
     if(c)c.checked=!!s.auto; if(i)i.value=s.interval_h||24;
     if(s.last_run&&m)m.textContent="последний заход: "+s.last_run;});
@@ -5846,6 +5856,21 @@ function ccScanWire(){
   ccScanPoll();
 }
 
+async function ccResearchSummary(){
+  const box=$("#cc-research");if(!box)return;
+  try{
+    const d=await api("/api/chatcat/research/summary"),t=d.totals||{};
+    const badge=(name,n,cls)=>n?`<span class="badge b-${cls}">${name}: ${n}</span>`:"";
+    const assigned=(d.assigned||[]).map(x=>`<div class="sub">${esc(x.chat_title||x.username||("чат #"+x.id))} → <b>${esc(x.account_label||"—")}</b>${x.research_assigned_at?" · "+fmt(x.research_assigned_at):""}</div>`).join("");
+    const recent=(d.recent||[]).slice(0,6).map(x=>`<div class="sub">${esc(x.chat_title||("чат #"+x.chat_id))} · ${esc(x.account_label||"—")} · ${esc(x.status)}${x.error?" · ⚠ "+esc(x.error):""}</div>`).join("");
+    box.innerHTML=`<b style="font-size:13px">🔬 Исследование групп в прогреве</b>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">${badge("в очереди",t.new||0,"nurture")}${badge("назначено",t.assigned||0,"nurture")}${badge("готово",t.done||0,"active")}${badge("повторить",t.retry||0,"stop")}${badge("недоступно",t.unavailable||0,"stop")}</div>
+      <div class="hint">На стадиях прогрева 5–7 аккаунт берёт не более одной публичной группы: только читает её, никуда не вступает и ничего не отправляет.</div>
+      ${assigned?`<div style="margin-top:8px"><b class="hint">Сейчас назначено</b>${assigned}</div>`:""}
+      ${recent?`<div style="margin-top:8px"><b class="hint">Последние результаты</b>${recent}</div>`:""}`;
+  }catch(e){box.textContent="Не удалось загрузить очередь исследования.";}
+}
+
 async function viewChatCatalog(v){
   CHATCAT=await api("/api/chatcat");
   let niches=[];try{niches=await api("/api/niches");}catch(e){}
@@ -5935,6 +5960,7 @@ async function viewChatCatalog(v){
     </div>
 
     <div class="cc-tab" data-tab="scan" style="display:none">
+      <div class="card" id="cc-research" style="padding:14px;margin-bottom:12px">загружаю очередь исследования…</div>
       <div class="card" style="padding:14px">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <b style="font-size:13px">📊 Проверка чатов</b>
@@ -5954,6 +5980,7 @@ async function viewChatCatalog(v){
   });
   loadCoverage();
   ccScanWire();
+  ccResearchSummary();
   ccRenderVerdictSummary();
   ccFilterWire();
   // «и сразу вступить» — общий для поиска / bio-скана / похожих

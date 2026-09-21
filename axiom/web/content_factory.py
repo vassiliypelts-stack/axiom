@@ -280,9 +280,49 @@ def content_video_sources() -> JSONResponse:
     base = _video_factory_dir()
     if base is None:
         return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
-    sources = _read_json(base / "config" / "sources.json", {"youtube_channels": []})
+    sources = _read_json(base / "config" / "sources.json", {"youtube_channels": [], "donors": []})
     queue = _read_json(base / "data" / "queue-state.json", {"items": []})
-    return JSONResponse({"channels": sources.get("youtube_channels", []), "donors": queue.get("items", [])[::-1]})
+    legacy = [
+        {"platform": "youtube", "name": x.get("name", "Без имени"),
+         "url": x.get("shorts_url", ""), "daily_limit": x.get("daily_limit", 0),
+         "enabled": x.get("enabled", True)}
+        for x in sources.get("youtube_channels", [])
+    ]
+    return JSONResponse({"channels": [*legacy, *sources.get("donors", [])],
+                         "donors": queue.get("items", [])[::-1]})
+
+
+@router.post("/api/content/video/sources")
+def content_video_add_source(body: dict = Body(...)) -> JSONResponse:
+    """Save a donor account. Adding it does not download or reuse any video."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    platform = str(body.get("platform", "")).strip().lower()
+    name = str(body.get("name", "")).strip()
+    url = str(body.get("url", "")).strip()
+    if platform not in {"youtube", "instagram"}:
+        return JSONResponse({"error": "Выберите YouTube или Instagram."}, status_code=400)
+    if not name or not url.startswith(("https://", "http://")):
+        return JSONResponse({"error": "Укажите название и корректную ссылку https://."}, status_code=400)
+    if platform == "youtube" and "youtube." not in url and "youtu.be" not in url:
+        return JSONResponse({"error": "Для YouTube нужна ссылка на YouTube."}, status_code=400)
+    if platform == "instagram" and "instagram.com" not in url:
+        return JSONResponse({"error": "Для Instagram нужна ссылка на Instagram."}, status_code=400)
+    try:
+        daily_limit = max(1, min(20, int(body.get("daily_limit", 3))))
+    except (TypeError, ValueError):
+        daily_limit = 3
+    path = base / "config" / "sources.json"
+    sources = _read_json(path, {"youtube_channels": [], "donors": []})
+    entries = sources.setdefault("donors", [])
+    if any(str(x.get("url", "")).rstrip("/") == url.rstrip("/") for x in entries):
+        return JSONResponse({"error": "Этот донор уже есть в списке."}, status_code=409)
+    item = {"id": f"{platform}-{uuid.uuid4().hex[:10]}", "platform": platform,
+            "name": name, "url": url, "daily_limit": daily_limit, "enabled": True}
+    entries.append(item)
+    _write_json(path, sources)
+    return JSONResponse({"ok": True, "item": item})
 
 
 @router.get("/api/content/video/plan")

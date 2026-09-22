@@ -433,6 +433,45 @@ CTA: {brief['cta']}
     return JSONResponse({"ok": True, "item": item, "script": script})
 
 
+@router.post("/api/content/video/analyze-donor")
+def content_video_analyze_donor(body: dict = Body(...)) -> JSONResponse:
+    """Explicit editorial analysis of a donor link; never downloads or copies it."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    url = str(body.get("url", "")).strip()
+    notes = str(body.get("notes", "")).strip()
+    if not url.startswith(("https://", "http://")):
+        return JSONResponse({"error": "Добавьте ссылку на конкретный ролик донора."}, status_code=400)
+    model = os.getenv("DEEPSEEK_EDITORIAL_MODEL", "deepseek:deepseek-chat")
+    if ":" not in model:
+        model = f"deepseek:{model}"
+    if not llm.available(model):
+        return JSONResponse({"error": "DeepSeek не подключён."}, status_code=400)
+    prompt = f"""Разбери донорский короткий ролик только по описанию и заметкам ниже. Не выдумывай, что видел ролик; неизвестное помечай «нужна проверка». Не копируй фразы и сценарий.
+Ссылка: {url}
+Заметки пользователя: {notes or 'нет'}
+Верни компактно по разделам: ТЕМА; HOOK первых 3 секунд; СТРУКТУРА удержания; ВИЗУАЛ/МОНТАЖ; CTA/ВОРОНКА; ЧТО БЕРЁМ КАК МЕХАНИКУ; ЧТО НЕЛЬЗЯ КОПИРОВАТЬ; ОРИГИНАЛЬНЫЙ УГОЛ для Axiom."""
+    try:
+        analysis = llm.text(model, system="Ты редактор-аналитик коротких видео. Анализируй механику, а не копируй чужое произведение.", messages=[{"role": "user", "content": prompt}], max_tokens=1000, timeout=90)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"Не удалось разобрать донора: {exc}"}, status_code=502)
+    path = base / "data" / "donor-analyses.json"
+    saved = _read_json(path, {"items": []})
+    item = {"id": f"donor-{uuid.uuid4().hex[:12]}", "created_at": datetime.now(timezone.utc).isoformat(), "url": url, "notes": notes, "analysis": analysis, "model": model}
+    saved.setdefault("items", []).append(item)
+    _write_json(path, saved)
+    return JSONResponse({"ok": True, "item": item})
+
+
+@router.get("/api/content/video/donor-analyses")
+def content_video_donor_analyses() -> JSONResponse:
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    return JSONResponse({"items": _read_json(base / "data" / "donor-analyses.json", {"items": []}).get("items", [])[-12:][::-1]})
+
+
 @router.get("/api/content/video/scripts")
 def content_video_scripts() -> JSONResponse:
     base = _video_factory_dir()

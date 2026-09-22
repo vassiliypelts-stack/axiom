@@ -233,6 +233,24 @@ CREATE TABLE IF NOT EXISTS account_chats (
     UNIQUE(account_id, chat_id)
 );
 
+-- Личная записная книжка конкретного Telegram-аккаунта. Не смешиваем её с
+-- общей CRM: один и тот же человек может быть контактом у нескольких аккаунтов.
+CREATE TABLE IF NOT EXISTS account_story_contacts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      INTEGER NOT NULL,
+    tg_user_id      INTEGER NOT NULL,
+    username        TEXT,
+    name            TEXT,
+    contact_id      INTEGER,
+    first_seen_at   TEXT DEFAULT (datetime('now')),
+    last_story_at   TEXT,
+    last_reaction_at TEXT,
+    last_action     TEXT,
+    note            TEXT,
+    UNIQUE(account_id, tg_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_account_story_contacts_account ON account_story_contacts(account_id, last_story_at);
+
 -- История read-only исследования: кто проверил каталог и какой получен результат.
 -- Не заменяет account_chats: участие в чате и ответственность за проверку различны.
 CREATE TABLE IF NOT EXISTS chat_research_runs (

@@ -336,13 +336,15 @@ async def _setup_profile(client, acc: dict, force: bool = False) -> list[str]:
     return done
 
 
-async def _view_stories(client, n: int) -> int:
+async def _view_stories(client, n: int, account_id: int | None = None) -> int:
     """Посмотреть и «прочитать» сторис из ленты (ещё живее). Best-effort —
     если версия Telethon без stories API, тихо пропускаем."""
     if n <= 0:
         return 0
     try:
         from telethon.tl.functions.stories import GetPeerStoriesRequest, ReadStoriesRequest
+        from telethon.tl.functions.contacts import AddContactRequest
+        from telethon.tl.types import User
     except Exception:  # noqa: BLE001
         return 0
     done = 0
@@ -351,10 +353,36 @@ async def _view_stories(client, n: int) -> int:
             if done >= n:
                 break
             try:
+                # Сториз групп/каналов не является личным знакомством. В личную
+                # книжку кладём только реальных пользователей, уже видимых в ленте.
+                if not isinstance(d.entity, User):
+                    continue
                 res = await client(GetPeerStoriesRequest(peer=d.entity))
                 items = getattr(getattr(res, "stories", None), "stories", None) or []
                 if items:
                     await client(ReadStoriesRequest(peer=d.entity, max_id=max(s.id for s in items)))
+                    if account_id:
+                        name = " ".join(x for x in [getattr(d.entity, "first_name", ""),
+                                                       getattr(d.entity, "last_name", "")] if x).strip()
+                        # Telegram разрешает добавить уже известного пользователя
+                        # в контакты без номера; номер не передаём и не раскрываем.
+                        try:
+                            await client(AddContactRequest(id=d.entity, first_name=getattr(d.entity, "first_name", "") or "Контакт",
+                                                           last_name=getattr(d.entity, "last_name", "") or "", phone=""))
+                            action = "contact_added"
+                        except Exception:
+                            action = "story_seen"
+                        with database.get_conn() as conn:
+                            contact_id = database.upsert_contact(conn, source="story_seen", tg_user_id=d.entity.id,
+                                                                 username=getattr(d.entity, "username", None), name=name,
+                                                                 tags="story_seen")
+                            conn.execute(
+                                "INSERT INTO account_story_contacts (account_id,tg_user_id,username,name,contact_id,last_story_at,last_action) "
+                                "VALUES (?,?,?,?,?,datetime('now'),?) "
+                                "ON CONFLICT(account_id,tg_user_id) DO UPDATE SET username=excluded.username, "
+                                "name=excluded.name, contact_id=excluded.contact_id, last_story_at=datetime('now'), last_action=excluded.last_action",
+                                (account_id, d.entity.id, getattr(d.entity, "username", None), name, contact_id, action),
+                            )
                     done += 1
                     print(f"  смотрю сторис «{getattr(d.entity, 'title', getattr(d, 'name', '?'))}»")
                     await asyncio.sleep(random.uniform(2.0, 6.0))
@@ -664,7 +692,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
         audit(f"поставил реакции: {reacts} постов")
 
     # 4b) смотрим сторис из ленты (ещё живее)
-    stories = await _view_stories(client, plan.get("react", 1))
+    stories = await _view_stories(client, plan.get("react", 1), acc["id"])
     if stories:
         audit(f"посмотрел сторис: {stories}")
 
@@ -803,7 +831,7 @@ async def _upkeep_passive(acc: dict) -> None:
             print(f"  [{who}] исследование: {type(exc).__name__}: {exc}")
         reads = await _read_feed(client, random.randint(*UPKEEP_READ))
         reacts = await _react_feed(client, random.randint(*UPKEEP_REACT))
-        stories = await _view_stories(client, random.randint(1, 2))
+        stories = await _view_stories(client, random.randint(1, 2), acc["id"])
         suffix = (f", исследовал #{research['chat_id']} ({research['status']})"
                   if research else "")
         print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}{suffix}")

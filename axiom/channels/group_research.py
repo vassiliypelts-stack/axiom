@@ -128,8 +128,21 @@ async def run_one(client, account_id: int) -> dict | None:
             unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
             state = "unavailable" if unavailable else "retry"
             with database.get_conn() as conn:
-                conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",
-                             (state, reason, task["id"]))
+                if unavailable:
+                    # Это не временный сбой: Telegram подтвердил, что объекта по
+                    # ссылке нет. Ставим итог и в основной карточке, чтобы чат
+                    # исчез из рабочих фильтров, а причина осталась проверяемой.
+                    conn.execute(
+                        "UPDATE chats SET research_status='unavailable', research_error=?, "
+                        "research_finished_at=datetime('now'), research_rating=5, "
+                        "research_rating_reason='ссылка не существует или больше не актуальна', "
+                        "verdict='мёртвый', verdict_src='скан', verdict_at=datetime('now'), "
+                        "scan_error=?, status='skip' WHERE id=?",
+                        (reason, reason, task["id"]),
+                    )
+                else:
+                    conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",
+                                 (state, reason, task["id"]))
                 conn.execute("UPDATE chat_research_runs SET status=?, error=?, finished_at=datetime('now') WHERE id=?",
                              (state, reason, task["run_id"]))
             if not unavailable:

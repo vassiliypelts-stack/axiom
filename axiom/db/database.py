@@ -459,6 +459,10 @@ _EXTRA_CHAT_COLS = {
     "research_assigned_at": "TEXT",
     "research_finished_at": "TEXT",
     "research_error": "TEXT",
+    # Итоговая шкала ТЗ исследования: 1 живая, 2 полуживая, 3 мусорная,
+    # 4 мёртвая/спам, 5 объекта по ссылке больше не существует.
+    "research_rating": "INTEGER",
+    "research_rating_reason": "TEXT",
     # ─── Инкрементальный парсинг (channels/tg_parser.py, режим active) ───────────
     # Та же идея, что kw_last_id/kw_scanned_at у прослушки по ключам, но отдельная
     # watermark: прослушка идёт непрерывно фоном и по всем нишам разом, а парсинг —

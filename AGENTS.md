@@ -10,3 +10,8 @@
 - Боевые: YouTube `https://www.youtube.com/@therealvassiliy`, Instagram `https://www.instagram.com/therealvassiliy/`, VK `https://vk.ru/therealvassiliy`.
 - Тестовые: YouTube `https://youtube.com/channel/UCU5Irbu8VIWP-fgJ3bcE4Eg`, Instagram `https://www.instagram.com/realvasiliy/`, VK `https://vk.ru/blagorussinvest`.
 - Не путать боевые и тестовые площадки; любую первую автоматическую выкладку направлять только в тестовые после OAuth-подключения владельцем.
+
+## Домен и OAuth
+
+- Пока Axiom работает только по `http://34.12.128.70:8000/`. Для OAuth-публикации YouTube/Instagram нужен домен с HTTPS; IP-адрес не использовать как OAuth redirect URI.
+- Кандидат пользователя: `neiro365.ru`. На 2026-09-22 DNS домена указывает на `31.177.76.32` и `31.177.80.32`, а не на Axiom; перенос A-записи на `34.12.128.70` делать только после подтверждения владельца/доступа к DNS.

@@ -600,6 +600,66 @@ def content_video_analyze_donor(body: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "item": item})
 
 
+@router.post("/api/content/video/analyze-donor-file")
+async def content_video_analyze_donor_file(file: UploadFile = File(...), source_url: str = Form(""), visual_notes: str = Form("")) -> JSONResponse:
+    """Transcribe an authorised donor MP4 before analysis; it never republishes the source."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    filename = Path(file.filename or "donor.mp4").name
+    if Path(filename).suffix.lower() != ".mp4":
+        return JSONResponse({"error": "Для фактического разбора загрузите MP4."}, status_code=400)
+    incoming = base / "intake" / "donor-analysis"
+    incoming.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:12]
+    video_path = incoming / f"donor-{token}.mp4"
+    try:
+        with video_path.open("wb") as output:
+            shutil.copyfileobj(file.file, output, length=1024 * 1024)
+    finally:
+        await file.close()
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        video_path.unlink(missing_ok=True)
+        return JSONResponse({"error": "Файл пустой."}, status_code=400)
+    if video_path.stat().st_size > 500 * 1024 * 1024:
+        video_path.unlink(missing_ok=True)
+        return JSONResponse({"error": "Лимит MP4 для разбора — 500 МБ."}, status_code=400)
+    transcript_path = base / "artifacts" / "transcripts" / f"donor-{token}.json"
+    try:
+        result = await run_in_threadpool(subprocess.run,
+            [sys.executable, "-m", "app.media.transcribe", str(video_path), str(transcript_path), "--model", "base"],
+            cwd=base, capture_output=True, text=True, encoding="utf-8", timeout=600, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return JSONResponse({"error": f"Не удалось запустить расшифровку: {exc}"}, status_code=502)
+    if result.returncode != 0 or not transcript_path.exists():
+        return JSONResponse({"error": f"Расшифровка не завершилась: {(result.stderr or result.stdout).strip()[-700:]}"}, status_code=502)
+    transcript_payload = _read_json(transcript_path, {})
+    transcript = " ".join(str(x.get("text", "")).strip() for x in transcript_payload.get("segments", [])).strip()
+    if not transcript:
+        return JSONResponse({"error": "В речи ролика не найден текст. Добавьте визуальные заметки и разберите ссылкой."}, status_code=400)
+    model = os.getenv("DEEPSEEK_EDITORIAL_MODEL", "deepseek:deepseek-chat")
+    if ":" not in model:
+        model = f"deepseek:{model}"
+    if not llm.available(model):
+        return JSONResponse({"error": "DeepSeek не подключён."}, status_code=400)
+    origin = source_url.strip() or f"локальный MP4: {filename}"
+    notes = f"ФАКТИЧЕСКАЯ РАСШИФРОВКА: {transcript}\nВИЗУАЛЬНЫЕ ЗАМЕТКИ: {visual_notes.strip() or 'не добавлены'}"
+    prompt = f"""Разбери донорский короткий ролик по фактической расшифровке и визуальным заметкам. Не выдумывай невидимые кадры. Не копируй фразы и сценарий.
+Источник: {origin}
+{notes}
+Верни компактно по разделам: ТЕМА; HOOK первых 3 секунд; СТРУКТУРА удержания; ВИЗУАЛ/МОНТАЖ; CTA/ВОРОНКА; ЧТО БЕРЁМ КАК МЕХАНИКУ; ЧТО НЕЛЬЗЯ КОПИРОВАТЬ; ОРИГИНАЛЬНЫЙ УГОЛ для Axiom."""
+    try:
+        analysis = await run_in_threadpool(llm.text, model, system="Ты редактор-аналитик коротких видео. Анализируй механику, а не копируй чужое произведение.", messages=[{"role": "user", "content": prompt}], max_tokens=1000, timeout=90)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"Не удалось разобрать донора: {exc}"}, status_code=502)
+    path = base / "data" / "donor-analyses.json"
+    saved = _read_json(path, {"items": []})
+    item = {"id": f"donor-{uuid.uuid4().hex[:12]}", "created_at": datetime.now(timezone.utc).isoformat(), "url": source_url.strip(), "notes": visual_notes.strip(), "analysis": analysis, "model": model, "transcript_path": str(transcript_path.relative_to(base)), "transcript": transcript}
+    saved.setdefault("items", []).append(item)
+    _write_json(path, saved)
+    return JSONResponse({"ok": True, "item": item, "analysis": analysis})
+
+
 @router.get("/api/content/video/donor-analyses")
 def content_video_donor_analyses() -> JSONResponse:
     base = _video_factory_dir()

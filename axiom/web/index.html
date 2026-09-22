@@ -213,6 +213,15 @@
   .clp>*:not(.dash-chh){display:none!important;}
   .clp .dash-chh{margin-bottom:0;}
   .clp .caret{transform:rotate(-90deg);}
+  /* Сворачивание карточек без .dash-chh (панели «Аккаунтов»): шапкой служит первая
+     строка карточки, помеченная .cardh. Экран начинался семью развёрнутыми блоками,
+     и таблица уходила за нижний край — оператор каждый раз пролистывал мимо того,
+     чем пользуется раз в неделю. */
+  .cardh{cursor:pointer;user-select:none;}
+  .cardh .caret{margin-left:8px;color:var(--muted);font-size:11px;transition:transform .15s;flex:none;}
+  .clp>*:not(.cardh){display:none!important;}
+  .clp>.cardh{margin-bottom:0!important;}
+  .clp .cardh .caret{transform:rotate(-90deg);}
   .dash-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(106px,1fr));gap:10px;}
   .dtile{background:color-mix(in srgb,var(--panel2) 72%,transparent);border:1px solid var(--border);border-radius:13px;padding:13px 14px;position:relative;overflow:hidden;cursor:pointer;transition:transform .18s,border-color .25s;}
   .dtile:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 40%,transparent);}
@@ -1241,6 +1250,37 @@ function wireCollapse(scope){
   });
 }
 
+// Сворачивание панелей, у которых нет шапки .dash-chh (экран «Аккаунты»): шапкой
+// назначаем первую строку карточки. Состояние живёт в localStorage под ключом из
+// заголовка, поэтому переживает ре-рендер и перезаход — свернул однажды, и блок
+// больше не мозолит глаза. Кнопки внутри шапки продолжают работать: клик по ним
+// до сворачивания не доходит.
+function wireCardCollapse(scope,defaults){
+  (scope||document).querySelectorAll(".cardh").forEach(h=>{
+    if(h.dataset.clp)return;
+    h.dataset.clp="1";
+    const card=h.closest(".card");if(!card)return;
+    const title=((h.querySelector("b")||{}).textContent||"").trim();
+    if(!title)return;
+    const key="axiom_clpc_"+title;
+    if(!h.querySelector(".caret")){
+      const c=document.createElement("span");c.className="caret";c.textContent="▾";
+      (h.lastElementChild&&h.lastElementChild.classList.contains("ttoolbar")
+        ? h.insertBefore(c,h.lastElementChild) : h.appendChild(c));
+    }
+    // Свёрнуто по умолчанию — для панелей, которые нужны редко. Явный выбор
+    // оператора (в localStorage) всегда важнее умолчания.
+    let saved=null;try{saved=localStorage.getItem(key);}catch(e){}
+    const def=(defaults||[]).some(t=>title.indexOf(t)>=0);
+    if(saved==="1"||(saved===null&&def))card.classList.add("clp");
+    h.addEventListener("click",e=>{
+      if(e.target.closest("a,button,input,select,textarea,label"))return;
+      card.classList.toggle("clp");
+      try{localStorage.setItem(key,card.classList.contains("clp")?"1":"0");}catch(e){}
+    });
+  });
+}
+
 // ----------------------------------------------------------------- views
 // Задачи на сегодня: то, что планировщик собирается сделать за тебя — напомнить о
 // встрече, дожать молчуна, вернуть не дошедшего. Расчёт (scheduler.collect_due) был
@@ -1772,7 +1812,7 @@ async function loadTwofa(){
       <span class="hint" style="margin-left:8px">облачный пароль стоит везде — продавец не уведёт аккаунт по SMS</span></div>`;
     return;}
   box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
-    <b>🔓 Без защиты: ${d.at_risk} аккаунт(ов)</b>${d.protected?` · с паролем: ${d.protected}`:""}
+    <div class="cardh" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>🔓 Без защиты: ${d.at_risk} аккаунт(ов)</b>${d.protected?`<span class="sub">· с паролем: ${d.protected}</span>`:""}</div>
     <div class="hint" style="margin:6px 0">У купленного аккаунта номер остаётся у продавца. Пока нет облачного пароля, он входит по SMS и завершает наши сеансы — аккаунт уходит вместе со всей перепиской. С паролем ему придётся ждать сброса неделю.</div>
     <div class="hint" style="margin-bottom:8px">${d.unprotected.slice(0,10).map(x=>esc(x.label||x.phone||("#"+x.id))).join(" · ")}${d.at_risk>10?` …и ещё ${d.at_risk-10}`:""}</div>
     <div class="ttoolbar" style="margin:0">
@@ -1896,7 +1936,7 @@ async function loadProxyCheck(){
     return;}
   const nm=x=>esc(x.label||x.phone||("#"+x.id));
   box.innerHTML=`<div class="card" style="padding:11px 13px;border-left:3px solid #c0392b">
-    <b>🕸 Прокси пересекаются</b>
+    <div class="cardh" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b>🕸 Прокси пересекаются</b></div>
     <div class="hint" style="margin:6px 0">Сессия, которую Telegram увидел с двух адресов, сгорает навсегда — так уже потеряны три аккаунта. Один прокси = один аккаунт, иначе рано или поздно повторится.</div>
     ${(d.shared||[]).map(g=>`<div style="padding:6px 0;border-top:1px solid var(--border)">
       <span class="badge b-stop">${esc(g.address)}</span>
@@ -1919,7 +1959,7 @@ async function renderParkHealth(){
     `<span class="badge" style="background:${color}22;color:${color};border-color:${color}55" title="${esc(title||"")}">${label}: ${n}</span>`;
   const pct=h.total?Math.round((c.ready||0)*100/h.total):0;
   box.innerHTML=`<div class="card" style="padding:12px 14px">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+    <div class="cardh" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
       <div>
         <b style="font-size:14px">🩺 Здоровье парка</b>
         <span class="sub" style="margin-left:8px">готовы к работе <b style="color:${pct>50?"var(--green)":"#c0392b"}">${c.ready||0}</b> из ${h.total}</span>
@@ -1991,7 +2031,7 @@ async function viewAgents(v){
     <div id="acc-spare" style="margin-bottom:12px"></div>
     <div id="acc-proxy" style="margin-bottom:12px"></div>
     <div class="card" style="margin-bottom:12px;padding:10px 12px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div class="cardh" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>🔑 Завести купленные аккаунты</b>
         <input type="file" id="ak-file" accept=".txt,.zip" style="max-width:260px">
         <select id="ak-status" style="max-width:150px">
@@ -2020,7 +2060,7 @@ async function viewAgents(v){
     <div class="ttoolbar" style="margin:0 0 12px"><button id="a-health">Проверить аккаунты (@SpamBot)</button>
       <span class="hint">аккаунты сами спросят @SpamBot про ограничения — статус появится в колонке «Подключение» через ~минуту (обнови)</span></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="cardh" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🫀 Живость аккаунтов</b>
         <button class="primary" id="a-sess" title="Реальный вход каждой сессией в Telegram (get_me) — покажет, кто ещё наш, у кого сессия слетела и кого забанили. Колонка «Живость» ниже">🫀 Проверить живость всех</button>
         <span id="a-sess-sum">${accLiveSummary(a)}</span>
@@ -2058,7 +2098,7 @@ async function viewAgents(v){
       </div>
       <div class="hint" style="margin-top:8px">Как только человек согласился на конкретное время, агент сразу присылает ему эту ссылку. Пока поле пустое, встреча фиксируется <b>без адреса подключения</b> — в колокольчик падает «📅 Встреча назначена (без ссылки)», и ссылку придётся отправлять руками. Заведи в Телемосте постоянную комнату и вставь её сюда.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="cardh" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🔔 Уведомления о встречах</b>
         <span class="hint">кому слать в личку, когда агент договорился о звонке</span>
         <input id="ntf-target" type="text" placeholder="+79137876067, +77027417272, @ник" style="max-width:340px">
@@ -2069,7 +2109,7 @@ async function viewAgents(v){
       Отправитель назначается кнопкой «🔔 назначить» в колонке «Уведомляет о встречах» в таблице ниже — обычно «родной» номер, чтобы сообщение выглядело как обычная переписка. Если назначенный отправитель умрёт, система сама возьмёт следующий живой аккаунт и попробует им — раньше в этом случае уведомления просто молча переставали доходить. Если не дошло вообще никому, в колокольчик падает красная тревога.</div></div>
     </details>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="cardh" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">Автопрогрев</b>
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="wa-auto"> в фоне, ступень каждые</label>
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
@@ -2081,7 +2121,7 @@ async function viewAgents(v){
       </div>
       <div class="hint" style="margin-top:8px">Фон двигает каждый аккаунт в статусе «прогрев» на +1 ступень за заход (~2 недели до «активен»). Прогресс — в колонке «Прогрев» ниже. Человекоподобный темп: первые дни только пассив (каналы/чтение/лайки/онлайн), ЛС позже и плавно. Греем ТОЛЬКО с живым прокси — без прокси/с мёртвым аккаунт пропускается (раздай прокси кнопкой «🆓 Бесплатный прокси» ниже).</div></div>
     <div id="acc-bulk" class="card" style="margin:0 0 12px;background:var(--panel2);padding:10px">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="cardh" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <b style="font-size:13px">Массово (<span id="ab-cnt">0</span>):</b>
         <button id="ab-selall" title="выделить все строки, что сейчас видны после фильтра/поиска">Выделить всё</button>
         <button id="ab-selnone" title="снять выделение со всех">Снять</button>
@@ -2127,11 +2167,19 @@ async function viewAgents(v){
     </div>
     <div id="acc-tbl"></div>`;
   v.querySelectorAll(".acc-preset").forEach(b=>b.onclick=()=>{localStorage.setItem("acc_preset",b.dataset.preset);route();});
-  renderParkHealth();
-  loadIdentityCheck();
-  loadTwofa();
+  // Панели сворачиваются кликом по заголовку. По умолчанию свёрнуто всё, кроме
+  // «Здоровья парка» и «Массово»: остальное — разовые операции (завести партию,
+  // раздать пароли, настроить прогрев), из-за которых таблица уезжала за экран.
+  // Часть блоков приходит из async-загрузчиков, поэтому вызываем и после них.
+  const CLP_DEF=["Завести купленные","Живость аккаунтов","Уведомления о встречах",
+                 "Автопрогрев","Без защиты","Прокси пересекаются"];
+  const clp=()=>wireCardCollapse(v,CLP_DEF);
+  clp();
+  renderParkHealth().then(clp,clp);
+  loadIdentityCheck().then(clp,clp);
+  loadTwofa().then(clp,clp);
   loadSpare();
-  loadProxyCheck();
+  loadProxyCheck().then(clp,clp);
   const akGo=$("#ak-go");
   if(akGo)akGo.onclick=async()=>{
     const f=$("#ak-file").files[0],m=$("#ak-msg");

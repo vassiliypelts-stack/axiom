@@ -3775,6 +3775,7 @@ async function viewContentVideo(v){
   }
   const c=s.counts||{}, queue=s.queue||[], waitingJobs=(jobs.items||[]).filter(x=>x.status==="waiting_mp4");
   const jobOptions=waitingJobs.map(x=>`<option value="${esc(x.id)}">${esc(x.brief?.topic||x.id)}</option>`).join("");
+  const productionBlock=(jobs.items||[]).slice(0,4).map(x=>`<div class="cf-find"><b>${esc(x.brief?.topic||"Задача на монтаж")}</b><div class="sub">${x.status==="waiting_mp4"?"Нужен готовый MP4 — выберите эту задачу при загрузке ниже.":x.status==="review_mp4"?"MP4 загружен и ждёт вашего одобрения.":esc(x.status||"")}</div></div>`).join("");
   const active=queue.find(x=>x.source==="upload"&&!x.published)||queue[0];
   const nextAction=active?(active.approved?`<button class="cf-chip vc-publish-pack" data-vseq="${active.sequence}">Следующее: подготовить публикацию</button>`:active.local_path?`<button class="cf-chip vc-approve" data-vseq="${active.sequence}">Следующее: одобрить MP4</button>`:"Добавьте готовый MP4"):"Добавьте первый MP4";
   const best=queue.find(x=>x.published)||queue.find(x=>x.approved)||queue[0];
@@ -3791,6 +3792,7 @@ async function viewContentVideo(v){
       </div>
       <p class="sub" style="margin-bottom:0">Редакционная модель: ${esc(s.editorial_model||"deepseek-v4-pro")}. Публикация всегда только после ручного одобрения.</p>
       ${bestBlock}<div class="ttoolbar" style="margin-top:10px"><span class="sub">${active?`Ролик №${active.sequence}: ${vcfStatus(active.status)}`:"Очередь пуста."}</span>${nextAction}</div>
+      ${productionBlock?`<div class="cf-postlist" style="margin-top:12px"><div class="dash-chh"><h3>Задачи на монтаж</h3><span class="tag">${(jobs.items||[]).length}</span></div>${productionBlock}</div>`:""}
       <div class="ttoolbar" style="margin-top:14px"><select id="vc-upload-job" class="cf-date"><option value="">MP4 без задачи на монтаж</option>${jobOptions}</select><input id="vc-upload-title" class="cf-date" placeholder="Название ролика (необязательно)"><input id="vc-upload-file" type="file" accept="video/mp4" style="max-width:260px"><button id="vc-upload-go" class="primary">Загрузить готовый MP4</button><span class="sub" id="vc-upload-note"></span></div>
     </section>
     <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Динамика</h3><span class="sub">пока этапы производства; просмотры появятся после подключения аналитики</span></div><div style="display:flex;align-items:end;gap:12px;min-height:130px;padding:4px 6px">${chart}</div></section>

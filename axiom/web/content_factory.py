@@ -545,13 +545,14 @@ def content_video_generate_script(body: dict = Body(...)) -> JSONResponse:
         model = f"deepseek:{model}"
     if not llm.available(model):
         return JSONResponse({"error": "DeepSeek не подключён: добавьте ключ в .env Axiom."}, status_code=400)
-    brief = {key: str(body.get(key, "")).strip() for key in ("topic", "audience", "goal", "format", "cta", "source_url")}
+    brief = {key: str(body.get(key, "")).strip() for key in ("topic", "audience", "goal", "format", "cta", "source_url", "donor_analysis")}
     prompt = f"""Создай оригинальный сценарий вертикального ролика на русском. Не копируй источник буквально.
 Тема: {brief['topic']}
 Аудитория: {brief['audience']}
 Цель: {brief['goal']}
 Формат: {brief['format']}
 CTA: {brief['cta']}
+Вывод разбора донора (используй только как механизм, не копируй текст или структуру буквально): {brief['donor_analysis'] or 'нет'}
 Верни строго по разделам: 1) ХУК 0–3 сек, 2) СЦЕНАРИЙ ОЗВУЧКИ с таймкодами до 45 сек, 3) МОНТАЖНОЕ ТЗ: AI-аватар, скринкаст, B-roll, субтитры и переходы для каждого блока, 4) ЗАГОЛОВОК, 5) ОПИСАНИЕ для YouTube Shorts и Instagram Reels, 6) ФИНАЛЬНЫЙ CTA, 7) ПЕРВЫЙ ОТВЕТ В ЛС человеку, который написал кодовое слово. Не копируй формулировки источника.
 """
     try:

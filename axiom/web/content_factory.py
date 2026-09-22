@@ -274,7 +274,7 @@ async def content_video_upload(file: UploadFile = File(...), title: str = Form("
         "channel": "Оригинальное производство" if job else "Свой ролик",
         "source_id": source_id,
         "source_url": str(job.get("source_url", "")) if job else "",
-        "title": (title.strip() or str(job.get("brief", {}).get("topic", "")).strip() or Path(filename).stem),
+        "title": (title.strip() or str(job.get("title", "")).strip() or str(job.get("brief", {}).get("topic", "")).strip() or Path(filename).stem),
         "local_path": str(target.relative_to(base)).replace("\\", "/"),
         "status": "rendered",
         "approved": False,
@@ -687,7 +687,7 @@ def content_video_production_jobs() -> JSONResponse:
 
 
 @router.post("/api/content/video/scripts/{script_id}/approve-production")
-def content_video_approve_script_for_production(script_id: str) -> JSONResponse:
+def content_video_approve_script_for_production(script_id: str, body: dict = Body(default={})) -> JSONResponse:
     """Human gate between original editorial output and any montage work."""
     base = _video_factory_dir()
     if base is None:
@@ -705,10 +705,11 @@ def content_video_approve_script_for_production(script_id: str) -> JSONResponse:
     script["status"] = "approved_for_production"
     script["approved_at"] = datetime.now(timezone.utc).isoformat()
     _write_json(scripts_path, scripts)
+    chosen_title = str(body.get("title", "")).strip()
     job = {
         "id": f"production-{uuid.uuid4().hex[:12]}", "script_id": script_id,
         "created_at": datetime.now(timezone.utc).isoformat(), "status": "waiting_mp4",
-        "brief": script.get("brief", {}), "script": script.get("script", ""),
+        "brief": script.get("brief", {}), "script": script.get("script", ""), "title": chosen_title,
         "source_url": script.get("brief", {}).get("source_url", ""),
     }
     jobs.setdefault("items", []).append(job)

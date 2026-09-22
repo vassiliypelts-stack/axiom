@@ -3699,13 +3699,14 @@ let VCF_TAB="summary";
 function vcfTabs(){
   return `<div class="ttoolbar" style="margin-bottom:14px">
     <button id="vcf-summary" class="${VCF_TAB==='summary'?'primary':'ghost'}">Сводка</button>
+    <button id="vcf-wizard" class="${VCF_TAB==='wizard'?'primary':'ghost'}">Первый ролик · по шагам</button>
     <button id="vcf-sources" class="${VCF_TAB==='sources'?'primary':'ghost'}">Источники и доноры</button>
     <button id="vcf-create" class="${VCF_TAB==='create'?'primary':'ghost'}">Создание контента</button>
     <button id="vcf-plan" class="${VCF_TAB==='plan'?'primary':'ghost'}">План и публикации</button>
   </div>`;
 }
 function vcfBindTabs(v){
-  [["summary","#vcf-summary"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
+  [["summary","#vcf-summary"],["wizard","#vcf-wizard"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
     const b=v.querySelector(sel);if(b)b.onclick=()=>{VCF_TAB=tab;viewContentVideo(v);};
   });
 }
@@ -3714,6 +3715,7 @@ function vcfStatus(status){
   return `<span class="tag">${esc(map[status]||status||"—")}</span>`;
 }
 async function viewContentVideo(v){
+  if(VCF_TAB==="wizard")return viewVideoWizard(v);
   if(VCF_TAB==="sources")return viewVideoSources(v);
   if(VCF_TAB==="create")return viewVideoCreate(v);
   if(VCF_TAB==="plan")return viewVideoPlan(v);
@@ -3750,6 +3752,9 @@ async function viewContentVideo(v){
   </div></div>`;vcfBindTabs(v);
   const upload=v.querySelector("#vc-upload-go");if(upload)upload.onclick=async()=>{const input=v.querySelector("#vc-upload-file"),note=v.querySelector("#vc-upload-note");if(!input.files[0]){note.textContent="Выберите MP4-файл.";return;}upload.disabled=true;note.textContent="загружаю…";try{const form=new FormData();form.append("file",input.files[0]);form.append("title",v.querySelector("#vc-upload-title").value.trim());const r=await fetch("/api/content/video/upload",{method:"POST",body:form});const d=await r.json();if(!r.ok||d.error)note.textContent="⚠️ "+(d.error||"Ошибка загрузки");else viewContentVideo(v);}catch(e){note.textContent="⚠️ "+e.message;}finally{upload.disabled=false;}};
   let selectedSource="",selectedStatus="";const filterRows=()=>v.querySelectorAll("#vcf-video-rows tr[data-vsource]").forEach(row=>row.style.display=(!selectedSource||row.dataset.vsource===selectedSource)&&(!selectedStatus||row.dataset.vstatus===selectedStatus)?"":"none");v.querySelectorAll("button[data-vsource]").forEach(b=>b.onclick=()=>{selectedSource=b.dataset.vsource;v.querySelectorAll("button[data-vsource]").forEach(x=>x.classList.toggle("on",x.dataset.vsource===selectedSource));filterRows();});v.querySelectorAll("button[data-vstatus]").forEach(b=>b.onclick=()=>{selectedStatus=b.dataset.vstatus;v.querySelectorAll("button[data-vstatus]").forEach(x=>x.classList.toggle("on",x.dataset.vstatus===selectedStatus));filterRows();});v.querySelectorAll(".vc-approve").forEach(b=>b.onclick=async()=>{if(!confirm("Одобрить MP4? Ролик не будет опубликован автоматически."))return;b.disabled=true;const r=await api(`/api/content/video/queue/${b.dataset.vseq}/approve`,{method:"POST"});if(r.error)alert(r.error);viewContentVideo(v);});v.querySelectorAll(".vc-publish-pack").forEach(b=>b.onclick=async()=>{b.disabled=true;const r=await api(`/api/content/video/queue/${b.dataset.vseq}/prepare-publish`,{method:"POST"});if(r.error)alert(r.error);else{VCF_TAB="plan";viewContentVideo(v);}});
+}
+async function viewVideoWizard(v){
+  v.innerHTML=vcfTabs()+`<div class="empty">Проверяю готовность первого ролика…</div>`;vcfBindTabs(v);let s;try{s=await api("/api/content/video/summary");}catch(e){s={error:e.message};}if(s.error){v.innerHTML=vcfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`;vcfBindTabs(v);return;}const x=(s.queue||[]).find(i=>i.source==="upload")||(s.queue||[])[0];if(!x){v.innerHTML=vcfTabs()+`<div class="empty">Шаг 1: загрузьте готовый MP4 на вкладке «Сводка».</div>`;vcfBindTabs(v);return;}const done=x.approved, next=done?`<button class="primary" id="vw-publish">Создать карточки YouTube + Instagram</button>`:`<button class="primary" id="vw-approve">Подтвердить: MP4 проверен</button>`;v.innerHTML=vcfTabs()+`<div class="dash"><div class="dash-grid"><section class="dash-glass dash-card" style="grid-column:1/-1"><div class="dash-chh"><h3>Первый ролик: ${esc(x.title||"без названия")}</h3><span class="tag">${vcfStatus(x.status)}</span></div><p class="sub">Иди только сверху вниз. Пульт не опубликует ролик без твоего действия.</p><div class="cf-postlist"><div class="cf-find"><b>1. MP4 загружен</b><div class="sub">✓ файл находится в Axiom</div></div><div class="cf-find"><b>2. Ручная проверка</b><div class="sub">${done?"✓ ролик одобрен":"Нужно твоё подтверждение после просмотра MP4."}</div></div><div class="cf-find"><b>3. Карточки публикации</b><div class="sub">${done?"Следующее действие: подготовить YouTube Shorts и Instagram Reels.":"Откроются после одобрения."}</div></div><div class="cf-find"><b>4. Публикация</b><div class="sub">Потребуется войти в свои YouTube и Instagram. Подключений к аккаунтам в пульте ещё нет, поэтому отправка будет только вручную.</div></div></div><div class="ttoolbar" style="margin-top:14px">${next}<span class="sub" id="vw-note"></span></div></section></div></div>`;vcfBindTabs(v);const b=v.querySelector("#vw-approve");if(b)b.onclick=async()=>{b.disabled=true;const r=await api(`/api/content/video/queue/${x.sequence}/approve`,{method:"POST"});if(r.error)alert(r.error);else viewVideoWizard(v)};const p=v.querySelector("#vw-publish");if(p)p.onclick=async()=>{p.disabled=true;const r=await api(`/api/content/video/queue/${x.sequence}/prepare-publish`,{method:"POST"});if(r.error)alert(r.error);else{VCF_TAB="plan";viewContentVideo(v)}};
 }
 async function viewVideoSources(v){
   v.innerHTML=vcfTabs()+`<div class="empty">Загружаю источники…</div>`;vcfBindTabs(v);

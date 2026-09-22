@@ -5697,6 +5697,7 @@ async function loadBackfill(){
 // читали как «одобрен», хотя это лишь «робот прочитал».
 const CHAT_VERDICT={"годен":"✅ годен","не годен":"🚫 не годен","на проверку":"🤔 на проверку","мёртвый":"💀 мёртвый"};
 const CHAT_VERDICT_CLS={"годен":"active","не годен":"stop","на проверку":"nurture","мёртвый":"stop"};
+const RESEARCH_RATING={1:"1 · живая",2:"2 · полуживая",3:"3 · мусор",4:"4 · мёртвая/спам",5:"5 · не существует"};
 // Откуда чат приехал в каталог. Пачка из «похожих» имеет общую природу — по этому
 // полю её можно отобрать целиком и разобрать разом, а не выискивать глазами в notes.
 const CHAT_SRC={similar:"🔗 похожий",discover:"🔍 поиск",tgstat:"📈 tgstat",inventory:"👤 мой аккаунт",keyword:"🎯 по ключам",manual:"✍️ вручную"};
@@ -6126,8 +6127,9 @@ async function viewChatCatalog(v){
       if(CC_FILTER.notrash && (r.verdict==='мёртвый'||r.verdict==='не годен'))return false;
       return true;},
     onDraw:rows=>{ccFiltered=rows;},
-    groupOptions:[{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"},{key:"source",label:"откуда"},{key:"parent_title",label:"похож на"}],
+    groupOptions:[{key:"research_rating",label:"рейтинг 1–5"},{key:"research_status",label:"исследование"},{key:"verdict",label:"вердикт"},{key:"topic",label:"тема"},{key:"city",label:"город"},{key:"can_write",label:"могу писать"},{key:"status",label:"статус"},{key:"kind",label:"тип"},{key:"source",label:"откуда"},{key:"parent_title",label:"похож на"}],
     groupFmt:(k,val)=>k==="status"?(CHAT_ST[val]||val):k==="verdict"?(CHAT_VERDICT[val]||"без вердикта")
+      :k==="research_rating"?(RESEARCH_RATING[val]||"не оценён")
       :k==="source"?(CHAT_SRC[val]||val||"источник не указан"):k==="parent_title"?(val||"не из похожих"):val,
     onRowClick:openChat,
     columns:[
@@ -6140,6 +6142,10 @@ async function viewChatCatalog(v){
           :r.verdict_src==='ai'?'предварительно от ИИ — подтверди своим решением'
           :r.verdict_src==='человек'?('твоё решение от '+(r.verdict_at||'')):'';
         return `<span class="badge b-${CHAT_VERDICT_CLS[r.verdict]||'nurture'}" title="${esc(tip)}">${CHAT_VERDICT[r.verdict]||esc(r.verdict)}${src}</span>`;}},
+      {key:"research_rating",label:"Рейтинг",render:r=>{
+        if(!r.research_rating)return '<span class="no">—</span>';
+        const cls=r.research_rating<=2?'active':r.research_rating===3?'nurture':'stop';
+        return `<span class="badge b-${cls}" title="${esc(r.research_rating_reason||'')}">${esc(RESEARCH_RATING[r.research_rating]||String(r.research_rating))}</span>`;}},
       {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
       {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
@@ -6167,6 +6173,7 @@ async function viewChatCatalog(v){
         const s=r.last_scanned_at?`<br><span class="mono" style="font-size:10px;opacity:.7" title="когда последний раз сканировали">🔎 ${fmt(r.last_scanned_at)}</span>`
           :'<br><span class="no" style="font-size:10px">не сканирован</span>';
         return b+s;}},
+      {key:"research_status",label:"Исследование",cls:"sub",render:r=>esc(r.research_status||"new")},
     ],
     emptyText:"Чатов нет. «Инвентаризация» подтянет твои чаты, или добавь @username вручную → «Анализ».",
   });

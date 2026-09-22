@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from channels.chat_scan import scan_one
 from channels.chat_join import _record_membership
@@ -18,6 +19,25 @@ from telethon.tl.functions.channels import JoinChannelRequest
 # Это не username и не повод десятки раз расходовать слоты прогрева на одну
 # и ту же «Ссылку».
 _PLACEHOLDER_USERNAMES = {"ссылка", "ссылки", "username", "канал", "чат", "link", "url"}
+
+
+def _rating(verdict: str | None, activity: str | None) -> tuple[int, str]:
+    """Единая шкала ТЗ для уже доступной и просканированной группы.
+
+    Номер — не замена сохранённому вердикту: он даёт оператору быстрый фильтр,
+    а текст причины оставляет проверяемое основание решения.
+    """
+    rate = re.search(r"~?(\d+)\s+сообщ", activity or "")
+    per_day = int(rate.group(1)) if rate else None
+    if verdict == "годен":
+        return 1, "живая и пригодная для работы"
+    if verdict == "мёртвый":
+        return 4, "группа недоступна при сканировании"
+    if verdict == "не годен":
+        if per_day is not None and per_day <= 0:
+            return 4, "неактивная группа"
+        return 3, "нерелевантная или с признаками мусора/спама"
+    return 2, "данных недостаточно для рабочего статуса: оставить на наблюдении"
 
 
 def _daily_budget(account_id: int) -> int:
@@ -110,12 +130,16 @@ async def run_one(client, account_id: int) -> dict | None:
             return None
         try:
             await _join_and_keep(client, task, account_id)
-        # Полный, а не light-скан: нужны админы и нормальная выборка активности
-        # для карточки из ТЗ, а не только отметка «ссылка открылась».
+            # Полный, а не light-скан: нужны админы и нормальная выборка активности
+            # для карточки из ТЗ, а не только отметка «ссылка открылась».
             result = await scan_one(client, task["username"] or task["link"], task["id"], light=False)
             with database.get_conn() as conn:
+                row = conn.execute("SELECT verdict, activity FROM chats WHERE id=?", (task["id"],)).fetchone()
+                rating, rating_reason = _rating(row["verdict"] if row else None,
+                                                 row["activity"] if row else result.get("activity"))
                 conn.execute("UPDATE chats SET research_status='done', research_finished_at=datetime('now'), "
-                             "research_error=NULL, status='joined' WHERE id=?", (task["id"],))
+                             "research_error=NULL, research_rating=?, research_rating_reason=?, "
+                             "status='joined' WHERE id=?", (rating, rating_reason, task["id"]))
                 conn.execute("UPDATE chat_research_runs SET status='done', result_json=?, "
                              "finished_at=datetime('now') WHERE id=?",
                              (json.dumps(result, ensure_ascii=False), task["run_id"]))

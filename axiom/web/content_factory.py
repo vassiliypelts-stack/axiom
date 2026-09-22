@@ -359,7 +359,8 @@ def _youtube_json(url: str) -> dict:
 
 def _script_section(script: str, heading: str) -> str:
     """Read a bounded editor section from the deliberately headed AI deliverable."""
-    pattern = rf"(?:^|\n)\s*(?:\d+\)\s*)?{re.escape(heading)}\s*[:—-]?\s*(.*?)(?=\n\s*(?:\d+\)\s*)?[А-ЯЁA-Z][А-ЯЁA-Z /_-]{{2,}}\s*[:—-]|\Z)"
+    marker = r"(?:#+\s*)?(?:\d+\)\s*)?"
+    pattern = rf"(?:^|\n)\s*{marker}{re.escape(heading)}\s*[:—-]?\s*(.*?)(?=\n\s*{marker}[А-ЯЁA-Z][А-ЯЁA-Z /_-]{{2,}}\s*[:—-]?|\Z)"
     match = re.search(pattern, script, flags=re.IGNORECASE | re.DOTALL)
     return match.group(1).strip() if match else ""
 

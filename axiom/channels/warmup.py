@@ -838,7 +838,24 @@ async def run_upkeep(only_id: int | None = None) -> None:
     # выходит на связь раз в несколько дней, а не каждый прогон.
     accs.sort(key=lambda a: (a.get("last_upkeep_at") or ""))
     take = max(2, int(len(accs) * UPKEEP_SHARE)) if only_id is None else len(accs)
-    batch = accs[:take]
+    # ОТПРАВИТЕЛИ ИДУТ ВНЕ ОЧЕРЕДИ. Доля 25% от всех боевых означала, что конкретный
+    # номер получает поддержку раз в четыре дня. Для аккаунта, который каждый день
+    # пишет незнакомцам, это и есть почерк бота: исходящие холодные есть, а живой
+    # активности между ними нет. 22.09 так слегли все восемь отправителей 9407 —
+    # PeerFlood за три часа, при том что у каждого свой прокси и лимит 2/сутки.
+    # Поэтому тех, кто реально в команде запущенных кампаний, берём КАЖДЫЙ прогон
+    # и сверх общей доли: им живость нужнее всех.
+    if only_id is None:
+        with database.get_conn() as conn:
+            senders = {r["account_id"] for r in conn.execute(
+                "SELECT DISTINCT ca.account_id FROM campaign_accounts ca "
+                "JOIN campaigns c ON c.id = ca.campaign_id "
+                "WHERE c.status='running' AND COALESCE(c.archived,0)=0")}
+        hot = [a for a in accs if a["id"] in senders]
+        rest = [a for a in accs if a["id"] not in senders]
+        batch = hot + rest[:max(0, take - len(hot))]
+    else:
+        batch = accs[:take]
     print(f"поддержка: {len(batch)} из {len(accs)} боевых "
           f"(очередь по давности, доля {int(UPKEEP_SHARE * 100)}%)")
 

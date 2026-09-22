@@ -150,7 +150,11 @@ async def run_one(client, account_id: int) -> dict | None:
         # Повторять её на следующем аккаунте бессмысленно: это битая ссылка/заголовок,
         # а не временный сетевой сбой.
             unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
-            state = "unavailable" if unavailable else "retry"
+            # Закрытая группа существует, но Telegram принял заявку и ждёт
+            # одобрения админа. Это не сбой и не повод отправлять туда другие
+            # аккаунты: фиксируем её как требующую ручного наблюдения.
+            join_pending = type(exc).__name__ == "InviteRequestSentError"
+            state = "unavailable" if unavailable else "review_needed" if join_pending else "retry"
             with database.get_conn() as conn:
                 if unavailable:
                     # Это не временный сбой: Telegram подтвердил, что объекта по
@@ -163,6 +167,14 @@ async def run_one(client, account_id: int) -> dict | None:
                         "verdict='мёртвый', verdict_src='скан', verdict_at=datetime('now'), "
                         "scan_error=?, status='skip' WHERE id=?",
                         (reason, reason, task["id"]),
+                    )
+                elif join_pending:
+                    conn.execute(
+                        "UPDATE chats SET research_status='review_needed', research_error=?, "
+                        "research_finished_at=datetime('now'), research_rating=2, "
+                        "research_rating_reason='заявка на вступление отправлена, ждём одобрения админа', "
+                        "status='pending' WHERE id=?",
+                        (reason, task["id"]),
                     )
                 else:
                     conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",

@@ -8538,6 +8538,61 @@ def campaign_kps_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "id": new_id})
 
 
+@app.get("/api/campaign/{cid}/objections")
+def campaign_objections_list(cid: int) -> JSONResponse:
+    """База возражений кампании: что говорят люди и как это отрабатывать."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, title, objection, answer, COALESCE(enabled,1) enabled, "
+            "COALESCE(hits,0) hits, source, contact_id, last_seen, created_at "
+            "FROM campaign_objections WHERE campaign_id=? "
+            # Сначала то, что ждёт ответа владельца (пустой answer) и что чаще
+            # встречается: именно эти строки нужно дописать в первую очередь.
+            "ORDER BY (answer IS NULL OR answer='') DESC, hits DESC, id DESC",
+            (cid,)).fetchall()
+    items = [dict(r) for r in rows]
+    return JSONResponse({
+        "items": items,
+        "ready": sum(1 for x in items if (x["answer"] or "").strip() and x["enabled"]),
+        "pending": sum(1 for x in items if not (x["answer"] or "").strip()),
+    })
+
+
+@app.post("/api/campaign/{cid}/objections")
+def campaign_objections_save(cid: int, payload: dict = Body(...)) -> JSONResponse:
+    """Создать или обновить возражение. Без id — новая строка."""
+    oid = payload.get("id")
+    title = (payload.get("title") or "").strip() or None
+    objection = (payload.get("objection") or "").strip() or None
+    answer = (payload.get("answer") or "").strip() or None
+    enabled = 1 if payload.get("enabled", True) else 0
+    if not objection and not title:
+        return JSONResponse({"error": "нужно само возражение или хотя бы название"},
+                            status_code=400)
+    with database.get_conn() as conn:
+        if oid:
+            conn.execute(
+                "UPDATE campaign_objections SET title=?, objection=?, answer=?, enabled=? "
+                "WHERE id=? AND campaign_id=?",
+                (title, objection, answer, enabled, int(oid), cid))
+            new_id = int(oid)
+        else:
+            cur = conn.execute(
+                "INSERT INTO campaign_objections (campaign_id, title, objection, answer, "
+                "enabled, source) VALUES (?,?,?,?,?,'manual')",
+                (cid, title, objection, answer, enabled))
+            new_id = cur.lastrowid
+    return JSONResponse({"ok": True, "id": new_id})
+
+
+@app.post("/api/campaign/{cid}/objections/{oid}/delete")
+def campaign_objections_delete(cid: int, oid: int) -> JSONResponse:
+    with database.get_conn() as conn:
+        conn.execute("DELETE FROM campaign_objections WHERE id=? AND campaign_id=?", (oid, cid))
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/campaign/{cid}/kps/{kp_id}/file")
 async def campaign_kps_file(cid: int, kp_id: int, file: UploadFile = File(...)) -> JSONResponse:
     with database.get_conn() as conn:

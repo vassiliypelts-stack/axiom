@@ -1373,13 +1373,15 @@ async function openAudience(cid){
       <div class="card" style="background:var(--panel2);padding:9px 11px;margin-bottom:10px">
         <b>${d.in_queue}</b> из <b>${d.total}</b> пойдут в рассылку.
         <div style="margin-top:6px">
-          <span class="badge" title="кому первое сообщение уже ушло">📨 отправлено: <b>${d.sent||0}</b></span>
+          <span class="badge" title="кому первое сообщение уже ушло. В процентах — доля от всей аудитории: сколько базы уже прошли">📨 отправлено: <b>${d.sent||0}</b>${(d.total&&d.sent)?` <span class="hint">(${Math.round(d.sent*100/d.total)}% базы)</span>`:""}</span>
           <span class="badge" title="Telegram принял сообщение и положил его в диалог собеседника. Отдельного статуса доставки, как в WhatsApp, у Telegram нет: если сообщение ушло — оно доставлено.">✓ доставлено: <b>${d.delivered||0}</b></span>
           <span class="badge" title="человек открыл диалог и дочитал до нашего сообщения (галочки Telegram). Прочитал и молчит — не цепляет текст; не прочитал — письмо не доходит до глаз, вопрос к аккаунту">👁 прочитано: <b>${d.read||0}</b>${(d.sent&&d.read)?` <span class="hint">(${Math.round(d.read*100/d.sent)}%)</span>`:""}</span>
           <span class="badge ${d.replied?"b-active":""}" title="сколько человек ответили хоть раз">↩️ ответили: <b>${d.replied||0}</b>${(d.sent&&d.replied)?` <span class="hint">(${Math.round(d.replied*100/d.sent)}%)</span>`:""}</span>
-          ${d.leads?`<span class="badge b-new" title="ответили на рассылку">💬 лидов: <b>${d.leads}</b></span> `:""}
-          ${d.hot?`<span class="badge b-active" title="готовы действовать — им нужно написать лично">🔥 горячих: <b>${d.hot}</b></span>`:""}
+          ${d.leads?`<span class="badge b-new" title="ответили на рассылку и стали лидами. Процент — конверсия из отправленного в лида">💬 лидов: <b>${d.leads}</b>${d.sent?` <span class="hint">(${Math.round(d.leads*100/d.sent)}%)</span>`:""}</span> `:""}
+          ${d.hot?`<span class="badge b-active" title="готовы действовать — им нужно написать лично. Процент — конверсия из отправленного в горячего">🔥 горячих: <b>${d.hot}</b>${d.sent?` <span class="hint">(${Math.round(d.hot*100/d.sent)}%)</span>`:""}</span>`:""}
+          <button type="button" id="aud-funnel-btn" class="badge" style="cursor:pointer;border-style:dashed" title="расширенная статистика: вся воронка с конверсией на каждом шаге">👁 конверсия</button>
         </div>
+        <div id="aud-funnel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"></div>
         ${reasons?`<div class="hint" style="margin-top:4px">Остальные не пойдут — ${reasons}</div>`:""}
         ${(()=>{
           // Раньше здесь было «не проверено: Telegram у 0, WhatsApp у 1000» — фраза про
@@ -1497,6 +1499,57 @@ async function openAudience(cid){
     inner.querySelectorAll(".aud-f").forEach(b=>b.onclick=()=>{AUD_ONLY=b.dataset.f;draw();});
     const srcSel=inner.querySelector("#aud-src");
     if(srcSel)srcSel.onchange=()=>{AUD_SRC=srcSel.value;draw();};
+    // Расширенная конверсия по глазку. В строке счётчиков видно «сколько», а
+    // вопрос всегда второй: «сколько это в процентах и где сыплется». Считаем
+    // воронку двумя способами сразу: доля от отправленных (сквозная конверсия,
+    // её сравнивают между кампаниями) и переход с предыдущего шага (видно, ГДЕ
+    // именно теряем). Цифры те же, что в счётчиках, — отдельного запроса нет,
+    // поэтому панель обновляется вместе со всей таблицей.
+    const fnBtn=inner.querySelector("#aud-funnel-btn"),fnBox=inner.querySelector("#aud-funnel");
+    if(fnBtn&&fnBox){
+      const open=localStorage.getItem("axiom_aud_funnel")==="1";
+      const drawFunnel=()=>{
+        const total=d.total||0,sent=d.sent||0;
+        const steps=[
+          ["Аудитория",total,null,"всего контактов с тегом кампании"],
+          ["Отправлено",sent,total,"кому ушло первое сообщение"],
+          ["Доставлено",d.delivered||0,sent,"Telegram принял и положил в диалог"],
+          ["Прочитано",d.read||0,sent,"человек открыл диалог и увидел сообщение"],
+          ["Ответили",d.replied||0,sent,"ответил хоть раз — это и есть отклик на текст"],
+          ["Лиды",d.leads||0,sent,"ответили и попали в работу"],
+          ["Горячие",d.hot||0,sent,"готовы действовать, нужен личный контакт"],
+        ];
+        const pct=(a,b)=>b?Math.round(a*1000/b)/10:0;
+        let prev=null;
+        const rows=steps.map(([label,val,base,tip])=>{
+          const ofSent=base?pct(val,base):100;
+          const step=(prev===null)?null:pct(val,prev);
+          prev=val;
+          const w=Math.max(2,Math.min(100,ofSent));
+          return `<div style="display:grid;grid-template-columns:104px 1fr 116px;gap:8px;align-items:center;margin:3px 0" title="${esc(tip)}">
+            <span class="sub">${esc(label)}</span>
+            <span style="background:var(--border);border-radius:4px;height:14px;position:relative;overflow:hidden">
+              <span style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:var(--accent);opacity:.65"></span></span>
+            <span class="mono" style="font-size:12px"><b>${val}</b>${base?` · ${ofSent}%`:""}${step!==null&&step<100?` <span class="hint">(шаг ${step}%)</span>`:""}</span>
+          </div>`;}).join("");
+        // Самый узкий переход — то место, куда осмысленно вмешиваться.
+        let worst=null;
+        for(let i=1;i<steps.length;i++){
+          const p=pct(steps[i][1],steps[i-1][1]);
+          if(steps[i-1][1]&&(worst===null||p<worst.p))worst={p,from:steps[i-1][0],to:steps[i][0]};
+        }
+        fnBox.innerHTML=rows
+          +`<div class="hint" style="margin-top:6px">Процент — доля от отправленных (сквозная конверсия). «шаг» — переход с предыдущей строки: по нему видно, где именно теряем.</div>`
+          +(worst?`<div class="hint" style="margin-top:2px">Самое узкое место: <b>${esc(worst.from)} → ${esc(worst.to)}</b>, проходит ${worst.p}%.</div>`:"");
+      };
+      if(open){fnBox.style.display="";drawFunnel();}
+      fnBtn.onclick=()=>{
+        const now=fnBox.style.display==="none";
+        fnBox.style.display=now?"":"none";
+        if(now)drawFunnel();
+        try{localStorage.setItem("axiom_aud_funnel",now?"1":"0");}catch(e){}
+      };
+    }
     // Пробив TG — прямо здесь, где проблема и видна: иначе оператор читает
     // предупреждение и не знает, куда идти его лечить.
     const tgAuto=inner.querySelector("#aud-tgauto"),tgRun=inner.querySelector("#aud-tgrun");
@@ -7158,6 +7211,9 @@ async function viewCampaigns(v){
       <div class="field"><label>📚 Несколько КП под типы ЦА (брокеры / застройщики / АН) — агент сам выберет уместное</label>
         <div class="hint" style="margin-bottom:6px">Если база смешанная: добавь по КП на тип, опиши «кому подходит» — агент по ходу диалога определит тип собеседника и пришлёт нужное. Когда здесь есть КП, агент использует их вместо «общего» выше.</div>
         <div id="c-kps-box"></div></div>
+      <div class="field"><label>🛡 База возражений — что отвечают люди и как это отрабатывать</label>
+        <div class="hint" style="margin-bottom:6px">Копилка, которая растёт от живой переписки. Агент сам складывает сюда реплики, которые счёл возражением, — остаётся дописать ответ. Пока ответ пуст, строка в работу не идёт: агент не выдумывает отработку там, где ты ещё не решил, что говорить. Заполненные подмешиваются в промпт автоматически, переписывать сценарий не нужно.</div>
+        <div id="c-obj-box"></div></div>
       <div class="field"><label>🎤 Голосовые — твои записи, уходят живым голосом следом за текстом</label>
         <div class="hint" style="margin-bottom:6px">Запиши голосовое на телефон и залей сюда (m4a/ogg/mp3/wav — приведём к формату Telegram сами). В диалоге оно придёт НАСТОЯЩИМ голосовым: кружок с волной, скорость 2×, а не файлом. Холодным первым касанием голос не уходит никогда — только после того, как человек ответил. Одному человеку одна и та же запись дважды не отправляется.</div>
         <div id="c-voices-box"></div></div>
@@ -7370,6 +7426,53 @@ async function viewCampaigns(v){
     renderKpBox(c);
     renderKpsBox(c);
     renderVoicesBox();
+    renderObjBox();
+  };
+  // База возражений кампании. Строки с пустым ответом идут первыми и помечены —
+  // это очередь работы владельца: агент сложил, что услышал, решение за человеком.
+  const renderObjBox=async()=>{
+    const box=$("#c-obj-box");if(!box)return;
+    const eid=form.dataset.edit;
+    if(!eid){box.innerHTML='<span class="hint">Сначала создай и сохрани кампанию — потом сюда можно складывать возражения.</span>';return;}
+    let d;try{d=await api(`/api/campaign/${eid}/objections`);}catch(e){box.innerHTML='<span class="hint">не удалось загрузить</span>';return;}
+    const items=d.items||[];
+    const card=o=>{
+      const waiting=!(o.answer||"").trim();
+      return `<div class="card" style="padding:9px 11px;margin-bottom:8px${waiting?";border-left:3px solid #b08800":""}">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <input class="obj-title" data-id="${o.id}" value="${esc(o.title||"")}" placeholder="Коротко: «Дорого», «Далеко»" style="max-width:220px">
+          ${o.source==="auto"?'<span class="badge" title="агент сам поймал это в переписке">🤖 из диалога</span>':'<span class="badge" title="добавлено вручную">✍️ вручную</span>'}
+          ${o.hits>1?`<span class="badge" title="сколько раз встретилось">×${o.hits}</span>`:""}
+          ${waiting?'<span class="badge b-stop" title="пока ответ не задан, агент это возражение не отрабатывает">⏳ ждёт ответа</span>':'<span class="badge b-active">✅ в работе</span>'}
+          <label class="hint" style="display:inline-flex;align-items:center;gap:5px;margin-left:auto;cursor:pointer"><input type="checkbox" class="obj-on" data-id="${o.id}" ${o.enabled?"checked":""}> включено</label>
+        </div>
+        <div class="hint" style="margin-bottom:3px">Как звучит от человека:</div>
+        <textarea class="obj-text" data-id="${o.id}" rows="2" placeholder="«Сельхозка за космическую цену?»">${esc(o.objection||"")}</textarea>
+        <div class="hint" style="margin:6px 0 3px">Как отрабатывать — твоими словами, агент перескажет по-своему:</div>
+        <textarea class="obj-answer" data-id="${o.id}" rows="3" placeholder="Это не сельхозка, а готовый актив: 1-2 га вместо 4-6 соток за те же деньги…">${esc(o.answer||"")}</textarea>
+        <div class="ttoolbar" style="margin:6px 0 0">
+          <button type="button" class="primary obj-save" data-id="${o.id}">Сохранить</button>
+          <button type="button" class="obj-del" data-id="${o.id}">Удалить</button>
+          <span class="hint obj-msg" data-id="${o.id}"></span></div>
+      </div>`;};
+    box.innerHTML=(items.length
+        ?`<div class="hint" style="margin-bottom:6px">в работе: <b>${d.ready||0}</b>${d.pending?` · ждут твоего ответа: <b style="color:#b08800">${d.pending}</b>`:""}</div>`+items.map(card).join("")
+        :'<div class="hint" style="margin-bottom:6px">Пока пусто. Добавь первое возражение сам — или подожди, пока агент поймает его в переписке.</div>')
+      +`<button type="button" id="c-obj-add">+ Добавить возражение</button>`;
+    box.querySelector("#c-obj-add").onclick=async()=>{
+      await api(`/api/campaign/${eid}/objections`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({title:"Новое возражение"})});renderObjBox();};
+    box.querySelectorAll(".obj-save").forEach(b=>b.onclick=async()=>{const id=b.dataset.id;
+      const g=cls=>{const el=box.querySelector(`.${cls}[data-id="${id}"]`);return el?el.value:"";};
+      const on=box.querySelector(`.obj-on[data-id="${id}"]`);
+      const r=await api(`/api/campaign/${eid}/objections`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id:+id,title:g("obj-title"),objection:g("obj-text"),answer:g("obj-answer"),enabled:on?on.checked:true})});
+      const m=box.querySelector(`.obj-msg[data-id="${id}"]`);
+      if(m)m.textContent=r.ok?"✅ сохранено":(r.error||"ошибка");
+      if(r.ok)setTimeout(renderObjBox,600);});
+    box.querySelectorAll(".obj-del").forEach(b=>b.onclick=async()=>{
+      if(!confirm("Удалить это возражение из базы?"))return;
+      await api(`/api/campaign/${eid}/objections/${b.dataset.id}/delete`,{method:"POST"});renderObjBox();});
   };
   const renderKpsBox=(c)=>{
     const box=$("#c-kps-box");if(!box)return;

@@ -10338,6 +10338,7 @@ def warmup_settings_get() -> JSONResponse:
             "auto": database.get_setting(conn, "warm_auto", "off") == "on",
             "interval_h": int(database.get_setting(conn, "warm_interval_min", "1440")) // 60,
             "ca_mix": database.get_setting(conn, "warm_ca_mix", "off") == "on",
+            "knock": database.get_setting(conn, "warm_knock", "off") == "on",
             "last_run": database.get_setting(conn, "warm_last_run", None),
         })
 
@@ -10421,6 +10422,8 @@ def warmup_settings_set(payload: dict = Body(...)) -> JSONResponse:
             database.set_setting(conn, "warm_interval_min", str(max(1, int(payload.get("interval_h") or 24)) * 60))
         if "ca_mix" in payload:
             database.set_setting(conn, "warm_ca_mix", "on" if payload.get("ca_mix") else "off")
+        if "knock" in payload:
+            database.set_setting(conn, "warm_knock", "on" if payload.get("knock") else "off")
     return JSONResponse({"ok": True})
 
 

@@ -461,7 +461,119 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     return sent
 
 
-async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
+# --------------------------------------------------------------------------- #
+#  ТИХИЙ СТУК — короткое «Здравствуйте, Максим?» на время прогрева              #
+# --------------------------------------------------------------------------- #
+# Проверка «читает ли человек вообще», а не продажа. Молодой номер (до 14 дней) в
+# холодную рассылку не допускается — он ловит PeerFlood на первом же полноценном
+# письме (18-19.09 по 9407 так встали шесть номеров). Но короткий человеческий
+# вопрос «Здравствуйте, Максим?» — это не рассылочный почерк: одно предложение,
+# без ссылок, без оффера, без переносов строк. Такой стук Telegram не читает как
+# спам, а мы узнаём, живой ли контакт и читает ли он личку.
+#
+# РОВНО ОДНО сообщение в сутки на аккаунт. Не «до одного» и не «одно за заход»:
+# заходов прогрева в день несколько, и без суточного счёта номер разослал бы по
+# числу заходов.
+#
+# Ответил — питч уходит ВТОРЫМ сообщением (KNOCK_PITCH ниже), уже по-человечески:
+# человек откликнулся, значит пишем живому. Дальше диалог ведёт обычный агент
+# кампании, как после любого первого касания.
+KNOCK_HELLO = ("Добрый день", "Здравствуйте", "Приветствую", "Салют")
+
+# Второе сообщение — уходит ТОЛЬКО тому, кто ответил на стук. Текст Василия
+# (22.09.2026): знакомство через комментарии + вопрос про сообщество и землю.
+KNOCK_PITCH = (
+    "Обратил внимание на вас в комментариях в крымских каналах — "
+    "значит, тема Крыма вам близка 🙂\n"
+    "Вам интересно участие в сообществе, где у каждого участника своя земля "
+    "1-2 га в шаговой доступности к морю в Крыму, с миндальным садом, который "
+    "при этом приносит доход от 1,5 млн рублей в год?"
+)
+
+
+def _knock_text(row) -> str:
+    """«Здравствуйте, Максим?» — приветствие плюс имя с вопросительным знаком.
+
+    Имя берём тем же разбором ФИО, что и рассылка (_greeting), иначе на половине
+    базы выходит «Викторович?» вместо «Максим?». Без имени стук не шлём вовсе:
+    голое «Здравствуйте?» выглядит как бот и смысла проверки не несёт.
+    """
+    from channels.campaign_send import _greeting
+    from channels import fio
+    # person_name — разобранное ФИО живого человека; name может оказаться названием
+    # фирмы («Эталон недвижимость»), и тогда _greeting вернёт её первое слово.
+    # «Добрый день, Эталон?» — мгновенный провал проверки, поэтому берём имя только
+    # из person_name, а из name — лишь когда это узнаваемое русское имя.
+    pn = (row["person_name"] or "").strip()
+    name = (_greeting(row) or "").strip() if pn else ""
+    if not name:
+        cand = (row["name"] or "").strip().split()
+        first_raw = cand[0] if cand else ""
+        if first_raw and fio._is_known_first(first_raw):
+            name = first_raw
+    first = name.split()[0] if name else ""
+    if not first or not first.isalpha() or len(first) < 3:
+        return ""
+    return f"{random.choice(KNOCK_HELLO)}, {first}?"
+
+
+def _knock_sent_today(conn, acc_id: int) -> int:
+    """Сколько стуков этот аккаунт уже отправил за сутки (UTC, как пишет БД)."""
+    return conn.execute(
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE account_id=? "
+        "AND knock_at IS NOT NULL AND date(knock_at)=date('now')", (acc_id,)
+    ).fetchone()["c"]
+
+
+async def _knock(client, acc: dict) -> int:
+    """Один короткий стук от прогреваемого аккаунта. Возвращает 1, если отправлен."""
+    from channels.campaign_send import _add_tag, _audience
+    from channels.telegram import _resolve_entity
+
+    with database.get_conn() as conn:
+        if _knock_sent_today(conn, acc["id"]):
+            return 0                      # суточная норма уже выбрана
+        camp = conn.execute(
+            "SELECT c.id, c.audience_tag FROM campaigns c "
+            "JOIN campaign_accounts ca ON ca.campaign_id=c.id "
+            "WHERE ca.account_id=? AND c.channel='telegram' AND COALESCE(c.archived,0)=0 "
+            "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
+        ).fetchone()
+    if not camp:
+        return 0
+    # Берём с запасом: часть контактов отсеется без имени, часть не отрезолвится.
+    rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12)
+    for row in rows:
+        text = _knock_text(row)
+        if not text:
+            continue
+        try:
+            ent = await _resolve_entity(client, row)
+            msg = await client.send_message(ent, text)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [стук skip {row['id']}] {e}")
+            continue
+        with database.get_conn() as conn:
+            database.set_tg_user_id(conn, row["id"], int(ent.id))
+            database.add_message(conn, row["id"], "out", text, intent=None,
+                                 tg_msg_ids=[int(msg.id)] if msg else None)
+            # Статус НЕ трогаем: стук — не первое касание кампании, человек ещё
+            # ничего о проекте не услышал. Пометим контакт как «постучались»,
+            # чтобы рассылка не написала ему заново своё первое сообщение.
+            conn.execute("UPDATE contacts SET tags=? WHERE id=?",
+                         (_add_tag(row["tags"], "стук"), row["id"]))
+            conn.execute(
+                "INSERT INTO campaign_contacts (campaign_id, contact_id, account_id, knock_at) "
+                "VALUES (?,?,?,datetime('now')) "
+                "ON CONFLICT(campaign_id, contact_id) DO UPDATE SET "
+                "account_id=excluded.account_id, knock_at=excluded.knock_at",
+                (camp["id"], row["id"], acc["id"]))
+        print(f"  [стук] -> {text}")
+        return 1
+    return 0
+
+
+async def _warm_one(acc, anchors, peers, ca_mix: bool = False, knock: bool = False) -> None:
     """Обёртка: гарантирует, что клиент закроется, чем бы ни кончилась ступень.
 
     Тело прогрева — ~90 строк сетевых вызовов (вступления, реакции, ЛС), и любой из них
@@ -472,7 +584,7 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
     client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
                           acc.get("api_id"), acc.get("api_hash"))
     try:
-        await _warm_one_body(client, acc, anchors, peers, ca_mix)
+        await _warm_one_body(client, acc, anchors, peers, ca_mix, knock)
     finally:
         try:
             await client.disconnect()
@@ -480,7 +592,8 @@ async def _warm_one(acc, anchors, peers, ca_mix: bool = False) -> None:
             pass
 
 
-async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> None:
+async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
+                         knock: bool = False) -> None:
     await client.connect()
     if not await client.is_user_authorized():
         print(f"[skip #{acc['id']}] сессия не авторизована — перелогинь: python -m channels.account_login --id {acc['id']}")
@@ -567,6 +680,17 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False) -> N
     # 6) опционально: вплести немного реальной ЦА (анти-бан, выкл по умолчанию)
     if ca_mix and stage >= 5:
         await _ca_mix(client, acc, stage)
+
+    # 7) тихий стук: одно короткое «Здравствуйте, Максим?» в сутки. Работает с
+    # первой же ступени — в этом и смысл, проверять читаемость базы, пока номер
+    # дозревает до холодной рассылки. Ответившим питч уходит отдельно, из
+    # channels.listener, а не отсюда.
+    if knock:
+        try:
+            if await _knock(client, acc):
+                audit("постучался в один контакт базы")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [стук] пропуск: {e}")
 
     new_stage = stage + 1
     activate = new_stage >= READY_STAGE
@@ -750,6 +874,7 @@ async def run(only_id: int | None = None) -> None:
         accs = [dict(a) for a in database.warming_accounts(conn)]
         anchors = [dict(a) for a in database.warm_anchors(conn)]
         ca_mix = database.get_setting(conn, "warm_ca_mix", "off") == "on"
+        knock = database.get_setting(conn, "warm_knock", "off") == "on"
     if only_id is not None:
         accs = [a for a in accs if a["id"] == only_id]
         if not accs:
@@ -762,10 +887,11 @@ async def run(only_id: int | None = None) -> None:
               "у каждого. Разда́й прокси (кнопка «🆓 Бесплатный прокси» или «🌐 Раздать прокси»), "
               "потом запускай прогрев.")
         return
-    print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}; ЦА-микс: {'вкл' if ca_mix else 'выкл'}")
+    print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}; "
+          f"ЦА-микс: {'вкл' if ca_mix else 'выкл'}; тихий стук: {'вкл' if knock else 'выкл'}")
     for acc in accs:
         try:
-            await _warm_one(acc, anchors, accs, ca_mix=ca_mix)
+            await _warm_one(acc, anchors, accs, ca_mix=ca_mix, knock=knock)
         except Exception as e:  # noqa: BLE001
             from channels.antiban import classify_error
             cat = classify_error(e)

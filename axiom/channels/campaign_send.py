@@ -177,6 +177,13 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     if exclude_paused:
         where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"
         params.append(cid)
+    # Кому уже постучался прогреваемый номер («Здравствуйте, Максим?», warmup._knock),
+    # тот из обычной очереди выбывает, пока не ответит. Иначе человек получает два
+    # знакомства подряд с РАЗНЫХ номеров: короткий вопрос от одного и полноценное
+    # первое письмо от другого. Ответит — питч ему отправит слушатель, тем же
+    # аккаунтом, что и стучался, и там же проставится sent_at.
+    where += (" AND id NOT IN (SELECT contact_id FROM campaign_contacts "
+              "WHERE knock_at IS NOT NULL AND sent_at IS NULL)")
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
     # В ТЕСТ-режиме отсев по достижимости не применяем вовсе: это свои номера, спамом
     # они быть не могут, а гейт «только пробитые» (tg_verified_only, по умолчанию ВКЛ)

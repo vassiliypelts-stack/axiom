@@ -8149,13 +8149,15 @@ function renderCampList(mount,camps){
           <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="warm-auto"> авто-ступень каждые</label>
           <input id="warm-int" type="number" min="1" value="24" style="max-width:64px"> ч
           <label style="display:inline-flex;align-items:center;gap:6px;margin-left:14px"><input type="checkbox" id="warm-camix"> 📊 микс 10-20% реальной ЦА (поздние ступени)</label>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin-left:14px" title="Прогреваемый номер шлёт ОДНО короткое «Здравствуйте, Имя?» в сутки. Ответившему вторым сообщением уходит питч кампании"><input type="checkbox" id="warm-knock"> 👋 тихий стук: 1 короткое «Здравствуйте, Имя?» в день</label>
           <button id="warm-set-save">сохранить</button><span class="hint" id="warm-set-msg"></span></div>
-        <div class="hint" style="margin-top:8px">Безопасно: одна ступень = «день» (~2 недели до «активен»). Первые дни — только пассив (каналы, чтение, лайки, сторис, онлайн), ЛС позже и плавно. <b>ЦА-микс</b> (по галочке, реальные люди): со стадии 5 аккаунт добавляет 1→2→3 реальных касаний ЦА в день вперемешку — естественнее, меньше риск бана. Включай осознанно.</div></div>`;
+        <div class="hint" style="margin-top:8px">Безопасно: одна ступень = «день» (~2 недели до «активен»). Первые дни — только пассив (каналы, чтение, лайки, сторис, онлайн), ЛС позже и плавно. <b>ЦА-микс</b> (по галочке, реальные люди): со стадии 5 аккаунт добавляет 1→2→3 реальных касаний ЦА в день вперемешку — естественнее, меньше риск бана. Включай осознанно. <b>Тихий стук</b>: с первой же ступени номер шлёт ОДНО короткое «Здравствуйте, Имя?» в сутки — это проверка, читает ли человек личку, а не продажа. Про проект ни слова, пока не ответит: ответил — вторым сообщением уходит питч кампании, дальше диалог ведёт агент. Кому постучались, тому обычная рассылка не пишет.</div></div>`;
       api("/api/warmup/settings").then(s=>{const a=box.querySelector("#warm-auto"),i=box.querySelector("#warm-int"),m=box.querySelector("#warm-camix");
         if(a)a.checked=!!s.auto;if(i)i.value=s.interval_h||24;if(m)m.checked=!!s.ca_mix;
+        const k=box.querySelector("#warm-knock");if(k)k.checked=!!s.knock;
         if(s.last_run)box.querySelector("#warm-set-msg").textContent="последний авто-прогрев: "+s.last_run;});
       const ss=box.querySelector("#warm-set-save");if(ss)ss.onclick=async()=>{
-        await api("/api/warmup/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:box.querySelector("#warm-auto").checked,interval_h:+box.querySelector("#warm-int").value,ca_mix:box.querySelector("#warm-camix").checked})});
+        await api("/api/warmup/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:box.querySelector("#warm-auto").checked,interval_h:+box.querySelector("#warm-int").value,ca_mix:box.querySelector("#warm-camix").checked,knock:box.querySelector("#warm-knock").checked})});
         box.querySelector("#warm-set-msg").textContent="сохранено";};
       const gb=box.querySelector(`#warm-go-${id}`);if(gb)gb.onclick=async()=>{gb.disabled=true;gb.textContent="запускаю…";
         const r=await api(`/api/campaign/${id}/warmup`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})});

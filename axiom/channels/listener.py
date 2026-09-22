@@ -143,6 +143,20 @@ def _log(msg: str) -> None:
         pass
 
 
+def _knock_pitch_due(contact_id: int) -> bool:
+    """Этот контакт ответил на тихий стук и ещё не получил питч?
+
+    Признак — непустой campaign_contacts.knock_at: его ставит warmup._knock и
+    снимает отправка питча. Гейт намеренно узкий: если человек уже получал
+    основное сообщение кампании (sent_at), стук был лишним и питч не повторяем.
+    """
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM campaign_contacts WHERE contact_id=? AND knock_at IS NOT NULL "
+            "AND sent_at IS NULL LIMIT 1", (contact_id,)).fetchone()
+    return bool(row)
+
+
 def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
     """Авто-отвечать ли с этого аккаунта прямо сейчас.
 
@@ -374,6 +388,30 @@ async def _handle_private(event, acc_id: int) -> None:
                 f"{wake:%d.%m %H:%M} МСК — ночью живым людям не пишем.",
                 level="info", contact_id=contact["id"], account_id=acc_id)
         _log(f"[#{acc_id}] 🌙 контакт {contact['id']}: ночь, ответ отложен до {wake:%d.%m %H:%M} МСК")
+        return
+    # ОТВЕТ НА ТИХИЙ СТУК. Прогреваемый номер написал «Здравствуйте, Максим?» и
+    # человек откликнулся — значит, личку читает. Только теперь уходит питч, вторым
+    # сообщением: до ответа мы про проект молчим, в этом весь смысл режима. Дальше
+    # диалог ведёт обычный агент кампании, как после любого первого касания, поэтому
+    # снимаем метку и выходим — агент подключится со следующей реплики человека.
+    if _knock_pitch_due(contact["id"]):
+        try:
+            from channels.warmup import KNOCK_PITCH
+            await event.respond(KNOCK_PITCH)
+        except Exception as e:  # noqa: BLE001
+            _log(f"[#{acc_id}] питч после стука не ушёл: {e}")
+        else:
+            with database.get_conn() as conn:
+                database.add_message(conn, contact["id"], "out", KNOCK_PITCH, intent=None)
+                database.set_status(conn, contact["id"], "messaged")
+                conn.execute("UPDATE campaign_contacts SET knock_at=NULL, sent_at=datetime('now') "
+                             "WHERE contact_id=? AND knock_at IS NOT NULL", (contact["id"],))
+                database.add_event(
+                    conn, "campaign_send", "👋 Ответил на стук — ушёл питч",
+                    f"Контакт #{contact['id']} откликнулся на короткое приветствие "
+                    f"с прогреваемого номера. Отправлено основное сообщение кампании.",
+                    level="good", contact_id=contact["id"], account_id=acc_id)
+            _log(f"[#{acc_id}] → питч после стука контакту {contact['id']}")
         return
     if _should_reply(acc_id, contact["id"]):
         # ОДИН ОТВЕТ НА ОЧЕРЕДЬ СООБЩЕНИЙ. Человек редко пишет одной фразой: «здрась,

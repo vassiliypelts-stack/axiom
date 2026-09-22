@@ -637,6 +637,20 @@ def accounts_list() -> JSONResponse:
     return JSONResponse(out)
 
 
+@app.get("/api/account/{acc_id}/story_contacts")
+def account_story_contacts(acc_id: int) -> JSONResponse:
+    """Личная записная книжка и наблюдения сториз для одного аккаунта."""
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT s.*, c.name AS crm_name, c.username AS crm_username "
+            "FROM account_story_contacts s LEFT JOIN contacts c ON c.id=s.contact_id "
+            "WHERE s.account_id=? ORDER BY COALESCE(s.last_story_at,s.first_seen_at) DESC LIMIT 500",
+            (acc_id,),
+        ).fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
 @app.post("/api/settings/listen_account")
 def settings_listen_account(payload: dict = Body(...)) -> JSONResponse:
     """Какие аккаунты опрашивают публичные чаты (channels.chat_keywords).

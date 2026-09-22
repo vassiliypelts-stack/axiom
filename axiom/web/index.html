@@ -3699,14 +3699,13 @@ let VCF_TAB="summary";
 function vcfTabs(){
   return `<div class="ttoolbar" style="margin-bottom:14px">
     <button id="vcf-summary" class="${VCF_TAB==='summary'?'primary':'ghost'}">Сводка</button>
-    <button id="vcf-wizard" class="${VCF_TAB==='wizard'?'primary':'ghost'}">Первый ролик · по шагам</button>
     <button id="vcf-sources" class="${VCF_TAB==='sources'?'primary':'ghost'}">Источники и доноры</button>
     <button id="vcf-create" class="${VCF_TAB==='create'?'primary':'ghost'}">Создание контента</button>
     <button id="vcf-plan" class="${VCF_TAB==='plan'?'primary':'ghost'}">План и публикации</button>
   </div>`;
 }
 function vcfBindTabs(v){
-  [["summary","#vcf-summary"],["wizard","#vcf-wizard"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
+  [["summary","#vcf-summary"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
     const b=v.querySelector(sel);if(b)b.onclick=()=>{VCF_TAB=tab;viewContentVideo(v);};
   });
 }
@@ -3715,7 +3714,6 @@ function vcfStatus(status){
   return `<span class="tag">${esc(map[status]||status||"—")}</span>`;
 }
 async function viewContentVideo(v){
-  if(VCF_TAB==="wizard")return viewVideoWizard(v);
   if(VCF_TAB==="sources")return viewVideoSources(v);
   if(VCF_TAB==="create")return viewVideoCreate(v);
   if(VCF_TAB==="plan")return viewVideoPlan(v);
@@ -3728,6 +3726,10 @@ async function viewContentVideo(v){
     </section>`;vcfBindTabs(v);return;
   }
   const c=s.counts||{}, queue=s.queue||[];
+  const active=queue.find(x=>x.source==="upload"&&!x.published)||queue[0];
+  const nextAction=active?(active.approved?`<button class="cf-chip vc-publish-pack" data-vseq="${active.sequence}">Следующее: подготовить публикацию</button>`:active.local_path?`<button class="cf-chip vc-approve" data-vseq="${active.sequence}">Следующее: одобрить MP4</button>`:"Добавьте готовый MP4"):"Добавьте первый MP4";
+  const best=queue.find(x=>x.published)||queue.find(x=>x.approved)||queue[0];
+  const bestBlock=best?`<div class="cf-best">🏆 Главный ролик сейчас — <b>${esc(best.title||best.source_id||"без названия")}</b>. ${best.source_url?`<a href="${esc(best.source_url)}" target="_blank" rel="noopener">Открыть ↗</a>`:"Метрики появятся после подключения аналитики площадок."}</div>`:"";
   const rows=queue.map(x=>`<tr data-vsource="${esc(x.source||"")}" data-vstatus="${esc(x.status||"")}"><td class="mono">#${x.sequence||"—"}</td><td>${esc(x.channel||"Свой ролик")}</td><td>${esc(x.title||x.source_id||"Без названия")}</td><td>${vcfStatus(x.status)}</td><td>${x.approved?`<button class="cf-chip vc-publish-pack" data-vseq="${x.sequence}">в публикацию</button>`:x.local_path?`<button class="cf-chip vc-approve" data-vseq="${x.sequence}">одобрить</button>`:"—"}</td><td>${x.source_url?`<a class="cf-open" href="${esc(x.source_url)}" target="_blank" rel="noopener" title="Открыть исходный ролик">↗</a>`:"—"}</td></tr>`).join("");
   const stages=[["найдено",c.discovered||0,"#4caee8"],["загружено",c.downloaded||0,"#6687da"],["preview",c.rendered||0,"#e3a95d"],["одобрено",c.approved||0,"#77ba6a"],["опубликовано",c.published||0,"#2b9c94"]];
   const chartMax=Math.max(1,...stages.map(x=>x[1]));
@@ -3739,9 +3741,10 @@ async function viewContentVideo(v){
         ${cfTile(s.total||0,"всего роликов")}${cfTile(c.discovered||0,"найдено")}${cfTile(c.rendered||0,"на проверке","accent")}${cfTile(c.approved||0,"одобрено","lime")}${cfTile(c.published||0,"опубликовано")}
       </div>
       <p class="sub" style="margin-bottom:0">Редакционная модель: ${esc(s.editorial_model||"deepseek-v4-pro")}. Публикация всегда только после ручного одобрения.</p>
+      ${bestBlock}<div class="ttoolbar" style="margin-top:10px"><span class="sub">${active?`Ролик №${active.sequence}: ${vcfStatus(active.status)}`:"Очередь пуста."}</span>${nextAction}</div>
       <div class="ttoolbar" style="margin-top:14px"><input id="vc-upload-title" class="cf-date" placeholder="Название ролика (необязательно)"><input id="vc-upload-file" type="file" accept="video/mp4" style="max-width:260px"><button id="vc-upload-go" class="primary">Загрузить свой MP4</button><span class="sub" id="vc-upload-note"></span></div>
     </section>
-    <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Производственный график</h3><span class="sub">не просмотры, а этапы роликов</span></div><div style="display:flex;align-items:end;gap:12px;min-height:130px;padding:4px 6px">${chart}</div></section>
+    <section class="dash-glass dash-card" style="grid-column:span 7"><div class="dash-chh"><h3>Динамика</h3><span class="sub">пока этапы производства; просмотры появятся после подключения аналитики</span></div><div style="display:flex;align-items:end;gap:12px;min-height:130px;padding:4px 6px">${chart}</div></section>
     <section class="dash-glass dash-card" style="grid-column:1/-1"><div class="dash-chh"><h3>Все ролики</h3><span class="tag">${queue.length}</span></div>
       <div class="ttoolbar" style="margin:0 0 10px"><span class="sub">Источник:</span><button class="cf-chip on" data-vsource="">все</button><button class="cf-chip" data-vsource="upload">свои MP4</button><button class="cf-chip" data-vsource="youtube">доноры</button><span class="sub" style="margin-left:8px">Этап:</span><button class="cf-chip on" data-vstatus="">все</button>${stages.map(([label,,])=>`<button class="cf-chip" data-vstatus="${label==='preview'?'rendered':label==='загружено'?'downloaded':label==='найдено'?'discovered':label}">${label}</button>`).join("")}</div>
       <div class="cf-tablewrap"><table class="cf-table"><thead><tr><th>#</th><th>Источник</th><th>Ролик</th><th>Этап</th><th>ОК</th><th></th></tr></thead><tbody id="vcf-video-rows">${rows||'<tr><td colspan="6" class="sub">Очередь пока пуста.</td></tr>'}</tbody></table></div>

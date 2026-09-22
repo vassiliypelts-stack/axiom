@@ -692,9 +692,13 @@ def settings_notify_sender(payload: dict = Body(...)) -> JSONResponse:
     acc_id = payload.get("account_id")
     with database.get_conn() as conn:
         if acc_id:
-            row = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM accounts WHERE id=? AND tg_session IS NOT NULL AND tg_session<>'' "
+                "AND COALESCE(session_alive,1)=1 "
+                "AND (session_state IS NULL OR session_state='' OR session_state='alive')",
+                (acc_id,)).fetchone()
             if not row:
-                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
+                return JSONResponse({"error": "выбери аккаунт с живой сессией Telegram"}, status_code=400)
             database.set_setting(conn, "notify_sender_account_id", str(acc_id))
         else:
             database.set_setting(conn, "notify_sender_account_id", "")
@@ -718,8 +722,12 @@ def settings_notify_backup(payload: dict = Body(...)) -> JSONResponse:
                 acc_id = int(raw)
             except (TypeError, ValueError):
                 continue
-            if not conn.execute("SELECT 1 FROM accounts WHERE id=?", (acc_id,)).fetchone():
-                return JSONResponse({"error": f"аккаунт #{acc_id} не найден"}, status_code=404)
+            if not conn.execute(
+                "SELECT 1 FROM accounts WHERE id=? AND tg_session IS NOT NULL AND tg_session<>'' "
+                "AND COALESCE(session_alive,1)=1 "
+                "AND (session_state IS NULL OR session_state='' OR session_state='alive')",
+                (acc_id,)).fetchone():
+                return JSONResponse({"error": "в резерв можно добавить только аккаунт с живой сессией Telegram"}, status_code=400)
             if acc_id not in clean:
                 clean.append(acc_id)
         database.set_setting(conn, "notify_backup_ids", ",".join(str(i) for i in clean))
@@ -1042,11 +1050,19 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
     if action == "warmup":
         with database.get_conn() as conn:
             rows = conn.execute(
-                f"SELECT id, tg_session, COALESCE(protected,0) protected FROM accounts WHERE id IN ({qm})", ids
+                f"SELECT id, tg_session, COALESCE(protected,0) protected, "
+                f"COALESCE(acc_role,'') acc_role FROM accounts WHERE id IN ({qm})", ids
             ).fetchall()
-            protected = [r["id"] for r in rows if r["protected"]]            # родных не трогаем
-            ready = [r["id"] for r in rows if r["tg_session"] and not r["protected"]]
-            no_sess = [r["id"] for r in rows if not r["tg_session"] and not r["protected"]]
+            # Греем по алгоритму ТОЛЬКО боевые. Родной трогать нельзя (им пользуется
+            # владелец), а служебному прогрев не нужен вовсе: он существует ради
+            # допуска в холодную рассылку, куда служебный не идёт никогда. Раньше
+            # кнопка ставила служебным status='warming', и пульт потом показывал по
+            # ним «прогрев», который никогда не двигался.
+            skip = [r["id"] for r in rows if r["protected"] or r["acc_role"] == "service"]
+            protected = skip                                                  # родных/служебных не трогаем
+            warmable = [r for r in rows if not r["protected"] and r["acc_role"] != "service"]
+            ready = [r["id"] for r in warmable if r["tg_session"]]
+            no_sess = [r["id"] for r in warmable if not r["tg_session"]]
             if ready:
                 rq = ",".join("?" * len(ready))
                 conn.execute(

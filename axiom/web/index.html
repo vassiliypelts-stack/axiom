@@ -2367,6 +2367,17 @@ async function viewAgents(v){
       {key:"kind",label:"Тип",cls:"sub",render:r=>`${r.protected?'🏠 ':''}${ACC_KIND[r.kind]||(r.kind?esc(r.kind):'<span class="no">—</span>')}`},
       {key:"role",label:"Роль",cls:"sub",render:r=>esc(ROLE_RU[r.role]||r.role||"—")},
       {key:"status",label:"Статус",render:r=>{
+        // Статус 'warming' у родного/служебного номера — мусорный остаток заведения
+        // карточки, а не факт: греет только warming_accounts(), а она отсекает и
+        // protected, и acc_role='service'. Пульт при этом писал в «Статусе» «прогрев»,
+        // а в соседней колонке — «не греется», и оператор видел противоречие на
+        // ровном месте. Греем по алгоритму ТОЛЬКО боевые; для остальных показываем
+        // назначение, а не выдуманную стадию.
+        const role=r.acc_role||"combat";
+        if(r.protected||role==='service')
+          return r.protected
+            ? '<span class="badge b-own" title="Родной номер: им пользуется владелец. Прогрев и холодная рассылка к нему неприменимы. Остаётся рабочим для парсинга чатов и как получатель тестовых сообщений">🏠 родной</span>'
+            : '<span class="badge b-own" title="Служебный номер: уведомления/отчёты/пробив. Прогрев и холодная рассылка к нему неприменимы">🛠 служебный</span>';
         const base=`<span class="badge b-${r.status==='active'?'active':r.status==='banned'?'stop':'nurture'}">${ACC_ST[r.status]||r.status}</span>`;
         // Автопауза после PeerFlood (channels/campaign_send.py) — холодную рассылку
         // этим номером сервер сам не запускает до даты в spam_pause_until, растёт
@@ -2378,9 +2389,19 @@ async function viewAgents(v){
       {key:"warm_stage",label:"Прогрев",render:r=>{
         // Родной номер (protected) автоматика не греет — warming_accounts() его
         // отсекает. Бейдж смотрел только на status и рисовал «прогрев 0/14 дн»
-        // вечно застывшим: выглядело как сломанный прогрев, хотя это ровно то
-        // поведение, которого мы и хотим. Говорим прямо, что он не греется.
-        if(r.protected)return '<span class="badge b-own" title="Родной номер: автоматика его не греет и не рассылает с него">🏠 не греется</span>';
+        // вечно застывшим: выглядело как сломанный прогрев.
+        // Прогрев — свойство ТОЛЬКО боевых: его правила (14 ступеней, ежедневный
+        // заход в группы, разбор и подшивка информации о них) существуют ради
+        // допуска в холодную рассылку. Родной и служебный туда не идут никогда,
+        // поэтому у них здесь не «не греется» и не стадия, а прочерк: колонка их
+        // просто не касается. Любой бейдж тут читается как «что-то происходит».
+        //
+        // Прочерк — это «прогрев неприменим», а НЕ «номер выключен»: родным
+        // владелец парсит чаты и принимает на них тестовые сообщения, когда
+        // проверяет фичу рассылки. Живость таких номеров смотрят в колонке
+        // «Живость», и она для них обязана работать наравне с боевыми.
+        if(r.protected||(r.acc_role||"combat")==='service')
+          return '<span class="no" title="Прогрев применяется только к боевым аккаунтам">—</span>';
         // «active» у девятидневного номера означает лишь что сессия и профиль
         // готовы. В холодную рассылку он попадёт только после 14 дней; раньше тут
         // стояло «✅ готов», из-за чего пульт противоречил реальному sender.
@@ -2550,7 +2571,7 @@ async function viewAgents(v){
   $("#ab-selnone").onclick=()=>{selAcc.clear();syncSelDom();$("#ab-msg").textContent="выделение снято";};
   $("#ab-selbattle").onclick=()=>{selAcc.clear();const battle=accFiltered.filter(r=>!r.protected);battle.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🪖 выделено боевых: ${battle.length} (родные не тронуты)`;};
   $("#ab-selnative").onclick=()=>{selAcc.clear();const native=accFiltered.filter(r=>r.protected);native.forEach(r=>selAcc.add(r.id));syncSelDom();$("#ab-msg").textContent=`🏠 выделено родных: ${native.length}`;};
-  $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных пропущено: ${r.skipped_protected}`:""}`);
+  $("#ab-warm").onclick=()=>bulk({action:"warmup"},r=>`на прогрев: ${r.warming}${r.skipped_no_session&&r.skipped_no_session.length?` · без сессии: ${r.skipped_no_session.length}`:""}${r.skipped_protected?` · 🏠 родных/служебных пропущено: ${r.skipped_protected}`:""}`);
   $("#ab-check").onclick=()=>bulk({action:"check"},r=>`проверяю ${r.checking} — статус обновится через ~минуту`);
   $("#ab-sess-check").onclick=()=>bulk({action:"session_check"},r=>`🫀 проверяю живость ${r.queued} сессий в фоне (~минута)${r.skipped_no_session?` · без сессии пропущено: ${r.skipped_no_session}`:""} — колонка «Живость» обновится, обнови страницу`);
   $("#ab-invent").onclick=()=>bulk({action:"inventory"},r=>`инвентаризация ${r.queued} аккаунт(ов) — чаты появятся в каталоге через ~минуту`);

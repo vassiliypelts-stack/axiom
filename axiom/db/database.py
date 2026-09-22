@@ -1235,10 +1235,17 @@ def warming_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     прокси, который не помечен мёртвым. «Родные» (protected) исключаем — их
     автоматика не трогает. Без этого гейта аккаунт без прокси коннектится
     напрямую (или через общий) — сразу несколько «разных» аккаунтов светят
-    Telegram один и тот же IP, прямой путь к бану всей пачки."""
+    Telegram один и тот же IP, прямой путь к бану всей пачки.
+
+    Служебные (acc_role='service') тоже исключаем: прогрев существует ровно для
+    того, чтобы номер пустили в холодную рассылку, а служебный туда не идёт
+    никогда (campaign_send._team отсекает его отдельно). Греть его — тратить
+    заходы и трогать номер, на котором висят уведомления о встречах. Греем по
+    алгоритму ТОЛЬКО боевые."""
     return conn.execute(
         "SELECT * FROM accounts WHERE status='warming' AND tg_session IS NOT NULL AND tg_session<>'' "
-        "AND COALESCE(protected,0)=0 AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+        "AND COALESCE(protected,0)=0 AND COALESCE(acc_role,'')<>'service' "
+        "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
     ).fetchall()
 
 

@@ -6325,6 +6325,7 @@ def chatcat_import(payload: dict = Body(...)) -> JSONResponse:
         text = (payload.get("text") or "").strip()
         city = (payload.get("city") or "").strip() or None
         topic = (payload.get("topic") or "").strip() or None
+        source = (payload.get("source") or "manual").strip()[:80] or "manual"
 
         if not text:
             return JSONResponse({"error": "укажи список ссылок или username'ов"}, status_code=400)
@@ -6370,12 +6371,16 @@ def chatcat_import(payload: dict = Body(...)) -> JSONResponse:
                         ex = conn.execute("SELECT id FROM chats WHERE link=?", (link,)).fetchone()
 
                     if ex:
+                        # Повторная загрузка того же списка не создаёт дубль, но
+                        # достраивает происхождение старой строки каталога.
+                        conn.execute("UPDATE chats SET source=COALESCE(source, ?) WHERE id=?",
+                                     (source, ex["id"]))
                         skipped += 1
                         continue
 
                     conn.execute(
-                        "INSERT INTO chats (title, username, link, city, topic, status) VALUES (?,?,?,?,?,'new')",
-                        (title, username, link, city, topic),
+                        "INSERT INTO chats (title, username, link, city, topic, source, status) VALUES (?,?,?,?,?,?,'new')",
+                        (title, username, link, city, topic, source),
                     )
                     added += 1
                 except Exception as e:

@@ -130,11 +130,12 @@ def run(index_path: Path, dry_run: bool) -> dict:
         for username, topic in all_users.items():
             exists = conn.execute("SELECT id FROM chats WHERE LOWER(COALESCE(username,''))=?", (username,)).fetchone()
             if exists:
+                conn.execute("UPDATE chats SET source=COALESCE(source, '16тысТГ') WHERE id=?", (exists["id"],))
                 result["already_in_catalog"] += 1
                 continue
             conn.execute(
-                "INSERT INTO chats (title, username, link, topic, status, notes) VALUES (?,?,?,?, 'new', ?)",
-                (username, username, f"https://t.me/{username}", topic,
+                "INSERT INTO chats (title, username, link, topic, source, status, notes) VALUES (?,?,?,?,?,'new', ?)",
+                (username, username, f"https://t.me/{username}", topic, "16тысТГ",
                  "Импорт: тематический индекс «16 000 чатов Телеграм»"),
             )
             result["added"] += 1

@@ -19,6 +19,10 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import urlopen
 
 from fastapi import APIRouter, Body, File, Form, UploadFile
 from fastapi.responses import JSONResponse
@@ -324,6 +328,91 @@ def content_video_add_source(body: dict = Body(...)) -> JSONResponse:
     entries.append(item)
     _write_json(path, sources)
     return JSONResponse({"ok": True, "item": item})
+
+
+def _youtube_json(url: str) -> dict:
+    """Small dependency-free client for public YouTube Data API reads."""
+    try:
+        with urlopen(url, timeout=18) as response:  # noqa: S310 -- Google API URL built below
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"YouTube API вернул {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Не удалось соединиться с YouTube API: {exc.reason}") from exc
+
+
+def _youtube_channel_id(source_url: str, api_key: str) -> str:
+    parsed = urlparse(source_url)
+    bits = [x for x in parsed.path.split("/") if x]
+    if len(bits) >= 2 and bits[0] == "channel":
+        return bits[1]
+    handle = next((x[1:] for x in bits if x.startswith("@")), "")
+    if not handle:
+        raise RuntimeError("Для YouTube-радара укажите ссылку вида youtube.com/@имя или /channel/ID.")
+    endpoint = "https://www.googleapis.com/youtube/v3/channels?part=contentDetails,snippet&forHandle=" + quote(handle) + "&key=" + quote(api_key)
+    items = _youtube_json(endpoint).get("items", [])
+    if not items:
+        raise RuntimeError("YouTube-канал не найден по этой ссылке.")
+    return str(items[0]["id"])
+
+
+@router.get("/api/content/video/donor-radar")
+def content_video_donor_radar(days: int = 7) -> JSONResponse:
+    """Return recent public YouTube uploads ranked against the donor's own baseline.
+
+    Instagram deliberately is not scraped: its data needs an authorised Meta connection.
+    """
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    days = max(1, min(15, int(days)))
+    sources = _read_json(base / "config" / "sources.json", {"youtube_channels": [], "donors": []})
+    donors = [x for x in sources.get("donors", []) if x.get("enabled", True)]
+    donors += [{"platform": "youtube", "name": x.get("name", "Без имени"), "url": x.get("shorts_url", ""), "enabled": x.get("enabled", True)} for x in sources.get("youtube_channels", []) if x.get("enabled", True)]
+    api_key = os.getenv("YOUTUBE_DATA_API_KEY", "").strip()
+    result: dict = {"period_days": days, "youtube_ready": bool(api_key), "instagram_ready": False,
+                    "candidates": [], "warnings": []}
+    if any(x.get("platform") == "instagram" for x in donors):
+        result["warnings"].append("Instagram: для метрик и свежих Reels подключите профессиональный аккаунт через Meta. Публичные страницы не сканируем.")
+    youtube = [x for x in donors if x.get("platform") == "youtube"]
+    if youtube and not api_key:
+        result["warnings"].append("YouTube: добавьте YOUTUBE_DATA_API_KEY на сервере, чтобы радар получил последние загрузки и публичные метрики.")
+        return JSONResponse(result)
+    now = datetime.now(timezone.utc)
+    for donor in youtube:
+        try:
+            channel_id = _youtube_channel_id(str(donor.get("url", "")), api_key)
+            channel = _youtube_json("https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=" + quote(channel_id) + "&key=" + quote(api_key))
+            uploads = channel.get("items", [])[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+            page = _youtube_json("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&maxResults=12&playlistId=" + quote(uploads) + "&key=" + quote(api_key))
+            raw = page.get("items", [])
+            ids = [str(x.get("contentDetails", {}).get("videoId", "")) for x in raw if x.get("contentDetails", {}).get("videoId")]
+            stats_data = _youtube_json("https://www.googleapis.com/youtube/v3/videos?part=statistics&id=" + quote(",".join(ids)) + "&key=" + quote(api_key)) if ids else {"items": []}
+            stats = {str(x["id"]): x.get("statistics", {}) for x in stats_data.get("items", [])}
+            all_items = []
+            for row in raw:
+                snippet = row.get("snippet", {})
+                video_id = str(row.get("contentDetails", {}).get("videoId", ""))
+                published = snippet.get("publishedAt", "")
+                try:
+                    published_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                views = int(stats.get(video_id, {}).get("viewCount", 0))
+                age_hours = max((now - published_dt).total_seconds() / 3600, 1)
+                all_items.append({"video_id": video_id, "title": snippet.get("title", "Без названия"), "url": f"https://www.youtube.com/watch?v={video_id}", "published_at": published, "views": views, "likes": int(stats.get(video_id, {}).get("likeCount", 0)), "age_hours": round(age_hours, 1), "velocity": round(views / age_hours, 1)})
+            baseline = median([x["views"] for x in all_items] or [1])
+            for x in all_items[:3]:
+                age = now - datetime.fromisoformat(x["published_at"].replace("Z", "+00:00"))
+                if age.total_seconds() <= days * 86400:
+                    x.update({"platform": "youtube", "donor": donor.get("name", "YouTube"), "outlier_score": round(x["views"] / max(baseline, 1), 2), "recommended": False})
+                    result["candidates"].append(x)
+        except Exception as exc:  # one donor must not break the radar
+            result["warnings"].append(f"{donor.get('name', 'YouTube')}: {exc}")
+    if result["candidates"]:
+        max(result["candidates"], key=lambda x: (x["outlier_score"], x["velocity"]))["recommended"] = True
+    return JSONResponse(result)
 
 
 @router.get("/api/content/video/plan")

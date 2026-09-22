@@ -459,18 +459,42 @@ def content_video_plan_save(body: dict = Body(...)) -> JSONResponse:
     status = str(body.get("status", "brief"))
     if status not in allowed_statuses:
         return JSONResponse({"error": "Неизвестный статус плана."}, status_code=400)
+    path = base / "data" / "editorial-plan.json"
+    plan = _read_json(path, {"items": []})
+    existing = next((x for x in plan.get("items", []) if str(x.get("id")) == str(body.get("id"))), {})
     item = {
         "id": str(body.get("id") or datetime.now(timezone.utc).strftime("video-%Y%m%d-%H%M%S-%f")),
         "title": title, "platform": str(body.get("platform", "YouTube Shorts")).strip() or "YouTube Shorts",
         "production_date": str(body.get("production_date", "")).strip(),
         "publish_date": str(body.get("publish_date", "")).strip(), "status": status,
         "source_url": str(body.get("source_url", "")).strip(),
+        "caption": str(body.get("caption", existing.get("caption", ""))).strip(),
+        "destination": str(body.get("destination", existing.get("destination", ""))).strip(),
+        "local_path": str(body.get("local_path", existing.get("local_path", ""))).strip(),
+        "video_sequence": body.get("video_sequence", existing.get("video_sequence")),
     }
-    path = base / "data" / "editorial-plan.json"
-    plan = _read_json(path, {"items": []})
     items = [x for x in plan.get("items", []) if str(x.get("id")) != item["id"]]
     items.append(item)
     path.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "item": item})
+
+
+@router.post("/api/content/video/plan/{item_id}/approve")
+def content_video_plan_approve(item_id: str) -> JSONResponse:
+    """Explicit approval of title/caption before a card enters the publish queue."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    path = base / "data" / "editorial-plan.json"
+    plan = _read_json(path, {"items": []})
+    item = next((x for x in plan.get("items", []) if x.get("id") == item_id), None)
+    if item is None:
+        return JSONResponse({"error": "Карточка публикации не найдена."}, status_code=404)
+    if not str(item.get("caption", "")).strip():
+        return JSONResponse({"error": "Сначала добавьте описание к ролику."}, status_code=400)
+    item["status"] = "scheduled"
+    item["approved_at"] = datetime.now(timezone.utc).isoformat()
+    _write_json(path, plan)
     return JSONResponse({"ok": True, "item": item})
 
 
@@ -679,7 +703,7 @@ def content_video_prepare_publish(sequence: int) -> JSONResponse:
             continue
         card = {"id": f"publish-{uuid.uuid4().hex[:12]}", "video_sequence": sequence, "title": title,
                 "caption": caption, "platform": platform, "production_date": "", "publish_date": "",
-                "status": "scheduled", "source_url": "", "local_path": video["local_path"],
+                "status": "review", "source_url": "", "local_path": video["local_path"],
                 "destination": "https://studio.youtube.com/" if platform == "YouTube Shorts" else "https://www.instagram.com/"}
         plan.setdefault("items", []).append(card)
         created.append(card)

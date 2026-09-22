@@ -43,9 +43,12 @@ def _daily_budget(account_id: int) -> int:
 def _claim(account_id: int) -> dict | None:
     """Атомарно закрепить одну группу, не превышая дневную квоту аккаунта."""
     with database.get_conn() as conn:
+        # В лимит входят только реальные успешно обработанные группы. Битая
+        # строка каталога не должна отнимать у аккаунта его единственный
+        # безопасный слот на сегодня.
         done_today = conn.execute(
             "SELECT COUNT(*) n FROM chat_research_runs WHERE account_id=? "
-            "AND date(created_at)=date('now')", (account_id,)
+            "AND status='done' AND date(created_at)=date('now')", (account_id,)
         ).fetchone()["n"]
         if done_today >= _daily_budget(account_id):
             return None
@@ -97,31 +100,38 @@ async def _join_and_keep(client, task: dict, account_id: int) -> None:
 
 async def run_one(client, account_id: int) -> dict | None:
     """Выполнить одно задание и оставить проверяемую историю результата."""
-    task = _claim(account_id)
-    if not task:
-        return None
-    try:
-        await _join_and_keep(client, task, account_id)
+    # Импортированные таблицы могут содержать несколько устаревших username.
+    # Пропускаем небольшую пачку таких строк в рамках одного запуска, но после
+    # первого настоящего исследования сразу останавливаемся: дневной темп
+    # вступлений остаётся 1--2 группы на аккаунт.
+    for _ in range(5):
+        task = _claim(account_id)
+        if not task:
+            return None
+        try:
+            await _join_and_keep(client, task, account_id)
         # Полный, а не light-скан: нужны админы и нормальная выборка активности
         # для карточки из ТЗ, а не только отметка «ссылка открылась».
-        result = await scan_one(client, task["username"] or task["link"], task["id"], light=False)
-        with database.get_conn() as conn:
-            conn.execute("UPDATE chats SET research_status='done', research_finished_at=datetime('now'), "
-                         "research_error=NULL, status='joined' WHERE id=?", (task["id"],))
-            conn.execute("UPDATE chat_research_runs SET status='done', result_json=?, "
-                         "finished_at=datetime('now') WHERE id=?",
-                         (json.dumps(result, ensure_ascii=False), task["run_id"]))
-        return {"chat_id": task["id"], "title": task["title"], "status": "done"}
-    except Exception as exc:
-        reason = f"{type(exc).__name__}: {exc}"[:300]
+            result = await scan_one(client, task["username"] or task["link"], task["id"], light=False)
+            with database.get_conn() as conn:
+                conn.execute("UPDATE chats SET research_status='done', research_finished_at=datetime('now'), "
+                             "research_error=NULL, status='joined' WHERE id=?", (task["id"],))
+                conn.execute("UPDATE chat_research_runs SET status='done', result_json=?, "
+                             "finished_at=datetime('now') WHERE id=?",
+                             (json.dumps(result, ensure_ascii=False), task["run_id"]))
+            return {"chat_id": task["id"], "title": task["title"], "status": "done"}
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:300]
         # ValueError от get_entity означает, что строка не резолвится как TG-сущность.
         # Повторять её на следующем аккаунте бессмысленно: это битая ссылка/заголовок,
         # а не временный сетевой сбой.
-        unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
-        state = "unavailable" if unavailable else "retry"
-        with database.get_conn() as conn:
-            conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",
-                         (state, reason, task["id"]))
-            conn.execute("UPDATE chat_research_runs SET status=?, error=?, finished_at=datetime('now') WHERE id=?",
-                         (state, reason, task["run_id"]))
-        return {"chat_id": task["id"], "title": task["title"], "status": state, "error": reason}
+            unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
+            state = "unavailable" if unavailable else "retry"
+            with database.get_conn() as conn:
+                conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",
+                             (state, reason, task["id"]))
+                conn.execute("UPDATE chat_research_runs SET status=?, error=?, finished_at=datetime('now') WHERE id=?",
+                             (state, reason, task["run_id"]))
+            if not unavailable:
+                return {"chat_id": task["id"], "title": task["title"], "status": state, "error": reason}
+    return None

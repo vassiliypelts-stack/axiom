@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import random
 import json
+import re
 import subprocess
 import sys
 import shutil
@@ -356,6 +357,13 @@ def _youtube_json(url: str) -> dict:
         raise RuntimeError(f"Не удалось соединиться с YouTube API: {exc.reason}") from exc
 
 
+def _script_section(script: str, heading: str) -> str:
+    """Read a bounded editor section from the deliberately headed AI deliverable."""
+    pattern = rf"(?:^|\n)\s*(?:\d+\)\s*)?{re.escape(heading)}\s*[:—-]?\s*(.*?)(?=\n\s*(?:\d+\)\s*)?[А-ЯЁA-Z][А-ЯЁA-Z /_-]{{2,}}\s*[:—-]|\Z)"
+    match = re.search(pattern, script, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
 def _youtube_channel_id(source_url: str, api_key: str) -> str:
     parsed = urlparse(source_url)
     bits = [x for x in parsed.path.split("/") if x]
@@ -655,7 +663,16 @@ def content_video_prepare_publish(sequence: int) -> JSONResponse:
     path = base / "data" / "editorial-plan.json"
     plan = _read_json(path, {"items": []})
     title = str(video.get("title") or "Новый ролик")
-    caption = f"{title}\n\nНапиши «КЛУБ» в комментариях — пришлю видео с AI-клубом изнутри."
+    script = ""
+    if video.get("production_id"):
+        jobs = _read_json(base / "data" / "production-jobs.json", {"items": []})
+        job = next((x for x in jobs.get("items", []) if x.get("id") == video.get("production_id")), {})
+        script = str(job.get("script", ""))
+    generated_title = _script_section(script, "ЗАГОЛОВОК")
+    generated_caption = _script_section(script, "ОПИСАНИЕ")
+    if generated_title:
+        title = generated_title.splitlines()[0][:120]
+    caption = generated_caption or f"{title}\n\nНапиши «КЛУБ» в комментариях — пришлю видео с AI-клубом изнутри."
     created = []
     for platform in ("YouTube Shorts", "Instagram Reels"):
         if any(int(x.get("video_sequence", -1)) == sequence and x.get("platform") == platform for x in plan.get("items", [])):

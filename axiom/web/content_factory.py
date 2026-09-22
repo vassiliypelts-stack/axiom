@@ -229,7 +229,7 @@ def content_video_summary() -> JSONResponse:
 
 
 @router.post("/api/content/video/upload")
-async def content_video_upload(file: UploadFile = File(...), title: str = Form("")) -> JSONResponse:
+async def content_video_upload(file: UploadFile = File(...), title: str = Form(""), production_id: str = Form("")) -> JSONResponse:
     """Загрузить собственный MP4 в очередь. Публикация здесь невозможна."""
     base = _video_factory_dir()
     if base is None:
@@ -260,18 +260,32 @@ async def content_video_upload(file: UploadFile = File(...), title: str = Form("
     path = base / "data" / "queue-state.json"
     queue = _read_json(path, {"next_sequence": 1, "items": []})
     sequence = int(queue.get("next_sequence") or 1)
+    production_id = production_id.strip()
+    jobs_path = base / "data" / "production-jobs.json"
+    jobs = _read_json(jobs_path, {"items": []})
+    job = next((x for x in jobs.get("items", []) if x.get("id") == production_id), None) if production_id else None
+    if production_id and job is None:
+        target.unlink(missing_ok=True)
+        return JSONResponse({"error": "Задача на монтаж не найдена."}, status_code=404)
     item = {
         "sequence": sequence,
         "source": "upload",
-        "channel": "Свой ролик",
+        "channel": "Оригинальное производство" if job else "Свой ролик",
         "source_id": source_id,
-        "source_url": "",
-        "title": (title.strip() or Path(filename).stem),
+        "source_url": str(job.get("source_url", "")) if job else "",
+        "title": (title.strip() or str(job.get("brief", {}).get("topic", "")).strip() or Path(filename).stem),
         "local_path": str(target.relative_to(base)).replace("\\", "/"),
-        "status": "downloaded",
+        "status": "rendered",
         "approved": False,
         "published": False,
     }
+    if job:
+        item["production_id"] = job["id"]
+        item["script_id"] = job["script_id"]
+        job["status"] = "review_mp4"
+        job["queue_sequence"] = sequence
+        job["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+        _write_json(jobs_path, jobs)
     items = queue.get("items", [])
     items.append(item)
     queue["items"] = items
@@ -506,7 +520,7 @@ def content_video_generate_script(body: dict = Body(...)) -> JSONResponse:
 Цель: {brief['goal']}
 Формат: {brief['format']}
 CTA: {brief['cta']}
-Верни: 1) хук 0–3 сек, 2) текст озвучки с таймкодами до 45 сек, 3) что показывает AI-аватар, 4) кадры скринкаста, 5) финальный CTA.
+Верни строго по разделам: 1) ХУК 0–3 сек, 2) СЦЕНАРИЙ ОЗВУЧКИ с таймкодами до 45 сек, 3) МОНТАЖНОЕ ТЗ: AI-аватар, скринкаст, B-roll, субтитры и переходы для каждого блока, 4) ЗАГОЛОВОК, 5) ОПИСАНИЕ для YouTube Shorts и Instagram Reels, 6) ФИНАЛЬНЫЙ CTA, 7) ПЕРВЫЙ ОТВЕТ В ЛС человеку, который написал кодовое слово. Не копируй формулировки источника.
 """
     try:
         script = llm.text(model, system="Ты редактор коротких видео. Пиши конкретно, честно и без обещаний результата.",
@@ -568,6 +582,45 @@ def content_video_scripts() -> JSONResponse:
         return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
     scripts = _read_json(base / "data" / "scripts.json", {"items": []})
     return JSONResponse({"items": scripts.get("items", [])[-20:][::-1]})
+
+
+@router.get("/api/content/video/production-jobs")
+def content_video_production_jobs() -> JSONResponse:
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    jobs = _read_json(base / "data" / "production-jobs.json", {"items": []})
+    return JSONResponse({"items": jobs.get("items", [])[-20:][::-1]})
+
+
+@router.post("/api/content/video/scripts/{script_id}/approve-production")
+def content_video_approve_script_for_production(script_id: str) -> JSONResponse:
+    """Human gate between original editorial output and any montage work."""
+    base = _video_factory_dir()
+    if base is None:
+        return JSONResponse({"error": "Задайте VIDEO_FACTORY_DIR в .env Axiom."}, status_code=400)
+    scripts_path = base / "data" / "scripts.json"
+    scripts = _read_json(scripts_path, {"items": []})
+    script = next((x for x in scripts.get("items", []) if x.get("id") == script_id), None)
+    if script is None:
+        return JSONResponse({"error": "Сценарий не найден."}, status_code=404)
+    jobs_path = base / "data" / "production-jobs.json"
+    jobs = _read_json(jobs_path, {"items": []})
+    existing = next((x for x in jobs.get("items", []) if x.get("script_id") == script_id), None)
+    if existing:
+        return JSONResponse({"ok": True, "item": existing, "already_exists": True})
+    script["status"] = "approved_for_production"
+    script["approved_at"] = datetime.now(timezone.utc).isoformat()
+    _write_json(scripts_path, scripts)
+    job = {
+        "id": f"production-{uuid.uuid4().hex[:12]}", "script_id": script_id,
+        "created_at": datetime.now(timezone.utc).isoformat(), "status": "waiting_mp4",
+        "brief": script.get("brief", {}), "script": script.get("script", ""),
+        "source_url": script.get("brief", {}).get("source_url", ""),
+    }
+    jobs.setdefault("items", []).append(job)
+    _write_json(jobs_path, jobs)
+    return JSONResponse({"ok": True, "item": job})
 
 
 @router.post("/api/content/video/queue/{sequence}/approve")

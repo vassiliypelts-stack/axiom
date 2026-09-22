@@ -14,6 +14,12 @@ from db import database
 from telethon.tl.functions.channels import JoinChannelRequest
 
 
+# Заголовки из ручных таблиц иногда приезжают как обычная строка каталога.
+# Это не username и не повод десятки раз расходовать слоты прогрева на одну
+# и ту же «Ссылку».
+_PLACEHOLDER_USERNAMES = {"ссылка", "ссылки", "username", "канал", "чат", "link", "url"}
+
+
 def _daily_budget(account_id: int) -> int:
     """Стабильная на сутки квота 1--2 вступления для конкретного аккаунта.
 
@@ -47,6 +53,7 @@ def _claim(account_id: int) -> dict | None:
             "SELECT id, title, username, link FROM chats "
             "WHERE COALESCE(research_status,'new') IN ('new','retry') "
             "AND last_scanned_at IS NULL AND username IS NOT NULL AND username<>'' "
+            "AND LOWER(username) NOT IN ('ссылка','ссылки','username','канал','чат','link','url') "
             "AND (verdict IS NULL OR verdict<>'мёртвый') ORDER BY id LIMIT 1"
         ).fetchone()
         if not row:
@@ -107,7 +114,10 @@ async def run_one(client, account_id: int) -> dict | None:
         return {"chat_id": task["id"], "title": task["title"], "status": "done"}
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"[:300]
-        unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError"}
+        # ValueError от get_entity означает, что строка не резолвится как TG-сущность.
+        # Повторять её на следующем аккаунте бессмысленно: это битая ссылка/заголовок,
+        # а не временный сетевой сбой.
+        unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
         state = "unavailable" if unavailable else "retry"
         with database.get_conn() as conn:
             conn.execute("UPDATE chats SET research_status=?, research_error=? WHERE id=?",

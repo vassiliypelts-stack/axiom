@@ -974,9 +974,12 @@ async def run_upkeep(only_id: int | None = None) -> None:
     # время спит; пачка личных сообщений среди ночи — готовый признак фермы, ради
     # борьбы с которым вся эта живость и существует. Ручной запуск (only_id) не
     # ограничиваем: оператор проверяет конкретный номер осознанно.
-    if only_id is None and not _upkeep_daytime():
-        print("поддержка: сейчас ночь по Москве — живые люди спят, прогон пропускаю")
-        return
+    # Ночью гасим только ПЕРЕПИСКУ между своими: личные сообщения в 4 утра —
+    # почерк фермы. Пассивная часть (онлайн, лента, лайки) и исследование групп
+    # ночью безопасны: это чтение, а не ЛС, и именно там наполняется каталог.
+    # Раньше гейт стоял на входе и отменял прогон целиком — 24.09 из-за этого
+    # за ночь не исследовано ни одной группы, хотя накануне их было 87.
+    night = only_id is None and not _upkeep_daytime()
     with database.get_conn() as conn:
         accs = [dict(a) for a in database.upkeep_accounts(conn)]
     if only_id is not None:
@@ -1011,7 +1014,7 @@ async def run_upkeep(only_id: int | None = None) -> None:
         # Каждый номер выходит на связь в СВОЙ час дня, а не вся команда разом.
         # Без этого 23.09 в 22-23 часа ожили 34 аккаунта подряд — для Telegram это
         # один почерк, сколько бы разных сценариев внутри ни было.
-        batch = [a for a in batch if _upkeep_due_now(a)]
+        batch = batch if night else [a for a in batch if _upkeep_due_now(a)]
         if not batch:
             print("поддержка: сейчас ничей «личный час» не наступил — прогон пропускаю")
             return
@@ -1028,8 +1031,12 @@ async def run_upkeep(only_id: int | None = None) -> None:
     # _upkeep_passive — онлайн, лента, лайки и исследование одной группы. Именно
     # там вызывается group_research, поэтому каталог наполняют все боевые каждый
     # заход, а не четверть из них.
-    pool = [a for a in batch if not (random.random() < UPKEEP_SKIP)]
-    silent = [a for a in batch if a not in pool]
+    if night:
+        pool, silent = [], list(batch)
+        print("поддержка: ночь по Москве — только лента, лайки и группы, без ЛС")
+    else:
+        pool = [a for a in batch if not (random.random() < UPKEEP_SKIP)]
+        silent = [a for a in batch if a not in pool]
     random.shuffle(pool)
     pairs = [(pool[i], pool[i + 1]) for i in range(0, len(pool) - 1, 2)]
     if len(pool) % 2:

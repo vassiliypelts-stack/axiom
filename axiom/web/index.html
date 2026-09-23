@@ -7274,6 +7274,11 @@ async function viewCampaigns(v){
     const fst=(($("#c-acc-fst")||{}).value)||"";
     const fprot=(($("#c-acc-fprot")||{}).value)||"";
     const list=accounts.filter(a=>{
+      // Архивные в справочнике команды не нужны: это отработанные номера, в
+      // рассылку они не идут, а список открывался именно с них — живые уезжали
+      // под прокрутку. Исключение — уже отмеченный в команде: иначе счётчик
+      // «выбрано» показывал бы больше, чем видно строк.
+      if(a.status==="archived"&&!teamSet.has(a.id))return false;
       if(fchan==="tg"&&!a.tg_connected)return false;
       if(fchan==="wa"&&!a.wa_authed)return false;
       if(fst&&a.status!==fst)return false;
@@ -7353,6 +7358,7 @@ async function viewCampaigns(v){
     const fst=(($("#c-acc-fst")||{}).value)||"";
     const fprot=(($("#c-acc-fprot")||{}).value)||"";
     const list=accounts.filter(a=>{
+      if(a.status==="archived")return false;   // архивные в команду не набираем
       if(fchan==="tg"&&!a.tg_connected)return false;
       if(fchan==="wa"&&!a.wa_authed)return false;
       if(fst&&a.status!==fst)return false;

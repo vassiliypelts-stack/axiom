@@ -2168,6 +2168,7 @@ async function viewAgents(v){
         <input id="wa-int" type="number" min="1" value="24" style="max-width:64px"> ч
         <button id="wa-save">сохранить</button>
         <button class="primary" id="wa-run">Прогреть всех сейчас</button>
+        <button id="wa-upkeep" title="Живость БОЕВЫХ номеров плюс исследование групп: каждый берёт 1-2 группы из очереди, вступает, сканирует и заполняет карточку в каталоге">🔎 Живость и группы — боевым сейчас</button>
         <button id="wa-log">🧾 Журнал всех прогревов</button>
         <button id="wa-stop" title="Остановить текущий фоновый прогрев">⏹ Стоп</button>
         <span class="hint" id="wa-msg"></span>
@@ -2367,6 +2368,12 @@ async function viewAgents(v){
   $("#wa-save").onclick=async()=>{
     await api("/api/warmup/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto:$("#wa-auto").checked,interval_h:+$("#wa-int").value})});
     $("#wa-msg").textContent="✓ сохранено · фон "+($("#wa-auto").checked?"включён":"выключен");};
+  const wuBtn=$("#wa-upkeep");
+  if(wuBtn)wuBtn.onclick=async()=>{wuBtn.disabled=true;const t=wuBtn.textContent;wuBtn.textContent="запускаю…";
+    try{const r=await api("/api/warmup/upkeep_now",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+      $("#wa-msg").innerHTML=r.ok?'<span style="color:var(--green)">боевых в работе: '+r.accounts+' — живость и вступления идут фоном, карточки появятся в «Чаты» через несколько минут</span>':(r.error||"ошибка");}
+    catch(e){$("#wa-msg").textContent="не удалось: "+e.message;}
+    wuBtn.disabled=false;wuBtn.textContent=t;};
   $("#wa-run").onclick=async()=>{const b=$("#wa-run");b.disabled=true;b.textContent="запускаю…";
     const r=await api("/api/warmup/run_now",{method:"POST"});
     b.disabled=false;b.textContent="Прогреть всех сейчас";

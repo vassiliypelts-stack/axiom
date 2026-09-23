@@ -2399,7 +2399,12 @@ def _proxy_scheduler() -> None:
         try:
             with database.get_conn() as conn:
                 uauto = database.get_setting(conn, "upkeep_auto", "on")
-                uint = int(database.get_setting(conn, "upkeep_interval_min", "1440"))
+                # Раз в сутки — мало. За один прогон аккаунт берёт одну группу, а
+                # дневная квота 1-2 (group_research._daily_budget), и вторая половина
+                # просто не выбиралась. Плюс живость боевых при суточном шаге ложилась
+                # одним всплеском вместо ровного фона. Каждые 6 часов: квота
+                # выбирается, а темп вступлений по-прежнему держит сам group_research.
+                uint = int(database.get_setting(conn, "upkeep_interval_min", "360"))
                 ulast = database.get_setting(conn, "upkeep_last_run_ts", "0")
             if uauto == "on" and (time.time() - float(ulast or 0)) >= uint * 60:
                 with database.get_conn() as conn:
@@ -10459,6 +10464,36 @@ def warmup_run_now() -> JSONResponse:
     with database.get_conn() as conn:
         database.set_setting(conn, "warmup_pid", str(proc.pid))
     return JSONResponse({"ok": True, "warming": len(rows), "skipped_no_proxy": skipped})
+
+
+@app.post("/api/warmup/upkeep_now")
+def warmup_upkeep_now() -> JSONResponse:
+    """Поддерживающий прогрев БОЕВЫХ прямо сейчас: живость + исследование групп.
+
+    Своей кнопки у upkeep не было — он шёл только по расписанию раз в сутки, и
+    дождаться его можно было лишь к следующему дню. При этом именно здесь
+    вызывается group_research: боевые номера берут по 1-2 группы, вступают,
+    сканируют и пишут карточку в каталог. Без ручного запуска очередь в 16 тысяч
+    групп двигалась на десяток строк в сутки.
+    """
+    import subprocess
+    import sys
+    import time
+    with database.get_conn() as conn:
+        rows = database.upkeep_accounts(conn)
+    if not rows:
+        return JSONResponse({"error": "нет боевых с живой сессией и прокси"}, status_code=400)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "channels_warmup.log"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"\n===== {__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S} "
+                f"запуск: channels.warmup --upkeep =====\n")
+        f.flush()
+        subprocess.Popen([sys.executable, "-m", "channels.warmup", "--upkeep"],
+                         cwd=str(BASE_DIR.parent), stdout=f, stderr=subprocess.STDOUT)
+    with database.get_conn() as conn:
+        database.set_setting(conn, "upkeep_last_run_ts", str(time.time()))
+    return JSONResponse({"ok": True, "accounts": len(rows)})
 
 
 @app.post("/api/warmup/stop")

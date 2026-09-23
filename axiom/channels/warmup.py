@@ -791,6 +791,45 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
     # disconnect делает обёртка _warm_one (finally) — здесь он больше не нужен
 
 
+# Продолжения диалога: третья и четвёртая реплики. Живая переписка редко
+# обрывается ровно на «вопрос — ответ»; но и тянуться бесконечно не должна.
+UPKEEP_TAILS = [
+    ("понял тебя)", "ага"),
+    ("ну ок, тогда спишемся", "давай) на связи"),
+    ("ясно) удачи там", "спасибо, и тебе"),
+    ("а, ну норм тогда", "ну да)"),
+    ("понятно) ладно, не буду отвлекать", "да не, всё норм) пиши если что"),
+    ("окей, добро", "ага, до связи"),
+    ("хорошо) тогда до завтра", "давай, хорошего вечера"),
+    ("вот и отлично", "ну а что) всё путём"),
+]
+
+# Как часто диалог идёт дальше второй реплики и как часто обрывается на первой.
+UPKEEP_TAIL_CHANCE = 0.45      # шанс, что после ответа будет продолжение
+UPKEEP_TAIL2_CHANCE = 0.40     # шанс четвёртой реплики, если была третья
+UPKEEP_NOREPLY_CHANCE = 0.18   # шанс, что собеседник просто не ответит
+
+
+def _build_chain() -> list[str]:
+    """Реплики диалога по порядку: чётные от первого номера, нечётные от второго.
+
+    Длина случайная. Иногда это одна фраза без ответа — человек написал, второй
+    не ответил, и это нормально: у живых людей так бывает постоянно, а у ботов
+    никогда. Иногда четыре реплики с прощанием. Фиксированные пары «вопрос —
+    ответ» во всех чатах подряд — такой же почерк, как одинаковое время выхода.
+    """
+    ask, reply = random.choice(UPKEEP_DIALOGS)
+    if random.random() < UPKEEP_NOREPLY_CHANCE:
+        return [ask]                       # написал и не дождался ответа
+    chain = [ask, reply]
+    if random.random() < UPKEEP_TAIL_CHANCE:
+        tail_a, tail_b = random.choice(UPKEEP_TAILS)
+        chain.append(tail_a)
+        if random.random() < UPKEEP_TAIL2_CHANCE:
+            chain.append(tail_b)
+    return chain
+
+
 async def _upkeep_pair(a: dict, b: dict) -> int:
     """Живой диалог между двумя своими номерами: a спрашивает, b отвечает.
 
@@ -800,7 +839,10 @@ async def _upkeep_pair(a: dict, b: dict) -> int:
     """
     from channels.telegram import build_client
     from telethon.sessions import StringSession
-    ask, reply = random.choice(UPKEEP_DIALOGS)
+    # Живой диалог редко укладывается в ровные «вопрос — ответ»: иногда это
+    # четыре реплики, иногда человек не отвечает вовсе. Строим цепочку
+    # переменной длины (_build_chain), а не фиксированную пару.
+    chain = _build_chain()
     ca = build_client(StringSession(a["tg_session"]), a["proxy"],
                       a.get("api_id"), a.get("api_hash"))
     cb = build_client(StringSession(b["tg_session"]), b["proxy"],
@@ -816,19 +858,22 @@ async def _upkeep_pair(a: dict, b: dict) -> int:
         if not (peer_a and peer_b):
             return 0
         ent_b = await _resolve_target(ca, peer_b)
-        async with ca.action(ent_b, "typing"):
-            await asyncio.sleep(random.uniform(1.5, 4.0))
-        await ca.send_message(ent_b, ask)
-        sent += 1
-        print(f"  {na} -> {nb}: {ask}")
-        # Пауза «человек прочитал и печатает ответ».
-        await asyncio.sleep(random.uniform(20, 90))
         ent_a = await _resolve_target(cb, peer_a)
-        async with cb.action(ent_a, "typing"):
-            await asyncio.sleep(random.uniform(1.5, 4.0))
-        await cb.send_message(ent_a, reply)
-        sent += 1
-        print(f"  {nb} -> {na}: {reply}")
+        # Реплики идут по очереди: чётные от a, нечётные от b. Пауза перед
+        # каждой — время «прочитал и печатает», и она тем длиннее, чем
+        # длиннее сам текст: мгновенный ответ на длинную фразу читается
+        # как бот.
+        for idx, text in enumerate(chain):
+            from_a = (idx % 2 == 0)
+            client, ent = (ca, ent_b) if from_a else (cb, ent_a)
+            who_from, who_to = (na, nb) if from_a else (nb, na)
+            if idx:
+                await asyncio.sleep(random.uniform(20, 110))
+            async with client.action(ent, "typing"):
+                await asyncio.sleep(min(6.0, 1.2 + len(text) / random.uniform(9, 16)))
+            await client.send_message(ent, text)
+            sent += 1
+            print(f"  {who_from} -> {who_to}: {text}")
     except FloodWaitError as e:
         print(f"  [floodwait] {e.seconds}с — пару пропускаю")
     except Exception as e:  # noqa: BLE001

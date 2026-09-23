@@ -2827,6 +2827,21 @@ def _meetings_scheduler() -> None:
                 if not in_campaign:
                     continue                  # не рассылка — не наш собеседник, молчим
                 if a.kind == "followup":
+                    # ЗАЩИТА ОТ ЗАДВОЕНИЯ. collect_due считает шаг дожима по хвосту
+                    # исходящих (_trailing_out_streak), а отметка о нём появляется
+                    # только ПОСЛЕ подтверждённой отправки. Между сбором и записью
+                    # проходят секунды-минуты (очередь, подключение слушателя), и
+                    # следующий тик успевает собрать тот же самый дожим заново:
+                    # 23.09 контакт #295 получил один и тот же текст дважды, в 7:30
+                    # и 7:45. Смотрим на факт — если наше исходящее этому контакту
+                    # ушло меньше часа назад, дожим уже сделан, второй не нужен.
+                    with database.get_conn() as conn:
+                        just_sent = conn.execute(
+                            "SELECT 1 FROM messages WHERE contact_id=? AND direction='out' "
+                            "AND ts >= datetime('now','-1 hour') LIMIT 1", (a.contact_id,)
+                        ).fetchone()
+                    if just_sent:
+                        continue
                     acc = row["account_id"]
                     if sent_by_acc.get(acc, 0) >= FOLLOWUP_PER_TICK:
                         continue              # остальное догоним следующими тиками
@@ -4446,6 +4461,32 @@ def company_delete(cid: int) -> JSONResponse:
 _CONTACT_EDIT_FIELDS = ("name", "person_name", "person_role", "phone", "username",
                         "wa_phone", "city", "company_id", "specialization", "tags",
                         "notes", "agent_context", "preferred_channel")
+
+
+@app.post("/api/contact/{contact_id}/test_flag")
+def contact_test_flag(contact_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Пометить контакт «тестовым» (или снять пометку).
+
+    Свои номера владельца попадают в базу теми же путями, что и лиды: парсингом
+    чатов, импортом, ручным добавлением. Дальше их берёт боевая рассылка и
+    дожим, а в статистике кампании они идут наравне с живыми людьми — портят
+    конверсию и заставляют разбирать «почему бот написал мне самому».
+
+    is_test=1 решает и то, и другое: _audience берёт такие контакты ТОЛЬКО для
+    кнопки «Тест», а счётчики аудитории их не считают.
+    """
+    on = 1 if payload.get("is_test", True) else 0
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT id FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "контакт не найден"}, status_code=404)
+        conn.execute("UPDATE contacts SET is_test=?, updated_at=datetime('now') WHERE id=?",
+                     (on, contact_id))
+        # Тестовый контакт не должен оставаться в очереди боевой кампании: пока
+        # он там, планировщик продолжит считать его «ждущим ответа» и дожимать.
+        if on:
+            conn.execute("DELETE FROM opener_queue WHERE contact_id=?", (contact_id,))
+    return JSONResponse({"ok": True, "id": contact_id, "is_test": bool(on)})
 
 
 @app.post("/api/contacts/create")

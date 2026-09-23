@@ -3265,7 +3265,13 @@ def _owner_tg_handle() -> str | None:
 # Telegram-рассылка сейчас допустима: номер может быть слишком молодым или
 # стоять на передышке после PeerFlood. Держим это рядом с API аккаунтов, чтобы
 # пульт и пред-полётная проверка не обещали то, чего sender потом не сделает.
-_MIN_COLD_OUTREACH_AGE_DAYS = 14
+# Значение берём из самого отправщика, а не дублируем числом: 23.09.2026 порог
+# снизили до 13 в campaign_send, а здесь осталась своя 14 — и пульт писал
+# «дозревает 13/14» по номерам, которые sender уже был готов взять.
+try:
+    from channels.campaign_send import MIN_COMBAT_AGE_DAYS as _MIN_COLD_OUTREACH_AGE_DAYS
+except Exception:  # noqa: BLE001 — пульт не должен падать из-за импорта канала
+    _MIN_COLD_OUTREACH_AGE_DAYS = 13
 
 
 def _cold_outreach_state(a: dict) -> dict:

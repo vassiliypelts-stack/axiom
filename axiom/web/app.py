@@ -1893,11 +1893,13 @@ def _wa_digits(phone: str | None) -> str:
 
 
 def _wa_has_session(digits: str) -> bool:
-    """Номер привязан на ЭТОЙ машине. creds.json Baileys создаёт сразу при старте,
-    ещё до привязки, — поэтому смотрим, записан ли в нём сам аккаунт (me)."""
+    """Номер привязан на ЭТОЙ машине. creds.json Baileys создаёт сразу при старте, а
+    поле me заполняет уже в момент ЗАПРОСА кода — ещё до ввода на телефоне. Признак
+    завершённой привязки — account (подпись устройства, приходит только после
+    подтверждения с телефона), для обоих способов: по коду и по QR."""
     f = WA_DIR / f"auth_{digits}" / "creds.json"
     try:
-        return bool(json.loads(f.read_text(encoding="utf-8")).get("me"))
+        return bool(json.loads(f.read_text(encoding="utf-8")).get("account"))
     except (OSError, ValueError):
         return False
 
@@ -2087,8 +2089,17 @@ def account_wa_login(acc_id: int) -> JSONResponse:
     процесс остаётся работать (слушает входящие, берёт очередь) — супервизор его
     не дублирует."""
     import re
+    import shutil
     import time
     database.init_db()
+    # Недопривязанная сессия (код запросили, но не ввели) WhatsApp отбивает кодом 401,
+    # и новый код с ней не получить — стираем её. Готовую сессию не трогаем.
+    with database.get_conn() as conn:
+        ph = conn.execute("SELECT phone FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    digits = _wa_digits(ph["phone"] if ph else "")
+    if digits and not _wa_has_session(digits):
+        _wa_stop(acc_id)
+        shutil.rmtree(WA_DIR / f"auth_{digits}", ignore_errors=True)
     try:
         _wa_spawn(acc_id, pair=True)
     except Exception as e:  # noqa: BLE001

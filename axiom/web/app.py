@@ -47,6 +47,10 @@ from web.google_contacts import router as google_contacts_router
 app.include_router(google_contacts_router)
 from web.content_factory import router as content_factory_router
 app.include_router(content_factory_router)
+# WhatsApp-мост: Node-процессы номеров (whatsapp/index.js) ходят сюда за очередью и
+# с входящими. Пароль пульта им не нужен — пускаем по токену, см. _auth_gate.
+from channels.wa_bridge import router as wa_bridge_router
+app.include_router(wa_bridge_router)
 
 # --------------------------------------------------------------------------- #
 #  Вход по паролю (закрытый доступ на сервере).                                #
@@ -152,6 +156,13 @@ async def _auth_gate(request: Request, call_next):
     path = request.url.path
     if path in _AUTH_OPEN:
         return await call_next(request)
+    # /wa/* — внутренний мост для Node-процессов WhatsApp. Проверять «запрос с
+    # localhost» нельзя: nginx сам ходит на 127.0.0.1, и снаружи всё выглядело бы
+    # локальным. Поэтому только по токену, который пульт отдаёт своим процессам.
+    if path.startswith("/wa/"):
+        if _hmac.compare_digest(request.headers.get("x-axiom-wa", ""), WA_TOKEN):
+            return await call_next(request)
+        return JSONResponse({"error": "нет доступа"}, status_code=403)
     cookie = request.cookies.get(_AUTH_COOKIE, "")
     # Проверка: пароль ИЛИ Telegram-сессия
     pw_ok = _AUTH_PW and _hmac.compare_digest(cookie, _auth_token())
@@ -1831,69 +1842,280 @@ def account_inventory(acc_id: int) -> JSONResponse:
     return JSONResponse({"ok": res.get("ok"), "output": res.get("output")})
 
 
-# Папка Node-приложения WhatsApp (Baileys). Можно переопределить через env AXIOM_WA_DIR.
+# --------------------------------------------------------------------------- #
+#  WhatsApp: по Node-процессу (whatsapp/index.js, Baileys) на привязанный номер. #
+# --------------------------------------------------------------------------- #
+# Пульт сам держит эти процессы (_wa_supervisor): поднимает после рестарта/деплоя,
+# перезапускает упавшие. Процесс живёт в группе сервиса — systemd при рестарте
+# пульта гасит и их, а супервизор нового процесса поднимает заново. Сессии номеров
+# лежат в whatsapp/auth_<номер> (в .gitignore): деплой (reset --hard) их не стирает.
 import os as _os
-WA_DIR = Path(_os.environ.get("AXIOM_WA_DIR", r"C:\Users\vp198\axiom-wa"))
-_WA_PROCS: dict = {}   # acc_id -> Popen (держим ссылку, чтобы процесс жил для привязки)
+import secrets as _secrets
+WA_DIR = Path(_os.environ.get("AXIOM_WA_DIR") or (BASE_DIR.parent / "whatsapp"))
+# Токен доступа Node → /wa/* (см. _auth_gate). Новый на каждый запуск пульта: дочерние
+# процессы получают его в env и умирают вместе с пультом.
+WA_TOKEN = _secrets.token_hex(16)
+_WA_PROCS: dict = {}   # acc_id -> Popen
+_WA_LOG: dict = {}     # acc_id -> последние строки вывода (для кода привязки и пульта)
+_WA_SPAWNED: dict = {}  # acc_id -> time.time() последнего запуска (антицикл)
+WA_RESPAWN_SEC = 120
+WA_REPLACED_PAUSE_SEC = 30 * 60
+
+
+def _wa_node() -> str | None:
+    import shutil
+    return shutil.which("node") or (r"C:\Program Files\nodejs\node.exe"
+                                    if Path(r"C:\Program Files\nodejs\node.exe").exists() else None)
+
+
+def _wa_ensure_modules() -> str | None:
+    """node_modules ставим сами при первом запуске на сервере. None — всё готово."""
+    import shutil
+    import subprocess
+    if (WA_DIR / "node_modules" / "@whiskeysockets").exists():
+        return None
+    npm = shutil.which("npm")
+    if not npm:
+        return "npm не найден — поставь Node.js 20+"
+    try:
+        r = subprocess.run([npm, "install", "--omit=dev", "--no-audit", "--no-fund"],
+                           cwd=str(WA_DIR), capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return f"npm install упал: {e}"
+    if r.returncode != 0:
+        return "npm install: " + (r.stderr or r.stdout or "")[-400:]
+    return None
+
+
+def _wa_digits(phone: str | None) -> str:
+    import re
+    return re.sub(r"\D", "", phone or "")
+
+
+def _wa_has_session(digits: str) -> bool:
+    """Номер привязан на ЭТОЙ машине. creds.json Baileys создаёт сразу при старте,
+    ещё до привязки, — поэтому смотрим, записан ли в нём сам аккаунт (me)."""
+    f = WA_DIR / f"auth_{digits}" / "creds.json"
+    try:
+        return bool(json.loads(f.read_text(encoding="utf-8")).get("me"))
+    except (OSError, ValueError):
+        return False
+
+
+def _wa_alive(acc_id: int) -> bool:
+    p = _WA_PROCS.get(acc_id)
+    return bool(p and p.poll() is None)
+
+
+def _wa_spawn(acc_id: int, pair: bool = False):
+    """Запустить Node-процесс номера. Старый процесс этого номера гасим: два
+    подключения одним номером WhatsApp рвёт кодом 440 и оба падают."""
+    import subprocess
+    import threading
+    with database.get_conn() as conn:
+        a = conn.execute("SELECT phone, proxy, COALESCE(proxy_alive,1) proxy_alive "
+                         "FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not a:
+        raise RuntimeError("аккаунт не найден")
+    digits = _wa_digits(a["phone"])
+    if not digits:
+        raise RuntimeError("у аккаунта не задан номер телефона")
+    if not (WA_DIR / "index.js").exists():
+        raise RuntimeError(f"WhatsApp-модуль не найден в {WA_DIR}")
+    node = _wa_node()
+    if not node:
+        raise RuntimeError("Node.js не найден — установи Node 20+")
+    err = _wa_ensure_modules()
+    if err:
+        raise RuntimeError(err)
+    _wa_stop(acc_id)
+    args = [node, "index.js", "--auth", digits, "--account", str(acc_id)]
+    if pair:
+        args.append("--pair")
+    # Тот же IP, что у номера в Telegram: один номер — один адрес, как и там.
+    px = (a["proxy"] or "").strip()
+    if px.startswith(("socks", "http")) and a["proxy_alive"] != 0:
+        args += ["--proxy", px]
+    env = dict(_os.environ)
+    env["AXIOM_BRIDGE"] = f"http://127.0.0.1:{_os.environ.get('AXIOM_PORT', '8000')}"
+    env["AXIOM_WA_TOKEN"] = WA_TOKEN
+    log_path = config.BASE_DIR / "data" / "logs" / f"wa_{acc_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if log_path.exists() and log_path.stat().st_size > 5_000_000:
+            log_path.unlink()
+    except OSError:
+        pass
+    proc = subprocess.Popen(args, cwd=str(WA_DIR), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                            errors="replace")
+    _WA_PROCS[acc_id] = proc
+    _WA_SPAWNED[acc_id] = _t.time()
+    buf: list[str] = []
+    _WA_LOG[acc_id] = buf
+
+    def _reader() -> None:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {_dtmod.datetime.now():%Y-%m-%d %H:%M:%S} старт {' '.join(args[1:4])}\n")
+            for ln in proc.stdout:  # type: ignore[union-attr]
+                f.write(ln)
+                f.flush()
+                buf.append(ln)
+                if len(buf) > 300:
+                    del buf[:100]
+    threading.Thread(target=_reader, daemon=True).start()
+    return proc
+
+
+def _wa_stop(acc_id: int) -> None:
+    p = _WA_PROCS.pop(acc_id, None)
+    if p and p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            p.kill()
+
+
+def _wa_stop_all() -> None:
+    for aid in list(_WA_PROCS):
+        _wa_stop(aid)
+
+
+def _wa_supervisor() -> None:
+    """Держит поднятыми процессы всех привязанных WhatsApp-номеров.
+
+    Не поднимаем: при выключенном тумблере (settings.wa_enabled=off), у забаненных,
+    у номеров без сессии на ЭТОЙ машине (привязали когда-то на ноутбуке — нужен новый
+    код в пульте), и полчаса после 440 «сессию перехватило другое подключение» —
+    иначе мы бы бодались с тем, кто её перехватил, и WhatsApp снял бы привязку."""
+    _t.sleep(20)
+    while True:
+        try:
+            with database.get_conn() as conn:
+                on = database.get_setting(conn, "wa_enabled", "on") != "off"
+                rows = conn.execute(
+                    "SELECT id, phone, status, wa_state, wa_state_at FROM accounts "
+                    "WHERE wa_authed='yes'").fetchall()
+            if not on:
+                _wa_stop_all()
+            else:
+                for r in rows:
+                    aid = r["id"]
+                    if _wa_alive(aid):
+                        continue
+                    if r["status"] == "banned":
+                        continue
+                    digits = _wa_digits(r["phone"])
+                    if not digits or not _wa_has_session(digits):
+                        if r["wa_state"] != "no_session":
+                            with database.get_conn() as conn:
+                                conn.execute("UPDATE accounts SET wa_state='no_session', "
+                                             "wa_state_at=datetime('now') WHERE id=?", (aid,))
+                        continue
+                    if _t.time() - _WA_SPAWNED.get(aid, 0) < WA_RESPAWN_SEC:
+                        continue
+                    if r["wa_state"] == "replaced" and r["wa_state_at"]:
+                        try:
+                            age = (_dtmod.datetime.utcnow() - _dtmod.datetime.fromisoformat(
+                                str(r["wa_state_at"]))).total_seconds()
+                        except ValueError:
+                            age = WA_REPLACED_PAUSE_SEC
+                        if age < WA_REPLACED_PAUSE_SEC:
+                            continue
+                    try:
+                        _wa_spawn(aid)
+                        print(f"[wa] поднял процесс номера #{aid}")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[wa] #{aid}: {e}")
+                        _WA_SPAWNED[aid] = _t.time()
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[wa supervisor] {e}")
+        _t.sleep(30)
+
+
+@app.get("/api/wa/status")
+def wa_status_api() -> JSONResponse:
+    """WhatsApp-номера: привязан ли, жив ли процесс, что в очереди."""
+    with database.get_conn() as conn:
+        on = database.get_setting(conn, "wa_enabled", "on") != "off"
+        rows = conn.execute(
+            "SELECT id, label, phone, wa_authed, wa_state, wa_state_at, "
+            "COALESCE(protected,0) protected FROM accounts "
+            "WHERE wa_authed IN ('yes','no') OR wa_state IS NOT NULL ORDER BY id").fetchall()
+        out = []
+        for r in rows:
+            q = conn.execute(
+                "SELECT SUM(status IN ('pending','sending')) queued, "
+                "SUM(status='sent' AND date(sent_at)=date('now')) sent_today, "
+                "SUM(status='failed') failed FROM wa_outbox WHERE account_id=?",
+                (r["id"],)).fetchone()
+            d = dict(r)
+            d["running"] = _wa_alive(r["id"])
+            d["has_session"] = _wa_has_session(_wa_digits(r["phone"]))
+            d["queued"] = q["queued"] or 0
+            d["sent_today"] = q["sent_today"] or 0
+            d["failed"] = q["failed"] or 0
+            d["log"] = "".join(_WA_LOG.get(r["id"], [])[-15:])
+            out.append(d)
+    return JSONResponse({"enabled": on, "accounts": out, "node": bool(_wa_node()),
+                         "dir": str(WA_DIR)})
+
+
+@app.post("/api/wa/toggle")
+def wa_toggle(payload: dict = Body(...)) -> JSONResponse:
+    """Общий рубильник WhatsApp: off — гасим все процессы номеров (очередь ждёт)."""
+    on = "on" if payload.get("enabled") else "off"
+    with database.get_conn() as conn:
+        database.set_setting(conn, "wa_enabled", on)
+    if on == "off":
+        _wa_stop_all()
+    return JSONResponse({"ok": True, "enabled": on == "on"})
+
+
 
 
 @app.post("/api/account/{acc_id}/wa_login")
 def account_wa_login(acc_id: int) -> JSONResponse:
-    """Подключить WhatsApp по коду привязки: запускает Node-логин и возвращает 8-значный код.
-    Код вводишь на телефоне: WhatsApp → Связанные устройства → Привязать → по номеру телефона."""
+    """Подключить WhatsApp по коду привязки: запускает Node-процесс номера в режиме
+    привязки и возвращает 8-значный код. Код вводишь на телефоне: WhatsApp →
+    Связанные устройства → Привязать → по номеру телефона. После привязки этот же
+    процесс остаётся работать (слушает входящие, берёт очередь) — супервизор его
+    не дублирует."""
     import re
-    import shutil
-    import subprocess
-    import threading
     import time
     database.init_db()
+    try:
+        _wa_spawn(acc_id, pair=True)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=400)
     with database.get_conn() as conn:
-        row = conn.execute("SELECT phone FROM accounts WHERE id=?", (acc_id,)).fetchone()
-    if not row:
-        return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
-    digits = re.sub(r"\D", "", row["phone"] or "")
-    if not digits:
-        return JSONResponse({"error": "у аккаунта не задан номер телефона"}, status_code=400)
-    if not (WA_DIR / "index.js").exists():
-        return JSONResponse({"error": f"WhatsApp-модуль не найден в {WA_DIR}. Укажи путь в AXIOM_WA_DIR."},
-                            status_code=400)
-    node = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
-    if not Path(node).exists() and not shutil.which("node"):
-        return JSONResponse({"error": "Node.js не найден — установи Node или добавь в PATH"}, status_code=400)
-    # старый процесс этого аккаунта прибиваем, чтобы не плодить коннекты
-    old = _WA_PROCS.pop(acc_id, None)
-    if old and old.poll() is None:
-        old.terminate()
-    proc = subprocess.Popen([node, "index.js", "--auth", digits, "--pair"], cwd=str(WA_DIR),
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                            encoding="utf-8", errors="replace")
-    _WA_PROCS[acc_id] = proc
-    lines: list[str] = []
+        conn.execute("UPDATE accounts SET wa_state='pairing', wa_state_at=datetime('now') "
+                     "WHERE id=?", (acc_id,))
+    proc = _WA_PROCS[acc_id]
     code = None
-
-    def _reader():
-        for ln in proc.stdout:  # type: ignore
-            lines.append(ln)
-    t = threading.Thread(target=_reader, daemon=True); t.start()
     deadline = time.time() + 45
     while time.time() < deadline:
-        for ln in lines:
+        for ln in list(_WA_LOG.get(acc_id, [])):
             m = re.search(r"КОД:\s*([A-Z0-9\-]{6,12})", ln)
             if m:
                 code = m.group(1).strip()
                 break
+            if "подключён как" in ln:
+                return JSONResponse({"ok": True, "already": True,
+                                     "hint": "Номер уже привязан — процесс подключился по "
+                                             "сохранённой сессии, код не нужен."})
         if code or proc.poll() is not None:
             break
         time.sleep(0.4)
     if code:
-        return JSONResponse({"ok": True, "code": code, "phone": digits,
-                             "hint": "На телефоне: WhatsApp → Связанные устройства → Привязать устройство → "
-                                     "«Привязать по номеру телефона» → введи код. Окно подключения не закрывай."})
-    if proc.poll() is None:
-        proc.terminate()
-    _WA_PROCS.pop(acc_id, None)
+        return JSONResponse({"ok": True, "code": code,
+                             "hint": "На телефоне: WhatsApp → Связанные устройства → Привязать "
+                                     "устройство → «Привязать по номеру телефона» → введи код. "
+                                     "Статус «WA ✓» появится сам через несколько секунд."})
+    _wa_stop(acc_id)
     return JSONResponse({"ok": False, "error": "не удалось получить код привязки (см. лог)",
-                         "output": "".join(lines[-20:])}, status_code=200)
+                         "output": "".join(_WA_LOG.get(acc_id, [])[-20:])}, status_code=200)
 
 
 @app.post("/api/account/{acc_id}/tdesktop")
@@ -3108,6 +3330,17 @@ def _campaign_has_cold_sender(conn, cid: int) -> bool:
     rows = conn.execute(
         "SELECT a.* FROM accounts a JOIN campaign_accounts ca ON ca.account_id=a.id "
         "WHERE ca.campaign_id=?", (cid,)).fetchall()
+    ch = conn.execute("SELECT channel, account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if ch and "whatsapp" in (ch["channel"] or ""):
+        # Отправитель WhatsApp — привязанный номер команды (или campaigns.account_id),
+        # не родной и не служебный: то же правило, что в campaign_send._wa_team.
+        wa = conn.execute(
+            "SELECT 1 FROM accounts WHERE wa_authed='yes' AND status<>'banned' "
+            "AND COALESCE(protected,0)=0 AND COALESCE(acc_role,'')<>'service' "
+            "AND (id IN (SELECT account_id FROM campaign_accounts WHERE campaign_id=?) OR id=?) "
+            "LIMIT 1", (cid, ch["account_id"] or -1)).fetchone()
+        if wa:
+            return True
     return any(_cold_outreach_state(dict(row))["eligible"] for row in rows)
 
 
@@ -3461,6 +3694,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_session_check_scheduler, daemon=True).start()
     threading.Thread(target=_listener_watchdog, daemon=True).start()
     threading.Thread(target=_read_status_scheduler, daemon=True).start()
+    threading.Thread(target=_wa_supervisor, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
     try:
@@ -3484,6 +3718,7 @@ def _stop_listener() -> None:
         listener.shutdown()
     except Exception as e:  # noqa: BLE001
         print(f"[listener] штатная остановка не удалась: {e}")
+    _wa_stop_all()
 
 
 @app.get("/api/listener/status")
@@ -9316,6 +9551,13 @@ def _spawn_campaign_send(cid: int, limit: int, test: bool = False,
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
 
+    with database.get_conn() as conn:
+        ch = conn.execute("SELECT channel FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if ch and "telegram" not in (ch["channel"] or ""):
+        # Только WhatsApp: заход лишь ставит строки в очередь wa_outbox, Telegram-
+        # сессии не поднимает — слушатель гасить незачем.
+        subprocess.Popen(args, cwd=str(BASE_DIR.parent), env=env)
+        return
     was_on = _listener_hold()
     if was_on and not _wait_listener_drained():
         # Слушатель не подтвердил, что отпустил сессии. Раньше мы всё равно шли
@@ -10944,6 +11186,8 @@ def campaign_test(cid: int, payload: dict = Body(default={})) -> JSONResponse:
         conn.execute(f"DELETE FROM messages WHERE contact_id IN ({qmarks})", test_ids)
         conn.execute(f"DELETE FROM deals WHERE contact_id IN ({qmarks})", test_ids)
         conn.execute(f"DELETE FROM opener_queue WHERE contact_id IN ({qmarks})", test_ids)
+        conn.execute(f"DELETE FROM wa_outbox WHERE is_test=1 AND contact_id IN ({qmarks})",
+                     test_ids)
         conn.execute(
             f"DELETE FROM campaign_contacts WHERE campaign_id=? AND contact_id IN ({qmarks})",
             (cid, *test_ids))

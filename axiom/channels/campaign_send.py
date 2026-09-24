@@ -695,6 +695,166 @@ def _human_conn_error(e: Exception) -> str:
     return t[:200]
 
 
+# ───────────────────────────── WhatsApp ─────────────────────────────
+#
+# Потолок холодных первых сообщений в сутки с одного WA-номера на время теста
+# канала. WhatsApp банит номер за жалобы «спам» от незнакомцев, и бан там —
+# навсегда, без паузы, как у PeerFlood. Поднимать — только по итогам теста,
+# когда будет видно, как номер переносит холодные.
+WA_MAX_DAILY = 5
+WA_OPENER_PARTS = 2        # первое + второе сообщение; третьего «через сутки» в WA пока нет
+
+
+def _wa_team(cid: int, camp: dict, test: bool, test_account: int | None) -> list[dict]:
+    """WA-отправители кампании: номера из команды (или campaigns.account_id).
+    Родной (protected) и служебный номер холодную не шлют — только тест на свои номера."""
+    sel = ("SELECT a.id, a.label, a.phone, a.tg_name, a.status, a.wa_authed, "
+           "COALESCE(a.protected,0) protected, COALESCE(a.acc_role,'') acc_role, "
+           "COALESCE(ca.daily_limit, a.daily_limit) cap "
+           "FROM accounts a LEFT JOIN campaign_accounts ca "
+           "ON ca.account_id=a.id AND ca.campaign_id=? ")
+    with database.get_conn() as conn:
+        if test and test_account:
+            rows = conn.execute(sel + "WHERE a.id=?", (cid, test_account)).fetchall()
+        else:
+            rows = conn.execute(
+                sel + "WHERE a.id IN (SELECT account_id FROM campaign_accounts WHERE campaign_id=?) "
+                "OR a.id=? ORDER BY a.id", (cid, cid, camp.get("account_id") or -1)).fetchall()
+    out = []
+    for r in rows:
+        r = dict(r)
+        if r["status"] == "banned":
+            continue
+        if not test and (r["protected"] or r["acc_role"] == "service"):
+            continue
+        out.append(r)
+    return out
+
+
+def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
+                   test_account: int | None = None, test_contacts: list[int] | None = None,
+                   tg_too: bool = False) -> int:
+    """Поставить первые сообщения кампании в очередь WhatsApp (wa_outbox).
+
+    Доставляет Node-процесс номера (whatsapp/index.js) — он держит единственный
+    сокет, второй параллельный коннект WhatsApp рвёт кодом 440. Здесь только решение
+    «кому и с какого номера»: рабочие часы и воскресенье уже проверил run(), тут —
+    дневные лимиты кампании и номеров, тест-режим и сегмент. Возвращает сколько."""
+    tmpl = camp.get("message_template") or ""
+    if opener_lint.severe(opener_lint.lint(tmpl)) or not _parts(tmpl, "", strict=False):
+        print("[WA] шаблон первого сообщения пуст или похож на промпт — в очередь не ставлю")
+        return 0
+    team = _wa_team(cid, camp, test, test_account)
+    authed = [a for a in team if a["wa_authed"] == "yes"]
+    if not authed:
+        why = ("в команде кампании нет номера с привязанным WhatsApp — привяжи его в "
+               "«Аккаунтах» кнопкой WA (код привязки)")
+        if not test:
+            why += ". Родные и служебные номера холодную по WhatsApp не шлют — только тест"
+        print(f"[WA] {why}")
+        with database.get_conn() as conn:
+            database.add_event(conn, "campaign_wa", f"⚠️ «{camp['name']}»: WhatsApp слать не с кого",
+                               why, level="warn", campaign_id=cid)
+        return 0
+
+    # Сколько ещё можно сегодня — кампании целиком и каждому номеру. Строки в очереди
+    # считаем как уже отправленные, иначе два захода подряд поставят вдвое больше.
+    with database.get_conn() as conn:
+        camp_left = limit
+        day_cap = int(camp.get("daily_limit") or 0)
+        if day_cap > 0 and not test:
+            used = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=? "
+                "        AND date(sent_at)=date('now')) + "
+                "       (SELECT COUNT(*) FROM wa_outbox WHERE campaign_id=? AND is_test=0 "
+                "        AND status IN ('pending','sending')) n", (cid, cid)).fetchone()["n"]
+            camp_left = min(camp_left, day_cap - used)
+        senders = []
+        for a in authed:
+            if test:
+                left = limit
+            else:
+                cap = min(int(a["cap"] or WA_MAX_DAILY), WA_MAX_DAILY)
+                used = conn.execute(
+                    "SELECT COUNT(*) n FROM wa_outbox WHERE account_id=? AND is_test=0 "
+                    "AND (status IN ('pending','sending') OR date(sent_at)=date('now'))",
+                    (a["id"],)).fetchone()["n"]
+                left = cap - used
+            if left > 0:
+                senders.append({**a, "left": left})
+    if camp_left <= 0 or not senders:
+        print("[WA] дневной объём выбран (кампании или номеров) — продолжу завтра")
+        return 0
+
+    where = ("c.status='new' AND c.deleted_at IS NULL AND c.phone IS NOT NULL AND c.phone<>'' "
+             "AND COALESCE(c.has_wa,'unknown') IN ('yes','unknown') "
+             "AND (c.outreach_campaign_id IS NULL OR c.outreach_campaign_id=?) "
+             "AND c.id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?) "
+             "AND c.id NOT IN (SELECT contact_id FROM wa_outbox WHERE status IN ('pending','sending'))")
+    params: list = [cid, cid]
+    if tg_too and not test:
+        where += " AND c.has_tg='no'"      # остальных достанет Telegram-часть захода
+    where += " AND COALESCE(c.is_test,0)=" + ("1" if test else "0")
+    if test:
+        where += " AND (c.test_campaign_id IS NULL OR c.test_campaign_id=?)"
+        params.append(cid)
+        if test_contacts:
+            where += " AND c.id IN ({})".format(",".join("?" * len(test_contacts)))
+            params.extend(test_contacts)
+    else:
+        tag = (camp.get("audience_tag") or "").strip()
+        if not tag:
+            print("[WA] у кампании нет сегмента (тега) — всю базу не рассылаем")
+            return 0
+        where += (" AND c.id NOT IN (SELECT contact_id FROM wa_outbox "
+                  "WHERE campaign_id=? AND status IN ('sent','no_wa'))")
+        where += " AND c.tags LIKE ?"
+        params += [cid, f"%{tag}%"]
+    with database.get_conn() as conn:
+        rows = conn.execute(f"SELECT c.* FROM contacts c WHERE {where} ORDER BY c.id LIMIT ?",
+                            (*params, max(camp_left, 0))).fetchall()
+    if not rows:
+        print("[WA] " + ("тест: нет своих номеров (is_test=1) с телефоном" if test
+                         else "аудитория для WhatsApp пуста"))
+        return 0
+
+    queued = 0
+    rr = 0
+    with database.get_conn() as conn:
+        for row in rows:
+            avail = [s for s in senders if s["left"] > 0]
+            if not avail:
+                break
+            s = avail[rr % len(avail)]
+            rr += 1
+            parts = _parts(tmpl, _greeting(row), row["agency"] or row["name"],
+                           _decision_phrase(row), sender=_sender_name(s),
+                           spec=_spec_of(row))[:WA_OPENER_PARTS]
+            if not parts:
+                continue
+            # Контакт закрепляем за кампанией сразу: иначе Telegram-заход другой
+            # кампании возьмёт его, пока строка ждёт своей очереди в WhatsApp.
+            if not test:
+                conn.execute("UPDATE contacts SET outreach_campaign_id=? WHERE id=? "
+                             "AND outreach_campaign_id IS NULL", (cid, row["id"]))
+            conn.execute("INSERT INTO wa_outbox (campaign_id, contact_id, account_id, phone, "
+                         "parts, is_test) VALUES (?,?,?,?,?,?)",
+                         (cid, row["id"], s["id"], row["phone"],
+                          json.dumps(parts, ensure_ascii=False), 1 if test else 0))
+            s["left"] -= 1
+            queued += 1
+        if queued:
+            database.add_event(
+                conn, "campaign_wa",
+                f"🟢 «{camp['name']}»: {queued} в очередь WhatsApp" + (" (тест)" if test else ""),
+                "С номеров: " + ", ".join(s["label"] or f"#{s['id']}" for s in senders)
+                + ". Номер шлёт по одному с паузой в несколько минут и только в рабочие "
+                  "часы кампании (тест — сразу).",
+                level="good", campaign_id=cid)
+    print(f"[WA] поставлено в очередь: {queued}")
+    return queued
+
+
 async def run(cid: int, limit: int, test: bool = False,
               test_account: int | None = None,
               test_contacts: list[int] | None = None) -> None:
@@ -717,13 +877,14 @@ async def run(cid: int, limit: int, test: bool = False,
               f"(ответы на входящие идут как обычно)")
         return
     chans = _channels(camp["channel"])
-    if "telegram" not in chans:
-        print(f"канал '{camp['channel']}': отправка через WhatsApp пока не подключена "
-              f"(Baileys-мост). Сейчас этот отправщик шлёт только Telegram.")
-        return
     if "whatsapp" in chans:
-        print("режим мультиканала: TG-достижимым шлём сейчас; WhatsApp-only контакты "
-              "дождутся подключения WA-моста.")
+        # WhatsApp не шлёт отсюда сам: кладём строки в очередь wa_outbox, а доставит
+        # Node-процесс номера (он держит единственный сокет). В мультиканале WA берёт
+        # только тех, кого Telegram не достанет (has_tg='no'), — дубля не будет.
+        queue_whatsapp(cid, camp, limit, test=test, test_account=test_account,
+                       test_contacts=test_contacts, tg_too="telegram" in chans)
+    if "telegram" not in chans:
+        return
     # ДНЕВНОЙ потолок кампании — именно дневной, а не «на заход».
     # Раньше здесь стояло min(limit, daily_limit), то есть daily_limit резал КАЖДЫЙ
     # заход по отдельности: при автозапуске «каждый час по 3» выходило до 45 сообщений

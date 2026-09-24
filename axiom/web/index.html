@@ -2448,7 +2448,15 @@ async function viewAgents(v){
       {key:"username",label:"Ник TG",render:r=>r.username?`<span class="tg">@${esc(r.username)}</span>`:'<span class="no">—</span>'},
       {key:"conn",label:"Подключение",render:r=>{
         const tg=r.tg_connected?'<span class="badge b-active">TG ✓</span>':'<span class="badge b-nurture">TG —</span>';
-        const wa=r.wa_authed==='yes'?'<span class="badge b-active">WA ✓</span>':'<span class="badge b-nurture">WA —</span>';
+        // WA ✓ — привязан и процесс на связи; жёлтый — привязан, но сокет не открыт
+        // (no_session: привязывали не на сервере — нужен новый код в карточке).
+        const WA_ST={open:"на связи",closed:"переподключается",connecting:"подключается",pairing:"ждёт код привязки",
+          replaced:"сессию перехватило другое подключение (WhatsApp Web?) — пауза 30 мин",logged_out:"отвязан на телефоне",
+          no_session:"на сервере нет сессии — получи код в карточке аккаунта"};
+        const wa=r.wa_authed==='yes'
+          ?(r.wa_state==='open'?'<span class="badge b-active" title="WhatsApp на связи">WA ✓</span>'
+            :`<span class="badge b-nurture" style="color:var(--warn,#c90)" title="${esc(WA_ST[r.wa_state]||r.wa_state||'процесс не запущен')}">WA ⚠</span>`)
+          :'<span class="badge b-nurture">WA —</span>';
         const spam=r.spam_status==='ok'?' <span class="badge b-active" title="@SpamBot: чисто">SB✓</span>'
           :(r.spam_status&&r.spam_status!=='unknown'?` <span class="badge b-stop" title="@SpamBot: ${esc(r.spam_status)}">SB⚠</span>`:'');
         const conn=r.tg_connected?'':` <button class="acc-login" data-id="${r.id}" data-phone="${esc(r.phone||'')}" data-label="${esc(r.label||r.username||('#'+r.id))}" style="font-size:11px;padding:2px 8px">🔌 Подключить</button>`;

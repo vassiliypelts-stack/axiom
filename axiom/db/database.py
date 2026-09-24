@@ -314,6 +314,11 @@ _EXTRA_ACCOUNT_COLS = {
     "listen_role": "TEXT",
     "tg_session": "TEXT",                 # StringSession аккаунта (Telegram)
     "wa_authed": "TEXT",                  # авторизован ли в WhatsApp ('yes'/'no')
+    # Что сейчас с WhatsApp-сокетом номера (пишет whatsapp/index.js через /wa/status):
+    # open | connecting | closed | logged_out | pairing. Отдельно от wa_authed: номер
+    # может быть привязан, но процесс лежит — и рассылка тогда копит очередь впустую.
+    "wa_state": "TEXT",
+    "wa_state_at": "TEXT",
     "proxy": "TEXT",                      # персональный прокси (socks5://user:pass@host:port)
     "warm_stage": "INTEGER DEFAULT 0",    # стадия/день прогрева
     "warm_started_at": "TEXT",
@@ -1080,7 +1085,8 @@ def mark_photos_by_tg(conn: sqlite3.Connection, tg_user_ids) -> None:
 def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text: str,
                 intent: str | None = None, account_id: int | None = None,
                 tg_msg_ids: list[int] | None = None, media_path: str | None = None,
-                media_name: str | None = None, media_mime: str | None = None) -> None:
+                media_name: str | None = None, media_mime: str | None = None,
+                channel: str = "telegram") -> None:
     tg_msg_id = ",".join(str(i) for i in tg_msg_ids) if tg_msg_ids else None
     # Доставку Telegram отдельным статусом не отдаёт (в отличие от WhatsApp): если
     # send_message вернул id сообщения, оно уже лежит в диалоге собеседника. Поэтому
@@ -1089,9 +1095,9 @@ def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text:
     # разница показывает, дело в тексте оффера или в том, что письмо не открывают.
     delivered = "datetime('now')" if (direction == "out" and tg_msg_id) else "NULL"
     conn.execute(
-        "INSERT INTO messages (contact_id, direction, text, intent, account_id, tg_msg_id, "
-        f"delivered_at, media_path, media_name, media_mime) VALUES (?, ?, ?, ?, ?, ?, {delivered}, ?, ?, ?)",
-        (contact_id, direction, text, intent, account_id, tg_msg_id,
+        "INSERT INTO messages (contact_id, channel, direction, text, intent, account_id, tg_msg_id, "
+        f"delivered_at, media_path, media_name, media_mime) VALUES (?, ?, ?, ?, ?, ?, ?, {delivered}, ?, ?, ?)",
+        (contact_id, channel, direction, text, intent, account_id, tg_msg_id,
          media_path, media_name, media_mime),
     )
 

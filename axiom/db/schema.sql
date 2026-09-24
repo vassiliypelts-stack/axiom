@@ -532,3 +532,24 @@ CREATE INDEX IF NOT EXISTS idx_contacts_tg_user ON contacts(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_admins_chat ON chat_admins(chat_id);
 CREATE INDEX IF NOT EXISTS idx_user_posts_user ON tg_user_posts(tg_user_id);
 CREATE INDEX IF NOT EXISTS idx_opener_queue_due ON opener_queue(next_at);
+
+-- Очередь исходящих WhatsApp. Решение «кому и когда писать» принимает
+-- channels/campaign_send (те же рабочие часы, дневные лимиты, тест-режим, что и в
+-- Telegram), а доставляет Node-процесс номера (whatsapp/index.js): он держит
+-- подключение и забирает отсюда свои строки. Так отправка идёт по одному сокету на
+-- номер — второй параллельный коннект WhatsApp рвёт кодом 440.
+CREATE TABLE IF NOT EXISTS wa_outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER,
+    contact_id  INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    phone       TEXT,
+    parts       TEXT NOT NULL,              -- JSON-список сообщений (строки шаблона)
+    is_test     INTEGER DEFAULT 0,
+    status      TEXT DEFAULT 'pending',     -- pending | sending | sent | no_wa | failed
+    error       TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    taken_at    TEXT,
+    sent_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wa_outbox_acc ON wa_outbox(account_id, status);

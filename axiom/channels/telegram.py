@@ -608,6 +608,38 @@ def _notify_agent_down(contact_id: int, exc: Exception) -> None:
         pass
 
 
+def campaign_prompt_with_objections(conn, camp) -> str | None:
+    """Промпт кампании + её база возражений (общий для Telegram и WhatsApp)."""
+    campaign_prompt = camp["agent_prompt"] if camp else None
+    # База возражений кампании прирастает к промпту, а не живёт внутри него:
+    # владелец дописывает отработки по одной, не переписывая сценарий целиком.
+    # Берём только те, где ответ уже задан — пустые ждут решения владельца.
+    if camp and campaign_prompt:
+        objs = conn.execute(
+            "SELECT title, objection, answer FROM campaign_objections "
+            "WHERE campaign_id=? AND COALESCE(enabled,1)=1 "
+            "AND answer IS NOT NULL AND TRIM(answer)<>'' "
+            "ORDER BY COALESCE(hits,0) DESC, id", (camp["id"],)).fetchall()
+        if objs:
+            lines = []
+            for o in objs:
+                head = (o["title"] or o["objection"] or "").strip()
+                said = (o["objection"] or "").strip()
+                body = (o["answer"] or "").strip()
+                if said and said != head:
+                    lines.append(f"— {head} (звучит как «{said}»):\n  {body}")
+                else:
+                    lines.append(f"— {head}:\n  {body}")
+            campaign_prompt += (
+                "\n\nБАЗА ВОЗРАЖЕНИЙ — ГОТОВЫЕ ОТРАБОТКИ ВЛАДЕЛЬЦА.\n"
+                "Это проверенные ответы на то, что люди реально говорят. Если реплика\n"
+                "человека похожа на одно из возражений ниже — отрабатывай ИМЕННО так,\n"
+                "своими словами, не выдумывая свой вариант. Дальше действуй по общему\n"
+                "правилу: одна отработка, потом призыв и передача представителю.\n\n"
+                + "\n".join(lines))
+    return campaign_prompt
+
+
 async def _agent_reply(event, contact_id: int, username: str | None,
                        account_id: int | None = None) -> None:
     """Генерит ответ ИИ-агентом и шлёт его ЧЕРЕЗ аккаунт, получивший сообщение
@@ -636,33 +668,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         opener, messages = _history_for_agent(database.get_history(conn, contact_id))
         contact_info = _contact_dict(contact)
         camp = database.get_contact_campaign(conn, contact_id)
-        campaign_prompt = camp["agent_prompt"] if camp else None
-        # База возражений кампании прирастает к промпту, а не живёт внутри него:
-        # владелец дописывает отработки по одной, не переписывая сценарий целиком.
-        # Берём только те, где ответ уже задан — пустые ждут решения владельца.
-        if camp and campaign_prompt:
-            objs = conn.execute(
-                "SELECT title, objection, answer FROM campaign_objections "
-                "WHERE campaign_id=? AND COALESCE(enabled,1)=1 "
-                "AND answer IS NOT NULL AND TRIM(answer)<>'' "
-                "ORDER BY COALESCE(hits,0) DESC, id", (camp["id"],)).fetchall()
-            if objs:
-                lines = []
-                for o in objs:
-                    head = (o["title"] or o["objection"] or "").strip()
-                    said = (o["objection"] or "").strip()
-                    body = (o["answer"] or "").strip()
-                    if said and said != head:
-                        lines.append(f"— {head} (звучит как «{said}»):\n  {body}")
-                    else:
-                        lines.append(f"— {head}:\n  {body}")
-                campaign_prompt += (
-                    "\n\nБАЗА ВОЗРАЖЕНИЙ — ГОТОВЫЕ ОТРАБОТКИ ВЛАДЕЛЬЦА.\n"
-                    "Это проверенные ответы на то, что люди реально говорят. Если реплика\n"
-                    "человека похожа на одно из возражений ниже — отрабатывай ИМЕННО так,\n"
-                    "своими словами, не выдумывая свой вариант. Дальше действуй по общему\n"
-                    "правилу: одна отработка, потом призыв и передача представителю.\n\n"
-                    + "\n".join(lines))
+        campaign_prompt = campaign_prompt_with_objections(conn, camp)
         kp_file = (camp["kp_file"] if camp and "kp_file" in camp.keys() else None)
         extra_context = contact["agent_context"] if "agent_context" in contact.keys() else None
         kps = []

@@ -1076,7 +1076,7 @@ function smartTable(mount,cfg){
       st.colFilters[k]=arr.length?arr:"";st.page=0;persist();mfHoldUntil=Date.now()+400;draw();};
     mfPop.querySelectorAll("input").forEach(i=>i.onchange=apply);
     mfPop.querySelector(".mf-all").onclick=()=>{mfPop.querySelectorAll("input").forEach(i=>i.checked=false);apply();};   // «все» = без фильтра
-    mfPop.className="mf-pop";
+    mfPop.className="mf-pop";mfHoldUntil=Date.now()+400;   // хвост прокрутки до кнопки не должен закрыть список
     document.body.appendChild(mfPop);
     // Строка фильтров часто у нижнего края экрана — тогда раскрываем вверх.
     const h=mfPop.offsetHeight;

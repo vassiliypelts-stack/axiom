@@ -707,7 +707,9 @@ WA_OPENER_PARTS = 2        # первое + второе сообщение; т�
 
 def _wa_team(cid: int, camp: dict, test: bool, test_account: int | None) -> list[dict]:
     """WA-отправители кампании: номера из команды (или campaigns.account_id).
-    Родной (protected) и служебный номер холодную не шлют — только тест на свои номера."""
+    Родной (protected) номер холодную не шлёт — только тест на свои номера.
+    Служебный (acc_role='service') — шлёт: его запрет в Telegram защищает канал
+    уведомлений владельцу, а бан номера в WhatsApp Telegram-аккаунт не задевает."""
     sel = ("SELECT a.id, a.label, a.phone, a.tg_name, a.status, a.wa_authed, "
            "COALESCE(a.protected,0) protected, COALESCE(a.acc_role,'') acc_role, "
            "COALESCE(ca.daily_limit, a.daily_limit) cap "
@@ -725,7 +727,7 @@ def _wa_team(cid: int, camp: dict, test: bool, test_account: int | None) -> list
         r = dict(r)
         if r["status"] == "banned":
             continue
-        if not test and (r["protected"] or r["acc_role"] == "service"):
+        if not test and r["protected"]:
             continue
         out.append(r)
     return out
@@ -750,7 +752,7 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
         why = ("в команде кампании нет номера с привязанным WhatsApp — привяжи его в "
                "«Аккаунтах» кнопкой WA (код привязки)")
         if not test:
-            why += ". Родные и служебные номера холодную по WhatsApp не шлют — только тест"
+            why += ". Родные номера холодную по WhatsApp не шлют — только тест"
         print(f"[WA] {why}")
         with database.get_conn() as conn:
             database.add_event(conn, "campaign_wa", f"⚠️ «{camp['name']}»: WhatsApp слать не с кого",

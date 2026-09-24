@@ -3333,10 +3333,10 @@ def _campaign_has_cold_sender(conn, cid: int) -> bool:
     ch = conn.execute("SELECT channel, account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
     if ch and "whatsapp" in (ch["channel"] or ""):
         # Отправитель WhatsApp — привязанный номер команды (или campaigns.account_id),
-        # не родной и не служебный: то же правило, что в campaign_send._wa_team.
+        # не родной: то же правило, что в campaign_send._wa_team.
         wa = conn.execute(
             "SELECT 1 FROM accounts WHERE wa_authed='yes' AND status<>'banned' "
-            "AND COALESCE(protected,0)=0 AND COALESCE(acc_role,'')<>'service' "
+            "AND COALESCE(protected,0)=0 "
             "AND (id IN (SELECT account_id FROM campaign_accounts WHERE campaign_id=?) OR id=?) "
             "LIMIT 1", (cid, ch["account_id"] or -1)).fetchone()
         if wa:

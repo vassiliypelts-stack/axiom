@@ -1029,6 +1029,51 @@ function smartTable(mount,cfg){
     try{_sb.innerHTML=c.render(r);}catch(e){return String(r[c.key]??"");}
     return (_sb.textContent||"").replace(/\s+/g," ").trim();
   };
+  // Фильтр колонки: строка — поиск подстроки (как было), массив — выбранные в
+  // выпадающем списке значения (видимый текст ячейки), совпадение любого из них.
+  const cfLabel=(r,c)=>cellText(r,c)||"(пусто)";
+  const applyColFilters=rows=>{
+    Object.keys(st.colFilters).forEach(k=>{const v=st.colFilters[k],c=colByKey(k);if(!c)return;
+      if(Array.isArray(v)){if(!v.length)return;const set=new Set(v);rows=rows.filter(r=>set.has(cfLabel(r,c)));return;}
+      const fv=(v||"").toLowerCase();if(!fv)return;   // ищем и по видимому тексту («жив»), и по сырому полю («1»)
+      rows=rows.filter(r=>cellText(r,c).toLowerCase().includes(fv)||String(r[k]??"").toLowerCase().includes(fv));});
+    return rows;
+  };
+  // Выпадающий список с галочками — для колонок, где разных значений немного
+  // (тип, вердикт, рейтинг, город). Решаем по сырому полю: это дёшево даже на 17k
+  // строк, а считать видимый текст всех ячеек ради одной проверки — дорого.
+  const MF_MAX=40,mfCache={};
+  const isMulti=k=>{
+    if(k in mfCache)return mfCache[k];
+    let ok=!k.startsWith("__");
+    if(ok){const s=new Set();let filled=false;
+      for(const r of cfg.rows){const v=r[k];if(v!==undefined&&v!==null&&v!=="")filled=true;s.add(String(v??""));if(s.size>MF_MAX){ok=false;break;}}
+      if(!filled)ok=false;}   // поля нет в данных (колонка чисто вычисляемая) — оставляем текстовый поиск
+    return mfCache[k]=ok;
+  };
+  const mfBtnText=v=>Array.isArray(v)&&v.length?(v.length===1?v[0]:`${v.length} выбрано`):(typeof v==="string"&&v?`«${v}»`:"все");
+  let mfPop=null;
+  const mfClose=()=>{if(mfPop){mfPop.remove();mfPop=null;document.removeEventListener("mousedown",mfOutside,true);document.removeEventListener("keydown",mfEsc);}};
+  const mfOutside=e=>{if(mfPop&&!mfPop.contains(e.target)&&!e.target.closest(".cfm"))mfClose();};
+  const mfEsc=e=>{if(e.key==="Escape")mfClose();};
+  const mfOpen=(btn,k)=>{
+    mfClose();
+    const c=colByKey(k),cnt=new Map();
+    for(const r of cfg.rows){const l=cfLabel(r,c);cnt.set(l,(cnt.get(l)||0)+1);}
+    const opts=[...cnt].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]),"ru"));
+    const cur=new Set(Array.isArray(st.colFilters[k])?st.colFilters[k]:[]);
+    const rc=btn.getBoundingClientRect();
+    mfPop=document.createElement("div");
+    mfPop.style.cssText=`position:fixed;left:${Math.min(rc.left,window.innerWidth-240)}px;top:${rc.bottom+4}px;z-index:1000;min-width:200px;max-width:320px;max-height:340px;overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.15);padding:6px;font-size:13px;font-weight:400;text-align:left`;
+    mfPop.innerHTML=`<div style="margin-bottom:6px"><button class="mf-all" style="font-size:12px" title="снять выбор — показать все значения">все</button></div>`+
+      opts.map(([l,n])=>`<label style="display:flex;align-items:center;gap:6px;padding:3px 4px;cursor:pointer;white-space:nowrap"><input type="checkbox" value="${esc(l)}"${cur.has(l)?" checked":""}><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(l)}</span><span class="hint">${n}</span></label>`).join("");
+    const apply=()=>{const arr=[...mfPop.querySelectorAll("input:checked")].map(i=>i.value);
+      st.colFilters[k]=arr.length?arr:"";st.page=0;persist();draw();};
+    mfPop.querySelectorAll("input").forEach(i=>i.onchange=apply);
+    mfPop.querySelector(".mf-all").onclick=()=>{mfPop.querySelectorAll("input").forEach(i=>i.checked=false);apply();};   // «все» = без фильтра
+    document.body.appendChild(mfPop);
+    document.addEventListener("mousedown",mfOutside,true);document.addEventListener("keydown",mfEsc);
+  };
   const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
   const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters,pageSize:st.pageSize}));
   const wrap=document.createElement("div");
@@ -1107,9 +1152,7 @@ function smartTable(mount,cfg){
     let rows=cfg.rows.slice();
     if(cfg.prefilter)rows=rows.filter(cfg.prefilter);   // внешние быстрые чипы (избранные/годные/…)
     if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
-    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(!fv)return;
-      const c=colByKey(k);   // ищем и по видимому тексту («жив»), и по сырому полю («1») — что удобнее
-      rows=rows.filter(r=>cellText(r,c).toLowerCase().includes(fv)||String(r[k]??"").toLowerCase().includes(fv));});
+    rows=applyColFilters(rows);
     if(st.sortKey)rows.sort((a,b)=>{const x=a[st.sortKey]??"",y=b[st.sortKey]??"";return (x>y?1:x<y?-1:0)*st.sortDir;});
     wrap.querySelector("#st-cnt").textContent=`${rows.length} из ${cfg.rows.length}`;
     if(cfg.onDraw)cfg.onDraw(rows);   // отдаём наружу текущий отфильтрованный набор (для «выделить всё»)
@@ -1130,7 +1173,10 @@ function smartTable(mount,cfg){
     rows=paged;
     const w=k=>st.widths[k]?` style="width:${st.widths[k]}px;min-width:${st.widths[k]}px"`:"";
     const head=`<tr>${cols.map(c=>`<th scope="col" data-k="${c.key}"${w(c.key)}>${c.label}${st.sortKey===c.key?(st.sortDir>0?" ▲":" ▼"):""}<span class="rsz" data-k="${c.key}"></span></th>`).join("")}</tr>`;
-    const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>`<th><input class="cf" data-k="${c.key}" value="${esc(st.colFilters[c.key]||"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`).join("")}</tr>`:"";
+    const filtRow=st.showFilters?`<tr class="filtrow">${cols.map(c=>{const v=st.colFilters[c.key];
+      if(isMulti(c.key)){const on=Array.isArray(v)?v.length>0:!!v;
+        return `<th><button class="cfm" data-k="${c.key}" title="выбрать одно или несколько значений" style="width:100%;font-weight:${on?600:400};font-size:12px;padding:3px 6px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis${on?";border-color:var(--accent,#2563eb)":""}">${esc(mfBtnText(v))} ▾</button></th>`;}
+      return `<th><input class="cf" data-k="${c.key}" value="${esc(typeof v==="string"?v:"")}" placeholder="фильтр…" style="width:100%;font-weight:400;font-size:12px;padding:3px 6px"></th>`;}).join("")}</tr>`:"";
     // Счётчик для колонки «№»: продолжает с номера первой строки текущей страницы
     // (st.page*ps), а не с 1 — иначе на странице 2 снова шло бы 1,2,3…, что не
     // совпадает с «101–200 из 1713» в пейджере снизу и сбивает с толку сильнее,
@@ -1173,6 +1219,9 @@ function smartTable(mount,cfg){
       });
       drawSelBar();
     }
+    wrap.querySelectorAll(".cfm").forEach(b=>b.onclick=e=>{e.stopPropagation();
+      if(mfPop&&mfPop.dataset.k===b.dataset.k){mfClose();return;}
+      mfOpen(b,b.dataset.k);mfPop.dataset.k=b.dataset.k;});
     wrap.querySelectorAll(".cf").forEach(inp=>{inp.onclick=e=>e.stopPropagation();
       inp.oninput=()=>{const k=inp.dataset.k,pos=inp.selectionStart;st.colFilters[k]=inp.value;persist();draw();
         const ni=wrap.querySelector(`.cf[data-k="${k}"]`);if(ni){ni.focus();try{ni.setSelectionRange(pos,pos);}catch(e){}}};});
@@ -1192,8 +1241,7 @@ function smartTable(mount,cfg){
     let rows=cfg.rows.slice();
     if(cfg.prefilter)rows=rows.filter(cfg.prefilter);
     if(st.q){const q=st.q.toLowerCase();rows=rows.filter(r=>(cfg.searchKeys||Object.keys(r)).some(k=>String(r[k]??"").toLowerCase().includes(q)));}
-    Object.keys(st.colFilters).forEach(k=>{const fv=(st.colFilters[k]||"").toLowerCase();if(!fv)return;
-      const c=colByKey(k);rows=rows.filter(r=>cellText(r,c).toLowerCase().includes(fv)||String(r[k]??"").toLowerCase().includes(fv));});
+    rows=applyColFilters(rows);
     const sep="\t";
     const hdr=cols.map(c=>c.label).join(sep);
     const bdy=rows.map(r=>cols.map(c=>{

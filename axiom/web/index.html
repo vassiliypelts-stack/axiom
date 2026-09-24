@@ -1031,7 +1031,9 @@ function smartTable(mount,cfg){
   };
   // Фильтр колонки: строка — поиск подстроки (как было), массив — выбранные в
   // выпадающем списке значения (видимый текст ячейки), совпадение любого из них.
-  const cfLabel=(r,c)=>cellText(r,c)||"(пусто)";
+  // c.filterBucket(r) — колонка сама раскладывает значения по корзинам (числа → диапазоны),
+  // c.filterBuckets — порядок корзин в списке; иначе значение = видимый текст ячейки.
+  const cfLabel=(r,c)=>c.filterBucket?c.filterBucket(r):(cellText(r,c)||"(пусто)");
   const applyColFilters=rows=>{
     Object.keys(st.colFilters).forEach(k=>{const v=st.colFilters[k],c=colByKey(k);if(!c)return;
       if(Array.isArray(v)){if(!v.length)return;const set=new Set(v);rows=rows.filter(r=>set.has(cfLabel(r,c)));return;}
@@ -1045,6 +1047,7 @@ function smartTable(mount,cfg){
   const MF_MAX=40,mfCache={};
   const isMulti=k=>{
     if(k in mfCache)return mfCache[k];
+    if(colByKey(k)?.filterBucket)return mfCache[k]=true;
     let ok=!k.startsWith("__");
     if(ok){const s=new Set();let filled=false;
       for(const r of cfg.rows){const v=r[k];if(v!==undefined&&v!==null&&v!=="")filled=true;s.add(String(v??""));if(s.size>MF_MAX){ok=false;break;}}
@@ -1065,7 +1068,8 @@ function smartTable(mount,cfg){
     mfClose();
     const c=colByKey(k),cnt=new Map();
     for(const r of cfg.rows){const l=cfLabel(r,c);cnt.set(l,(cnt.get(l)||0)+1);}
-    const opts=[...cnt].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]),"ru"));
+    const ord=c.filterBuckets,pos=l=>{const i=ord?ord.indexOf(l):-1;return i<0?999:i;};
+    const opts=[...cnt].sort((a,b)=>ord?pos(a[0])-pos(b[0]):(b[1]-a[1]||String(a[0]).localeCompare(String(b[0]),"ru")));
     const cur=new Set(Array.isArray(st.colFilters[k])?st.colFilters[k]:[]);
     const rc=btn.getBoundingClientRect();
     mfPop=document.createElement("div");
@@ -5898,6 +5902,8 @@ async function loadBackfill(){
 // читали как «одобрен», хотя это лишь «робот прочитал».
 const CHAT_VERDICT={"годен":"✅ годен","не годен":"🚫 не годен","на проверку":"🤔 на проверку","мёртвый":"💀 мёртвый"};
 const CHAT_VERDICT_CLS={"годен":"active","не годен":"stop","на проверку":"nurture","мёртвый":"stop"};
+// Диапазоны для фильтра «Участники» в каталоге чатов: [верхняя граница, подпись].
+const MEMBERS_BUCKETS=[[100,"до 100"],[1000,"100 – 1 000"],[5000,"1 000 – 5 000"],[20000,"5 000 – 20 000"],[Infinity,"от 20 000"]];
 const RESEARCH_RATING={1:"1 · живая",2:"2 · полуживая",3:"3 · мусор",4:"4 · мёртвая/спам",5:"5 · не существует"};
 // Откуда чат приехал в каталог. Пачка из «похожих» имеет общую природу — по этому
 // полю её можно отобрать целиком и разобрать разом, а не выискивать глазами в notes.
@@ -6360,7 +6366,9 @@ async function viewChatCatalog(v){
       {key:"report",label:"Отчёт",render:r=>`<button class="cc-rep" data-id="${r.id}" onclick="event.stopPropagation()" title="о чём пишут, как часто, что заходит">📊${r.posts_count?" "+r.posts_count:""}</button>`},
       {key:"city",label:"Город",cls:"sub",render:r=>esc(r.city)||"—"},
       {key:"topic",label:"Тема",cls:"sub",render:r=>esc(r.topic)||"—"},
-      {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—"},
+      {key:"members_count",label:"Участники",cls:"mono",render:r=>r.members_count!=null?Number(r.members_count).toLocaleString("ru-RU"):"—",
+        filterBuckets:MEMBERS_BUCKETS.map(b=>b[1]).concat("неизвестно"),
+        filterBucket:r=>{const n=r.members_count;if(n==null||n==="")return "неизвестно";return (MEMBERS_BUCKETS.find(b=>+n<b[0])||MEMBERS_BUCKETS[MEMBERS_BUCKETS.length-1])[1];}},
       {key:"can_write",label:"Могу писать",render:r=>{
         if(!r.can_write)return '<span class="no" title="чат ещё не проанализирован — жми «📊 Проверить чаты»">— не проверен</span>';
         const stop=["заблокирован","только админы","ограничено"].includes(r.can_write);

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+from datetime import datetime
 
 from telethon import TelegramClient, functions
 from telethon.errors import FloodWaitError
@@ -667,6 +668,18 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
         return
     stage = acc["warm_stage"] or 0
     plan = WARM_PLAN.get(min(stage, max(WARM_PLAN)), WARM_PLAN[max(WARM_PLAN)])
+    # ОДНА СТУПЕНЬ — ОДИН ДЕНЬ. Планировщик заходит каждые warm_interval_min
+    # (на сервере 6 ч), и раньше каждый заход поднимал ступень: 14 «дней» прогрева
+    # проходились за 3,5 суток, после чего номер сразу писал незнакомцам и ловил
+    # PeerFlood на первом же письме (9407, 24.09.2026). Теперь первый заход суток —
+    # полный, со ступенью; остальные — «глянул ленту»: чтение и лайк, без вступлений,
+    # переписки, стука и новой ступени. Частые короткие заходы — как у живого человека.
+    last_day = str(acc.get("last_warm_at") or "")[:10]
+    full_day = stage == 0 or last_day != datetime.utcnow().strftime("%Y-%m-%d")
+    if not full_day:
+        plan = {"channels": 0, "msgs": 0, "react": min(1, plan.get("react", 0)),
+                "read": max(2, plan.get("read", 6) // 3)}
+        ca_mix = knock = False
     me = await client.get_me()
     def audit(text: str) -> None:
         """Поштучный журнал для пульта: фактическое действие и его время."""
@@ -709,7 +722,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
     # группы) держит сам group_research._daily_budget, поэтому снятие потолка темп
     # не разгоняет — оно лишь возвращает в работу тех, кто просто дозревает.
     research = None
-    if stage >= 5:
+    if stage >= 5 and full_day:
         try:
             from channels import group_research
             research = await group_research.run_one(client, acc["id"])
@@ -764,6 +777,15 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
                 audit("постучался в один контакт базы")
         except Exception as e:  # noqa: BLE001
             print(f"  [стук] пропуск: {e}")
+
+    if not full_day:
+        # Ступень за сегодня уже засчитана — отмечаем только сам заход.
+        with database.get_conn() as conn:
+            conn.execute("UPDATE accounts SET last_warm_at=datetime('now') WHERE id=?",
+                         (acc["id"],))
+        print(f"  лёгкий заход (ступень {stage} за сегодня уже есть): "
+              f"лента {reads}, лайки {reacts}, сторис {stories}")
+        return
 
     new_stage = stage + 1
     activate = new_stage >= READY_STAGE

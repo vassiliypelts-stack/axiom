@@ -78,7 +78,11 @@ if (aci !== -1) ACCOUNT_ID = parseInt(argv[aci + 1] || "0", 10) || 0;
 
 // короткие фразы для теста/прогрева
 const WARM_CHATTER = ["привет)", "как дела?", "тест связи", "на связи", "всё ок?", "добрый день"];
-let kickoffDone = false; // одноразовые действия (ping/wacampaign/match/outreach) — только при первом подключении
+let kickoffDone = false;
+// Сколько раз подряд сокет закрылся, так и не открывшись. Без потолка процесс
+// крутился бы вечно (мёртвый прокси, нет сети) и запрашивал код привязки по кругу.
+let failedConnects = 0;
+const MAX_FAILED_CONNECTS = 6; // одноразовые действия (ping/wacampaign/match/outreach) — только при первом подключении
 
 /** Извлекает текст из входящего сообщения (разные типы Baileys). */
 function extractText(m) {
@@ -426,6 +430,7 @@ async function start() {
     }
     if (connection === "open") {
       console.log(`\n[AXIOM WhatsApp] подключён как ${sock.user?.id || "?"}`);
+      failedConnects = 0;
       await postStatus("open", sock.user?.id || null);
       if (ACCOUNT_ID) {
         clearInterval(outboxTimer);
@@ -458,6 +463,12 @@ async function start() {
       if (loggedOut) {
         await postStatus("logged_out", null, String(code));
         process.exit(0);
+      }
+      // 515 «restart required» — штатный шаг сразу после успешной привязки, не сбой.
+      if (code !== DisconnectReason.restartRequired && ++failedConnects >= MAX_FAILED_CONNECTS) {
+        console.log(`[conn] ${failedConnects} неудачных подключений подряд — выхожу (пульт перезапустит позже).`);
+        await postStatus("closed", null, `${code} ×${failedConnects}`);
+        process.exit(1);
       }
       await postStatus("closed", null, String(code));
       setTimeout(() => start().catch((e) => { console.error(e); process.exit(1); }), rnd(3000, 8000));

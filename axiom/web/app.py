@@ -1932,9 +1932,13 @@ def _wa_spawn(acc_id: int, pair: bool = False):
     args = [node, "index.js", "--auth", digits, "--account", str(acc_id)]
     if pair:
         args.append("--pair")
-    # Тот же IP, что у номера в Telegram: один номер — один адрес, как и там.
-    px = (a["proxy"] or "").strip()
-    if px.startswith(("socks", "http")) and a["proxy_alive"] != 0:
+    # Прокси номера из Telegram сюда НЕ подставляем. 24.09.2026 первая же привязка
+    # 967 упёрлась в бесплатный SOCKS из пула, который уже умер: WhatsApp получал
+    # «Connection Closed» по кругу, код не выдавался. Статичный IP сервера для
+    # WhatsApp — нормальный стабильный адрес; «сессия с двух IP» — беда Telegram,
+    # не WhatsApp. Нужен прокси — задай его явно в env AXIOM_WA_PROXY_<id аккаунта>.
+    px = (_os.environ.get(f"AXIOM_WA_PROXY_{acc_id}") or "").strip()
+    if px:
         args += ["--proxy", px]
     env = dict(_os.environ)
     env["AXIOM_BRIDGE"] = f"http://127.0.0.1:{_os.environ.get('AXIOM_PORT', '8000')}"

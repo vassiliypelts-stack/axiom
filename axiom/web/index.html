@@ -568,8 +568,9 @@
   .message-file{display:inline-flex;align-items:center;gap:7px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--blue);text-decoration:none;}
   .message-file:hover{text-decoration:underline;}
   .sdot.gy{background:var(--muted);opacity:.5;}
-  ::-webkit-scrollbar{width:10px;height:10px;}
-  ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid var(--bg);}
+  /* Толстый бегунок: тонкий (6px) было не поймать мышью на длинных таблицах. */
+  ::-webkit-scrollbar{width:18px;height:18px;}
+  ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:9px;border:3px solid var(--bg);min-height:48px;min-width:48px;}
   ::-webkit-scrollbar-thumb:hover{background:var(--border-hov);}
   .fin-item{text-align:center;min-width:80px}
   .fin-val{display:block;font-weight:700;font-size:15px;color:var(--accent)}
@@ -6290,7 +6291,10 @@ async function viewChatCatalog(v){
         return `<span class="badge b-${cls}" title="${esc(r.research_rating_reason||'')}">${esc(RESEARCH_RATING[r.research_rating]||String(r.research_rating))}</span>`;}},
       {key:"title",label:"Чат",cls:"name",render:r=>`${r.in_account==='yes'?'👤 ':''}${esc(r.title||r.username||"—")}`},
       {key:"username",label:"Ссылка",render:r=>r.username?`<a class="ext" href="https://t.me/${esc(r.username)}" target="_blank" onclick="event.stopPropagation()">@${esc(r.username)} ↗</a>`:(r.link?`<a class="ext" href="${esc(r.link)}" target="_blank" onclick="event.stopPropagation()">ссылка ↗</a>`:"—")},
-      {key:"kind",label:"Тип",cls:"sub",render:r=>esc(r.kind)||"—"},
+      // В базе kind = группа|супергруппа|канал, а оператор ищет «чат» — показываем
+      // «💬 чат», сырое значение остаётся в подсказке и тоже ловится фильтром.
+      {key:"kind",label:"Тип",cls:"sub",render:r=>!r.kind?'<span class="no" title="ещё не сканирован">—</span>'
+        :r.kind==="канал"?'📢 канал':(r.kind==="группа"||r.kind==="супергруппа")?`<span title="${esc(r.kind)}">💬 чат</span>`:esc(r.kind)},
       {key:"source",label:"Откуда",cls:"sub",render:r=>{
         if(!r.source)return "—";
         const lbl=CHAT_SRC[r.source]||esc(r.source);

@@ -1053,7 +1053,12 @@ function smartTable(mount,cfg){
   };
   const mfBtnText=v=>Array.isArray(v)&&v.length?(v.length===1?v[0]:`${v.length} выбрано`):(typeof v==="string"&&v?`«${v}»`:"все");
   let mfPop=null;
-  const mfClose=()=>{if(mfPop){mfPop.remove();mfPop=null;document.removeEventListener("mousedown",mfOutside,true);document.removeEventListener("keydown",mfEsc);}};
+  const mfClose=()=>{if(mfPop){mfPop.remove();mfPop=null;document.removeEventListener("mousedown",mfOutside,true);document.removeEventListener("keydown",mfEsc);document.removeEventListener("scroll",mfScroll,true);}};
+  // Список прибит к экрану (position:fixed) — при прокрутке страницы он оторвался бы от кнопки.
+  // Сразу после выбора таблица меняет высоту и браузер сам сдвигает прокрутку —
+  // это не жест человека, список в этот момент не закрываем.
+  let mfHoldUntil=0;
+  const mfScroll=e=>{if(mfPop&&!mfPop.contains(e.target)&&Date.now()>mfHoldUntil)mfClose();};
   const mfOutside=e=>{if(mfPop&&!mfPop.contains(e.target)&&!e.target.closest(".cfm"))mfClose();};
   const mfEsc=e=>{if(e.key==="Escape")mfClose();};
   const mfOpen=(btn,k)=>{
@@ -1068,11 +1073,16 @@ function smartTable(mount,cfg){
     mfPop.innerHTML=`<div style="margin-bottom:6px"><button class="mf-all" style="font-size:12px" title="снять выбор — показать все значения">все</button></div>`+
       opts.map(([l,n])=>`<label style="display:flex;align-items:center;gap:6px;padding:3px 4px;cursor:pointer;white-space:nowrap"><input type="checkbox" value="${esc(l)}"${cur.has(l)?" checked":""}><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(l)}</span><span class="hint">${n}</span></label>`).join("");
     const apply=()=>{const arr=[...mfPop.querySelectorAll("input:checked")].map(i=>i.value);
-      st.colFilters[k]=arr.length?arr:"";st.page=0;persist();draw();};
+      st.colFilters[k]=arr.length?arr:"";st.page=0;persist();mfHoldUntil=Date.now()+400;draw();};
     mfPop.querySelectorAll("input").forEach(i=>i.onchange=apply);
     mfPop.querySelector(".mf-all").onclick=()=>{mfPop.querySelectorAll("input").forEach(i=>i.checked=false);apply();};   // «все» = без фильтра
+    mfPop.className="mf-pop";
     document.body.appendChild(mfPop);
+    // Строка фильтров часто у нижнего края экрана — тогда раскрываем вверх.
+    const h=mfPop.offsetHeight;
+    if(rc.bottom+4+h>window.innerHeight)mfPop.style.top=Math.max(8,rc.top-4-h)+"px";
     document.addEventListener("mousedown",mfOutside,true);document.addEventListener("keydown",mfEsc);
+    document.addEventListener("scroll",mfScroll,true);
   };
   const visCols=()=>st.order.map(colByKey).filter(c=>c&&!st.hidden.has(c.key));
   const persist=()=>localStorage.setItem(KEY,JSON.stringify({hidden:[...st.hidden],order:st.order,widths:st.widths,colFilters:st.colFilters,pageSize:st.pageSize}));

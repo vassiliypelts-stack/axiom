@@ -9391,41 +9391,13 @@ def accounts_twofa_status() -> JSONResponse:
 
 @contextlib.contextmanager
 def _listener_released(active: bool = True):
-    """Отпустить сессии слушателем на время операции, которая сама подключается к Telegram.
-
-    ЗАЧЕМ ОТДЕЛЬНЫМ ПОМОЩНИКОМ. Слушатель — фоновый поток пульта — держит подключения к
-    сессиям аккаунтов. Любая операция, открывающая ВТОРОЕ подключение тем же ключом,
-    сжигает аккаунт: Telegram считает это угоном (AuthKeyDuplicatedError). Так за одну
-    секунду сгорело три аккаунта на установке 2FA, а восстановить их нечем — номер
-    остаётся у продавца. Купленный аккаунт разовый, то есть каждый такой промах = деньги.
-
-    Пауза жила инлайном в одном роуте — и это ровно та форма, при которой следующий
-    похожий роут добавляют, забыв её скопировать. Любой новый эндпоинт, лезущий в
-    Telegram сессией аккаунта, обязан оборачиваться сюда.
-    """
-    paused = False
-    if active:
-        with database.get_conn() as conn:
-            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-        if was_on:
-            with database.get_conn() as conn:
-                database.set_setting(conn, "listener_enabled", "off")
-                # Метка «кто и когда погасил» — по ней сторож (_listener_watchdog)
-                # поднимет слушатель, если finally ниже не отработает вовсе: при
-                # обрыве соединения/убийстве процесса система иначе остаётся глухой
-                # молча и навсегда (входящие не сохраняются НИГДЕ), а причина —
-                # «выключен из пульта» — выглядит как осознанное действие оператора.
-                database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
-            paused = True
-            # Ждём подтверждения, а не фиксированной паузы (см. _wait_listener_drained).
-            _wait_listener_drained()
-    try:
-        yield
-    finally:
-        if paused:
-            with database.get_conn() as conn:
-                database.set_setting(conn, "listener_enabled", "on")
-                database.set_setting(conn, "listener_paused_by_op_ts", "")
+    """Раньше: погасить слушатель ЦЕЛИКОМ на время операции, которая сама подключается к
+    Telegram. Теперь каждое подключение само бронирует свой аккаунт (channels.session_lease
+    через telegram.build_client), и слушатель отпускает ровно его. Общий тумблер больше
+    не трогаем: шесть независимых владельцев одного выключателя и сожгли 23.09.2026 три
+    аккаунта (запаска включила слушатель посреди захода рассылки). Оставлен пустым
+    контекстом, чтобы не переписывать все места вызова."""
+    yield
 
 
 # Сколько заходов рассылки ДЕРЖАТ слушатель погашенным прямо сейчас.
@@ -9487,44 +9459,13 @@ def _wait_listener_drained(timeout: int = LISTENER_DRAIN_MAX) -> bool:
 
 
 def _listener_hold() -> bool:
-    """Погасить слушатель под заход (или присоединиться к уже погашенному).
-    Возвращает True, если слушатель надо будет вернуть, когда выйдет последний."""
-    global _SENDS_ACTIVE, _SENDS_WAS_ON
-    import time as _t
-    with _SEND_LOCK:
-        first = _SENDS_ACTIVE == 0
-        _SENDS_ACTIVE += 1
-        if not first:
-            return _SENDS_WAS_ON   # уже погашен другим заходом — встаём в очередь
-        with database.get_conn() as conn:
-            was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-            if was_on:
-                database.set_setting(conn, "listener_enabled", "off")
-                database.set_setting(conn, "listener_paused_by_op_ts", str(_t.time()))
-        _SENDS_WAS_ON = was_on
-        return was_on
+    """Больше не гасит слушатель: сессии бронирует сам campaign_send (session_lease)."""
+    return False
 
 
 def _listener_release(tag: str = "") -> None:
-    """Заход закончился. Слушатель поднимаем, только когда вышел ПОСЛЕДНИЙ — иначе
-    включим его под чужой ещё работающей отправкой и сожжём ключи."""
-    global _SENDS_ACTIVE, _SENDS_WAS_ON
-    with _SEND_LOCK:
-        _SENDS_ACTIVE = max(0, _SENDS_ACTIVE - 1)
-        if _SENDS_ACTIVE:
-            print(f"[{tag}] заход завершён, но ещё {_SENDS_ACTIVE} в работе — "
-                  f"слушатель пока не поднимаю")
-            return
-        if not _SENDS_WAS_ON:
-            return
-        _SENDS_WAS_ON = False
-        try:
-            with database.get_conn() as conn:
-                database.set_setting(conn, "listener_enabled", "on")
-                database.set_setting(conn, "listener_paused_by_op_ts", "")
-            print(f"[{tag}] заход завершён — слушатель возвращён")
-        except Exception as e:  # noqa: BLE001
-            print(f"[{tag}] не смог вернуть слушатель: {e}")
+    """Пара к _listener_hold — оставлена для мест вызова, ничего не делает."""
+    return None
 
 
 def _spawn_campaign_send(cid: int, limit: int, test: bool = False,

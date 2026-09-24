@@ -166,9 +166,57 @@ def parse_mtproxy(raw: str | None):
     return None   # faketls (ee…) / нестандартный — telethon не потянет, идём напрямую
 
 
+class LeasedClient(TelegramClient):
+    """TelegramClient, который перед подключением бронирует сессию аккаунта
+    (channels.session_lease) и снимает бронь при отключении.
+
+    Зачем: ключ сессии сгорает навсегда, если он в эфире одновременно с двух IP. Бронь
+    гарантирует одно подключение на аккаунт на весь сервер — слушатель на время брони
+    отпускает этот аккаунт, другие модули ждут своей очереди. Сессия не из базы
+    (пустая при первом входе) не бронируется. lease=False — только для самого слушателя:
+    это он уступает бронирующим, а не наоборот."""
+
+    def __init__(self, *a, account_id: int | None = None, lease: bool = True,
+                 lease_owner: str | None = None, **kw):
+        super().__init__(*a, **kw)
+        self._ax_acc = account_id
+        self._ax_lease_on = lease
+        self._ax_owner = lease_owner
+        self._ax_leased: int | None = None
+
+    async def connect(self):
+        if self._ax_lease_on and self._ax_leased is None:
+            from channels import session_lease
+            acc = self._ax_acc or session_lease.account_for_session(self.session)
+            if acc:
+                import os
+                import sys
+                owner = self._ax_owner or (" ".join(sys.argv[1:3]) or "web") + f" pid {os.getpid()}"
+                await session_lease.acquire(acc, owner)
+                self._ax_leased = acc
+        try:
+            return await super().connect()
+        except BaseException:
+            self._ax_release()
+            raise
+
+    def _ax_release(self) -> None:
+        if self._ax_leased is not None:
+            from channels import session_lease
+            session_lease.release(self._ax_leased)
+            self._ax_leased = None
+
+    async def _disconnect_coro(self):
+        try:
+            await super()._disconnect_coro()
+        finally:
+            self._ax_release()
+
+
 def build_client(session, proxy_raw: str | None = None,
                  api_id: int | None = None, api_hash: str | None = None,
-                 allow_shared_ip: bool = False) -> TelegramClient:
+                 allow_shared_ip: bool = False, account_id: int | None = None,
+                 lease: bool = True) -> TelegramClient:
     """Единая сборка клиента: MTProto-прокси (tg://proxy) или SOCKS5.
     api_id/api_hash — собственные креды аккаунта (для купленных сессий обязательно
     использовать те, под которыми сессия создана); иначе берём глобальные из .env.
@@ -201,7 +249,7 @@ def build_client(session, proxy_raw: str | None = None,
         kwargs["proxy"] = own or _parse_proxy()
     aid = int(api_id) if api_id else int(config.TG_API_ID)
     ahash = api_hash or config.TG_API_HASH
-    return TelegramClient(session, aid, ahash, **kwargs)
+    return LeasedClient(session, aid, ahash, account_id=account_id, lease=lease, **kwargs)
 
 
 def client_for_account(acc_id: int | None):
@@ -237,7 +285,9 @@ def _build_client() -> TelegramClient:
         session = StringSession(config.TG_STRING_SESSION)
     else:
         session = config.TG_SESSION
-    return TelegramClient(
+    # Сессия из .env может совпадать с аккаунтом из базы (его держит слушатель) —
+    # LeasedClient сам найдёт это по ключу и забронирует; чужая сессия идёт без брони.
+    return LeasedClient(
         session,
         int(config.TG_API_ID),
         config.TG_API_HASH,

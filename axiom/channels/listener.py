@@ -38,6 +38,10 @@ _LOG = config.DB_PATH.parent / "logs" / "listener.log"
 _MEDIA_DIR = config.DB_PATH.parent / "message_media"
 
 CLIENTS: dict[int, object] = {}                 # acc_id -> подключённый TelegramClient
+# Аккаунты, к которым слушатель прямо сейчас подключается (ещё не в CLIENTS). Их тоже
+# публикуем как «держу»: иначе модуль, забронировавший аккаунт в эти секунды, увидел бы
+# «слушатель его не держит» и подключился бы вторым — см. channels/session_lease.py.
+CONNECTING: set[int] = set()
 _LOOP: "asyncio.AbstractEventLoop | None" = None  # event loop потока слушателя (для shutdown)
 STATUS: dict = {"started": None, "accounts": {}, "hits": 0, "enabled": True}  # снимок для веб-статуса
 # [(niche_id, [ключи], режим охоты), ...] — кэш ниш. Режим лежит рядом с ключами,
@@ -557,8 +561,10 @@ async def _connect(acc: dict):
         raise RuntimeError("нет своего прокси — не подключаю: сессия ушла бы через общий "
                            "IP из .env, а это сжигает ключ (два IP на один ключ). "
                            "Раздай прокси в «Аккаунтах»")
+    # lease=False: слушатель брони не берёт — это он уступает тем, кто бронирует.
     client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
-                          acc.get("api_id"), acc.get("api_hash"))
+                          acc.get("api_id"), acc.get("api_hash"),
+                          account_id=acc["id"], lease=False)
     # Таймаут/ошибка коннекта — клиент ОБЯЗАН быть закрыт: Telethon к этому моменту уже
     # поднял свои _send_loop/_recv_loop, и брошенный на полпути клиент оставляет их
     # висеть навсегда («Task was destroyed but it is pending»). На дохлом аккаунте это
@@ -599,6 +605,39 @@ async def _disconnect_all() -> None:
             pass
         CLIENTS.pop(acc_id, None)
     STATUS["accounts"].clear()
+    await _publish()
+
+
+async def _publish() -> None:
+    """Сообщить бронирующим (channels.session_lease), какие аккаунты слушатель держит."""
+    try:
+        from channels import session_lease
+        await asyncio.to_thread(session_lease.publish_listener, set(CLIENTS) | CONNECTING)
+    except Exception:  # noqa: BLE001 — отчёт не должен ронять слушатель
+        pass
+
+
+async def _leased() -> set[int]:
+    try:
+        from channels import session_lease
+        return await asyncio.to_thread(session_lease.leased_ids)
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+async def _release_leased() -> bool:
+    """Отпустить забронированные аккаунты. True — кого-то отпустили."""
+    busy = await _leased() & set(CLIENTS)
+    for acc_id in busy:
+        client = CLIENTS.pop(acc_id, None)
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        STATUS["accounts"].pop(acc_id, None)
+        _log(f"[#{acc_id}] отпускаю на время брони другим модулем")
+    await _publish()
+    return bool(busy)
 
 
 async def _nap(total: int, was_enabled: bool) -> None:
@@ -610,6 +649,10 @@ async def _nap(total: int, was_enabled: bool) -> None:
         slept += POLL_SEC
         if await _enabled() != was_enabled:
             return
+        # Брони проверяем на каждом шаге, а не раз в круг: бронирующий ждёт, и ждать
+        # полминуты RECHECK_SEC ему незачем. Отпускаем только забронированных —
+        # остальные аккаунты продолжают слушать.
+        await _release_leased()
 
 
 async def _supervise() -> None:
@@ -628,7 +671,8 @@ async def _supervise() -> None:
             await _nap(RECHECK_SEC, on)
             continue
         _NICHES = _load_niches()   # свежие ключи ниш (можно править в пульте на лету)
-        want = {a["id"]: a for a in _listenable()}
+        leased = await _leased()
+        want = {a["id"]: a for a in _listenable() if a["id"] not in leased}
         # 1) отключаем выбывших / отвалившихся (переподключим на следующем круге)
         for acc_id, client in list(CLIENTS.items()):
             if acc_id not in want or not client.is_connected():
@@ -642,12 +686,19 @@ async def _supervise() -> None:
         # 2) подключаем новых параллельно (у каждого свой таймаут)
         to_add = [a for aid, a in want.items() if aid not in CLIENTS]
 
+        CONNECTING.update(a["id"] for a in to_add)
+        await _publish()
+
         async def _try(a: dict) -> None:
             try:
                 CLIENTS[a["id"]] = await _connect(a)
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": True}
                 _log(f"[#{a['id']}] {a.get('label') or ''} — слушаю ✓")
+                CONNECTING.discard(a["id"])
+                await _publish()
             except Exception as e:  # noqa: BLE001
+                CONNECTING.discard(a["id"])
+                await _publish()
                 # У TimeoutError текст ПУСТОЙ — в пульте и логе оставалась строка
                 # «не подключился: » без причины, и понять, что аккаунт просто не
                 # достучался через свой прокси, было нельзя (10.09.2026: так висели
@@ -726,7 +777,12 @@ async def _supervise() -> None:
                     pass
 
         if to_add:
-            await asyncio.gather(*[_try(a) for a in to_add])
+            try:
+                await asyncio.gather(*[_try(a) for a in to_add])
+            finally:
+                CONNECTING.clear()
+            # Пока подключались, аккаунт могли забронировать — отпускаем сразу.
+            await _release_leased()
         ok = sum(1 for v in STATUS["accounts"].values() if v.get("ok"))
         kw = sum(len(k) for _, k, _m in _NICHES)
         _log(f"итог: слушаю {ok} из {len(want)} аккаунтов · ниш {len(_NICHES)}/ключей {kw} · найдено запросов {STATUS.get('hits',0)}")

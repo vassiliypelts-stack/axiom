@@ -307,13 +307,11 @@ async def run(ids: list[int] | None, dry: bool, kick_others: bool, promote: int 
 def _pause_listener_if_running() -> bool:
     """CLI-запуск может идти мимо пульта — тогда слушателя надо остановить самим,
     иначе он держит основную сессию и подключение из этого процесса её сожжёт."""
-    with database.get_conn() as conn:
-        was_on = database.get_setting(conn, "listener_enabled", "on") != "off"
-        if was_on:
-            database.set_setting(conn, "listener_enabled", "off")
-    if was_on:
-        time.sleep(7)      # POLL_SEC=5 на обнаружение + запас на отключение клиентов
-    return was_on
+    # Больше ничего не делает: основная сессия бронируется сама при подключении
+    # (channels.session_lease), слушатель отпускает ровно этот аккаунт. Выключать
+    # слушатель целиком и включать обратно нельзя — 23.09.2026 именно это включение
+    # посреди захода рассылки сожгло три аккаунта.
+    return False
 
 
 def main() -> None:

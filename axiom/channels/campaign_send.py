@@ -632,6 +632,14 @@ AGE_CAP_STEPS = ((7, 2), (14, 4), (21, 6), (30, 10))
 # Ниже 13 не опускать: та самая практика 18-19.09 с 8-9-дневными номерами.
 MIN_COMBAT_AGE_DAYS = 13
 
+# БОНУС ЗА ЧИСТЫЙ ДЕНЬ. 24.09.2026 владелец поставил команде 9407 норму 1 ЛС в
+# сутки на номер и тест на 30 дней: если номер свою норму отправил и PeerFlood
+# сегодня не словил — пусть допишет ещё одному контакту. Бонус выдаётся не сразу
+# следом за первым письмом, а через BONUS_GAP_HOURS, чтобы два холодных ЛС подряд
+# не выглядели очередью. Общий дневной объём кампании бонус не превышает.
+CLEAN_DAY_BONUS = 1
+BONUS_GAP_HOURS = 3
+
 
 def _age_cap(days_alive, cap: int) -> tuple[int, str | None]:
     """(разрешённая норма, пояснение-если-срезали) для номера возрастом days_alive."""
@@ -854,16 +862,35 @@ async def run(cid: int, limit: int, test: bool = False,
         # лимита. campaigns.account_id остаётся только legacy-фолбэком для
         # кампаний без команды.
         sent_today_by_account: dict[int, int] = {}
+        last_sent_hours_ago: dict[int, float] = {}
+        flooded_today: set[int] = set()
         account_ids = [int(a["id"]) for a in team]
         if not test and account_ids:
             marks = ",".join("?" for _ in account_ids)
             with database.get_conn() as conn:
                 for row in conn.execute(
-                    f"SELECT account_id, COUNT(*) AS n FROM campaign_contacts "
+                    f"SELECT account_id, COUNT(*) AS n, "
+                    f"(julianday('now') - julianday(MAX(sent_at))) * 24 AS ago "
+                    f"FROM campaign_contacts "
                     f"WHERE account_id IN ({marks}) AND date(sent_at)=date('now') "
                     "GROUP BY account_id", account_ids
                 ):
                     sent_today_by_account[int(row["account_id"])] = int(row["n"])
+                    last_sent_hours_ago[int(row["account_id"])] = float(row["ago"] or 0)
+                # PeerFlood за сегодня: событие пишет обработчик отказа ниже, а тихая
+                # 8-часовая передышка (номер без единой отправки) видна по самой паузе.
+                for row in conn.execute(
+                    f"SELECT DISTINCT account_id FROM events WHERE account_id IN ({marks}) "
+                    f"AND type='ban' AND title LIKE '%PeerFlood%' AND date(ts)=date('now')",
+                    account_ids
+                ):
+                    flooded_today.add(int(row["account_id"]))
+                for row in conn.execute(
+                    f"SELECT id FROM accounts WHERE id IN ({marks}) "
+                    f"AND spam_pause_until >= date('now')",
+                    account_ids
+                ):
+                    flooded_today.add(int(row["id"]))
         for acc in team:
             label = acc["label"] or acc["username"] or acc["phone"] or f"#{acc['id']}"
             try:
@@ -898,14 +925,24 @@ async def run(cid: int, limit: int, test: bool = False,
                 acc_cap, why_cut = _age_cap(acc.get("days_alive"), acc_cap)
                 if why_cut:
                     print(f"[{label}] ⏬ {why_cut}")
+            # Бонус за чистый день (см. CLEAN_DAY_BONUS): норма выбрана, PeerFlood
+            # сегодня не было, с прошлого письма прошло BONUS_GAP_HOURS — ещё одно.
+            aid = int(acc["id"])
+            sent_n = sent_today_by_account.get(aid, 0)
+            if (not test and CLEAN_DAY_BONUS and sent_n >= acc_cap
+                    and aid not in flooded_today
+                    and last_sent_hours_ago.get(aid, 0) >= BONUS_GAP_HOURS):
+                acc_cap += CLEAN_DAY_BONUS
+                if sent_n < acc_cap:
+                    print(f"[{label}] ➕ PeerFlood сегодня не было — ещё {CLEAN_DAY_BONUS} "
+                          f"контакт сверх нормы")
             senders.append({
                 "id": acc["id"], "acc": acc, "label": label,
                 "client": client,
                 # Лимит аккаунта — именно на сутки, в том числе если кампанию
                 # запускали несколько раз. Не даём второму заходу превратить
                 # «3/день» в 3 сообщения каждый час.
-                "remaining": max(0, acc_cap
-                                 - sent_today_by_account.get(int(acc["id"]), 0)),
+                "remaining": max(0, acc_cap - sent_n),
             })
     else:
         senders.append({

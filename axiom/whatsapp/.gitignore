@@ -1,3 +1,5 @@
 node_modules/
 auth/
 auth_*/
+# ставится на сервере самим пультом (npm install) — в репо не держим
+package-lock.json

@@ -332,7 +332,8 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         paused = conn.execute(
             "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
             (camp["id"], c["id"])).fetchone() is not None
-        if paused or not database.in_work_hours(camp):
+        # Воскресенье — отдых на исход: дожим это наша инициатива, ждёт понедельника.
+        if paused or not database.outreach_allowed(camp):
             continue
         # Стартовая трёхшаговая цепочка управляется opener_queue: второе сообщение
         # ждёт короткую паузу, третье — сутки. Общий дожим 5/7/24 часа сюда нельзя

@@ -3208,8 +3208,8 @@ def _campaign_scheduler() -> None:
                     "ORDER BY COALESCE(auto_last_run_ts,0)"
                 ).fetchall()
             for camp in rows:
-                if not database.in_work_hours(camp):
-                    continue          # вне окна кампании — молча ждём, это не сбой
+                if not database.outreach_allowed(camp):
+                    continue          # вне окна кампании или воскресенье — молча ждём, это не сбой
                 if camp["auto_daily"]:
                     # НОВЫЙ режим: одно число «сколько в день», темп считает планировщик.
                     # Свой антидубль не нужен — план сам смотрит на факт отправок за

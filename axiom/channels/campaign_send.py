@@ -580,7 +580,11 @@ def _team(cid: int) -> list[dict]:
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap, "
             # Возраст номера нужен, чтобы срезать дневную норму молодым (см. _age_cap).
             "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
-            "     AS INTEGER) AS days_alive "
+            "     AS INTEGER) AS days_alive, "
+            # Пауза после PeerFlood закончилась меньше суток назад — номер «на
+            # восстановлении», шлёт половину нормы (см. RECOVERY_HOURS).
+            "CASE WHEN a.spam_pause_until > datetime('now', ?) THEN 1 ELSE 0 END "
+            "     AS recovering "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
             # Аккаунт на прогреве ещё не готов к холодным ЛС незнакомцам — ловит PeerFlood
@@ -601,7 +605,7 @@ def _team(cid: int) -> list[dict]:
             # пропущен живой созвон). Родной (own) сюда и так не попадал по protected.
             "AND COALESCE(a.acc_role,'') <> 'service' "
             "ORDER BY a.id",
-            (cid,),
+            (f"-{RECOVERY_HOURS} hours", cid),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -639,6 +643,12 @@ MIN_COMBAT_AGE_DAYS = 13
 # не выглядели очередью. Общий дневной объём кампании бонус не превышает.
 CLEAN_DAY_BONUS = 1
 BONUS_GAP_HOURS = 3
+
+# ПЛАВНЫЙ ВОЗВРАТ ПОСЛЕ PeerFlood. Пауза снялась — это не значит, что Telegram
+# забыл: вернуть номер сразу на полную норму значит снова писать тем же темпом,
+# за который его и придержали. Первые RECOVERY_HOURS после снятия паузы номер
+# шлёт половину нормы (но не меньше одного) и без бонуса за чистый день.
+RECOVERY_HOURS = 24
 
 
 def _age_cap(days_alive, cap: int) -> tuple[int, str | None]:
@@ -701,6 +711,10 @@ async def run(cid: int, limit: int, test: bool = False,
                                "заход пропущен — попадаешь в окно тишины кампании. "
                                "Запусти снова в рабочие часы, или поправь их в настройках кампании.",
                                level="warn", campaign_id=cid)
+        return
+    if not test and database.is_rest_day(camp):
+        print(f"кампания #{cid} «{camp['name']}»: воскресенье — первыми не пишем "
+              f"(ответы на входящие идут как обычно)")
         return
     chans = _channels(camp["channel"])
     if "telegram" not in chans:
@@ -925,11 +939,18 @@ async def run(cid: int, limit: int, test: bool = False,
                 acc_cap, why_cut = _age_cap(acc.get("days_alive"), acc_cap)
                 if why_cut:
                     print(f"[{label}] ⏬ {why_cut}")
+            recovering = not test and bool(acc.get("recovering"))
+            if recovering:
+                half = max(1, acc_cap // 2)
+                if half < acc_cap:
+                    print(f"[{label}] 🩹 после PeerFlood сутки на восстановлении — "
+                          f"норма {half} вместо {acc_cap}")
+                acc_cap = half
             # Бонус за чистый день (см. CLEAN_DAY_BONUS): норма выбрана, PeerFlood
             # сегодня не было, с прошлого письма прошло BONUS_GAP_HOURS — ещё одно.
             aid = int(acc["id"])
             sent_n = sent_today_by_account.get(aid, 0)
-            if (not test and CLEAN_DAY_BONUS and sent_n >= acc_cap
+            if (not test and not recovering and CLEAN_DAY_BONUS and sent_n >= acc_cap
                     and aid not in flooded_today
                     and last_sent_hours_ago.get(aid, 0) >= BONUS_GAP_HOURS):
                 acc_cap += CLEAN_DAY_BONUS
@@ -1033,7 +1054,7 @@ async def run(cid: int, limit: int, test: bool = False,
     for row in rows:
         if sent >= cap:
             break
-        if not test and not database.in_work_hours(camp):
+        if not test and not database.outreach_allowed(camp):
             print(f"кампания #{cid}: рабочие часы закончились посреди захода — "
                   f"дальше {len(rows) - rows.index(row)} контактов достанутся следующему заходу")
             break

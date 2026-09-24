@@ -694,6 +694,28 @@ def in_work_hours(camp_row) -> bool:
     return now >= t_start or now <= t_end   # окно через полночь
 
 
+def is_rest_day(camp_row) -> bool:
+    """Воскресенье по часовому поясу кампании — день без исходящей инициативы.
+
+    Правило Василия (24.09.2026): суббота рабочая, воскресенье — отдых на исход.
+    Не шлём холодные первые письма, дожимы и остаток опенера. ОТВЕЧАТЬ можно:
+    человек сам написал — агент ответит, это не наша инициатива. Поэтому гейт
+    отдельный от in_work_hours, которым пользуется и ответ агента."""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        tz_name = camp_row["work_hours_tz"] if camp_row and "work_hours_tz" in camp_row.keys() else None
+        tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("Europe/Moscow")
+    except (ValueError, KeyError):
+        tz = _dt.timezone(_dt.timedelta(hours=3))
+    return _dt.datetime.now(tz).weekday() == 6
+
+
+def outreach_allowed(camp_row) -> bool:
+    """Можно ли сейчас писать ПЕРВЫМИ: рабочие часы и не воскресенье."""
+    return in_work_hours(camp_row) and not is_rest_day(camp_row)
+
+
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
     row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default

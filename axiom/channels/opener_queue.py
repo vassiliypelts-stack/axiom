@@ -36,7 +36,7 @@ NEXT_LINE_MIN = (24 * 60 * 60, 24 * 60 * 60)
 def _due_rows(conn) -> list[dict]:
     rows = conn.execute(
         "SELECT q.*, c.status AS contact_status, c.tg_user_id, c.username, c.phone, c.name, "
-        "       cm.status AS campaign_status, cm.name AS campaign_name "
+        "       cm.status AS campaign_status, cm.name AS campaign_name, cm.work_hours_tz "
         "FROM opener_queue q JOIN contacts c ON c.id = q.contact_id "
         "LEFT JOIN campaigns cm ON cm.id = q.campaign_id "
         "WHERE q.next_at <= datetime('now')"
@@ -211,6 +211,10 @@ async def tick() -> int:
     with database.get_conn() as conn:
         due = _due_rows(conn)
     for row in due:
+        # Воскресенье — отдых на исход: остаток опенера (третье касание через сутки)
+        # это наша инициатива, строка просто полежит в очереди до понедельника.
+        if database.is_rest_day(row):
+            continue
         await _send_next_line(row)
         await asyncio.sleep(random.uniform(2.0, 6.0))
     return len(due)

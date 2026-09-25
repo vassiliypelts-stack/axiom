@@ -8126,7 +8126,7 @@ def chats() -> JSONResponse:
     with database.get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT c.id, c.name, c.username, c.status, c.tags,
+            SELECT c.id, c.name, c.username, c.status, c.tags, COALESCE(c.is_test,0) AS is_test,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id) AS msg_count,
                    (SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id AND m.direction='in') AS in_cnt,
                    (SELECT text FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_text,
@@ -8512,7 +8512,7 @@ def _camp_row(conn, r) -> dict:
     d["audience_pending_check"] = max(
         _audience_count(conn, d["id"], d.get("audience_tag"), d.get("channel")) - d["audience"], 0)
     d["sent"] = conn.execute(
-        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)", (d["id"],)
     ).fetchone()["c"]
     # КОГДА реально слали в последний раз и сколько ушло сегодня.
     # Статус 'running' этого не показывает и показать не может: его ставит запуск, а
@@ -8523,11 +8523,11 @@ def _camp_row(conn, r) -> dict:
     # в UTC — сравнивать его с локальной датой значило бы ловить расхождение на
     # границе суток (сервер живёт в UTC, оператор в МСК, +3 часа).
     d["sent_today"] = conn.execute(
-        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1) "
         "AND date(sent_at)=date('now')", (d["id"],)
     ).fetchone()["c"]
     d["last_sent_at"] = (conn.execute(
-        "SELECT MAX(sent_at) t FROM campaign_contacts WHERE campaign_id=?", (d["id"],)
+        "SELECT MAX(sent_at) t FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)", (d["id"],)
     ).fetchone()["t"])
     # Сколько контактов сняли вручную в окне «Кто в рассылке» (кнопка «☐ снять все»
     # кладёт в паузу СРАЗУ ВСЮ текущую очередь). Карточка молчала про это — «в очереди
@@ -10360,7 +10360,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         replied_rows = {r["contact_id"]: r for r in conn.execute(
             "SELECT contact_id, COUNT(*) AS n, MAX(ts) AS last_ts FROM messages "
             "WHERE direction='in' AND contact_id IN "
-            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?) "
+            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)) "
             "GROUP BY contact_id", (cid,)).fetchall()}
         # ДОСТАВЛЕНО и ПРОЧИТАНО по нашим исходящим (channels/read_status).
         # «Доставлено» в Telegram = сообщение принято сервером и лежит в диалоге
@@ -10369,22 +10369,22 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # «текст не цепляет или письмо вообще не открывают».
         # Итоги воронки — одним запросом по всей кампании (не по странице списка).
         f_row = conn.execute(
-            "SELECT (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=?) AS sent, "
+            "SELECT (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)) AS sent, "
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='out' "
             " AND delivered_at IS NOT NULL AND contact_id IN "
-            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS delivered, "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS delivered, "
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='out' "
             " AND read_at IS NOT NULL AND contact_id IN "
-            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS read, "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS read, "
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='in' "
             " AND contact_id IN "
-            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS replied",
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS replied",
             (cid, cid, cid, cid)).fetchone()
         funnel = {k: int(f_row[k] or 0) for k in ("sent", "delivered", "read", "replied")}
         read_rows = {r["contact_id"]: r for r in conn.execute(
             "SELECT contact_id, MAX(delivered_at) AS delivered_at, MAX(read_at) AS read_at "
             "FROM messages WHERE direction='out' AND contact_id IN "
-            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?) "
+            "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)) "
             "GROUP BY contact_id", (cid,)).fetchall()}
 
     is_tg = "telegram" in [c.strip() for c in (camp.get("channel") or "").split(",")]
@@ -10585,22 +10585,22 @@ def campaign_econ(cid: int) -> JSONResponse:
         if not row:
             return JSONResponse({"error": "not found"}, status_code=404)
         row = dict(row)
-        reached = conn.execute("SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchone()["c"]
+        reached = conn.execute("SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)", (cid,)).fetchone()["c"]
         qmarks = ",".join("?" for _ in _ENGAGED)
         leads = conn.execute(
             f"SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
-            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status IN ({qmarks})",
+            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND COALESCE(ct.is_test,0)=0 AND ct.status IN ({qmarks})",
             (cid, *_ENGAGED),
         ).fetchone()["c"]
         deals = conn.execute(
             "SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
-            "JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status='won'",
+            "JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND COALESCE(ct.is_test,0)=0 AND ct.status='won'",
             (cid,),
         ).fetchone()["c"]
         kmarks = ",".join("?" for _ in _KEV_REACHED)
         kev = conn.execute(
             f"SELECT COUNT(DISTINCT cc.contact_id) c FROM campaign_contacts cc "
-            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND ct.status IN ({kmarks})",
+            f"JOIN contacts ct ON ct.id=cc.contact_id WHERE cc.campaign_id=? AND COALESCE(ct.is_test,0)=0 AND ct.status IN ({kmarks})",
             (cid, *_KEV_REACHED),
         ).fetchone()["c"]
 

@@ -152,7 +152,12 @@ def generate_reply(
         output_format=Reply, max_tokens=1000, **kwargs,
     )
     if reply.intent in ("positive", "agreed"):
-        reply.reply_parts = INTEREST_HANDOFF_PARTS.copy()
+        # Фиксированная передача «свяжется участник проекта, пришлёт бизнес-план»
+        # написана под Город Гениев. Раньше она подменяла ответ в ЛЮБОЙ кампании:
+        # 25.09.2026 директору ремонтной компании на «интересно» ушёл крымский текст
+        # про основателя проекта. Остальные кампании ведёт их собственный сценарий.
+        if _fixed_handoff(campaign_id):
+            reply.reply_parts = INTEREST_HANDOFF_PARTS.copy()
         reply.send_kp = False
         reply.kp_choice = None
         # Интерес должен сразу попасть представителю в личку через notify_hot(),
@@ -160,6 +165,19 @@ def generate_reply(
         reply.hot = True
     return reply
 
+
+
+# Проекты, где на интерес уходит фиксированный текст передачи (INTEREST_HANDOFF_PARTS).
+FIXED_HANDOFF_PROJECTS = {6}   # 6 = Город Гениев
+
+
+def _fixed_handoff(campaign_id: int | None) -> bool:
+    if not campaign_id:
+        return False
+    from db import database
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT project_id FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    return bool(row) and row["project_id"] in FIXED_HANDOFF_PROJECTS
 
 def _demo() -> None:
     """Офлайн-симуляция диалога до согласия на Zoom."""

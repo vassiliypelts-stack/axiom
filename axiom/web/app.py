@@ -8526,8 +8526,15 @@ def _camp_row(conn, r) -> dict:
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1) "
         "AND date(sent_at)=date('now')", (d["id"],)
     ).fetchone()["c"]
+    # Стук тихого номера («Здравствуйте, Максим?») пишет knock_at при пустом sent_at.
+    # Без отдельного счётчика карточка показывала «сегодня отправлено 3», хотя
+    # тихие номера за день постучались ещё к шестерым — стуки просто пропадали.
+    d["knocked_today"] = conn.execute(
+        "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1) "
+        "AND sent_at IS NULL AND date(knock_at)=date('now')", (d["id"],)
+    ).fetchone()["c"]
     d["last_sent_at"] = (conn.execute(
-        "SELECT MAX(sent_at) t FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)", (d["id"],)
+        "SELECT MAX(COALESCE(sent_at, knock_at)) t FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)", (d["id"],)
     ).fetchone()["t"])
     # Сколько контактов сняли вручную в окне «Кто в рассылке» (кнопка «☐ снять все»
     # кладёт в паузу СРАЗУ ВСЮ текущую очередь). Карточка молчала про это — «в очереди
@@ -10348,7 +10355,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # отдельной вкладки «Прогресс», и здесь ему место — решение «кому писать
         # дальше» принимается в этом же списке.
         sent_rows = {r["contact_id"]: r for r in conn.execute(
-            "SELECT cc.contact_id, cc.sent_at, COALESCE(a.label, a.phone, '') AS account "
+            "SELECT cc.contact_id, cc.sent_at, cc.knock_at, COALESCE(a.label, a.phone, '') AS account "
             "FROM campaign_contacts cc LEFT JOIN accounts a ON a.id=cc.account_id "
             "WHERE cc.campaign_id=?", (cid,)).fetchall()}
         sent = set(sent_rows)
@@ -10370,6 +10377,8 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # Итоги воронки — одним запросом по всей кампании (не по странице списка).
         f_row = conn.execute(
             "SELECT (SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1)) AS sent, "
+            "(SELECT COUNT(*) FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1) "
+            " AND sent_at IS NULL AND knock_at IS NOT NULL) AS knocked, "
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='out' "
             " AND delivered_at IS NOT NULL AND contact_id IN "
             " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS delivered, "
@@ -10379,8 +10388,8 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='in' "
             " AND contact_id IN "
             " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS replied",
-            (cid, cid, cid, cid)).fetchone()
-        funnel = {k: int(f_row[k] or 0) for k in ("sent", "delivered", "read", "replied")}
+            (cid, cid, cid, cid, cid)).fetchone()
+        funnel = {k: int(f_row[k] or 0) for k in ("sent", "knocked", "delivered", "read", "replied")}
         read_rows = {r["contact_id"]: r for r in conn.execute(
             "SELECT contact_id, MAX(delivered_at) AS delivered_at, MAX(read_at) AS read_at "
             "FROM messages WHERE direction='out' AND contact_id IN "
@@ -10394,8 +10403,16 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         src = (d.get("source") or "").strip() or "(без источника)"
         sources[src] = sources.get(src, 0) + 1
         why = None
+        sr = sent_rows.get(d["id"])
+        # Постучались тихим номером, питча ещё не было: статус у человека 'new'
+        # (стук — не первое касание кампании), и раньше строка выглядела как «в
+        # очереди» без даты отправки. Рассылка его не возьмёт — питч уйдёт сам,
+        # когда человек ответит на стук (channels/listener).
+        knocked = bool(sr and sr["knock_at"] and not sr["sent_at"])
         if d["id"] in paused:
             why = "снят вручную"
+        elif knocked:
+            why = "постучались, ждём ответа"
         elif d["status"] != "new":
             why = ("уже написали" if d["id"] in sent else f"статус «{d['status']}»")
         elif not (d["username"] or d["phone"]):
@@ -10413,9 +10430,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # этого не годится: его снимает _hot_lead_scheduler через 6 ч.
         d["heat"] = database.lead_heat(d.get("lead_since"), d.get("owner_contacted_at"))
         d["is_hot"] = d["heat"] in ("green", "yellow", "red")
-        sr = sent_rows.get(d["id"])
         d["sent"] = bool(sr)
-        d["sent_at"] = sr["sent_at"] if sr else None
+        d["knocked"] = knocked
+        # «Когда» у стука — время стука: по этой колонке сортируют «что ушло сегодня».
+        d["sent_at"] = (sr["sent_at"] or sr["knock_at"]) if sr else None
         d["sent_by"] = (sr["account"] if sr else "") or ""
         dr = read_rows.get(d["id"])
         d["delivered"] = bool(dr and dr["delivered_at"])

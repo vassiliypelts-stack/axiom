@@ -1460,6 +1460,7 @@ async function openAudience(cid){
         <b>${d.in_queue}</b> из <b>${d.total}</b> пойдут в рассылку.
         <div style="margin-top:6px">
           <span class="badge" title="кому первое сообщение уже ушло. В процентах — доля от всей аудитории: сколько базы уже прошли">📨 отправлено: <b>${d.sent||0}</b>${(d.total&&d.sent)?` <span class="hint">(${Math.round(d.sent*100/d.total)}% базы)</span>`:""}</span>
+          ${d.knocked?`<span class="badge" title="из отправленных: тихие номера только постучались («Здравствуйте, …?») и ждут ответа — питч уйдёт после него">👋 стук: <b>${d.knocked}</b></span>`:""}
           <span class="badge" title="Telegram принял сообщение и положил его в диалог собеседника. Отдельного статуса доставки, как в WhatsApp, у Telegram нет: если сообщение ушло — оно доставлено.">✓ доставлено: <b>${d.delivered||0}</b></span>
           <span class="badge" title="человек открыл диалог и дочитал до нашего сообщения (галочки Telegram). Прочитал и молчит — не цепляет текст; не прочитал — письмо не доходит до глаз, вопрос к аккаунту">👁 прочитано: <b>${d.read||0}</b>${(d.sent&&d.read)?` <span class="hint">(${Math.round(d.read*100/d.sent)}%)</span>`:""}</span>
           <span class="badge ${d.replied?"b-active":""}" title="сколько человек ответили хоть раз">↩️ ответили: <b>${d.replied||0}</b>${(d.sent&&d.replied)?` <span class="hint">(${Math.round(d.replied*100/d.sent)}%)</span>`:""}</span>
@@ -1531,10 +1532,12 @@ async function openAudience(cid){
         {key:"is_lead",label:"Лид",render:r=>leadHeatBadge(r)},
         {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
         {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
-        {key:"status",label:"Статус",cls:"sub",render:r=>esc(r.status||"")},
+        {key:"status",label:"Статус",cls:"sub",render:r=>r.knocked&&r.status==="new"?"стук":esc(r.status||"")},
         // Прогресс отправки прямо здесь: раньше ради «ушло / не ушло» открывали
         // отдельную вкладку «Прогресс» с тем же списком людей.
-        {key:"sent",label:"Ушло",render:r=>r.sent
+        {key:"sent",label:"Ушло",render:r=>r.knocked
+          ?`<span title="Тихий стук ${esc(r.sent_at||"")}${r.sent_by?" · с аккаунта "+esc(r.sent_by):""}: короткое «Здравствуйте, …?». Питч уйдёт, когда человек ответит">👋</span>`
+          :r.sent
           ?`<span style="color:var(--green);font-weight:700" title="Отправлено ${esc(r.sent_at||"")}${r.sent_by?" · с аккаунта "+esc(r.sent_by):""}">✓</span>`
           :'<span class="no" title="ещё в очереди">○</span>'},
         // Ответ человека — главная колонка этого списка: «ушло» говорит лишь о том,
@@ -1553,7 +1556,7 @@ async function openAudience(cid){
               style="text-decoration:none;font-weight:700;white-space:nowrap"
               title="Ответов: ${r.replies||1}${r.replied_at?" · последний "+esc(r.replied_at):""} — открыть переписку">↩️ ${r.replies||1} · открыть</a>`
           :(r.sent?'<span class="no" title="написали, ответа пока нет">—</span>':"")},
-        {key:"sent_at",label:"Когда",cls:"sub",render:r=>r.sent?esc(fmt(r.sent_at)):""},
+        {key:"sent_at",label:"Когда",cls:"sub",render:r=>r.sent?(r.knocked?"👋 ":"")+esc(fmt(r.sent_at)):""},
         {key:"sent_by",label:"Отправитель",cls:"sub",render:r=>esc(r.sent_by||"")},
         {key:"blocked_by",label:"Почему не пойдёт",cls:"sub",render:r=>r.blocked_by?esc(r.blocked_by):""},
         // Глаз показывает контекст прямо поверх кампании; карточка остаётся отдельной
@@ -8036,13 +8039,13 @@ function renderCampList(mount,camps){
     // себе этого не значит: его ставит запуск, а снимает лишь 'done' или ручная пауза,
     // поэтому отработавшая кампания висит «running» сутками при нуле отправок — и
     // пульт бодро мигал «Идёт», пока рассылка стояла третий день.
-    const sentToday=c.sent_today||0;
-    const isActive=isRunning&&left>0&&sentToday>0;
+    const sentToday=c.sent_today||0, knockedToday=c.knocked_today||0;
+    const isActive=isRunning&&left>0&&(sentToday+knockedToday)>0;
     const stCls=(isRunning?('b-active'+(isActive?' b-live':'')):c.status==='done'?'b-won':'b-nurture');
     // Что было на самом деле: сколько ушло сегодня и когда слали в последний раз.
     const todayTxt=isRunning
-      ? (sentToday
-          ? `<span style="color:var(--green)">сегодня отправлено ${sentToday}</span>`
+      ? ((sentToday||knockedToday)
+          ? `<span style="color:var(--green)">сегодня отправлено ${sentToday}${knockedToday?` <span title="тихие номера постучались «Здравствуйте, …?» — питч уйдёт после ответа">+ 👋 ${knockedToday} стук</span>`:""}</span>`
           : `<span style="color:#c0392b" title="кампания активна, но заходов сегодня не было — холодная рассылка стартует только кнопкой «▶ Запустить»">сегодня 0 — заход не запускали</span>`)
       : "";
     const lastTxt=c.last_sent_at?` · последняя отправка ${rel(c.last_sent_at)}`:" · ещё ни одной отправки";

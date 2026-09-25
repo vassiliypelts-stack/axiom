@@ -262,10 +262,8 @@ _EXTRA_CAMPAIGN_COLS = {
     # нетворкинга с экспертами звучат по-разному, а дожим один и тот же был бы для
     # обоих. Пусто → кампания дожимается только общими шаблонами, как раньше.
     "extra_followup_template": "TEXT",
-    # «Тихий заход» для НОВЫХ номеров команды (25.09.2026, решение владельца): первое
-    # время свежий номер пишет не питч, а короткое знакомство с вопросом, а оффер
-    # агент даёт уже после ответа. Кампания одна — текст знакомства хранится рядом с
-    # основным, а какие номера сейчас на нём, решает campaign_accounts.quiet_until.
+    # Не используется: тихий номер вместо своего текста стучится как прогреваемый
+    # (campaign_send, knock). Колонка осталась от первой версии 25.09.2026.
     "quiet_opener_template": "TEXT",
     # --- рабочие часы кампании: когда боту можно писать/отвечать живым людям ---
     # Ночная рассылка и полуночный ответ — то, что моментально выдаёт бота и пугает
@@ -550,7 +548,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     for col, typ in _EXTRA_ACCOUNT_COLS.items():
         if col not in acc:
             conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} {typ}")
-    # До этой даты номер в ЭТОЙ кампании пишет тихим заходом (quiet_opener_template).
+    # До этой даты номер в ЭТОЙ кампании не шлёт питч, а только стучится
+    # («Добрый день, Татьяна?»), см. campaign_send.run — решение владельца 25.09.2026.
     ca = {r["name"] for r in conn.execute("PRAGMA table_info(campaign_accounts)")}
     if ca and "quiet_until" not in ca:
         conn.execute("ALTER TABLE campaign_accounts ADD COLUMN quiet_until TEXT")

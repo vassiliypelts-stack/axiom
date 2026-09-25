@@ -3286,9 +3286,10 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
         return 0, "дневной объём не задан"
 
     # Уже отправленное за СУТКИ (UTC — в том же виде, что пишет campaign_contacts).
+    # Стук тихого номера (knock_at, sent_at пустой) — тоже касание и тоже в счёт.
     sent_today = conn.execute(
         "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-        "AND date(sent_at)=date('now')", (camp["id"],)).fetchone()["c"]
+        "AND date(COALESCE(sent_at, knock_at))=date('now')", (camp["id"],)).fetchone()["c"]
     left_today = daily - sent_today
     if left_today <= 0:
         return 0, f"дневной объём выбран: {sent_today}/{daily}"

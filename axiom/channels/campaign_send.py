@@ -902,7 +902,7 @@ async def run(cid: int, limit: int, test: bool = False,
         with database.get_conn() as conn:
             sent_today = conn.execute(
                 "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-                "AND date(sent_at)=date('now')", (cid,)).fetchone()["c"]
+                "AND date(COALESCE(sent_at, knock_at))=date('now')", (cid,)).fetchone()["c"]
         left_today = day_cap - sent_today
         if left_today <= 0:
             print(f"кампания #{cid}: дневной лимит выбран ({sent_today}/{day_cap}) — "
@@ -1049,9 +1049,12 @@ async def run(cid: int, limit: int, test: bool = False,
             with database.get_conn() as conn:
                 for row in conn.execute(
                     f"SELECT account_id, COUNT(*) AS n, "
-                    f"(julianday('now') - julianday(MAX(sent_at))) * 24 AS ago "
+                    f"(julianday('now') - julianday(MAX(COALESCE(sent_at, knock_at)))) * 24 AS ago "
                     f"FROM campaign_contacts "
-                    f"WHERE account_id IN ({marks}) AND date(sent_at)=date('now') "
+                    # Стук тихого номера — такое же холодное касание незнакомца и
+                    # тратит ту же суточную норму, хотя sent_at у него пустой.
+                    f"WHERE account_id IN ({marks}) "
+                    f"AND date(COALESCE(sent_at, knock_at))=date('now') "
                     "GROUP BY account_id", account_ids
                 ):
                     sent_today_by_account[int(row["account_id"])] = int(row["n"])
@@ -1249,15 +1252,18 @@ async def run(cid: int, limit: int, test: bool = False,
         name = _greeting(row)
         # sender — имя ИМЕННО того аккаунта, что сейчас шлёт (ротация команды):
         # «меня зовут {sender}» вместо зашитого в текст чужого имени.
-        # Номер на тихом заходе шлёт короткое знакомство вместо питча; оффер даст
-        # агент после ответа. Пустой тихий текст — не гадаем, шлём основной.
-        tmpl = camp["message_template"]
-        quiet_tmpl = (camp.get("quiet_opener_template") or "").strip()
-        if not test and quiet_tmpl and s["acc"] and s["acc"].get("quiet"):
-            tmpl = quiet_tmpl
-        parts = _parts(tmpl, name, row["agency"] or row["name"],
-                       _decision_phrase(row), sender=_sender_name(s["acc"]),
-                       spec=_spec_of(row))[:MAX_OPENER_PARTS]
+        # ТИХИЙ НОМЕР (campaign_accounts.quiet_until) не шлёт питч, а стучится, как
+        # прогреваемый: «Добрый день, Татьяна?» (warmup._knock_text). Ответит —
+        # предложение уйдёт из слушателя (listener._knock_pitch_due), не ответит —
+        # молчим: контакт остаётся 'new', дожимы его не видят.
+        knock = bool(not test and s["acc"] and s["acc"].get("quiet"))
+        if knock:
+            from channels.warmup import _knock_text
+            parts = [_knock_text(row)]
+        else:
+            parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
+                           _decision_phrase(row), sender=_sender_name(s["acc"]),
+                           spec=_spec_of(row))[:MAX_OPENER_PARTS]
         # РЕЗОЛВ — В ОТДЕЛЬНОМ try, НЕ ВМЕСТЕ С ОТПРАВКОЙ.
         #
         # Раньше поиск человека (_resolve_entity: get_entity по @нику, а при неудаче
@@ -1540,12 +1546,27 @@ async def run(cid: int, limit: int, test: bool = False,
                 mid = sent_ids[i] if i < len(sent_ids) else None
                 database.add_message(conn, row["id"], "out", p, intent=None,
                                      account_id=s["id"], tg_msg_ids=[mid] if mid else None)
-            database.set_status(conn, row["id"], "messaged")
-            conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
-            conn.execute(
-                "INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) VALUES (?,?,?)",
-                (cid, row["id"], s["id"]),
-            )
+            if knock:
+                # Стук — ещё не первое касание кампании: статус возвращаем в 'new'
+                # (захват выше его поднял), в книжку кладём knock_at вместо sent_at.
+                # Из очереди рассылки контакт выпадает по knock_at (см. _audience).
+                database.set_status(conn, row["id"], "new")
+                conn.execute("UPDATE contacts SET tags=? WHERE id=?",
+                             (_add_tag(_add_tag(row["tags"], tag), "стук"), row["id"]))
+                conn.execute(
+                    "INSERT INTO campaign_contacts (campaign_id, contact_id, account_id, "
+                    "sent_at, knock_at) VALUES (?,?,?,NULL,datetime('now')) "
+                    "ON CONFLICT(campaign_id, contact_id) DO UPDATE SET "
+                    "account_id=excluded.account_id, knock_at=excluded.knock_at",
+                    (cid, row["id"], s["id"]),
+                )
+            else:
+                database.set_status(conn, row["id"], "messaged")
+                conn.execute("UPDATE contacts SET tags=? WHERE id=?", (_add_tag(row["tags"], tag), row["id"]))
+                conn.execute(
+                    "INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, account_id) VALUES (?,?,?)",
+                    (cid, row["id"], s["id"]),
+                )
             if rest and s["id"] is not None:
                 next_at = (datetime.utcnow()
                            + timedelta(hours=24)).isoformat(
@@ -1559,7 +1580,7 @@ async def run(cid: int, limit: int, test: bool = False,
             # и в колокольчике нельзя было увидеть текст первого сообщения.
             to = name or (f"@{row['username']}" if row["username"] else row["phone"])
             database.add_event(
-                conn, "outreach", f"📨 {s['label']} → {to}",
+                conn, "outreach", f"{'👋 стук' if knock else '📨'} {s['label']} → {to}",
                 parts[0][:400] + (f" (+{len(rest)} строк(и) следом)" if rest else ""),
                 contact_id=row["id"], campaign_id=cid, account_id=s["id"])
         s["remaining"] -= 1

@@ -684,7 +684,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
     def audit(text: str) -> None:
         """Поштучный журнал для пульта: фактическое действие и его время."""
         with database.get_conn() as conn:
-            database.add_event(conn, "warm_action", f"🔥 {acc.get('label') or acc['id']}",
+            database.add_event(conn, "warm_action", f"🌱 {acc.get('label') or acc['id']}",
                                text, level="info", account_id=acc["id"])
     print(f"[#{acc['id']} @{me.username or me.id}] стадия {stage}: каналы {plan['channels']}, "
           f"ЛС {plan['msgs']}, лайки {plan.get('react', 0)}, чтение {plan.get('read', 0)}")
@@ -802,7 +802,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
     summary = ", ".join(parts) if parts else "зашёл онлайн (без активных действий в этот раз)"
     with database.get_conn() as conn:
         database.bump_warm(conn, acc["id"], new_stage, activate=activate)
-        database.add_event(conn, "warm_run", f"🔥 Прогрев: {who}",
+        database.add_event(conn, "warm_run", f"🌱 Прогрев: {who}",
                            f"стадия {stage}→{new_stage}: {summary}",
                            level="info", account_id=acc["id"])
         if activate:

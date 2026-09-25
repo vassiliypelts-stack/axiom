@@ -3332,7 +3332,21 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
     # у каждого: дело было не в суточном объёме, а в плотности.
     # Одно касание за заход растягивает тот же дневной объём по всему окну — темп
     # задаёт due_by_now, а не размер пачки.
-    return 1, f"план {due_by_now}, отправлено {sent_today}/{daily}"
+    #
+    # 25.09.2026: у 9407 норма 1 в сутки на КАЖДЫЙ номер, и заход раздаёт контакты
+    # по разным номерам (campaign_send._pick) — серии с одного номера больше нет.
+    # При одном контакте за 15-минутный тик 54 номера физически не успевали за
+    # окно (к 17:40 ушло 3 при плане 39). Когда отстаём, берём до AUTOSEND_CATCHUP
+    # — это столько же разных номеров, по одному касанию с каждого.
+    per_acc_one = conn.execute(
+        "SELECT COALESCE(MAX(COALESCE(ca.daily_limit, a.daily_limit)), 0) m "
+        "FROM campaign_accounts ca JOIN accounts a ON a.id=ca.account_id "
+        "WHERE ca.campaign_id=?", (camp["id"],)).fetchone()["m"] <= 1
+    batch = min(take, AUTOSEND_CATCHUP) if per_acc_one else 1
+    return batch, f"план {due_by_now}, отправлено {sent_today}/{daily}"
+
+
+AUTOSEND_CATCHUP = 4   # сколько разных номеров за тик, когда кампания отстаёт
 
 
 def _campaign_has_cold_sender(conn, cid: int) -> bool:

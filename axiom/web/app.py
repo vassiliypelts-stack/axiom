@@ -3566,7 +3566,17 @@ def _cold_outreach_state(a: dict) -> dict:
         return blocked("inactive", "не активен для рассылки")
     age = _days_since(a.get("bought_at") or a.get("created_at"))
     if age is not None and age < _MIN_COLD_OUTREACH_AGE_DAYS:
-        return blocked("young", f"дозревает: {age}/{_MIN_COLD_OUTREACH_AGE_DAYS} дн.")
+        # Тихий номер кампании стучится и молодым (campaign_send: quiet обходит
+        # возрастной порог) — пульт не должен писать «дозревает» тому, кто уже пишет.
+        quiet = None
+        if a.get("id"):
+            with database.get_conn() as conn:
+                quiet = conn.execute(
+                    "SELECT MAX(quiet_until) q FROM campaign_accounts "
+                    "WHERE account_id=? AND quiet_until > datetime('now')",
+                    (a["id"],)).fetchone()["q"]
+        if not quiet:
+            return blocked("young", f"дозревает: {age}/{_MIN_COLD_OUTREACH_AGE_DAYS} дн.")
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     pause = a.get("spam_pause_until") or ""
     if pause > now:
@@ -3574,6 +3584,9 @@ def _cold_outreach_state(a: dict) -> dict:
     flood = a.get("flood_wait_until") or ""
     if flood > now:
         return blocked("floodwait", f"FloodWait до {flood[:16]}")
+    if age is not None and age < _MIN_COLD_OUTREACH_AGE_DAYS:
+        return {"eligible": True, "code": "knock",
+                "text": "тихий режим: только «Добрый день, Имя?», предложение — после ответа"}
     return {"eligible": True, "code": "ready", "text": "можно слать холодное ЛС"}
 
 

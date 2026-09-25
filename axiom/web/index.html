@@ -2586,6 +2586,7 @@ async function viewAgents(v){
         // стояло «✅ готов», из-за чего пульт противоречил реальному sender.
         const cold=r.cold_outreach||{};
         if(r.status!=='warming'){
+          if(cold.code==='knock')return `<span class="badge b-nurture" title="${esc(cold.text||'')}">👋 тихий стук</span>`;
           if(cold.code==='young')return `<span class="badge b-nurture" title="${esc(cold.text||'дозревает')}">⏳ ${esc(cold.text||'дозревает')}</span>`;
           if(cold.code==='peerflood'||cold.code==='floodwait')return `<span class="badge b-stop" title="${esc(cold.text||'временная пауза Telegram')}">⏸ ${esc(cold.text||'пауза')}</span>`;
           return cold.eligible?'<span class="badge b-active">✅ холодная рассылка доступна</span>':'<span class="no" title="'+esc(cold.text||'недоступен для холодной рассылки')+'">—</span>';

@@ -156,6 +156,7 @@ def generate_reply(
     if reply.notes:
         import re
         reply.notes = re.split(r"""['"]\s*,\s*['"]?\w+['"]?\s*:""", reply.notes)[0].strip(" ',\"")
+    reply.reply_parts = [_fix_price(x) for x in reply.reply_parts]
     if reply.intent in ("positive", "agreed"):
         # Фиксированная передача «свяжется участник проекта, пришлёт бизнес-план»
         # написана под Город Гениев. Раньше она подменяла ответ в ЛЮБОЙ кампании:
@@ -170,6 +171,29 @@ def generate_reply(
         reply.hot = True
     return reply
 
+
+
+# ЦЕНА ГОРОДА ГЕНИЕВ: от 1,6 млн стоит ТОЛЬКО участок 2 га. Сад, посадка, уход и
+# инфраструктура идут отдельно по смете, её разбирают на встрече. 25.09.2026 бот при
+# правильном промпте ответил «от 1,6 млн за участок 2 га с садом, посадкой и
+# инфраструктурой», поэтому фразу, где цена стоит рядом с садом или инфраструктурой
+# без слов «отдельно» или «смета», заменяем правильной, не надеясь на промпт.
+PRICE_SENTENCE = ("Сам участок 2 га от 1,6 млн рублей. Сад, посадка и инфраструктура "
+                  "считаются отдельно по смете, ее разбирают на встрече.")
+
+
+def _fix_price(text: str) -> str:
+    import re
+    if not text or not re.search(r"1[,.]6\s*(млн|миллион)", text):
+        return text
+    out = []
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        if (re.search(r"1[,.]6\s*(млн|миллион)", sent)
+                and re.search(r"сад|посад|высад|саженц|инфраструктур|под ключ", sent, re.I)
+                and not re.search(r"отдельн|смет|не входит|не входят", sent, re.I)):
+            sent = PRICE_SENTENCE
+        out.append(sent)
+    return " ".join(out)
 
 
 # Проекты, где на интерес уходит фиксированный текст передачи (INTEREST_HANDOFF_PARTS).

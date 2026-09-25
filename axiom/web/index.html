@@ -891,6 +891,29 @@ function applyTheme(t){document.documentElement.dataset.theme=t;try{localStorage
   applyTheme(localStorage.getItem("axiom_theme")||"dark");
   tp.addEventListener("click",e=>{const b=e.target.closest("button");if(b)applyTheme(b.dataset.t);});})();
 const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// Цвет горячего лида по давности отклика (database.lead_heat): 🟢 до 12 ч, 🟡 12-24 ч,
+// 🔴 больше суток без звонка. «✅ связался» гасит цвет, лид остаётся лидом.
+const LEAD_HEAT={green:["#1e9e4a","горячий","до 12 ч с отклика: свяжись сейчас"],
+  yellow:["#e0a800","остывает","12-24 ч с отклика, а ты ещё не связался"],
+  red:["#c0392b","остыл","больше суток с отклика, а ты так и не связался"],
+  done:["#8a8f98","связался","ты уже связался, это обычный лид"]};
+function leadHeatBadge(r){
+  const h=LEAD_HEAT[r.heat];if(!h)return "";
+  const btn=r.heat==="done"
+    ?`<button class="lead-contacted" data-id="${r.id}" data-done="0" title="снять отметку «связался»" style="padding:0 6px">↺</button>`
+    :`<button class="lead-contacted" data-id="${r.id}" data-done="1" title="отметить, что ты связался с лидом">✅ связался</button>`;
+  return `<span class="lead-heat" style="white-space:nowrap" title="${esc(h[2])} · отклик ${esc(r.lead_since||"")} UTC">`
+    +`<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:${h[0]};vertical-align:middle"></span> ${h[1]} ${btn}</span>`;
+}
+// Ловим на захвате: строки таблиц сами кликабельны, кнопка не должна открывать строку.
+document.addEventListener("click",async e=>{
+  const b=e.target.closest&&e.target.closest(".lead-contacted");if(!b)return;
+  e.preventDefault();e.stopPropagation();b.disabled=true;
+  let r;try{r=await api(`/api/contact/${b.dataset.id}/lead_contacted`,{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify({done:b.dataset.done==="1"})});}catch(err){r=null;}
+  if(!r||r.error){b.disabled=false;alert((r&&r.error)||"не сохранилось");return;}
+  const wrap=b.closest(".lead-heat");if(wrap)wrap.outerHTML=leadHeatBadge(r);
+},true);
 // Парсим и «наивный» UTC ('2026-07-18 11:47:00'), и ISO с таймзоной ('…T11:47:00+00:00').
 // Старый fmt слепо клеил 'Z' и на ISO-датах ломался (isNaN → показывал сырую строку).
 function parseTs(ts){if(!ts)return null;let s=String(ts).trim();if(s.indexOf("T")<0)s=s.replace(" ","T");
@@ -1441,7 +1464,8 @@ async function openAudience(cid){
           <span class="badge" title="человек открыл диалог и дочитал до нашего сообщения (галочки Telegram). Прочитал и молчит — не цепляет текст; не прочитал — письмо не доходит до глаз, вопрос к аккаунту">👁 прочитано: <b>${d.read||0}</b>${(d.sent&&d.read)?` <span class="hint">(${Math.round(d.read*100/d.sent)}%)</span>`:""}</span>
           <span class="badge ${d.replied?"b-active":""}" title="сколько человек ответили хоть раз">↩️ ответили: <b>${d.replied||0}</b>${(d.sent&&d.replied)?` <span class="hint">(${Math.round(d.replied*100/d.sent)}%)</span>`:""}</span>
           ${d.leads?`<span class="badge b-new" title="ответили на рассылку и стали лидами. Процент — конверсия из отправленного в лида">💬 лидов: <b>${d.leads}</b>${d.sent?` <span class="hint">(${Math.round(d.leads*100/d.sent)}%)</span>`:""}</span> `:""}
-          ${d.hot?`<span class="badge b-active" title="готовы действовать — им нужно написать лично. Процент — конверсия из отправленного в горячего">🔥 горячих: <b>${d.hot}</b>${d.sent?` <span class="hint">(${Math.round(d.hot*100/d.sent)}%)</span>`:""}</span>`:""}
+          ${d.hot?`<span class="badge b-active" title="согласились, а ты ещё не связался. 🟢 до 12 ч с отклика, 🟡 12-24 ч, 🔴 больше суток">🔥 ждут звонка: <b>${d.hot}</b> ${d.hot_green?`🟢${d.hot_green} `:""}${d.hot_yellow?`🟡${d.hot_yellow} `:""}${d.hot_red?`🔴${d.hot_red}`:""}</span>`:""}
+          ${d.contacted?`<span class="badge" title="лиды, с которыми ты уже связался">✅ связался: <b>${d.contacted}</b></span>`:""}
           <button type="button" id="aud-funnel-btn" class="badge" style="cursor:pointer;border-style:dashed" title="расширенная статистика: вся воронка с конверсией на каждом шаге">👁 конверсия</button>
         </div>
         <div id="aud-funnel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"></div>
@@ -1468,7 +1492,7 @@ async function openAudience(cid){
         ${[["","все",null],["queue","только кто пойдёт",null],["blocked","только выпавшие",null],
            ["sent","📨 отправлено",d.sent],["read","👁 прочитали",d.read],
            ["replied","↩️ ответили",d.replied],
-           ["leads","💬 лиды",d.leads],["hot","🔥 горячие",d.hot]].map(([k,l,n])=>
+           ["leads","💬 лиды",d.leads],["hot","🔥 ждут звонка",d.hot]].map(([k,l,n])=>
           `<button class="aud-f ${AUD_ONLY===k?"primary":""}" data-f="${k}">${l}${n?` <b>${n}</b>`:""}</button>`).join("")}
         <select id="aud-src" title="источник — откуда пришли контакты этой аудитории"><option value="">все источники (${d.total})</option>${srcOpts}</select>
         <span class="grow"></span>
@@ -1504,9 +1528,7 @@ async function openAudience(cid){
         // Результат рассылки виден здесь же: кто ответил и кто уже горячий. Иначе за
         // лидами приходилось идти в «Диалоги», хотя решение «кому писать дальше»
         // принимается в этом списке.
-        {key:"is_lead",label:"Лид",render:r=>r.is_hot
-          ?`<span class="badge b-active" title="Горячий лид — с ${esc(r.hot_since||"")}">🔥 горячий</span>`
-          :(r.is_lead?`<span class="badge b-new" title="Ответил — лид с ${esc(r.lead_since||"")}">💬 лид</span>`:"")},
+        {key:"is_lead",label:"Лид",render:r=>leadHeatBadge(r)},
         {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
         {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
         {key:"status",label:"Статус",cls:"sub",render:r=>esc(r.status||"")},
@@ -8324,21 +8346,20 @@ function renderCampList(mount,camps){
     const rows=d.leads.map(l=>{
       const who=esc(l.name||l.username||l.phone||("#"+l.id));
       const contact=l.username?`@${esc(l.username)}`:esc(l.phone||"");
-      const isHotNow=!!l.hot_since;
       // Имя — ссылка прямо в переписку (#chats/{id}), а @ник — в сам Telegram. Раньше
       // список говорил, КТО согласился, но чтобы ответить, приходилось идти в «Диалоги»
       // и искать человека там руками — при том что пишут этим лидам сразу после чтения.
       const link=`<a href="#chats/${l.id}" style="color:inherit;text-decoration:underline dotted" title="Открыть переписку с этим лидом">${who}</a>`;
       const tg=l.username?` <a class="ext" href="https://t.me/${esc(l.username)}" target="_blank" title="Написать в Telegram">↗</a>`:"";
       return `<tr>
-        <td>${link}${isHotNow?' <span class="badge b-active" title="владелец ещё не написал">🔥 ждёт</span>':''}</td>
+        <td>${link} ${leadHeatBadge(l)}</td>
         <td class="sub">${contact}${tg}</td>
         <td class="sub">${l.lead_since?esc(l.lead_since):"—"}</td>
         <td class="sub" style="max-width:320px;white-space:normal">${l.last_in?esc(l.last_in.slice(0,160)):"—"}</td>
       </tr>`;
     }).join("");
     box.innerHTML=`<div class="card" style="background:var(--panel2);padding:12px">
-      <b style="font-size:13px">🔥 Сказали «да»: ${d.count}</b>
+      <b style="font-size:13px">🔥 Сказали «да»: сегодня ${d.today||0} · всего ${d.count}</b>
       <table class="tbl" style="margin-top:8px"><thead><tr><th>Кто</th><th>Контакт</th><th>Когда согласился</th><th>Последнее сообщение</th></tr></thead>
       <tbody>${rows}</tbody></table>
     </div>`;

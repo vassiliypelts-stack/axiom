@@ -120,6 +120,10 @@ _EXTRA_CONTACT_COLS = {
     # глазами по разделу «Диалоги». Эта метка ставится один раз и остаётся навсегда —
     # по ней отчёт считает лидов за период (см. notify.campaign_report_text).
     "lead_since": "TEXT",
+    # Когда владелец СВЯЗАЛСЯ с лидом (кнопка «✅ связался» в пульте или ручное сообщение
+    # из «Диалогов»). Пока пусто, лид горит цветом по давности отклика (lead_heat):
+    # владелец пишет со своего Telegram, и сами мы этот момент не видим.
+    "owner_contacted_at": "TEXT",
     # Корзина: удаление из UI больше не стирает карточку сразу — ставит эту метку.
     # NULL = контакт активен (виден везде, участвует в рассылке/пробиве). Не NULL —
     # в корзине: пропадает из обычных списков и явно исключён из _audience()
@@ -1390,3 +1394,42 @@ def record_meeting(
 if __name__ == "__main__":
     init_db()
     print(f"БД готова: {config.DB_PATH}")
+
+
+# --- Цвет горячего лида -----------------------------------------------------------
+# Горячий лид живёт рабочий день: с момента отклика («да, интересно») до 12 ч он
+# зелёный, до суток жёлтый (остывает), дальше красный — владелец так и не связался.
+# После отметки «связался» лид остаётся просто лидом (done), без тревожного цвета.
+LEAD_GREEN_HOURS = 12
+LEAD_RED_HOURS = 24
+HEAT_MARK = {"green": "🟢", "yellow": "🟡", "red": "🔴", "done": "✅"}
+
+
+def lead_heat(lead_since: str | None, contacted_at: str | None = None, now=None) -> str | None:
+    """green | yellow | red | done | None (не лид). lead_since — UTC из datetime('now')."""
+    if not lead_since:
+        return None
+    if contacted_at:
+        return "done"
+    import datetime as _dt
+    try:
+        t = _dt.datetime.strptime(str(lead_since)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return "green"
+    hours = ((now or _dt.datetime.utcnow()) - t).total_seconds() / 3600
+    if hours < LEAD_GREEN_HOURS:
+        return "green"
+    return "yellow" if hours < LEAD_RED_HOURS else "red"
+
+
+def lead_age(lead_since: str | None, now=None) -> str:
+    """«3 ч назад» / «2 дн назад» — для отчёта, который читают с телефона."""
+    import datetime as _dt
+    try:
+        t = _dt.datetime.strptime(str(lead_since)[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
+    h = int(((now or _dt.datetime.utcnow()) - t).total_seconds() // 3600)
+    if h < 1:
+        return "меньше часа назад"
+    return f"{h} ч назад" if h < 48 else f"{h // 24} дн назад"

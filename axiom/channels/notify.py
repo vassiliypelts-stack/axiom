@@ -265,6 +265,22 @@ async def send_daily_report() -> None:
             head = ("📊 Сводка по кампаниям на утро" if hour < 15
                     else "📊 Итоги дня по кампаниям")
             lines = [head]
+            ids = [c["id"] for c in camps]
+            marks = ",".join("?" for _ in ids)
+            tot = conn.execute(
+                "SELECT DISTINCT c.id, c.lead_since, c.owner_contacted_at FROM contacts c "
+                f"JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id IN ({marks}) "
+                "WHERE c.lead_since IS NOT NULL AND c.deleted_at IS NULL AND COALESCE(c.is_test,0)=0", ids).fetchall()
+            today_start = conn.execute("SELECT date('now') d").fetchone()["d"]
+            heat = {}
+            for r in tot:
+                h = database.lead_heat(r["lead_since"], r["owner_contacted_at"])
+                heat[h] = heat.get(h, 0) + 1
+            n_today = sum(1 for r in tot if (r["lead_since"] or "") >= today_start)
+            lines.append(f"🔥 лиды (ушли тебе в ЛС): сегодня {n_today} · всего {len(tot)}")
+            if tot:
+                lines.append(f"⏱ ждут звонка: 🟢 {heat.get('green', 0)} · 🟡 {heat.get('yellow', 0)} · "
+                             f"🔴 {heat.get('red', 0)} · ✅ связался: {heat.get('done', 0)}")
             for camp in camps:
                 # Тот же расчёт, что у отчёта по одной кампании (кнопка «📤 Отчёт в ЛС»
                 # и экран кампании) — не заводим второй, похожий, который потом
@@ -343,7 +359,7 @@ def campaign_report_text(conn, cid: int) -> str | None:
         return conn.execute(
             "SELECT COUNT(DISTINCT c.id) n FROM contacts c "
             "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
-            f"WHERE c.lead_since IS NOT NULL{where}", (cid,)).fetchone()["n"]
+            f"WHERE c.lead_since IS NOT NULL AND COALESCE(c.is_test,0)=0{where}", (cid,)).fetchone()["n"]
 
     def refused_since(period_sql: str | None) -> int:
         """Явные отказы по времени самого входящего сообщения.
@@ -365,7 +381,8 @@ def campaign_report_text(conn, cid: int) -> str | None:
     leads_yest = conn.execute(
         "SELECT COUNT(DISTINCT c.id) n FROM contacts c "
         "JOIN campaign_contacts cc ON cc.contact_id=c.id AND cc.campaign_id=? "
-        "WHERE c.lead_since >= date('now','-1 day') AND c.lead_since < date('now')",
+        "WHERE c.lead_since >= date('now','-1 day') AND c.lead_since < date('now') "
+        "AND COALESCE(c.is_test,0)=0",
         (cid,)).fetchone()["n"]
 
     refused = refused_since(None)
@@ -507,6 +524,26 @@ def campaign_report_text(conn, cid: int) -> str | None:
     out.append(f"база на старте: {initial_base} · отправителей на старте: {started_accounts} · умерло: {dead_accounts}")
     out.append(f"осталось в базе: {left} · 🔕 игнор: {ignored}")
 
+    # ЛИДЫ: СЕГОДНЯ ОТДЕЛЬНО ОТ ВСЕГО. Лид здесь = согласился и ушёл владельцу в ЛС
+    # (lead_since). Цвет — сколько он ждёт звонка (database.lead_heat).
+    all_leads = conn.execute(
+        "SELECT DISTINCT c.id, c.name, c.person_name, c.username, c.phone, c.lead_since, "
+        "c.owner_contacted_at FROM contacts c JOIN campaign_contacts cc ON cc.contact_id=c.id "
+        "WHERE cc.campaign_id=? AND c.lead_since IS NOT NULL AND c.deleted_at IS NULL "
+        "AND COALESCE(c.is_test,0)=0 ORDER BY c.lead_since DESC", (cid,)).fetchall()
+    heat = {}
+    for r in all_leads:
+        h = database.lead_heat(r["lead_since"], r["owner_contacted_at"])
+        heat[h] = heat.get(h, 0) + 1
+    out.append("")
+    out.append(f"🔥 лиды (ушли тебе в ЛС): сегодня {leads_today} · всего {leads}")
+    out.append(f"↩️ ответили: сегодня {replied_today} · всего {replied}")
+    waiting = heat.get("green", 0) + heat.get("yellow", 0) + heat.get("red", 0)
+    if all_leads:
+        out.append(f"⏱ ждут твоего звонка: {waiting} (🟢 {heat.get('green', 0)} · "
+                   f"🟡 {heat.get('yellow', 0)} · 🔴 {heat.get('red', 0)}) · "
+                   f"✅ связался: {heat.get('done', 0)}")
+
     out.append("")
     out.append("📅 ЗА ВСЁ ВРЕМЯ")
     out.append(f"отправлено: {total}{_undeliv(undeliv_all)}")
@@ -542,29 +579,44 @@ def campaign_report_text(conn, cid: int) -> str | None:
         today_line += f" · ⚠️ не дошло {undeliv_today}"
     out.append(today_line)
 
-    # ПОИМЁННО, КТО ЛИД. Проценты отвечают «сколько», но не «кому писать прямо сейчас»,
-    # а ради этого отчёт и читают. Горячие первыми: им владелец должен написать лично,
-    # агент по ним намеренно молчит (listener._should_reply).
-    leads = conn.execute(
-        "SELECT c.id, c.name, c.person_name, c.username, c.phone, c.hot_since "
-        "FROM contacts c JOIN campaign_contacts cc ON cc.contact_id=c.id "
-        "WHERE cc.campaign_id=? AND c.lead_since IS NOT NULL AND c.deleted_at IS NULL "
-        "ORDER BY (c.hot_since IS NULL), COALESCE(c.hot_since, c.lead_since) DESC "
-        "LIMIT 20", (cid,)).fetchall()
-    if leads:
-        out.append("")
-        out.append(f"👥 ЛИДЫ ({len(leads)}):")
-        base = (config.PUBLIC_URL or "").rstrip("/")
-        for r in leads:
+    # ПОИМЁННО, КТО ЛИД — двумя списками: сегодняшние отдельно от прошлых. Проценты
+    # отвечают «сколько», но не «кому писать прямо сейчас», а ради этого отчёт и читают.
+    # Внутри списка ждущие звонка идут первыми, самые остывшие (🔴) сверху.
+    today_start = conn.execute("SELECT date('now') d").fetchone()["d"]
+    order = {"red": 0, "yellow": 1, "green": 2, "done": 3}
+    base = (config.PUBLIC_URL or "").rstrip("/")
+
+    def _lead_lines(rows) -> list[str]:
+        res = []
+        for r in rows:
+            h = database.lead_heat(r["lead_since"], r["owner_contacted_at"])
             who = (r["person_name"] or r["name"] or "без имени").strip()
             handle = f"@{r['username']}" if r["username"] else (r["phone"] or "")
-            mark = "🔥" if r["hot_since"] else "💬"
-            out.append(f"{mark} {who}" + (f" · {handle}" if handle else ""))
+            age = "" if h == "done" else database.lead_age(r["lead_since"])
+            res.append(f"{database.HEAT_MARK.get(h, '💬')} {who}"
+                       + (f" · {handle}" if handle else "") + (f" · {age}" if age else ""))
             # Отчёт читают с телефона, чтобы тут же написать человеку. Без ссылок
             # приходилось искать его в пульте руками по имени.
-            if base:
-                out.append(f"   💬 диалог: {base}/#chats/{r['id']}")
-                out.append(f"   👤 карточка: {base}/#contacts/{r['id']}")
+            if base and h != "done":
+                res.append(f"   💬 диалог: {base}/#chats/{r['id']}")
+        return res
+
+    def _by_heat(rows):
+        return sorted(rows, key=lambda r: order.get(
+            database.lead_heat(r["lead_since"], r["owner_contacted_at"]), 9))
+
+    fresh = [r for r in all_leads if (r["lead_since"] or "") >= today_start]
+    older = [r for r in all_leads if (r["lead_since"] or "") < today_start]
+    if fresh:
+        out.append("")
+        out.append(f"🆕 ЛИДЫ ЗА СЕГОДНЯ ({len(fresh)}):")
+        out.extend(_lead_lines(_by_heat(fresh)))
+    if older:
+        shown = _by_heat(older)[:20]
+        out.append("")
+        out.append(f"📋 ЛИДЫ РАНЬШЕ ({len(older)}"
+                   + (f", показаны {len(shown)}" if len(shown) < len(older) else "") + "):")
+        out.extend(_lead_lines(shown))
     return "\n".join(out)
 
 
@@ -631,6 +683,9 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
         if last_message and last_message.strip():
             lines.append(f"Последнее сообщение: {last_message.strip()[:300]}")
         lines.append(_chat_link(row["id"]))
+        lines.append(f"Связался — нажми «✅ связался» в пульте. Без отметки через "
+                     f"{database.LEAD_GREEN_HOURS} ч лид станет 🟡, через "
+                     f"{database.LEAD_RED_HOURS} ч 🔴.")
         text = "\n".join(lines)
         # В КОЛОКОЛЬЧИК — ТОЖЕ. Личка владельцу уходит с боевого аккаунта и может не
         # дойти (сессия умерла, Telegram придержал номер) — тогда о лиде не узнавал

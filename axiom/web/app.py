@@ -8285,6 +8285,10 @@ def contact_send(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
     with database.get_conn() as conn:
         database.add_message(conn, contact_id, "out", text, intent=None, account_id=int(acc_id),
                              tg_msg_ids=sent)
+        # Оператор сам написал согласившемуся лиду — значит, связался: цвет гаснет.
+        conn.execute("UPDATE contacts SET owner_contacted_at=datetime('now') "
+                     "WHERE id=? AND lead_since IS NOT NULL AND owner_contacted_at IS NULL",
+                     (contact_id,))
     return JSONResponse({"ok": True, "account_id": int(acc_id)})
 
 
@@ -10320,7 +10324,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             # Лид виден прямо в списке рассылки: кто ответил и кто уже горячий. Раньше
             # эти люди ничем не отличались от неотвеченных — оператор искал их в
             # «Диалогах» отдельно, хотя решение «кому писать дальше» принимается здесь.
-            f"lead_since, hot_since "
+            f"lead_since, hot_since, owner_contacted_at "
             f"FROM contacts WHERE {where} "
             # Те, КОМУ УЖЕ ПИСАЛИ, идут первыми — иначе их не видно вовсе.
             #
@@ -10404,7 +10408,11 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # Лид и горячий лид — отдельными флагами, чтобы список рассылки сразу показывал
         # результат, а не только «кому ещё не писали».
         d["is_lead"] = bool(d.get("lead_since"))
-        d["is_hot"] = bool(d.get("hot_since"))
+        # Горячий = согласился, а владелец ещё не связался. Цвет — по давности отклика
+        # (database.lead_heat): 🟢 до 12 ч, 🟡 12-24 ч, 🔴 больше суток. hot_since для
+        # этого не годится: его снимает _hot_lead_scheduler через 6 ч.
+        d["heat"] = database.lead_heat(d.get("lead_since"), d.get("owner_contacted_at"))
+        d["is_hot"] = d["heat"] in ("green", "yellow", "red")
         sr = sent_rows.get(d["id"])
         d["sent"] = bool(sr)
         d["sent_at"] = sr["sent_at"] if sr else None
@@ -10434,6 +10442,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # Результат кампании прямо в шапке списка: сколько ответили и сколько горячих.
         "leads": sum(1 for i in items if i["is_lead"]),
         "hot": sum(1 for i in items if i["is_hot"]),
+        "hot_green": sum(1 for i in items if i["heat"] == "green"),
+        "hot_yellow": sum(1 for i in items if i["heat"] == "yellow"),
+        "hot_red": sum(1 for i in items if i["heat"] == "red"),
+        "contacted": sum(1 for i in items if i["heat"] == "done"),
         "reasons": reasons,          # почему остальные не пойдут, с количеством
         "sources": sources,          # источник → сколько контактов из него в этой аудитории
         # Сколько ещё не проверено: пока номер не пробит, рассылка резолвит его прямо
@@ -10632,7 +10644,7 @@ def campaign_leads(cid: int) -> JSONResponse:
     with database.get_conn() as conn:
         rows = conn.execute(
             "SELECT c.id, c.name, c.phone, c.username, c.tg_user_id, c.status, "
-            "c.lead_since, c.hot_since, "
+            "c.lead_since, c.hot_since, c.owner_contacted_at, "
             "(SELECT text FROM messages m WHERE m.contact_id=c.id AND m.direction='in' "
             " ORDER BY m.ts DESC LIMIT 1) last_in "
             "FROM contacts c JOIN campaign_contacts cc "
@@ -10641,8 +10653,36 @@ def campaign_leads(cid: int) -> JSONResponse:
             "ORDER BY c.lead_since DESC",
             (cid,),
         ).fetchall()
+        today = conn.execute("SELECT date('now') d").fetchone()["d"]
     leads = [dict(r) for r in rows]
-    return JSONResponse({"leads": leads, "count": len(leads)})
+    for l in leads:
+        l["heat"] = database.lead_heat(l.get("lead_since"), l.get("owner_contacted_at"))
+    return JSONResponse({"leads": leads, "count": len(leads),
+                         "today": sum(1 for l in leads if (l["lead_since"] or "") >= today)})
+
+
+@app.post("/api/contact/{contact_id}/lead_contacted")
+def contact_lead_contacted(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
+    """Кнопка «✅ связался» у горячего лида: владелец написал или позвонил сам.
+
+    Лид остаётся лидом (lead_since не трогаем), но гаснет его цвет, и он уходит из
+    «ждут звонка» в отчётах. hot_since снимаем: владелец разговор уже подхватил, и
+    напоминание «с вами связался представитель?» через 6 ч было бы лишним.
+    done=false снимает отметку, если нажали по ошибке."""
+    done = bool(payload.get("done", True))
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT lead_since FROM contacts WHERE id=?", (contact_id,)).fetchone()
+        if not row:
+            return JSONResponse({"error": "контакт не найден"}, status_code=404)
+        if done:
+            conn.execute("UPDATE contacts SET owner_contacted_at=datetime('now'), hot_since=NULL "
+                         "WHERE id=?", (contact_id,))
+        else:
+            conn.execute("UPDATE contacts SET owner_contacted_at=NULL WHERE id=?", (contact_id,))
+        r = conn.execute("SELECT lead_since, owner_contacted_at FROM contacts WHERE id=?",
+                         (contact_id,)).fetchone()
+    return JSONResponse({"ok": True, "id": contact_id, "lead_since": r["lead_since"],
+                         "heat": database.lead_heat(r["lead_since"], r["owner_contacted_at"])})
 
 
 @app.post("/api/campaign/{cid}/econ")

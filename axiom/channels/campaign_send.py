@@ -578,6 +578,8 @@ def _team(cid: int) -> list[dict]:
             "a.api_id, a.api_hash, a.description, a.avatar, a.status, a.tg_name, "
             "COALESCE(a.protected,0) AS protected, "
             "COALESCE(ca.daily_limit, a.daily_limit) AS cap, "
+            # Номер на «тихом заходе» (см. quiet_opener_template в database.py).
+            "CASE WHEN ca.quiet_until > datetime('now') THEN 1 ELSE 0 END AS quiet, "
             # Возраст номера нужен, чтобы срезать дневную норму молодым (см. _age_cap).
             "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
             "     AS INTEGER) AS days_alive, "
@@ -1247,7 +1249,13 @@ async def run(cid: int, limit: int, test: bool = False,
         name = _greeting(row)
         # sender — имя ИМЕННО того аккаунта, что сейчас шлёт (ротация команды):
         # «меня зовут {sender}» вместо зашитого в текст чужого имени.
-        parts = _parts(camp["message_template"], name, row["agency"] or row["name"],
+        # Номер на тихом заходе шлёт короткое знакомство вместо питча; оффер даст
+        # агент после ответа. Пустой тихий текст — не гадаем, шлём основной.
+        tmpl = camp["message_template"]
+        quiet_tmpl = (camp.get("quiet_opener_template") or "").strip()
+        if not test and quiet_tmpl and s["acc"] and s["acc"].get("quiet"):
+            tmpl = quiet_tmpl
+        parts = _parts(tmpl, name, row["agency"] or row["name"],
                        _decision_phrase(row), sender=_sender_name(s["acc"]),
                        spec=_spec_of(row))[:MAX_OPENER_PARTS]
         # РЕЗОЛВ — В ОТДЕЛЬНОМ try, НЕ ВМЕСТЕ С ОТПРАВКОЙ.

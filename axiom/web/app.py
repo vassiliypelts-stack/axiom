@@ -8374,6 +8374,11 @@ def _sync_campaign_accounts(conn, cid: int, account_ids, account_limits: dict | 
     account_limits: {account_id (int|str): daily_limit}. Пусто у аккаунта — падает
     обратно на его общий daily_limit (см. COALESCE в campaign_send._team)."""
     account_limits = account_limits or {}
+    # Команда пересобирается целиком при каждом сохранении формы — без этого
+    # «тихий заход» номера молча слетал бы от любого «Сохранить».
+    quiet = {r["account_id"]: r["quiet_until"] for r in conn.execute(
+        "SELECT account_id, quiet_until FROM campaign_accounts "
+        "WHERE campaign_id=? AND quiet_until IS NOT NULL", (cid,))}
     conn.execute("DELETE FROM campaign_accounts WHERE campaign_id=?", (cid,))
     for aid in (account_ids or []):
         try:
@@ -8386,8 +8391,9 @@ def _sync_campaign_accounts(conn, cid: int, account_ids, account_limits: dict | 
         except (TypeError, ValueError):
             lim = None
         conn.execute(
-            "INSERT OR IGNORE INTO campaign_accounts (campaign_id, account_id, daily_limit) VALUES (?,?,?)",
-            (cid, aid_i, lim),
+            "INSERT OR IGNORE INTO campaign_accounts (campaign_id, account_id, daily_limit, quiet_until) "
+            "VALUES (?,?,?,?)",
+            (cid, aid_i, lim, quiet.get(aid_i)),
         )
 
 
@@ -8625,8 +8631,17 @@ def campaign_update(cid: int, payload: dict = Body(...)) -> JSONResponse:
             if key in payload:
                 conn.execute(f"UPDATE campaigns SET {key}=? WHERE id=?",
                              ((payload.get(key) or "").strip() or None, cid))
+        if "quiet_opener_template" in payload:
+            conn.execute("UPDATE campaigns SET quiet_opener_template=? WHERE id=?",
+                         ((payload.get("quiet_opener_template") or "").strip() or None, cid))
         if account_ids is not None:
             _sync_campaign_accounts(conn, cid, account_ids, account_limits)
+        # {account_id: "YYYY-MM-DD HH:MM:SS" | null} — до какой даты номер пишет тихим
+        # заходом. Пишем после пересборки команды, чтобы новые номера тоже получили дату.
+        for aid, until in (payload.get("account_quiet_until") or {}).items():
+            conn.execute("UPDATE campaign_accounts SET quiet_until=? "
+                         "WHERE campaign_id=? AND account_id=?",
+                         ((str(until).strip() or None) if until else None, cid, int(aid)))
     return JSONResponse({"ok": True, "id": cid})
 
 

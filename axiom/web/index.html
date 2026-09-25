@@ -8467,6 +8467,7 @@ async function viewChats(v){
       <select id="ch-acc"><option value="">любой аккаунт</option>${accs.map(([id,lbl])=>`<option value="${id}">${esc(lbl)}</option>`).join("")}</select>
       <select id="ch-camp" title="фильтр по кампании, откуда пришёл диалог"><option value="">любая кампания</option>${camps.map(([id,lbl])=>`<option value="${id}">${esc(lbl)}</option>`).join("")}</select>
       <select id="ch-sort"><option value="recent">свежие сверху</option><option value="unread">сначала ответившие</option><option value="msgs">больше сообщений</option></select>
+      <label class="hint" title="свои тест-номера (is_test): по умолчанию скрыты, в статистике не считаются" style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="ch-tests">🧪 тестовые</label>
       <span class="hint" id="ch-cnt"></span>
     </div>
     <div class="chat-wrap">
@@ -8476,7 +8477,9 @@ async function viewChats(v){
   const drawList=()=>{
     const q=($("#ch-q").value||"").toLowerCase().trim();
     const st=$("#ch-status").value, acc=$("#ch-acc").value, camp=$("#ch-camp").value, sort=$("#ch-sort").value;
-    let rows=CHATS_ALL.slice();
+    // Свои тест-номера — не лиды: прячем, пока не попросили показать.
+    const base=$("#ch-tests").checked?CHATS_ALL:CHATS_ALL.filter(c=>!c.is_test);
+    let rows=base.slice();
     if(st==="replied")rows=rows.filter(c=>(c.in_cnt||0)>0);
     else if(st)rows=rows.filter(c=>c.status===st);
     if(acc)rows=rows.filter(c=>String(c.account_id)===acc);
@@ -8485,7 +8488,7 @@ async function viewChats(v){
     if(sort==="unread")rows.sort((a,b)=>(b.in_cnt||0)-(a.in_cnt||0)||(b.last_ts>a.last_ts?1:-1));
     else if(sort==="msgs")rows.sort((a,b)=>(b.msg_count||0)-(a.msg_count||0));
     // recent — уже по last_ts с бэка
-    $("#ch-cnt").textContent=`${rows.length} из ${CHATS_ALL.length}`;
+    $("#ch-cnt").textContent=`${rows.length} из ${base.length}`;
     $("#clist").innerHTML=rows.length?rows.map(c=>{
       const replied=(c.in_cnt||0)>0;
       const waiting=c.last_dir==="in";   // последнее слово за клиентом — ждёт нашего ответа
@@ -8498,7 +8501,7 @@ async function viewChats(v){
     $("#clist").querySelectorAll(".chat-item").forEach(it=>it.onclick=()=>{CHAT_SEL=+it.dataset.id;
       $("#clist").querySelectorAll(".chat-item").forEach(x=>x.classList.remove("sel"));it.classList.add("sel");openThread(CHAT_SEL);});
   };
-  ["ch-q","ch-status","ch-acc","ch-camp","ch-sort"].forEach(id=>{const el=$("#"+id);el.oninput=drawList;el.onchange=drawList;});
+  ["ch-q","ch-status","ch-acc","ch-camp","ch-sort","ch-tests"].forEach(id=>{const el=$("#"+id);el.oninput=drawList;el.onchange=drawList;});
   drawList();
 
   // Приём ответов клиентов — «слушатель диалогов». Пульт здесь, а не в «Парсинге»:

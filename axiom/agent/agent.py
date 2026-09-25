@@ -151,6 +151,11 @@ def generate_reply(
         model, system=llm.cached(system, personal), messages=history,
         output_format=Reply, max_tokens=1000, **kwargs,
     )
+    # Модель иногда дописывает в notes хвост собственного JSON («...','send_kp':false,»),
+    # и он уезжал владельцу в уведомление о встрече. Отрезаем с первого такого шва.
+    if reply.notes:
+        import re
+        reply.notes = re.split(r"""['"]\s*,\s*['"]?\w+['"]?\s*:""", reply.notes)[0].strip(" ',\"")
     if reply.intent in ("positive", "agreed"):
         # Фиксированная передача «свяжется участник проекта, пришлёт бизнес-план»
         # написана под Город Гениев. Раньше она подменяла ответ в ЛЮБОЙ кампании:

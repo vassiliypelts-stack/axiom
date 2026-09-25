@@ -1025,7 +1025,10 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         else:
             conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (contact_id,))
 
-    if reply.hot:
+    # Договорились о встрече в этом же ответе — владельцу придёт «Договорились о
+    # встрече» со временем; второе уведомление «горячий лид» про то же сообщение
+    # только дублирует его (25.09.2026 владелец получил оба подряд).
+    if reply.hot and meeting is None:
         print(f"[HOT] contact {contact_id}: {who} готов действовать сейчас")
         from channels import notify
         await notify.notify_hot(contact_id, text_in, camp["id"] if camp else None)

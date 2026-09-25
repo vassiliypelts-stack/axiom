@@ -838,9 +838,13 @@ def _migrate_deals(conn: sqlite3.Connection) -> None:
     for r in rows:
         conn.execute(
             "INSERT INTO deals (contact_id, company_id, pipeline_id, stage, title, "
-            "product, created_at, updated_at) VALUES (?,?,?,?,?, 'Фонд доступного жилья', "
+            "product, created_at, updated_at) VALUES (?,?,?,?,?, "
+            # продукт — той кампании, что ведёт контакт; раньше здесь стоял зашитый
+            # «Фонд доступного жилья» для любой кампании
+            "(SELECT cp.product FROM campaign_contacts cc JOIN campaigns cp "
+            " ON cp.id=cc.campaign_id WHERE cc.contact_id=? ORDER BY cc.sent_at DESC LIMIT 1), "
             "datetime('now'), datetime('now'))",
-            (r["id"], r["company_id"], pid, r["status"], r["title"]),
+            (r["id"], r["company_id"], pid, r["status"], r["title"], r["id"]),
         )
 
 

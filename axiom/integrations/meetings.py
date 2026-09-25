@@ -110,6 +110,11 @@ def _meeting_url(campaign_id: int | None = None) -> str:
                 row = conn.execute("SELECT meeting_url FROM campaigns WHERE id=?",
                                    (campaign_id,)).fetchone()
                 own = (row["meeting_url"] or "").strip() if row else ""
+                # «-» — у кампании встреча по телефону, ссылки нет вовсе. Без этого
+                # подставлялась общая переговорка пульта (Телемост другой кампании),
+                # и напоминание уносило клиенту чужую ссылку.
+                if own == "-":
+                    return ""
                 if own:
                     return own
             url = (database.get_setting(conn, "meeting_url", "") or "").strip()

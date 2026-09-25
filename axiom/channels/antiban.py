@@ -121,7 +121,7 @@ def active_window_ok(start_h: int = 9, end_h: int = 22, tz_offset_h: int = 3) ->
 # уже прочитано вполуха), и явный сигнал автоматизации для Telegram.
 QUIET_TZ_OFFSET_H = 3          # МСК
 WORK_START_MIN = 9 * 60        # 09:00
-WORK_END_MIN = 21 * 60 + 30    # 21:30
+WORK_END_MIN = 21 * 60         # 21:00 (правило Василия, 25.09.2026: окно 9-21)
 
 
 def msk_now() -> datetime.datetime:
@@ -130,7 +130,7 @@ def msk_now() -> datetime.datetime:
 
 
 def within_work_hours(now: datetime.datetime | None = None) -> bool:
-    """Можно ли сейчас писать ЖИВОМУ человеку (09:00–21:30 МСК).
+    """Можно ли сейчас писать ЖИВОМУ человеку (09:00–21:00 МСК).
 
     Тестовые номера оператора этой проверкой не ограничены — их проверяют вживую в
     любое время суток, и запрет мешал бы работе (см. вызовы: is_test обходит окно).

@@ -29,7 +29,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from channels import antiban
+from channels import antiban, deslop
 from db import database
 
 
@@ -136,7 +136,10 @@ def _followup_text(step: dict, contact_row, streak: int) -> str:
     # соседние по id люди шли бы синхронно. Со сдвигом и человек видит разные
     # формулировки, и веером одинаковый текст не уходит.
     tmpl = pool[(contact_row["id"] + streak) % len(pool)]
-    return tmpl.format(name=_name(contact_row), spec=spec)
+    # {а|б} — синонимизация, как в опенере кампании (антиспам: одинаковый текст
+    # веером Telegram вычисляет как рассылку). Раскрываем ДО format: иначе
+    # «{кстати|и еще}» уронил бы format с KeyError.
+    return deslop.spin(tmpl).format(name=_name(contact_row), spec=spec)
 NOSHOW_TEMPLATE = "{name}, не получилось созвониться( давай перенесём? когда удобно на этой неделе?"
 
 # Окно напоминания: за сколько часов до встречи и не позже скольки. Целимся В ЧАС до
@@ -374,12 +377,18 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         # Поэтому: есть текст у кампании — дожимаем ТОЛЬКО им, через 7 часов тишины.
         # Нет — общая лесенка работает как прежде (нетворкинг ею и живёт).
         if extra:
-            steps = [{"after_hours": 7, "variants": [extra], "spec_variants": [extra]}]
+            # Второй дожим (правило Василия, 25.09.2026): только если человек ПРОЧИТАЛ
+            # первый и промолчал. Не прочитал — не шлём, контакт просто ждёт.
+            steps = [{"after_hours": 7, "variants": [extra], "spec_variants": [extra]},
+                     {"after_hours": 48, "variants": deslop.LAST_NUDGE,
+                      "spec_variants": deslop.LAST_NUDGE, "require_read": True}]
         else:
             steps = FOLLOWUP_STEPS
         if streak > len(steps):
             continue  # уже дожали максимум — оставляем планировщику nurture (ниже)
         step = steps[streak - 1]
+        if step.get("require_read") and not database.last_out_read(conn, c["id"]):
+            continue
         last_dt = _parse_dt(last_ts)
         if not last_dt:
             continue

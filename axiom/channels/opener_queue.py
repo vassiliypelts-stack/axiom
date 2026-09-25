@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 
 from telethon.sessions import StringSession
 
-from channels import opener_lint
+from channels import antiban, deslop, opener_lint
 from channels.antiban import classify_error
 from channels.telegram import build_client, _send_parts, _resolve_entity
 from db import database
@@ -32,16 +32,34 @@ from db import database
 # контакт без ответа получает статус «ignored», чтобы больше не попасть в дожим.
 NEXT_LINE_MIN = (24 * 60 * 60, 24 * 60 * 60)
 
+# После третьего касания, если человек ПРОЧИТАЛ и промолчал, можно дожать ещё раз
+# (правило Василия, 25.09.2026). Метка в начале строки очереди говорит «слать только
+# прочитавшему»: не прочитал, значит пинг он не увидит, а спам-жалобу копит.
+IF_READ = "[[if_read]]"
+LAST_NUDGE_AFTER = (44 * 60 * 60, 52 * 60 * 60)
+
 
 def _due_rows(conn) -> list[dict]:
     rows = conn.execute(
         "SELECT q.*, c.status AS contact_status, c.tg_user_id, c.username, c.phone, c.name, "
-        "       cm.status AS campaign_status, cm.name AS campaign_name, cm.work_hours_tz "
+        "       cm.status AS campaign_status, cm.name AS campaign_name, cm.work_hours_tz, "
+        "       cm.work_hours_start, cm.work_hours_end "
         "FROM opener_queue q JOIN contacts c ON c.id = q.contact_id "
         "LEFT JOIN campaigns cm ON cm.id = q.campaign_id "
         "WHERE q.next_at <= datetime('now')"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _close_ignored(conn, row: dict, account_id: int, why: str) -> None:
+    conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
+    database.set_status(conn, row["contact_id"], "ignored")
+    database.add_event(
+        conn, "ignored", f"🔕 Не ответил: контакт {row['contact_id']}",
+        why + " Автоматизация больше не пишет этому человеку.",
+        level="info", contact_id=row["contact_id"], campaign_id=row.get("campaign_id"),
+        account_id=account_id,
+    )
 
 
 def _account(conn, account_id: int) -> dict | None:
@@ -97,6 +115,17 @@ async def _send_next_line(row: dict) -> None:
             conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
         return
 
+    # Последний дожим — только тому, кто прочитал предыдущее и промолчал.
+    is_last_nudge = parts[0].startswith(IF_READ)
+    if is_last_nudge:
+        with database.get_conn() as conn:
+            if not database.last_out_read(conn, row["contact_id"]):
+                _close_ignored(conn, row, acc["id"],
+                               "Ушли все касания, последнее не прочитано, поэтому без дожима.")
+                print(f"[close] контакт {row['contact_id']}: не прочитал — последний дожим не шлём")
+                return
+        parts = [parts[0][len(IF_READ):]] + parts[1:]
+
     # ПОСЛЕДНИЙ рубеж: линтер опенера стоит в campaign_send._parts и проверяет шаблон
     # в момент отправки ПЕРВОЙ строки. Остаток лежит здесь уже готовым списком, и до
     # этой проверки уходил человеку вообще без контроля — раз в 1-3 минуты, строка за
@@ -150,23 +179,22 @@ async def _send_next_line(row: dict) -> None:
         return
 
     rest = parts[1:]
+    last_delay = NEXT_LINE_MIN
+    if not rest and not is_last_nudge:
+        # Опенер кончился — ставим последний дожим. Уйдёт, только если человек
+        # прочитает третье касание и промолчит (проверка выше, в момент отправки).
+        rest = [IF_READ + deslop.last_nudge(row.get("name") or "")]
+        last_delay = LAST_NUDGE_AFTER
     with database.get_conn() as conn:
         database.add_message(conn, row["contact_id"], "out", parts[0], intent=None,
                              account_id=acc["id"], tg_msg_ids=sent_ids)
         if rest:
             next_at = (datetime.utcnow()
-                       + timedelta(seconds=random.uniform(*NEXT_LINE_MIN))).isoformat(sep=" ", timespec="seconds")
+                       + timedelta(seconds=random.uniform(*last_delay))).isoformat(sep=" ", timespec="seconds")
             conn.execute("UPDATE opener_queue SET parts_json=?, next_at=? WHERE id=?",
                         (json.dumps(rest, ensure_ascii=False), next_at, row["id"]))
         else:
-            conn.execute("DELETE FROM opener_queue WHERE id=?", (row["id"],))
-            database.set_status(conn, row["contact_id"], "ignored")
-            database.add_event(
-                conn, "ignored", f"🔕 Не ответил: контакт {row['contact_id']}",
-                "Ушли все три касания, ответа нет. Автоматизация больше не пишет этому человеку.",
-                level="info", contact_id=row["contact_id"], campaign_id=row.get("campaign_id"),
-                account_id=acc["id"],
-            )
+            _close_ignored(conn, row, acc["id"], "Ушли все касания и последний дожим, ответа нет.")
     print(f"[{label}] -> контакт {row['contact_id']}: строка отправлена"
           + (f" (ещё {len(rest)} впереди)" if rest else " (опенер закрыт)"))
     try:
@@ -214,6 +242,10 @@ async def tick() -> int:
         # Воскресенье — отдых на исход: остаток опенера (третье касание через сутки)
         # это наша инициатива, строка просто полежит в очереди до понедельника.
         if database.is_rest_day(row):
+            continue
+        # Ночью не шлём: раньше очередь смотрела только на «прошли сутки», и третье
+        # касание уходило в 02:07 (ГГКрым, 25.09.2026). Строка ждёт утра в очереди.
+        if not (database.in_work_hours(row) and antiban.within_work_hours()):
             continue
         await _send_next_line(row)
         await asyncio.sleep(random.uniform(2.0, 6.0))

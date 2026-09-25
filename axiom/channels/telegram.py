@@ -29,7 +29,7 @@ from telethon.tl.types import InputPhoneContact, InputUser, PeerUser
 
 import config
 from agent.agent import generate_reply
-from channels import antiban, voice_notes
+from channels import antiban, deslop, voice_notes
 from db import database
 from integrations import meetings
 
@@ -457,7 +457,10 @@ async def _send_parts(client, peer, parts: list[str], fast: bool = False,
     обычный разговорный интервал. Если список короче числа границ или не передан,
     применяется ``PART_PAUSE``.
     """
-    clean = [_strip_md(p.strip()) for p in parts if p and p.strip()]
+    # deslop — последний рубеж против «нейрослопа» (длинное тире, «ё», 🙂): ловит
+    # и ответы агента, и опенеры, и дожимы, всё уходит через эту функцию.
+    clean = [deslop.clean(_strip_md(p.strip())) for p in parts if p and p.strip()]
+    clean = [p for p in clean if p]
     sent_ids: list[int] = []
     for i, part in enumerate(clean):
         typing = min(len(part) / random.uniform(*TYPING_CPS), MAX_TYPING_SEC)

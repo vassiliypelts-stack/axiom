@@ -724,6 +724,16 @@ def is_rest_day(camp_row) -> bool:
     return _dt.datetime.now(tz).weekday() == 6
 
 
+def last_out_read(conn: sqlite3.Connection, contact_id: int) -> bool:
+    """Прочитал ли человек наше ПОСЛЕДНЕЕ исходящее (галочки, channels/read_status).
+    Последний дожим уходит только прочитавшим: не прочитал, значит второй пинг
+    он тоже не увидит, а спам-жалобу копит."""
+    row = conn.execute(
+        "SELECT read_at FROM messages WHERE contact_id=? AND direction='out' "
+        "ORDER BY ts DESC, id DESC LIMIT 1", (contact_id,)).fetchone()
+    return bool(row and row["read_at"])
+
+
 def outreach_allowed(camp_row) -> bool:
     """Можно ли сейчас писать ПЕРВЫМИ: рабочие часы и не воскресенье."""
     return in_work_hours(camp_row) and not is_rest_day(camp_row)
@@ -1095,6 +1105,12 @@ def add_message(conn: sqlite3.Connection, contact_id: int, direction: str, text:
                 tg_msg_ids: list[int] | None = None, media_path: str | None = None,
                 media_name: str | None = None, media_mime: str | None = None,
                 channel: str = "telegram") -> None:
+    if direction == "out" and text:
+        # В «Диалогах» должно быть видно ровно то, что ушло: _send_parts чистит
+        # текст через deslop. Построчно: части ответа агента хранятся одной
+        # записью через «\n», и склеивать их в одну строку нельзя.
+        from channels import deslop
+        text = "\n".join(deslop.clean(t) if t.strip() else "" for t in text.split("\n"))
     tg_msg_id = ",".join(str(i) for i in tg_msg_ids) if tg_msg_ids else None
     # Доставку Telegram отдельным статусом не отдаёт (в отличие от WhatsApp): если
     # send_message вернул id сообщения, оно уже лежит в диалоге собеседника. Поэтому

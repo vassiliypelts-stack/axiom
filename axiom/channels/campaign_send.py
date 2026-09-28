@@ -1334,7 +1334,10 @@ async def run(cid: int, limit: int, test: bool = False,
                 if ("No user has" in str(e)
                         or type(e).__name__ in ("UsernameNotOccupiedError", "UsernameInvalidError")):
                     with database.get_conn() as conn:
-                        conn.execute("UPDATE contacts SET has_tg='no' WHERE id=?", (row["id"],))
+                        # tg_checked_at обязателен: без него database._repair_unverified_has_tg
+                        # при следующем init_db считает вердикт мусором и вернёт 'unknown'.
+                        conn.execute("UPDATE contacts SET has_tg='no', tg_checked_at=datetime('now') "
+                                     "WHERE id=?", (row["id"],))
             continue
         try:
             # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а

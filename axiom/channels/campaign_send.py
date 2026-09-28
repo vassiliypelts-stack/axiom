@@ -46,6 +46,12 @@ MAX_OPENER_PARTS = 3
 
 # Сколько ждать, прежде чем считать лок брошенным (процесс убит, сервис перезапущен).
 LOCK_STALE_SEC = 30 * 60
+# Потолок жизни одного захода. Обычный заход — 3-8 минут (подключение команды,
+# медленные прокси до ~4 мин, отправка с паузами). 28.09.2026 заход pid 1019288
+# завис в петле Telethon «Server sent a very new message» и держал сессии 9 часов.
+# По истечении процесс завершается сам: ОС закрывает его соединения, pid умирает —
+# и бронь сессий, и лок кампании освобождаются честно, а не по таймеру у живого.
+RUN_MAX_SEC = 25 * 60
 
 
 class _RunLock:
@@ -86,11 +92,22 @@ class _RunLock:
                 # был убит (перезапуск сервиса, деплой, падение), и ждать LOCK_STALE_SEC
                 # незачем: полчаса кампания отвечала «заход уже идёт» на пустом месте,
                 # а кнопка при этом рапортовала об успехе.
-                if age < LOCK_STALE_SEC and not self._holder_alive():
-                    print("[lock] держатель лока мёртв — забираю лок")
-                elif age < LOCK_STALE_SEC:
+                # Живого держателя НЕ вытесняем ни в каком возрасте: 28.09.2026 заход
+                # завис, через 30 минут лок у него забрали, и дальше по кампании
+                # работали два процесса с одними и теми же сессиями. Зависший заход
+                # сам себя гасит по RUN_MAX_SEC — после этого лок и освободится.
+                # Лок без читаемого pid (процесс упал между созданием файла и записью)
+                # проверить нечем — такой подбираем только по возрасту.
+                try:
+                    known = int(self.path.read_text().strip() or 0) > 0
+                except (OSError, ValueError):
+                    known = False
+                if known and self._holder_alive():
                     return False
-                print(f"[lock] прошлый заход брошен {int(age // 60)} мин назад — забираю лок")
+                if not known and age < LOCK_STALE_SEC:
+                    return False
+                print(f"[lock] прошлый заход брошен {int(age // 60)} мин назад "
+                      f"(держатель мёртв) — забираю лок")
                 try:
                     self.path.unlink()
                 except OSError:
@@ -1699,6 +1716,20 @@ def main() -> None:
         print(f"кампания #{args.cid}: заход уже идёт (лок {lock.path}) — второй процесс "
               f"не запускаю, иначе оба будут драться за одни и те же контакты")
         return
+    # Сторож в отдельном потоке: зависший event loop сам себя не остановит, а
+    # os._exit срабатывает независимо от него. Лок снимаем вручную — finally
+    # при _exit не выполнится.
+    import os
+    import threading
+
+    def _watchdog() -> None:
+        print(f"кампания #{args.cid}: заход идёт дольше {RUN_MAX_SEC // 60} мин — "
+              f"завис, завершаю процесс, чтобы освободить сессии", flush=True)
+        lock.release()
+        os._exit(3)
+    guard = threading.Timer(RUN_MAX_SEC, _watchdog)
+    guard.daemon = True
+    guard.start()
     try:
         asyncio.run(run(args.cid, args.limit, test=args.test,
                         test_account=args.test_account, test_contacts=only))

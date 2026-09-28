@@ -76,11 +76,17 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _stale(row) -> bool:
-    if time.time() - float(row["created_at"] or 0) > MAX_AGE_SEC:
-        return True
-    if row["host"] == HOST and row["pid"] != os.getpid() and not _pid_alive(int(row["pid"])):
-        return True
-    return False
+    if row["host"] == HOST and row["pid"] != os.getpid():
+        # Процесс на этом сервере проверяется напрямую: жив — бронь действительна,
+        # сколько бы ей ни было. Возраст тут НЕ аргумент: 28.09.2026 заход рассылки
+        # (pid 1019288) завис с подключёнными сессиями, через ровно 2 часа брони
+        # «протухли» по MAX_AGE_SEC, слушатель и следующий заход подключили те же
+        # ключи второй раз — и Telegram сжёг Василий120/122/128 через 16 минут.
+        # Зависший процесс гасит его собственный сторож (campaign_send.RUN_MAX_SEC).
+        return not _pid_alive(int(row["pid"]))
+    # Свой pid (клиент в самом пульте забыли отключить) или чужой хост — проверить
+    # нечем, остаётся только потолок по возрасту.
+    return time.time() - float(row["created_at"] or 0) > MAX_AGE_SEC
 
 
 def purge_stale(conn) -> int:

@@ -630,9 +630,13 @@ async def _knock(client, acc: dict) -> int:
             # чтобы рассылка не написала ему заново своё первое сообщение.
             conn.execute("UPDATE contacts SET tags=? WHERE id=?",
                          (_add_tag(row["tags"], "стук"), row["id"]))
+            # sent_at — ЯВНО NULL: у колонки DEFAULT datetime('now'), и без этого стук
+            # выглядел как полноценная отправка. _audience отсеивает стукнутых по
+            # «knock_at есть, sent_at пуст» — с заполненным sent_at человек оставался
+            # в очереди, и 26-28.09 Гога (#17812) получил 82 «Здравствуйте, Гога?».
             conn.execute(
-                "INSERT INTO campaign_contacts (campaign_id, contact_id, account_id, knock_at) "
-                "VALUES (?,?,?,datetime('now')) "
+                "INSERT INTO campaign_contacts (campaign_id, contact_id, account_id, sent_at, knock_at) "
+                "VALUES (?,?,?,NULL,datetime('now')) "
                 "ON CONFLICT(campaign_id, contact_id) DO UPDATE SET "
                 "account_id=excluded.account_id, knock_at=excluded.knock_at",
                 (camp["id"], row["id"], acc["id"]))

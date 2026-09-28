@@ -182,8 +182,11 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     # знакомства подряд с РАЗНЫХ номеров: короткий вопрос от одного и полноценное
     # первое письмо от другого. Ответит — питч ему отправит слушатель, тем же
     # аккаунтом, что и стучался, и там же проставится sent_at.
+    # Признак — только knock_at: слушатель при ответе обнуляет его сам. Условие
+    # «и sent_at пуст» пропускало строки, где sent_at заполнился (DEFAULT колонки
+    # при стуке из прогрева), и человек получал стук каждые 15 минут.
     where += (" AND id NOT IN (SELECT contact_id FROM campaign_contacts "
-              "WHERE knock_at IS NOT NULL AND sent_at IS NULL)")
+              "WHERE knock_at IS NOT NULL)")
     # Этот отправщик шлёт через Telegram, поэтому берём контакты с доступным TG.
     # В ТЕСТ-режиме отсев по достижимости не применяем вовсе: это свои номера, спамом
     # они быть не могут, а гейт «только пробитые» (tg_verified_only, по умолчанию ВКЛ)
@@ -907,7 +910,7 @@ async def run(cid: int, limit: int, test: bool = False,
         with database.get_conn() as conn:
             sent_today = conn.execute(
                 "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-                "AND date(COALESCE(sent_at, knock_at))=date('now')", (cid,)).fetchone()["c"]
+                "AND date(COALESCE(knock_at, sent_at))=date('now')", (cid,)).fetchone()["c"]
         left_today = day_cap - sent_today
         if left_today <= 0:
             print(f"кампания #{cid}: дневной лимит выбран ({sent_today}/{day_cap}) — "
@@ -1054,12 +1057,12 @@ async def run(cid: int, limit: int, test: bool = False,
             with database.get_conn() as conn:
                 for row in conn.execute(
                     f"SELECT account_id, COUNT(*) AS n, "
-                    f"(julianday('now') - julianday(MAX(COALESCE(sent_at, knock_at)))) * 24 AS ago "
+                    f"(julianday('now') - julianday(MAX(COALESCE(knock_at, sent_at)))) * 24 AS ago "
                     f"FROM campaign_contacts "
                     # Стук тихого номера — такое же холодное касание незнакомца и
                     # тратит ту же суточную норму, хотя sent_at у него пустой.
                     f"WHERE account_id IN ({marks}) "
-                    f"AND date(COALESCE(sent_at, knock_at))=date('now') "
+                    f"AND date(COALESCE(knock_at, sent_at))=date('now') "
                     "GROUP BY account_id", account_ids
                 ):
                     sent_today_by_account[int(row["account_id"])] = int(row["n"])
@@ -1308,6 +1311,15 @@ async def run(cid: int, limit: int, test: bool = False,
                 s["remaining"] = 0
             else:
                 print(f"[{s['label']}] ⏭ контакт {row['id']}: не нашёл в Telegram ({e})")
+                # Ника нет в Telegram совсем — это навсегда, а не сбой захода. Без
+                # отметки контакт оставался 'new' и каждый заход вставал в голову
+                # очереди: 28.09 по 9407 три мёртвых ника съедали весь заход «до 4»,
+                # и до живых контактов рассылка не доходила. Заодно номер впустую
+                # долбил поиск — лишние неудачные резолвы тоже признак спамера.
+                if ("No user has" in str(e)
+                        or type(e).__name__ in ("UsernameNotOccupiedError", "UsernameInvalidError")):
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE contacts SET has_tg='no' WHERE id=?", (row["id"],))
             continue
         try:
             # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а

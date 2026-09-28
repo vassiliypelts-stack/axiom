@@ -1157,6 +1157,7 @@ async def run(cid: int, limit: int, test: bool = False,
     live: list[dict] = []
     skipped_warm: list[str] = []
     why_dead: list[str] = []   # почему конкретно не поднялся каждый отправитель
+    quota_done: list[str] = []  # норма на сутки выбрана — не подключали вовсе
     needs_sender = any(v in (camp["message_template"] or "") for v in ("{sender}", "{от_кого}"))
     for s in senders:
         acc = s["acc"]
@@ -1166,6 +1167,14 @@ async def run(cid: int, limit: int, test: bool = False,
             skipped_warm.append(f"{s['label']} ({acc.get('status')})")
             print(f"[{s['label']}] ⏳ пропуск: не прогрет (статус {acc.get('status')}). "
                   f"Холодную шлём только с 'active' — заверши прогрев или переведи в 'active' вручную.")
+            continue
+        # НОРМА ВЫБРАНА — СЕССИЮ НЕ ТРОГАЕМ. Раньше заход подключал всю команду, даже
+        # номера с нулевым остатком: каждые 15 минут слушатель отдавал их рассылке и
+        # забирал обратно ради одного письма (28.09 по 9407 — 13 подключений на 1
+        # отправку). Каждая такая передача сессии между модулями — шанс, что Telegram
+        # увидит ключ с двух IP и сожжёт его: 26.09 так ушли 24 номера из 54.
+        if not test and acc and s["remaining"] <= 0:
+            quota_done.append(s["label"])
             continue
         try:
             await s["client"].start()
@@ -1190,6 +1199,12 @@ async def run(cid: int, limit: int, test: bool = False,
             # заход разбором АУДИТОРИИ («ещё не писали 1094»), хотя аудитория ни при
             # чём — не подключился отправитель. Текст ошибки Telethon кладём рядом.
             why_dead.append(f"{s['label']}: {_human_conn_error(e)}")
+    if not live and quota_done and not why_dead:
+        # Штатный исход, а не сбой: все, кто мог слать, свою норму уже выбрали.
+        # В колокольчик не пишем — иначе предупреждение каждые 15 минут до вечера.
+        print(f"кампания #{cid}: суточная норма выбрана у всех отправителей "
+              f"({', '.join(quota_done)}) — сессии не поднимаю, продолжу завтра")
+        return
     if not live:
         if skipped_warm:
             msg = (f"нет ПРОГРЕТЫХ (active) аккаунтов: {', '.join(skipped_warm)} ещё в прогреве. "

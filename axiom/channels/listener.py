@@ -617,17 +617,28 @@ async def _publish() -> None:
         pass
 
 
-async def _leased() -> set[int]:
+async def _leased() -> set[int] | None:
+    """Забронированные аккаунты. None — брони прочитать не удалось.
+
+    Раньше ошибка чтения (база занята заходами рассылки) превращалась в пустое
+    множество, то есть «броней нет» — и слушатель подключал сессии, которые в эту
+    секунду держала рассылка. Незнание — не разрешение: при None слушатель новых
+    подключений не берёт."""
     try:
         from channels import session_lease
         return await asyncio.to_thread(session_lease.leased_ids)
-    except Exception:  # noqa: BLE001
-        return set()
+    except Exception as e:  # noqa: BLE001
+        _log(f"брони не прочитались ({e}) — новых подключений в этот круг не беру")
+        return None
 
 
 async def _release_leased() -> bool:
     """Отпустить забронированные аккаунты. True — кого-то отпустили."""
-    busy = await _leased() & set(CLIENTS)
+    leased = await _leased()
+    if leased is None:
+        await _publish()
+        return False
+    busy = leased & set(CLIENTS)
     for acc_id in busy:
         client = CLIENTS.pop(acc_id, None)
         try:
@@ -672,6 +683,9 @@ async def _supervise() -> None:
             continue
         _NICHES = _load_niches()   # свежие ключи ниш (можно править в пульте на лету)
         leased = await _leased()
+        if leased is None:
+            await _nap(RECHECK_SEC, on)
+            continue
         want = {a["id"]: a for a in _listenable() if a["id"] not in leased}
         # 1) отключаем выбывших / отвалившихся (переподключим на следующем круге)
         for acc_id, client in list(CLIENTS.items()):
@@ -691,6 +705,13 @@ async def _supervise() -> None:
 
         async def _try(a: dict) -> None:
             try:
+                # Бронь могли взять между сбором списка и этой секундой (гонка с
+                # заходом рассылки) — тогда не подключаемся вовсе.
+                now_leased = await _leased()
+                if now_leased is None or a["id"] in now_leased:
+                    CONNECTING.discard(a["id"])
+                    await _publish()
+                    return
                 CLIENTS[a["id"]] = await _connect(a)
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": True}
                 _log(f"[#{a['id']}] {a.get('label') or ''} — слушаю ✓")
@@ -777,9 +798,27 @@ async def _supervise() -> None:
                     pass
 
         if to_add:
+            # ПУЛЬС на время пачки. Бронирующий считает слушатель мёртвым, если тот
+            # молчит дольше session_lease.LISTENER_STALE_SEC (45 с), и подключается
+            # сам. А пачка с подбором прокси (heal под замком, по одному) идёт
+            # дольше — и всё это время слушатель держит уже поднятые сессии. Пульс
+            # раз в POLL_SEC и отчитывается, и сразу отпускает забронированных.
+            # Останавливаем флагом, а не cancel(): отмена посреди disconnect() оставила
+            # бы соединение полуоткрытым при уже снятой брони — ровно два IP на ключ.
+            stop_beat = asyncio.Event()
+
+            async def _beat() -> None:
+                while not stop_beat.is_set():
+                    try:
+                        await asyncio.wait_for(stop_beat.wait(), timeout=POLL_SEC)
+                    except asyncio.TimeoutError:
+                        await _release_leased()
+            beat = asyncio.create_task(_beat())
             try:
                 await asyncio.gather(*[_try(a) for a in to_add])
             finally:
+                stop_beat.set()
+                await beat
                 CONNECTING.clear()
             # Пока подключались, аккаунт могли забронировать — отпускаем сразу.
             await _release_leased()

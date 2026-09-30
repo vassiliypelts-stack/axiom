@@ -150,6 +150,18 @@ def _try_insert(acc_id: int, owner: str) -> tuple[bool, str]:
             raise
 
 
+def held_by_me(acc_id: int) -> bool | None:
+    """Бронь всё ещё за этим процессом? None — прочитать не удалось (не повод рвать связь)."""
+    try:
+        with database.get_conn() as conn:
+            _ensure(conn)
+            row = conn.execute("SELECT pid, host FROM session_leases WHERE account_id=?",
+                               (acc_id,)).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    return bool(row) and int(row["pid"]) == os.getpid() and row["host"] == HOST
+
+
 def release(acc_id: int | None) -> None:
     if not acc_id:
         return

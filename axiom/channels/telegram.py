@@ -166,6 +166,11 @@ def parse_mtproxy(raw: str | None):
     return None   # faketls (ee…) / нестандартный — telethon не потянет, идём напрямую
 
 
+# Как часто подключённый клиент сверяет, что бронь всё ещё его: потерявший бронь
+# клиент уходит из эфира не позже чем через столько секунд.
+LEASE_GUARD_SEC = 5
+
+
 class LeasedClient(TelegramClient):
     """TelegramClient, который перед подключением бронирует сессию аккаунта
     (channels.session_lease) и снимает бронь при отключении.
@@ -183,6 +188,7 @@ class LeasedClient(TelegramClient):
         self._ax_lease_on = lease
         self._ax_owner = lease_owner
         self._ax_leased: int | None = None
+        self._ax_guard: asyncio.Task | None = None
 
     async def connect(self):
         if self._ax_lease_on and self._ax_leased is None:
@@ -195,10 +201,31 @@ class LeasedClient(TelegramClient):
                 await session_lease.acquire(acc, owner)
                 self._ax_leased = acc
         try:
-            return await super().connect()
+            res = await super().connect()
         except BaseException:
             self._ax_release()
             raise
+        if self._ax_leased is not None and self._ax_guard is None:
+            self._ax_guard = asyncio.get_running_loop().create_task(self._ax_guard_loop())
+        return res
+
+    async def _ax_guard_loop(self) -> None:
+        # Telethon сам переподключает оборванного клиента, минуя connect(), то есть
+        # без брони. 29.09.2026 заход рассылки завис, его бронь сочли протухшей, слушатель
+        # взял те же ключи, а зависший клиент продолжал переподключаться — сгорели 7
+        # аккаунтов. Правило: без брони в эфире не быть, кто бы её ни снял.
+        from channels import session_lease
+        while self._ax_leased is not None:
+            await asyncio.sleep(LEASE_GUARD_SEC)
+            acc = self._ax_leased
+            if acc is None:
+                return
+            if await asyncio.to_thread(session_lease.held_by_me, acc) is False:
+                print(f"[#{acc}] бронь сессии больше не наша — отключаюсь, иначе ключ в эфире дважды")
+                self._ax_leased = None
+                self._ax_guard = None
+                await self.disconnect()
+                return
 
     def _ax_release(self) -> None:
         if self._ax_leased is not None:
@@ -207,6 +234,9 @@ class LeasedClient(TelegramClient):
             self._ax_leased = None
 
     async def _disconnect_coro(self):
+        guard, self._ax_guard = self._ax_guard, None
+        if guard is not None and guard is not asyncio.current_task():
+            guard.cancel()
         try:
             await super()._disconnect_coro()
         finally:

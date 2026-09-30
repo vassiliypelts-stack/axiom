@@ -21,6 +21,16 @@
 другие сеансы») — то есть от всех случаев, на которых мы уже теряли аккаунты. НЕ спасает
 от бана самого аккаунта: бан убивает все сессии разом, запаска умрёт вместе с основной.
 
+ДВЕ ЗАПАСКИ, А НЕ ОДНА. Угнанный ключ (AuthKeyDuplicated) Telegram сносит вместе со
+СВЕЖИМИ авторизациями номера — угонщик первым делом плодит себе новые входы, и молодая
+запаска выглядит ровно так. По истории 26–29.09.2026: 8 из 8 запасок моложе 44 ч умерли
+вместе с основной, все запаски старше 7,8 сут пережили. Одна запаска после подъёма
+заменяется свежей, то есть неделю аккаунт фактически без страховки — так 28–29.09
+повторно сгорели 7 только что поднятых номеров. Поэтому слотов два (tg_session_spare,
+tg_session_spare2): при подъёме тратится старшая, вторая остаётся и страхует, пока новая
+набирает возраст. Инвариант: второй слот заполнен только при заполненном первом — все
+проверки «есть ли запаска» смотрят на первый.
+
 ПРАВИЛА ХРАНЕНИЯ. Запаска ХОЛОДНАЯ: выпустили, отключили, положили в БД и не трогаем до
 беды. Поднимать её «за компанию» с основной нельзя — два активных устройства с разных
 адресов сами по себе выглядят подозрительно (ключи разные, мгновенного ожога не будет,
@@ -71,15 +81,16 @@ _PARALLEL = 2            # операция трогает боевые сесс
 
 
 def _targets(ids: list[int] | None) -> list[dict]:
-    """Кому выпускаем: живая сессия, не родной, запаски ещё нет.
+    """Кому выпускаем: живая сессия, не родной, свободен хотя бы один из двух слотов.
 
     Родных (protected) не трогаем принципиально: это личные номера хозяина, у него есть
     доступ к SMS и запаска ему не нужна — а лишняя авторизация на личном номере только
     добавляет поверхность атаки."""
     where = ("session_alive=1 AND tg_session IS NOT NULL AND tg_session<>'' "
              "AND COALESCE(protected,0)=0 "
-             "AND (tg_session_spare IS NULL OR tg_session_spare='')")
-    cols = ("id, label, phone, tg_session, tg_session_spare, proxy, api_id, api_hash, tg_2fa")
+             "AND (COALESCE(tg_session_spare,'')='' OR COALESCE(tg_session_spare2,'')='')")
+    cols = ("id, label, phone, tg_session, tg_session_spare, tg_session_spare2, "
+            "proxy, api_id, api_hash, tg_2fa")
     with database.get_conn() as conn:
         if ids:
             qm = ",".join("?" * len(ids))
@@ -137,7 +148,9 @@ async def _mint(acc: dict, kick_others: bool) -> tuple[bool, str]:
         if not await primary.is_user_authorized():
             return False, "основная сессия не авторизована — подтверждать токен нечем"
 
-        if kick_others:
+        if kick_others and (acc.get("tg_session_spare") or "").strip():
+            note.append("сброс чужих сессий пропущен — он снёс бы уже выпущенную запаску")
+        elif kick_others:
             ok, msg = await _kick_others(primary, acc)
             note.append(msg)
             if not ok and "fresh-лок" not in msg:
@@ -175,10 +188,19 @@ async def _mint(acc: dict, kick_others: bool) -> tuple[bool, str]:
             return False, "пустая строка сессии — сохранять нечего"
 
         with database.get_conn() as conn:
-            conn.execute(
-                "UPDATE accounts SET tg_session_spare=?, spare_made_at=datetime('now'), "
-                "spare_note=? WHERE id=?",
-                (spare_str, "; ".join(note) or "выпущена", aid))
+            # Свободный слот выбирается в самом UPDATE (SQLite считает все SET по старой
+            # строке): первый, если пуст, иначе второй.
+            cur = conn.execute(
+                "UPDATE accounts SET "
+                "tg_session_spare2 = CASE WHEN COALESCE(tg_session_spare,'')<>'' THEN ? ELSE tg_session_spare2 END, "
+                "spare2_made_at = CASE WHEN COALESCE(tg_session_spare,'')<>'' THEN datetime('now') ELSE spare2_made_at END, "
+                "tg_session_spare = CASE WHEN COALESCE(tg_session_spare,'')='' THEN ? ELSE tg_session_spare END, "
+                "spare_made_at = CASE WHEN COALESCE(tg_session_spare,'')='' THEN datetime('now') ELSE spare_made_at END, "
+                "spare_note=? WHERE id=? "
+                "AND (COALESCE(tg_session_spare,'')='' OR COALESCE(tg_session_spare2,'')='')",
+                (spare_str, spare_str, "; ".join(note) or "выпущена", aid))
+            if cur.rowcount == 0:
+                return False, "оба слота уже заняты — новая авторизация не сохранена"
             database.add_event(
                 conn, "account_protected",
                 f"🧯 «{acc.get('label') or aid}»: выпущена запасная сессия",
@@ -196,56 +218,103 @@ async def _mint(acc: dict, kick_others: bool) -> tuple[bool, str]:
                 pass
 
 
-async def promote_one(acc_id: int) -> tuple[bool, str]:
-    """Основная сессия мертва → делаем запаску основной.
-
-    Порядок безопасный: сначала ПРОВЕРЯЕМ, что запаска реально авторизована, и только
-    потом перезаписываем tg_session. Иначе можно затереть основную (пусть даже мёртвую)
-    на нерабочую запаску и потерять последние следы."""
-    with database.get_conn() as conn:
-        row = conn.execute(
-            "SELECT id, label, tg_session, tg_session_spare, proxy, api_id, api_hash "
-            "FROM accounts WHERE id=?", (acc_id,)).fetchone()
-    if not row:
-        return False, "аккаунт не найден"
-    acc = dict(row)
-    spare_str = (acc.get("tg_session_spare") or "").strip()
-    if not spare_str:
-        return False, "запаски нет — восстанавливать нечем"
-
+async def _probe(acc: dict, spare_str: str) -> tuple[bool | None, str]:
+    """Жива ли запаска: True (+ @username), False — Telegram её не знает, None — проверить
+    не удалось (сеть/прокси), такую выбрасывать нельзя."""
     try:
         client = build_client(StringSession(spare_str), acc.get("proxy"),
                               int(acc["api_id"]) if acc.get("api_id") else None,
                               acc.get("api_hash"))
     except Exception as e:  # noqa: BLE001
-        return False, f"клиент не собрался: {str(e)[:60]}"
+        return None, f"клиент не собрался: {str(e)[:60]}"
     try:
         await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
         if not await client.is_user_authorized():
-            return False, "запаска тоже мертва (аккаунт забанен или сессии сброшены)"
+            return False, "мертва"
         me = await client.get_me()
+        return True, f"@{getattr(me, 'username', None) or me.id}"
     except Exception as e:  # noqa: BLE001
-        return False, f"запаска не поднялась: {str(e)[:70]}"
+        return None, f"запаска не поднялась: {str(e)[:70]}"
     finally:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
 
+
+async def promote_one(acc_id: int) -> tuple[bool, str]:
+    """Основная сессия мертва → делаем запаску основной.
+
+    Порядок безопасный: сначала ПРОВЕРЯЕМ, что запаска реально авторизована, и только
+    потом перезаписываем tg_session. Иначе можно затереть основную (пусть даже мёртвую)
+    на нерабочую запаску и потерять последние следы.
+
+    Пробуем старшую первой: свежую Telegram сносит вместе с угнанным ключом (см. шапку).
+    Мёртвые запаски снимаем, чтобы пульт не считал аккаунт застрахованным; оставшаяся
+    живая переезжает в первый слот и продолжает страховать."""
     with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, tg_session, tg_session_spare, spare_made_at, "
+            "tg_session_spare2, spare2_made_at, proxy, api_id, api_hash "
+            "FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return False, "аккаунт не найден"
+    acc = dict(row)
+    slots = [(s.strip(), at) for s, at in ((acc.get("tg_session_spare"), acc.get("spare_made_at")),
+                                            (acc.get("tg_session_spare2"), acc.get("spare2_made_at")))
+             if (s or "").strip()]
+    if not slots:
+        return False, "запаски нет — восстанавливать нечем"
+    slots.sort(key=lambda x: x[1] or "")
+
+    chosen: tuple[str, str | None, str] | None = None
+    dead: list[str] = []
+    errors: list[str] = []
+    for s, at in slots:
+        ok, info = await _probe(acc, s)
+        if ok:
+            chosen = (s, at, info)
+            break
+        if ok is False:
+            dead.append(s)
+        else:
+            errors.append(info)
+    keep = [(s, at) for s, at in slots
+            if s not in dead and (chosen is None or s != chosen[0])]
+    k1 = keep[0] if keep else (None, None)
+    k2 = keep[1] if len(keep) > 1 else (None, None)
+
+    with database.get_conn() as conn:
+        if chosen is None:
+            conn.execute(
+                "UPDATE accounts SET tg_session_spare=?, spare_made_at=?, "
+                "tg_session_spare2=?, spare2_made_at=?, spare_note=? WHERE id=?",
+                (k1[0], k1[1], k2[0], k2[1],
+                 f"запасок мертво: {len(dead)}" + (f", не проверено: {len(errors)}" if errors else ""),
+                 acc_id))
+            if errors:
+                return False, errors[0]
+            return False, "запаска тоже мертва (аккаунт забанен или сессии сброшены)"
+
+        spare_str, _, who = chosen
+        left = "вторая запаска на месте — аккаунт по-прежнему застрахован" if k1[0] else \
+            "запасок больше нет — выпусти новую, пока аккаунт жив"
+        if dead:
+            left += f"; мёртвых запасок снято: {len(dead)}"
         conn.execute(
-            "UPDATE accounts SET tg_session=?, tg_session_spare=NULL, "
+            "UPDATE accounts SET tg_session=?, tg_session_spare=?, spare_made_at=?, "
+            "tg_session_spare2=NULL, spare2_made_at=NULL, "
             "spare_used_at=datetime('now'), spare_note='запаска поднята как основная', "
             "session_alive=1, session_state='alive', "
             "session_reason='восстановлен из запасной сессии', "
-            "session_checked_at=datetime('now') WHERE id=?", (spare_str, acc_id))
+            "session_checked_at=datetime('now') WHERE id=?",
+            (spare_str, k1[0], k1[1], acc_id))
         database.add_event(
             conn, "account_protected",
             f"♻️ «{acc.get('label') or acc_id}»: восстановлен из запасной сессии",
-            f"Основная сессия была мертва, поднята запаска (@{getattr(me, 'username', None) or me.id}). "
-            "Запаски больше нет — выпусти новую, пока аккаунт жив.",
+            f"Основная сессия была мертва, поднята запаска ({who}). {left[:1].upper() + left[1:]}.",
             level="good", account_id=acc_id)
-    return True, f"восстановлен: @{getattr(me, 'username', None) or me.id}. Выпусти новую запаску"
+    return True, f"восстановлен: {who}. {left[:1].upper() + left[1:]}"
 
 
 async def count_authorizations(acc: dict) -> int | None:

@@ -225,9 +225,10 @@ def account_for_session(session) -> int | None:
         return _KEY_INDEX[sha]
     from telethon.sessions import StringSession
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT id, tg_session, tg_session_spare FROM accounts").fetchall()
+        rows = conn.execute("SELECT id, tg_session, tg_session_spare, tg_session_spare2 "
+                            "FROM accounts").fetchall()
     for r in rows:
-        for s in (r["tg_session"], r["tg_session_spare"]):
+        for s in (r["tg_session"], r["tg_session_spare"], r["tg_session_spare2"]):
             if not s:
                 continue
             try:

@@ -615,7 +615,9 @@ def accounts_list() -> JSONResponse:
         d["tg_connected"] = bool(d.pop("tg_session", None))  # секрет наружу не отдаём
         # Запасная сессия — тоже полноценный доступ к аккаунту. В браузер отдаём только
         # факт наличия: строку не показываем даже оператору, ей нечего делать в UI.
-        d["has_spare"] = bool((d.pop("tg_session_spare", None) or "").strip())
+        d["spares"] = sum(bool((d.pop(k, None) or "").strip())
+                          for k in ("tg_session_spare", "tg_session_spare2"))
+        d["has_spare"] = d["spares"] > 0
         d["chats_count"] = chats_by.get(d["id"], 0)
         # кто шлёт владельцу личное уведомление при назначенной встрече (channels/notify.py)
         d["is_notifier"] = bool(notify_id) and str(d["id"]) == str(notify_id)
@@ -1569,7 +1571,9 @@ def account_detail(acc_id: int) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
     d = dict(row)
     d["tg_connected"] = bool(d.pop("tg_session", None))   # секрет наружу не отдаём
-    d["has_spare"] = bool((d.pop("tg_session_spare", None) or "").strip())   # то же самое
+    d["spares"] = sum(bool((d.pop(k, None) or "").strip())   # то же самое
+                      for k in ("tg_session_spare", "tg_session_spare2"))
+    d["has_spare"] = d["spares"] > 0
     with database.get_conn() as conn:
         d["chats_count"] = conn.execute(
             "SELECT COUNT(*) c FROM chats WHERE joined_by=? AND in_account='yes'", (acc_id,)
@@ -9678,7 +9682,8 @@ def accounts_spare_status() -> JSONResponse:
     with database.get_conn() as conn:
         row = conn.execute(
             "SELECT COUNT(*) total, "
-            "SUM(CASE WHEN tg_session_spare IS NOT NULL AND tg_session_spare<>'' THEN 1 ELSE 0 END) with_spare "
+            "SUM(CASE WHEN tg_session_spare IS NOT NULL AND tg_session_spare<>'' THEN 1 ELSE 0 END) with_spare, "
+            "SUM(CASE WHEN COALESCE(tg_session_spare2,'')<>'' THEN 1 ELSE 0 END) with_two "
             "FROM accounts WHERE session_alive=1 AND COALESCE(protected,0)=0 "
             "AND tg_session IS NOT NULL AND tg_session<>''").fetchone()
         dead_with_spare = conn.execute(
@@ -9691,6 +9696,7 @@ def accounts_spare_status() -> JSONResponse:
         last_run = database.get_setting(conn, "protect_last_run", None)
     return JSONResponse({
         "total": total, "with_spare": with_spare, "without_spare": total - with_spare,
+        "with_two": row["with_two"] or 0,
         # мёртвые, которые можно поднять прямо сейчас — это деньги, лежащие на полу
         "recoverable": [dict(r) for r in dead_with_spare],
         "auto": auto, "last_run": last_run,

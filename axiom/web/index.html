@@ -2565,7 +2565,12 @@ async function viewAgents(v){
       {key:"has_spare",label:"🧯 Запаска",render:r=>{
         // Родным запаска не нужна: у хозяина есть доступ к SMS, он войдёт заново сам.
         if(r.protected)return '<span class="no" title="родной номер — восстанавливается по SMS, запаска не нужна">—</span>';
-        if(r.has_spare)return `<span class="badge b-active" title="Есть вторая независимая авторизация (свой ключ). Выпущена ${esc(fmt(r.spare_made_at)||'')}. Если основную сожжёт — жми «Поднять запаску» в карточке">🧯 есть</span>`;
+        if(r.has_spare){
+          // Свежую запаску Telegram сносит вместе с угнанным ключом: моложе недели она ещё не страхует.
+          const age=(Date.now()-Date.parse(String(r.spare_made_at||'').replace(' ','T')+'Z'))/864e5;
+          const young=r.spares<2&&age<7;
+          return `<span class="badge ${young?'b-nurture':'b-active'}" title="Запасных авторизаций: ${r.spares}. Старшая выпущена ${esc(fmt(r.spare_made_at)||'')}.${young?' Единственная запаска моложе недели: при угоне ключа Telegram сносит свежие входы вместе с ним — пока она не страхует.':''} Если основную сожжёт — жми «Поднять запаску» в карточке">🧯 ${r.spares}${young?' · молодая':''}</span>`;
+        }
         if(r.session_alive===0&&r.spare_used_at)return `<span class="badge b-stop" title="запаска уже израсходована ${esc(fmt(r.spare_used_at)||'')} — выпусти новую, пока аккаунт жив">израсходована</span>`;
         if(!r.tg_connected)return '<span class="no">—</span>';
         return '<span class="badge b-nurture" title="Аккаунт без страховки: если сессию сожжёт, восстановить будет нечем (номер у продавца, SMS не придёт). Выдели и жми «🧯 Выпустить запаску»">⚠️ нет</span>';

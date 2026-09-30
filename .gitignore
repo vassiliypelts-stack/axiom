@@ -81,3 +81,6 @@ Thumbs.db
 axiom/data/exports/
 # Экспорт личных переписок для анализа стиля — содержит персональные данные.
 axiom/data/private_exports/
+
+# Выгрузки каналов конкурентов (tools/export_competitor_channels.py) — не в репозиторий
+axiom/data/competitor/

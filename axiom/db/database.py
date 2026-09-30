@@ -401,6 +401,9 @@ _EXTRA_ACCOUNT_COLS = {
     # после подъёма страхует оставшаяся старшая (см. шапку session_spare.py).
     "tg_session_spare2": "TEXT",
     "spare2_made_at": "TEXT",
+    # Когда Telegram ответил «метод недоступен замороженному аккаунту». Холодная рассылка
+    # такой номер не берёт FROZEN_RETRY_DAYS, потом пробует снова (campaign_send._team).
+    "frozen_at": "TEXT",
 }
 
 

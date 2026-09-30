@@ -53,6 +53,7 @@ _SESSION_REVOKED_ERRORS = {
 }
 _FLOOD_ERRORS = {"FloodWaitError", "FloodError", "SlowModeWaitError"}
 _SPAM_ERRORS = {"PeerFloodError"}
+_FROZEN_ERRORS = {"FrozenMethodInvalidError", "FrozenParticipantMissingError"}
 _BLOCKED_ERRORS = {"UserIsBlockedError"}
 _SKIP_ERRORS = {
     "UserPrivacyRestrictedError", "UsernameNotOccupiedError", "UsernameInvalidError",
@@ -71,9 +72,13 @@ def classify_error(exc: BaseException) -> str:
                этот отправитель ему больше не пишет; отличать от прочих skip,
                чтобы в CRM было видно причину, а не общее «Потерян»).
     'skip'   — прочая проблема контакта (приватность/нет такого), аккаунт ни при чём.
+    'frozen' — Telegram заморозил номер: читать можно, писать незнакомцам и искать
+               людей — нет. Не бан и не проблема контакта.
     """
     name = type(exc).__name__
     msg = str(exc).lower()
+    if name in _FROZEN_ERRORS or "frozen account" in msg:
+        return "frozen"
     if name in _BAN_ERRORS or "banned" in msg or "deactivated" in msg:
         return "ban"
     if name in _SESSION_REVOKED_ERRORS or "auth key" in msg or "unauthorized" in msg:

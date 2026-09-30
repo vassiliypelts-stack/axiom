@@ -53,6 +53,10 @@ LOCK_STALE_SEC = 30 * 60
 # и бронь сессий, и лок кампании освобождаются честно, а не по таймеру у живого.
 RUN_MAX_SEC = 25 * 60
 
+# Замороженный Telegram номер (frozen_at) в холодную не берём столько дней, потом
+# пробуем снова: разморозили — вернётся в работу сам, нет — отметка обновится.
+FROZEN_RETRY_DAYS = 3
+
 
 class _RunLock:
     """Один отправляющий процесс на кампанию.
@@ -538,6 +542,9 @@ def _team_blocked_reason(cid: int) -> str:
         rows = conn.execute(
             "SELECT a.id, a.label, a.username, a.phone, a.status, "
             "a.spam_pause_until, a.flood_wait_until, a.tg_session, "
+            "COALESCE(a.session_alive,1) AS session_alive, "
+            f"CASE WHEN a.frozen_at >= datetime('now','-{FROZEN_RETRY_DAYS} day') "
+            "     THEN a.frozen_at END AS frozen_at, "
             "COALESCE(a.acc_role,'') AS acc_role, "
             "COALESCE(a.spam_flood_count,0) AS spam_flood_count, "
             "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
@@ -549,10 +556,15 @@ def _team_blocked_reason(cid: int) -> str:
                 "в «Кто в рассылке»")
     paused, warming, flood, no_sess, banned, service = [], [], [], [], [], []
     young: list[str] = []      # моложе MIN_COMBAT_AGE_DAYS — дозревают в прогреве
+    dead, frozen = [], []
     for r in rows:
         who = r["label"] or r["username"] or r["phone"] or f"#{r['id']}"
         if r["status"] == "banned":
             banned.append(who)
+        elif r["frozen_at"]:
+            frozen.append(f"{who} — с {str(r['frozen_at'])[:16]}")
+        elif not r["session_alive"]:
+            dead.append(who)
         elif r["acc_role"] == "service":
             service.append(who)
         elif r["status"] == "warming":
@@ -583,6 +595,11 @@ def _team_blocked_reason(cid: int) -> str:
         parts.append("без TG-сессии (нужен вход в «Аккаунтах»): " + ", ".join(no_sess))
     if banned:
         parts.append("забанены: " + ", ".join(banned))
+    if frozen:
+        parts.append(f"заморожены Telegram (незнакомцам писать не дают; повторная проба "
+                     f"через {FROZEN_RETRY_DAYS} дн.): " + ", ".join(frozen))
+    if dead:
+        parts.append("сессия сожжена (поднять запаску или войти заново): " + ", ".join(dead))
     if service:
         parts.append("служебные, в холодную рассылку не идут: " + ", ".join(service))
     head = (f"ни один из {len(rows)} аккаунтов команды сейчас не может слать холодную.")
@@ -630,6 +647,10 @@ def _team(cid: int) -> list[dict]:
             # физически запрещена — ломиться туда значит копить отказы на аккаунте.
             "AND (a.flood_wait_until IS NULL OR a.flood_wait_until < datetime('now')) "
             "AND a.tg_session IS NOT NULL AND a.tg_session <> '' "
+            # Сожжённый ключ подключать бессмысленно: 30.09.2026 каждый заход 9407 заново
+            # ломился в мёртвые 5353/5459. Поднимут запаску — session_alive станет 1.
+            "AND COALESCE(a.session_alive,1) <> 0 "
+            f"AND (a.frozen_at IS NULL OR a.frozen_at < datetime('now','-{FROZEN_RETRY_DAYS} day')) "
             # Служебный аккаунт (уведомления/отчёты/пробив) в холодную рассылку не идёт,
             # даже если его по ошибке добавили в команду кампании: сгорит отправитель
             # уведомлений — и владелец перестанет узнавать о встречах (так 24.08 был
@@ -1331,14 +1352,25 @@ async def run(cid: int, limit: int, test: bool = False,
         # Теперь флуд на резолве — это проблема КОНТАКТА в этом заходе, а не улика
         # против аккаунта: контакт возвращаем в 'new' (достанется другому заходу),
         # аккаунту даём короткую передышку без счётчика spam_flood_count.
+        # Ошибки про АККАУНТ (FloodWait, бан, отзыв сессии, заморозка) запоминаем и
+        # пробрасываем в начале try отправки ниже — их разбирают его except. Голый raise
+        # отсюда вылетал мимо них и ронял весь заход, оставляя контакт в 'messaged'.
+        account_err: BaseException | None = None
+        resolve_exc: BaseException | None = None
+        cat = None
+        entity = None
         try:
             entity = await _resolve_entity(s["client"], row)
-        except FloodWaitError:
-            raise           # обрабатывается общим except FloodWaitError ниже
-        except Exception as e:  # noqa: BLE001
-            cat = classify_error(e)
-            if cat in ("ban", "session_revoked"):
-                raise       # это про аккаунт, а не про контакт — пусть решает общий except
+        except FloodWaitError as ex:
+            account_err = ex
+        except Exception as ex:  # noqa: BLE001
+            cat = classify_error(ex)
+            if cat in ("ban", "session_revoked", "frozen"):
+                account_err = ex
+            else:
+                resolve_exc = ex
+        if resolve_exc is not None:
+            e = resolve_exc
             with database.get_conn() as conn:
                 conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'",
                              (row["id"],))
@@ -1366,6 +1398,8 @@ async def run(cid: int, limit: int, test: bool = False,
                                      "WHERE id=?", (row["id"],))
             continue
         try:
+            if account_err is not None:
+                raise account_err
             # СВЕРКА ЛИЧНОСТИ. Резолв идёт по @нику (см. telegram._resolve_entity), а
             # ники приходят выгрузкой со стороннего сайта, где имя с ником разъезжаются:
             # карточка «Дмитрий Иванович Норка», ник @Anna_Dobrokhodskaya. Без сверки
@@ -1450,6 +1484,27 @@ async def run(cid: int, limit: int, test: bool = False,
             continue
         except Exception as e:
             cat = classify_error(e)
+            if cat == "frozen":
+                # Раньше это шло веткой «не нашёл в Telegram»: замороженный номер оставался
+                # в заходе и перебирал контакты один за другим, получая отказ на каждом.
+                print(f"[{s['label']}] ❄️ номер заморожен Telegram — из холодной на "
+                      f"{FROZEN_RETRY_DAYS} дн.")
+                with database.get_conn() as conn:
+                    conn.execute("UPDATE contacts SET status='new' WHERE id=? AND status='messaged'", (row["id"],))
+                    if s["id"]:
+                        prev = conn.execute("SELECT frozen_at FROM accounts WHERE id=?",
+                                            (s["id"],)).fetchone()
+                        conn.execute("UPDATE accounts SET frozen_at=datetime('now') WHERE id=?", (s["id"],))
+                        if not (prev and prev["frozen_at"]):
+                            database.add_event(
+                                conn, "ban", f"❄️ Заморожен Telegram: «{s['label']}»",
+                                f"Telegram ограничил номер: писать незнакомцам и искать людей нельзя, "
+                                f"читать и отвечать в старых диалогах можно. Из холодной рассылки "
+                                f"выведен, проба снова через {FROZEN_RETRY_DAYS} дн. Разморозку можно "
+                                f"запросить апелляцией через @SpamBot с этого номера.",
+                                level="warn", campaign_id=cid, account_id=s["id"])
+                s["remaining"] = 0
+                continue
             if cat == "ban":
                 # НОМЕР мёртв/деактивирован Telegram'ом: помечаем banned и выводим из работы.
                 # контакт НЕ теряем — возвращаем в 'new', достанется живому аккаунту.

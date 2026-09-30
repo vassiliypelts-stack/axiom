@@ -401,12 +401,15 @@ async def _handle_private(event, acc_id: int) -> None:
     if _knock_pitch_due(contact["id"]):
         try:
             from channels.warmup import KNOCK_PITCH
-            await event.respond(KNOCK_PITCH)
+            sent = await event.respond(KNOCK_PITCH)
         except Exception as e:  # noqa: BLE001
             _log(f"[#{acc_id}] питч после стука не ушёл: {e}")
         else:
             with database.get_conn() as conn:
-                database.add_message(conn, contact["id"], "out", KNOCK_PITCH, intent=None)
+                # Без account_id и id сообщения пульт рисует ушедший питч «не доставлено».
+                database.add_message(conn, contact["id"], "out", KNOCK_PITCH, intent=None,
+                                     account_id=acc_id,
+                                     tg_msg_ids=[sent.id] if getattr(sent, "id", None) else None)
                 database.set_status(conn, contact["id"], "messaged")
                 conn.execute("UPDATE campaign_contacts SET knock_at=NULL, sent_at=datetime('now') "
                              "WHERE contact_id=? AND knock_at IS NOT NULL", (contact["id"],))
@@ -857,9 +860,12 @@ def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: f
     if loop is None or client is None:
         _log(f"[sched] аккаунт #{acc_id} не подключён слушателем — отправку пропускаю")
         return None
-    from channels.telegram import _send_parts
+    from channels.telegram import _send_parts, input_peer
 
-    fut = asyncio.run_coroutine_threadsafe(_send_parts(client, tg_user_id, parts), loop)
+    async def _go():
+        return await _send_parts(client, await input_peer(client, tg_user_id), parts)
+
+    fut = asyncio.run_coroutine_threadsafe(_go(), loop)
     try:
         return fut.result(timeout=timeout)
     except Exception as e:  # noqa: BLE001 — сеть/флуд: пусть решает вызывающий
@@ -881,7 +887,12 @@ def send_file_via_listener(acc_id: int, tg_user_id: int, path: str,
     if loop is None or client is None:
         _log(f"[sched] аккаунт #{acc_id} не подключён слушателем — файл не отправляю")
         return False
-    fut = asyncio.run_coroutine_threadsafe(client.send_file(tg_user_id, path), loop)
+    from channels.telegram import input_peer
+
+    async def _go():
+        return await client.send_file(await input_peer(client, tg_user_id), path)
+
+    fut = asyncio.run_coroutine_threadsafe(_go(), loop)
     try:
         fut.result(timeout=timeout)
         return True
@@ -903,7 +914,8 @@ def edit_via_listener(acc_id: int, tg_user_id: int, msg_id: int, text: str,
         return False
 
     async def _do():
-        await client.edit_message(tg_user_id, msg_id, text)
+        from channels.telegram import input_peer
+        await client.edit_message(await input_peer(client, tg_user_id), msg_id, text)
 
     fut = asyncio.run_coroutine_threadsafe(_do(), loop)
     try:
@@ -926,7 +938,8 @@ def delete_via_listener(acc_id: int, tg_user_id: int, msg_ids: list[int],
         return False
 
     async def _do():
-        await client.delete_messages(tg_user_id, msg_ids, revoke=True)
+        from channels.telegram import input_peer
+        await client.delete_messages(await input_peer(client, tg_user_id), msg_ids, revoke=True)
 
     fut = asyncio.run_coroutine_threadsafe(_do(), loop)
     try:

@@ -78,9 +78,19 @@ async def _read_marks(client, user_ids: list[int]) -> dict[int, int]:
     """{tg_user_id: read_outbox_max_id} для пачки диалогов одним запросом."""
     from telethon.tl.functions.messages import GetPeerDialogsRequest
 
+    from channels.telegram import input_peer
+
     out: dict[int, int] = {}
     for i in range(0, len(user_ids), _BATCH):
-        chunk = user_ids[i:i + _BATCH]
+        # Голые id после переподключения клиент не узнаёт, и один такой ронял всю пачку.
+        chunk = []
+        for uid in user_ids[i:i + _BATCH]:
+            try:
+                chunk.append(await input_peer(client, uid))
+            except Exception:  # noqa: BLE001 — нет в диалогах аккаунта: пропускаем только его
+                continue
+        if not chunk:
+            continue
         try:
             res = await client(GetPeerDialogsRequest(peers=chunk))
         except Exception as e:  # noqa: BLE001 — один аккаунт не рушит прогон

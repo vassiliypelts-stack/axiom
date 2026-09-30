@@ -469,6 +469,30 @@ async def _humanize_before_reply(client, peer, fast: bool = False) -> None:
                                          else _reply_delay_range())))
 
 
+# Не чаще, чем раз в столько секунд, клиент перечитывает свои диалоги ради кэша собеседников.
+DIALOGS_RELOAD_SEC = 30 * 60
+
+
+async def input_peer(client, tg_user_id: int):
+    """Собеседник по голому числовому id — даже сразу после переподключения.
+
+    Сессии у нас StringSession: access_hash собеседников живёт только в памяти клиента
+    и пропадает при каждом переподключении. Писать по голому id после этого Telegram не
+    даёт («Could not find the input entity»), пока человек сам не напишет снова. 30.09.2026
+    так за день не ушло 144 сообщения: дожимы, ручные ответы из пульта, напоминание
+    горячему лиду. Все эти люди есть в диалогах аккаунта, поэтому перечитываем диалоги
+    (они кладут собеседников в кэш) и пробуем ещё раз."""
+    try:
+        return await client.get_input_entity(tg_user_id)
+    except ValueError:
+        pass
+    import time
+    if time.time() - getattr(client, "_ax_dialogs_at", 0.0) > DIALOGS_RELOAD_SEC:
+        client._ax_dialogs_at = time.time()
+        await client.get_dialogs(limit=500)
+    return await client.get_input_entity(tg_user_id)
+
+
 async def _send_parts(client, peer, parts: list[str], fast: bool = False,
                       part_pauses: list[tuple[float, float] | None] | None = None) -> list[int]:
     """Шлёт сообщения по очереди как живой человек: показывает «печатает…»,

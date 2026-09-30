@@ -623,7 +623,7 @@ async def _knock(client, acc: dict) -> int:
             continue
         with database.get_conn() as conn:
             database.set_tg_user_id(conn, row["id"], int(ent.id))
-            database.add_message(conn, row["id"], "out", text, intent=None,
+            database.add_message(conn, row["id"], "out", text, intent=None, account_id=acc["id"],
                                  tg_msg_ids=[int(msg.id)] if msg else None)
             # Статус НЕ трогаем: стук — не первое касание кампании, человек ещё
             # ничего о проекте не услышал. Пометим контакт как «постучались»,

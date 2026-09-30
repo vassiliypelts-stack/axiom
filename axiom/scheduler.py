@@ -142,6 +142,16 @@ def _followup_text(step: dict, contact_row, streak: int) -> str:
     return deslop.spin(tmpl).format(name=_name(contact_row), spec=spec)
 NOSHOW_TEMPLATE = "{name}, не получилось созвониться( давай перенесём? когда удобно на этой неделе?"
 
+# НАПОМИНАНИЕ ПОСЛЕ СТУКА (идея Василия, 30.09.2026). На «Салют, Елена?» не ответили
+# за сутки — одно позитивное эмодзи тем же номером. Не текст и не оффер: поднимает чат
+# наверх и выглядит как живой человек, а не как дожим рассылки. Ответят — питч уйдёт
+# как на обычный ответ на стук (listener._knock_pitch_due). Второго напоминания нет.
+KNOCK_NUDGE_AFTER_HOURS = 24
+# Стуки старше этого не трогаем: иначе при включении эмодзи разом получили бы все,
+# кто молчит с 22.09, — веер одинаковых касаний с каждого номера.
+KNOCK_NUDGE_MAX_AGE_HOURS = 72
+KNOCK_NUDGE_EMOJI = ("👀", "😉", "😇", "🙂", "😊", "👋")
+
 # Окно напоминания: за сколько часов до встречи и не позже скольки. Целимся В ЧАС до
 # старта — именно тогда ссылка нужнее всего: раньше она теряется в переписке, позже
 # человек уже не успевает перестроить планы. Окно шире точки (тик раз в 15 минут),
@@ -166,7 +176,7 @@ ACTIVE_STATUSES = ("messaged", "in_dialog")
 
 @dataclass
 class Action:
-    kind: str            # reminder | followup | noshow
+    kind: str            # reminder | followup | noshow | knock_nudge
     contact_id: int
     tg_user_id: int | None
     name: str
@@ -399,6 +409,35 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
                 "followup", c["id"], c["tg_user_id"], c["name"] or "",
                 _followup_text(step, c, streak), followup_n=streak, followup_max=len(steps),
             ))
+
+    # --- ЭМОДЗИ ПОСЛЕ СТУКА без ответа ---
+    # knock_at слушатель обнуляет, как только человек ответил, поэтому непустой knock_at
+    # при пустом sent_at и есть «постучались, молчит». Номер — тот, что стучался
+    # (cc.account_id): стук из прогрева ложится в messages без account_id, и общий
+    # выбор аккаунта по последнему исходящему такого человека не находил.
+    fmt = "%Y-%m-%d %H:%M:%S"
+    knocked = conn.execute(
+        "SELECT cc.campaign_id, cc.contact_id, cc.account_id, c.name, c.tg_user_id "
+        "FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id "
+        "WHERE cc.knock_at IS NOT NULL AND cc.sent_at IS NULL AND cc.knock_nudge_at IS NULL "
+        "AND cc.knock_at <= ? AND cc.knock_at >= ? AND cc.account_id IS NOT NULL "
+        "AND c.tg_user_id IS NOT NULL AND c.deleted_at IS NULL AND COALESCE(c.is_test,0)=0 "
+        "AND c.hot_since IS NULL AND c.status IN ('new','messaged')",
+        ((now - timedelta(hours=KNOCK_NUDGE_AFTER_HOURS)).strftime(fmt),
+         (now - timedelta(hours=KNOCK_NUDGE_MAX_AGE_HOURS)).strftime(fmt)),
+    ).fetchall()
+    for k in knocked:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (k["campaign_id"],)).fetchone()
+        if not camp or not database.outreach_allowed(camp):
+            continue
+        if conn.execute("SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+                        (k["campaign_id"], k["contact_id"])).fetchone():
+            continue
+        actions.append(Action(
+            "knock_nudge", k["contact_id"], k["tg_user_id"], k["name"] or "",
+            KNOCK_NUDGE_EMOJI[k["contact_id"] % len(KNOCK_NUDGE_EMOJI)],
+            account_id=k["account_id"],
+        ))
     return actions
 
 
@@ -419,6 +458,12 @@ def apply(conn, action: Action) -> None:
         cap = action.followup_max or len(FOLLOWUP_TEMPLATES)
         if action.followup_n >= cap:
             database.set_status(conn, action.contact_id, "nurture")  # дожали максимум
+    elif action.kind == "knock_nudge":
+        # Статус не трогаем: человек по-прежнему «постучались, ждём ответа».
+        database.add_message(conn, action.contact_id, "out", action.text, intent=None,
+                             account_id=action.account_id, tg_msg_ids=action.tg_msg_ids)
+        conn.execute("UPDATE campaign_contacts SET knock_nudge_at=datetime('now') "
+                     "WHERE contact_id=? AND knock_at IS NOT NULL", (action.contact_id,))
 
 
 def check_stuck_replies(conn, now: datetime | None = None) -> int:

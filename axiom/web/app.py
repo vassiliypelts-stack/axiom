@@ -3044,11 +3044,15 @@ def _meetings_scheduler() -> None:
             for a in actions:
                 if not a.tg_user_id:
                     continue
-                with database.get_conn() as conn:
-                    row = conn.execute(
-                        "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
-                        "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (a.contact_id,)
-                    ).fetchone()
+                if a.kind == "knock_nudge":
+                    # Номер, который стучался, известен из campaign_contacts (см. collect_due).
+                    row = {"account_id": a.account_id}
+                else:
+                    with database.get_conn() as conn:
+                        row = conn.execute(
+                            "SELECT account_id FROM messages WHERE contact_id=? AND direction='out' "
+                            "AND account_id IS NOT NULL ORDER BY id DESC LIMIT 1", (a.contact_id,)
+                        ).fetchone()
                 if not row:
                     continue                  # не знаем, с какого аккаунта вести диалог
                 # ГЛАВНОЕ ПРАВИЛО, то же самое, что у авто-ответа (см. listener._should_reply):
@@ -3087,7 +3091,12 @@ def _meetings_scheduler() -> None:
                     if sent_by_acc.get(acc, 0) >= FOLLOWUP_PER_TICK:
                         continue              # остальное догоним следующими тиками
                     sent_by_acc[acc] = sent_by_acc.get(acc, 0) + 1
-                parts = [p for p in a.text.split("\n\n") if p.strip()] or [a.text]
+                if a.kind == "knock_nudge":
+                    acc = row["account_id"]
+                    if sent_by_acc.get(acc, 0) >= FOLLOWUP_PER_TICK:
+                        continue
+                    sent_by_acc[acc] = sent_by_acc.get(acc, 0) + 1
+                parts =[p for p in a.text.split("\n\n") if p.strip()] or [a.text]
                 # ЗАБИРАЕМ id отправленных сообщений, а не просто «получилось/нет».
                 # Раньше результат send_via_listener выбрасывался, а sched_apply писал
                 # в messages tg_msg_ids=action.tg_msg_ids — поле, которое НИКТО никогда

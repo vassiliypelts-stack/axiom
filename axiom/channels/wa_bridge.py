@@ -302,6 +302,9 @@ def reply(req: ReplyReq) -> JSONResponse:
         return JSONResponse({"skip": "обрубок от модели"})
 
     parts = [p.strip() for p in r.reply_parts if p and p.strip()]
+    if camp and "wa_bold" in camp.keys() and camp["wa_bold"]:
+        from channels import deslop
+        parts = [deslop.wa_bold(p, camp["wa_bold"]) for p in parts]
     # КП текстом (файлы по WhatsApp пока не шлём — Baileys-отправку документа не
     # доделали). Выбор по названию — как в Telegram (_agent_reply).
     if kps and r.kp_choice:

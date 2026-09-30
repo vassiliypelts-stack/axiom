@@ -58,6 +58,24 @@ def clean(text: str | None) -> str:
     return s.strip()
 
 
+def wa_bold(text: str, phrases: str | None) -> str:
+    """Выделить жирным (*фраза*, разметка WhatsApp) фразы кампании — по первому
+    вхождению каждой, без учёта регистра. phrases — campaigns.wa_bold, по одной
+    фразе в строке. Длинные фразы первыми, чтобы «до 20 новых партнеров» не
+    раздробилось о «20»."""
+    if not text or not (phrases or "").strip():
+        return text or ""
+    for ph in sorted({p.strip() for p in phrases.splitlines() if p.strip()}, key=len, reverse=True):
+        m = re.search(re.escape(ph), text, re.IGNORECASE)
+        if not m:
+            continue
+        # уже внутри *…* (фраза-часть более длинной) — не трогаем
+        if text[:m.start()].count("*") % 2:
+            continue
+        text = text[:m.start()] + "*" + m.group(0) + "*" + text[m.end():]
+    return text
+
+
 def spin(text: str) -> str:
     """{вариант1|вариант2} → случайный вариант (тот же синтаксис, что в шаблонах
     кампаний). {name}/{spec} без «|» не трогаем — их подставляют дальше."""

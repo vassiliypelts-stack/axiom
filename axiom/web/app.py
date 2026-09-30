@@ -4799,6 +4799,10 @@ def contact_update(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
             sets.append(f"{k}=?"); vals.append(v)
     if not sets:
         return JSONResponse({"ok": True})
+    # Поправили ник или имя — прежний вердикт «не тот человек» больше не про этот
+    # контакт: рассылка его отбрасывает, и без сброса он не вернулся бы в очередь никогда.
+    if any(k in payload for k in ("username", "name", "person_name")):
+        sets.append("name_match=NULL")
     vals.append(contact_id)
     with database.get_conn() as conn:
         conn.execute(f"UPDATE contacts SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?", vals)

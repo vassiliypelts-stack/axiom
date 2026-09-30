@@ -212,6 +212,11 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     # молча находил ноль, и в Telegram не приходило ничего.
     if "telegram" in _channels(channel) and not test:
         where += " AND has_tg IN ('yes','unknown')"
+        # «Не тот человек за ником» остаётся status='new' до правки оператором, а отбор
+        # идёт ORDER BY id: 30.09.2026 один такой контакт вставал первым в каждый заход
+        # «Ремонт Сочи» (35 раз за день), кампания не отправила ничего, а номер 35 раз
+        # резолвил чужой ник. Поправит ник — сверка обновит name_match, и он вернётся.
+        where += " AND COALESCE(name_match,'')<>'mismatch'"
         if verified_only is None:
             with database.get_conn() as conn:
                 row = conn.execute(
@@ -283,12 +288,16 @@ def _audience_report(cid: int, camp: dict) -> str:
         paused = conn.execute(
             "SELECT COUNT(*) c FROM campaign_paused_contacts WHERE campaign_id=?", (cid,)
         ).fetchone()["c"]
+        mismatch = n(" AND status='new' AND name_match='mismatch'")
     ready = len(_audience(cid, camp.get("audience_tag"), camp.get("channel"), 100000))
     out = (f"Аудитория по тегу «{tag or '—'}»: всего {total}, ещё не писали {fresh}. "
            f"Из них готовы к отправке {ready}, ждут пробива номера {unresolved}, "
            f"проверены и в Telegram отсутствуют {no_tg}.")
     if paused:
         out += f" Снято вручную (окно «Кто в рассылке»): {paused}."
+    if mismatch:
+        out += (f" Отложено «не тот человек за ником»: {mismatch} — поправь ник в карточке, "
+                f"и контакт вернётся в очередь.")
     if not ready and paused:
         out += " Похоже, вся готовая аудитория как раз в этих снятых — верни их галочкой там."
     elif not ready and unresolved:

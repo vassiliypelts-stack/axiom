@@ -2568,8 +2568,9 @@ async function viewAgents(v){
         if(r.has_spare){
           // Свежую запаску Telegram сносит вместе с угнанным ключом: моложе недели она ещё не страхует.
           const age=(Date.now()-Date.parse(String(r.spare_made_at||'').replace(' ','T')+'Z'))/864e5;
-          const young=r.spares<2&&age<7;
-          return `<span class="badge ${young?'b-nurture':'b-active'}" title="Запасных авторизаций: ${r.spares}. Старшая выпущена ${esc(fmt(r.spare_made_at)||'')}.${young?' Единственная запаска моложе недели: при угоне ключа Telegram сносит свежие входы вместе с ним — пока она не страхует.':''} Если основную сожжёт — жми «Поднять запаску» в карточке">🧯 ${r.spares}${young?' · молодая':''}</span>`;
+          const n=Number(r.spares)||1;
+          const young=n<2&&age<7;
+          return `<span class="badge ${young?'b-nurture':'b-active'}" title="Запасных авторизаций: ${n}. Старшая выпущена ${esc(fmt(r.spare_made_at)||'')}.${young?' Единственная запаска моложе недели: при угоне ключа Telegram сносит свежие входы вместе с ним — пока она не страхует.':''} Если основную сожжёт — жми «Поднять запаску» в карточке">🧯 ${n}${young?' · молодая':''}</span>`;
         }
         if(r.session_alive===0&&r.spare_used_at)return `<span class="badge b-stop" title="запаска уже израсходована ${esc(fmt(r.spare_used_at)||'')} — выпусти новую, пока аккаунт жив">израсходована</span>`;
         if(!r.tg_connected)return '<span class="no">—</span>';

@@ -3127,7 +3127,8 @@ def _meetings_scheduler() -> None:
                         database.add_event(
                             conn, "sched_undelivered",
                             f"📵 Не отправлено по расписанию: {len(failed)}",
-                            "Не ушли (нет подключения слушателя к аккаунту): "
+                            "Не ушли (слушатель не смог отправить — аккаунт не подключён или "
+                            "Telegram отказал; точная причина в data/logs/listener.log, строки [sched]): "
                             + ", ".join(failed[:10])
                             + (f" и ещё {len(failed) - 10}" if len(failed) > 10 else "")
                             + ". Попробую снова на следующем тике; если слушатель "
@@ -4260,7 +4261,7 @@ def contact_detail(contact_id: int) -> JSONResponse:
         # Отдельный запрос здесь, а не правка get_history — её читает и agent/agent.py.
         history = [dict(m) for m in conn.execute(
             "SELECT m.id, m.direction, m.text, m.intent, m.ts, m.account_id, m.tg_msg_id, "
-            "m.media_path, m.media_name, m.media_mime, "
+            "m.delivered_at, m.media_path, m.media_name, m.media_mime, "
             "COALESCE(a.label, a.username, a.phone) AS account_label "
             "FROM messages m LEFT JOIN accounts a ON a.id = m.account_id "
             "WHERE m.contact_id = ? ORDER BY m.id", (contact_id,)).fetchall()]
@@ -4271,9 +4272,12 @@ def contact_detail(contact_id: int) -> JSONResponse:
         first_id_ts = conn.execute(
             "SELECT MIN(ts) t FROM messages WHERE direction='out' "
             "AND COALESCE(tg_msg_id,'')<>''").fetchone()["t"]
+        # delivered_at без tg_msg_id — доставка подтверждена иначе (например, питч после
+        # стука, записанный до 30.09.2026 без id: человек на него ответил).
         for m in history:
             m["undelivered"] = bool(
                 m["direction"] == "out" and not (m.get("tg_msg_id") or "")
+                and not m.get("delivered_at")
                 and first_id_ts and str(m.get("ts") or "") >= str(first_id_ts))
         deal = conn.execute("SELECT * FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
         camp = database.get_contact_campaign(conn, contact_id)

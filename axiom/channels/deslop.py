@@ -25,6 +25,8 @@ _PUNCT_COMMA = re.compile(r"([.,!?:;])[ \t]*,")      # «?,» после зам�
 _SPACES = re.compile(r"[ \t]{2,}")
 _LINE_END_BARE = re.compile(r"(?<=[^\s.,!?:;)])[ \t]*\n")  # строка без знака в конце
 _NEWLINES = re.compile(r"[ \t]*\n+[ \t]*")
+_PARAGRAPH = re.compile(r"[ \t]*\n[ \t]*\n\s*")               # пустая строка = абзац
+_PARA_MARK = "\x00"
 
 
 def clean(text: str | None) -> str:
@@ -35,10 +37,14 @@ def clean(text: str | None) -> str:
     • 🙂/😊 → «)» — так пишут в личке живые люди;
     • перенос строки внутри ОДНОГО сообщения → пробел: абзацы в личке выдают
       рассылку, а отдельная мысль должна уходить отдельным сообщением. Строка без
-      знака в конце получает точку, иначе две мысли склеятся без границы."""
+      знака в конце получает точку, иначе две мысли склеятся без границы.
+      Исключение — пустая строка: это намеренный абзац из промпта кампании
+      (30.09.2026, «Ремонт Сочи»: оффер одним сообщением в два абзаца), его
+      оставляем одной пустой строкой."""
     if not text:
         return text or ""
-    s = _DASH_LEAD.sub(r"\1", text.strip())
+    s = _PARAGRAPH.sub(_PARA_MARK, text.strip())
+    s = _DASH_LEAD.sub(r"\1", s)
     s = _DASH_AFTER_PUNCT.sub(r"\1 ", s)
     s = _DASH_BETWEEN.sub(", ", s)
     s = _DASH_REST.sub("-", s)
@@ -48,6 +54,7 @@ def clean(text: str | None) -> str:
     s = _LINE_END_BARE.sub(".\n", s)
     s = _NEWLINES.sub(" ", s)
     s = _SPACES.sub(" ", s)
+    s = re.sub(r"[ \t]*" + _PARA_MARK + r"[ \t]*", "\n\n", s)
     return s.strip()
 
 

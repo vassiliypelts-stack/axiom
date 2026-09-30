@@ -386,6 +386,13 @@
   .b-active{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent);background:color-mix(in srgb,var(--green) 15%,var(--panel));}
   /* родной номер: автоматика его не трогает — нейтральный, не «зелёный-готов» */
   .b-own{color:var(--muted);border-color:var(--border);background:var(--bg);}
+  /* иконки каналов в строке аккаунта: яркая — подключён, жёлтая — привязан, но не на связи, тусклая — нет */
+  .acc-ch{width:20px;height:20px;min-width:20px;padding:0;border-radius:50%;border:1.5px solid transparent;font-size:11px;font-weight:800;line-height:1;display:inline-flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;}
+  .acc-ch-tg{background:#229ED9;} .acc-ch-wa{background:#25D366;}
+  .acc-ch.on{cursor:default;}
+  .acc-ch.off{background:var(--panel2);color:var(--muted);border-color:var(--border);opacity:.55;}
+  .acc-ch.off:hover{opacity:1;}
+  .acc-ch.warn{background:var(--panel);color:#C98A00;border-color:#E0A100;}
   /* бейдж прогрева с прогресс-заливкой: «прогрев N/14 дн» */
   .warmb{position:relative;display:inline-flex;align-items:center;border-radius:20px;overflow:hidden;
     border:1px solid color-mix(in srgb,var(--accent2) 45%,transparent);background:var(--panel2);min-width:120px;}
@@ -1851,6 +1858,20 @@ const ACC_ROLE_RU={own:"🏠 Родной (личный, автоматика н
                    service:"🛠 Служебный (уведомления, отчёты, пробив)",
                    combat:"🪖 Боевой (рассылка, парсинг, прогрев)","":"—"};
 const ACC_ROLE_SHORT={own:"🏠 родной",service:"🛠 служебный",combat:"🪖 боевой"};
+const ACC_WA_ST={open:"на связи",closed:"переподключается",connecting:"подключается",pairing:"ждёт код привязки",
+  replaced:"сессию перехватило другое подключение (WhatsApp Web?) — пауза 30 мин",logged_out:"отвязан на телефоне",
+  no_session:"на сервере нет сессии — нужен новый код привязки"};
+// Иконки T/W рядом с ярлыком: видно на глаз, какие мессенджеры живут на номере.
+// Клик по тусклой или жёлтой — привязка прямо из списка, без захода в карточку
+// (обработчик .acc-ch в viewAgents).
+function accChIcons(r){
+  const d=`data-id="${r.id}" data-phone="${esc(r.phone||'')}" data-label="${esc(r.label||r.username||('#'+r.id))}"`;
+  const tg=!r.tg_connected?"off":(r.session_state==="revoked"||r.session_state==="banned")?"warn":"on";
+  const tgTip=tg==="on"?"Telegram подключён":tg==="warn"?"Telegram: сессия слетела — нажми, чтобы войти заново по коду":"Telegram не подключён — нажми, чтобы войти по коду";
+  const wa=r.wa_authed!=="yes"?"off":r.wa_state==="open"?"on":"warn";
+  const waTip=wa==="on"?"WhatsApp на связи":wa==="warn"?`WhatsApp: ${ACC_WA_ST[r.wa_state]||r.wa_state||"процесс не запущен"} — нажми, чтобы получить код привязки`:"WhatsApp не подключён — нажми, чтобы получить код привязки";
+  return `<button class="acc-ch acc-ch-tg ${tg}" data-ch="tg" ${d} title="${esc(tgTip)}">T</button><button class="acc-ch acc-ch-wa ${wa}" data-ch="wa" ${d} title="${esc(waTip)}">W</button>`;
+}
 const ACC_ST={active:"активен",warming:"прогрев",paused:"пауза",banned:"бан"};
 const ACC_KIND_IC={own:"house",sim:"sim",bought:"cart"};
 const ACC_KIND_LBL={own:"Родной",sim:"Своя симка",bought:"Купленный"};
@@ -2526,7 +2547,7 @@ async function viewAgents(v){
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
-      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
+      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}<span style="display:inline-flex;gap:3px">${accChIcons(r)}</span>${r.protected?` <span class="badge b-active" title="Родной номер — автоматика (прогрев/рассылка) его не трогает">🏠 родной</span>`:''}${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}`},
       // Назначение: родной / служебный / боевой. Пустое acc_role сервер выводит сам
       // (по protected и флагам уведомителя), такие помечаем «авто» — видно, что
@@ -2540,9 +2561,7 @@ async function viewAgents(v){
         const tg=r.tg_connected?'<span class="badge b-active">TG ✓</span>':'<span class="badge b-nurture">TG —</span>';
         // WA ✓ — привязан и процесс на связи; жёлтый — привязан, но сокет не открыт
         // (no_session: привязывали не на сервере — нужен новый код в карточке).
-        const WA_ST={open:"на связи",closed:"переподключается",connecting:"подключается",pairing:"ждёт код привязки",
-          replaced:"сессию перехватило другое подключение (WhatsApp Web?) — пауза 30 мин",logged_out:"отвязан на телефоне",
-          no_session:"на сервере нет сессии — получи код в карточке аккаунта"};
+        const WA_ST=ACC_WA_ST;
         const wa=r.wa_authed==='yes'
           ?(r.wa_state==='open'?'<span class="badge b-active" title="WhatsApp на связи">WA ✓</span>'
             :`<span class="badge b-nurture" style="color:var(--warn,#c90)" title="${esc(WA_ST[r.wa_state]||r.wa_state||'процесс не запущен')}">WA ⚠</span>`)
@@ -2699,6 +2718,11 @@ async function viewAgents(v){
       return;}
     const lg=e.target.closest(".acc-login");
     if(lg){e.stopPropagation();showLoginDialog(lg.dataset.id,lg.dataset.phone,lg.dataset.label);return;}
+    const chb=e.target.closest(".acc-ch");
+    if(chb){e.stopPropagation();
+      if(chb.classList.contains("on"))return;       // уже подключён — привязывать нечего
+      (chb.dataset.ch==="wa"?showWaLinkDialog:showLoginDialog)(chb.dataset.id,chb.dataset.phone,chb.dataset.label);
+      return;}
     const eye=e.target.closest(".acc-eye");
     if(eye){e.stopPropagation();showInspectModal(eye.dataset.id,eye.dataset.label);return;}
     const warmLog=e.target.closest(".acc-warm-log");
@@ -2895,6 +2919,32 @@ function showLoginDialog(accId,phone,label){
     if(r.ok){msg(`✅ Подключено: @${r.username||"—"}. Аккаунт пойдёт в прогрев.`);setTimeout(()=>{close();route();},1500);}
     else if(r.need_password){$m("#lg-pwd-box").style.display="block";b.disabled=false;b.textContent="Войти";msg("Включён 2FA — введи облачный пароль и нажми «Войти».",true);$m("#lg-pwd").focus();}
     else{b.disabled=false;b.textContent="Войти";msg(r.error||"ошибка",true);}
+  };
+}
+
+// Привязка WhatsApp из списка аккаунтов — тот же /wa_login, что кнопка в карточке.
+function showWaLinkDialog(accId,phone,label){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
+  modal.innerHTML=`<div style="background:var(--bg);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);max-width:440px;width:92%;padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <b style="font-size:16px">📲 Привязать WhatsApp</b><button class="wl-close">✕</button></div>
+    <div class="sub" style="margin-bottom:14px">${esc(label||"")} · ${esc(phone||"")}<br>Сервер выдаст 8-значный код, его вводишь на телефоне с этим номером.</div>
+    <button class="primary" id="wl-get" style="width:100%;padding:10px">Получить код</button>
+    <div id="wl-code" style="display:none;margin-top:14px;font-size:28px;font-weight:800;letter-spacing:4px;text-align:center;user-select:all"></div>
+    <div id="wl-msg" style="margin-top:12px;font-size:13px;white-space:pre-wrap"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  const $m=s=>modal.querySelector(s);
+  const close=()=>{modal.remove();route();};
+  $m(".wl-close").onclick=close;modal.onclick=e=>{if(e.target===modal)close();};
+  $m("#wl-get").onclick=async()=>{
+    const b=$m("#wl-get"),m=$m("#wl-msg");b.disabled=true;b.textContent="запрашиваю код… (до 45 сек)";m.textContent="";
+    const r=await api(`/api/account/${accId}/wa_login`,{method:"POST"});
+    b.disabled=false;b.textContent="Получить новый код";
+    if(r.ok&&r.code){$m("#wl-code").style.display="block";$m("#wl-code").textContent=r.code;m.textContent=r.hint||"введи код на телефоне";}
+    else if(r.ok){m.textContent="✅ "+(r.hint||"готово");}
+    else{m.textContent="⚠ "+(r.error||"не получилось")+(r.output?"\n"+r.output:"");}
   };
 }
 

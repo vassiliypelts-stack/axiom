@@ -764,11 +764,13 @@ WA_OPENER_PARTS = 2        # первое + второе сообщение; т�
 
 def _wa_team(cid: int, camp: dict, test: bool, test_account: int | None) -> list[dict]:
     """WA-отправители кампании: номера из команды (или campaigns.account_id).
-    Родной (protected) номер холодную не шлёт — только тест на свои номера.
+    Родной (protected) номер холодную не шлёт — только тест на свои номера, если
+    владелец явно не разрешил ему WhatsApp (accounts.wa_cold_ok=1).
     Служебный (acc_role='service') — шлёт: его запрет в Telegram защищает канал
     уведомлений владельцу, а бан номера в WhatsApp Telegram-аккаунт не задевает."""
     sel = ("SELECT a.id, a.label, a.phone, a.tg_name, a.status, a.wa_authed, "
            "COALESCE(a.protected,0) protected, COALESCE(a.acc_role,'') acc_role, "
+           "COALESCE(a.wa_cold_ok,0) wa_cold_ok, "
            "COALESCE(ca.daily_limit, a.daily_limit) cap "
            "FROM accounts a LEFT JOIN campaign_accounts ca "
            "ON ca.account_id=a.id AND ca.campaign_id=? ")
@@ -784,7 +786,7 @@ def _wa_team(cid: int, camp: dict, test: bool, test_account: int | None) -> list
         r = dict(r)
         if r["status"] == "banned":
             continue
-        if not test and r["protected"]:
+        if not test and r["protected"] and not r["wa_cold_ok"]:
             continue
         out.append(r)
     return out

@@ -437,9 +437,15 @@ async def _handle_private(event, acc_id: int) -> None:
         # Молчание агента раньше было неотличимо от поломки. Пишем причину в лог и
         # в колокольчик: человек ответил, а мы не отвечаем — это всегда потеря лида.
         with database.get_conn() as conn:
-            why = ("выключен тумблер «авто-ответ ИИ»"
-                   if database.get_setting(conn, "tg_auto_reply", "on") != "on"
-                   else "аккаунт не в статусе «активен» и раньше этому контакту не писал")
+            hot = conn.execute("SELECT hot_since FROM contacts WHERE id=?",
+                               (contact["id"],)).fetchone()
+            if database.get_setting(conn, "tg_auto_reply", "on") != "on":
+                why = "выключен тумблер «авто-ответ ИИ»"
+            elif hot and hot["hot_since"]:
+                why = ("это горячий лид — бот замолчал и ждёт владельца; если владелец "
+                       "так и не напишет, бот позже сам напомнит человеку проверить личку")
+            else:
+                why = "аккаунт не в статусе «активен» и раньше этому контакту не писал"
             database.add_event(
                 conn, "agent_error", f"🔇 Ответ клиента без ответа агента",
                 f"Контакт #{contact['id']} написал, но авто-ответ не сработал: {why}. "

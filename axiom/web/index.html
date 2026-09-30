@@ -1911,7 +1911,9 @@ function tgGeoHint(phone,proxy){
 }
 const ACC_PRESETS={
   all:{label:"Все",test:r=>r.status!=='archived'},
-  live:{label:"🟢 Живые",test:r=>r.tg_connected&&r.session_state==='alive'&&r.status!=='banned'},
+  // Живой = на связи хотя бы один мессенджер. Раньше только Telegram, и номер,
+  // работающий в WhatsApp (967 в «Ремонт Сочи»), из «Живых» пропадал.
+  live:{label:"🟢 Живые",test:r=>r.status!=='banned'&&r.status!=='archived'&&((r.tg_connected&&r.session_state==='alive')||(r.wa_authed==='yes'&&r.wa_state==='open'))},
   bought:{label:"🛒 Купленные",test:r=>!r.protected&&r.status!=='archived'},
   personal:{label:"🏠 Родные",test:r=>!!r.protected},
   nosession:{label:"⚠ Без сессии",test:r=>!r.tg_connected&&r.status!=='archived'},

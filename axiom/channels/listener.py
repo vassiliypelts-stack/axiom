@@ -161,6 +161,21 @@ def _knock_pitch_due(contact_id: int) -> bool:
     return bool(row)
 
 
+def _own_knock_campaign(contact_id: int) -> int | None:
+    """Кампания со своим стуком (campaigns.quiet_opener_template), которая
+    постучалась этому контакту и ждёт ответа. Нет такой — None."""
+    from channels.campaign_send import own_knock_template
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.* FROM campaign_contacts cc JOIN campaigns c ON c.id=cc.campaign_id "
+            "WHERE cc.contact_id=? AND cc.knock_at IS NOT NULL AND cc.sent_at IS NULL "
+            "ORDER BY cc.knock_at DESC", (contact_id,)).fetchall()
+    for r in rows:
+        if own_knock_template(dict(r)):
+            return r["id"]
+    return None
+
+
 def _should_reply(acc_id: int, contact_id: int | None = None) -> bool:
     """Авто-отвечать ли с этого аккаунта прямо сейчас.
 
@@ -398,7 +413,22 @@ async def _handle_private(event, acc_id: int) -> None:
     # сообщением: до ответа мы про проект молчим, в этом весь смысл режима. Дальше
     # диалог ведёт обычный агент кампании, как после любого первого касания, поэтому
     # снимаем метку и выходим — агент подключится со следующей реплики человека.
-    if _knock_pitch_due(contact["id"]):
+    own_knock_cid = _own_knock_campaign(contact["id"]) if _knock_pitch_due(contact["id"]) else None
+    if own_knock_cid:
+        # У кампании свой стук («Привет, Илья! Как поживаешь?»). Общий KNOCK_PITCH про
+        # Крым сюда не идёт: человек ответил на дружеский вопрос, и ответить ему должен
+        # агент кампании, с учётом того, что он написал. Стук становится первым
+        # касанием, дальше обычный диалог.
+        with database.get_conn() as conn:
+            database.set_status(conn, contact["id"], "messaged")
+            conn.execute("UPDATE campaign_contacts SET knock_at=NULL, sent_at=datetime('now') "
+                         "WHERE contact_id=? AND knock_at IS NOT NULL", (contact["id"],))
+            database.add_event(
+                conn, "campaign_send", "👋 Ответил на стук",
+                f"Контакт #{contact['id']} откликнулся на приветствие. Дальше отвечает "
+                f"агент кампании.", level="good", contact_id=contact["id"],
+                campaign_id=own_knock_cid, account_id=acc_id)
+    elif _knock_pitch_due(contact["id"]):
         try:
             from channels.warmup import KNOCK_PITCH
             sent = await event.respond(KNOCK_PITCH)

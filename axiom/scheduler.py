@@ -281,6 +281,16 @@ def _campaign_extra_followup(conn, contact_id: int) -> str | None:
     return t or None
 
 
+def _split_extra(extra: str) -> tuple[str, str, str]:
+    """Текст дожима кампании → (первый шаг, разделитель, второй шаг).
+    Разделитель — строка из одних «---»; нет её — второй шаг пустой."""
+    import re
+    m = re.search(r"(?m)^[ \t]*-{3,}[ \t]*$", extra)
+    if not m:
+        return extra, "", ""
+    return extra[:m.start()], m.group(0), extra[m.end():]
+
+
 def collect_due(conn, now: datetime | None = None) -> list[Action]:
     now = now or _utcnow()
     actions: list[Action] = []
@@ -389,9 +399,15 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if extra:
             # Второй дожим (правило Василия, 25.09.2026): только если человек ПРОЧИТАЛ
             # первый и промолчал. Не прочитал — не шлём, контакт просто ждёт.
-            steps = [{"after_hours": 7, "variants": [extra], "spec_variants": [extra]},
-                     {"after_hours": 48, "variants": deslop.LAST_NUDGE,
-                      "spec_variants": deslop.LAST_NUDGE, "require_read": True}]
+            #
+            # Кампания может задать и второй шаг сама: строка «---» делит текст на два.
+            # Общий LAST_NUDGE написан на «вы» («если тема не ваша, просто скажите»), а
+            # «ИИ‑Прорыв» пишет знакомым Василия на «ты», и «вы» от друга режет глаз.
+            first, _, last = (p.strip() for p in _split_extra(extra))
+            last_pool = [last] if last else deslop.LAST_NUDGE
+            steps = [{"after_hours": 7, "variants": [first], "spec_variants": [first]},
+                     {"after_hours": 48, "variants": last_pool,
+                      "spec_variants": last_pool, "require_read": True}]
         else:
             steps = FOLLOWUP_STEPS
         if streak > len(steps):

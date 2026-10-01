@@ -8486,7 +8486,7 @@ def _busy_campaign_accounts(conn, account_ids, current_campaign_id: int | None =
         return []
     sql = (
         "SELECT a.id AS account_id, COALESCE(a.label,a.phone,'#' || a.id) AS account, "
-        "c.id AS campaign_id, c.name AS campaign "
+        "c.id AS campaign_id, c.name AS campaign, c.channel AS channel "
         "FROM campaign_accounts ca JOIN campaigns c ON c.id=ca.campaign_id "
         "JOIN accounts a ON a.id=ca.account_id "
         "WHERE c.status='running' AND ca.account_id IN ({})"
@@ -8495,7 +8495,22 @@ def _busy_campaign_accounts(conn, account_ids, current_campaign_id: int | None =
     if current_campaign_id is not None:
         sql += " AND c.id<>?"
         params.append(current_campaign_id)
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    # Занят номер только по ОБЩЕМУ каналу. Telegram и WhatsApp у номера — разные
+    # транспорты со своими лимитами: 702 может стучаться в TG по одной кампании и
+    # в WhatsApp по другой, сокеты и дневные нормы у них не пересекаются.
+    if current_campaign_id is not None:
+        cur = conn.execute("SELECT channel FROM campaigns WHERE id=?",
+                           (current_campaign_id,)).fetchone()
+        mine = set(_camp_channels(cur["channel"] if cur else None))
+        rows = [r for r in rows if mine & set(_camp_channels(r["channel"]))]
+    for r in rows:
+        r.pop("channel", None)
+    return rows
+
+
+def _camp_channels(channel: str | None) -> list[str]:
+    return [c.strip() for c in (channel or "telegram").split(",") if c.strip()]
 
 
 def _channel_clause(channel: str | None) -> str:

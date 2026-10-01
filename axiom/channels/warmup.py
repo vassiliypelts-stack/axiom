@@ -619,10 +619,19 @@ async def _knock(client, acc: dict) -> int:
         return 0
     # Берём с запасом: часть контактов не отрезолвится в Telegram.
     rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12)
+    # Свой стук кампании важнее общего: общий без имени говорит про «чаты по Крыму»,
+    # а «ИИ‑Прорыв» стучится знакомым Василия с его же номеров.
+    from channels.campaign_send import (_contact_first_name, _greeting, _own_knock_parts,
+                                        own_knock_template)
+    own = own_knock_template(dict(camp))
     for row in rows:
-        text = _knock_text(row)
         try:
             ent = await _resolve_entity(client, row)
+            if own:
+                name = (_greeting(row) or "").strip() if (row["person_name"] or "").strip() else ""
+                text = _own_knock_parts(own, name or _contact_first_name(ent))[0]
+            else:
+                text = _knock_text(row)
             msg = await client.send_message(ent, text)
         except Exception as e:  # noqa: BLE001
             print(f"  [стук skip {row['id']}] {e}")

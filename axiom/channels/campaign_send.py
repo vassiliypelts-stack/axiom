@@ -156,6 +156,42 @@ class _RunLock:
             pass
 
 
+def own_knock_template(camp) -> str:
+    """Свой стук кампании (campaigns.quiet_opener_template), пусто — нет.
+
+    Кампания со своим стуком пишет первым сообщением ТОЛЬКО его, с любого номера
+    команды: «Привет, Илья! Как поживаешь? Это Василий…». Оффера в нём нет. Не
+    ответили за сутки — одно эмодзи (scheduler, KNOCK_NUDGE). Ответили — дальше
+    говорит агент кампании (listener), а не общий KNOCK_PITCH: тот написан под
+    Крым и ушёл бы знакомым Василия из «ИИ‑Прорыва» про миндальные сады."""
+    try:
+        return ((camp or {}).get("quiet_opener_template") or "").strip()
+    except AttributeError:
+        return ""
+
+
+def _own_knock_parts(template: str, name: str) -> list[str]:
+    """Текст своего стука. Имени нет — убираем обращение вместе с запятой:
+    «Привет, {имя}!» → «Привет!», а не «Привет, !». Стук дружеский, на «ты»,
+    поэтому только имя: «Илья», а не «Илья Петрович»."""
+    import re
+    name = ((name or "").strip().split() or [""])[0]
+    if not name:
+        template = re.sub(r"[ \t]*,?[ \t]*\{\s*(?:имя|name)\s*\}", "", template,
+                          flags=re.IGNORECASE)
+    return _parts(template, name or "")[:1]
+
+
+def _contact_first_name(entity) -> str:
+    """Имя из Telegram, если это узнаваемое русское имя, иначе пусто.
+
+    У номера, в чьей книжке человек записан, first_name — это подпись из книжки
+    («Илья ПП Сочи»), то есть ровно то имя, которым владелец номера зовёт
+    человека. Берём первое слово и только если это имя, а не «ПП» или ник."""
+    first = ((getattr(entity, "first_name", "") or "").strip().split() or [""])[0]
+    return first if first and first.isalpha() and fio._is_known_first(first) else ""
+
+
 def _load_campaign(cid: int) -> dict | None:
     with database.get_conn() as conn:
         row = conn.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
@@ -911,9 +947,15 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
                 break
             s = avail[rr % len(avail)]
             rr += 1
-            parts = _parts(tmpl, _greeting(row), row["agency"] or row["name"],
-                           _decision_phrase(row), sender=_sender_name(s),
-                           spec=_spec_of(row))[:WA_OPENER_PARTS]
+            own = own_knock_template(camp)
+            if own:
+                # Свой стук: в WhatsApp первым уходит только он, дальше ведёт агент.
+                parts = _own_knock_parts(
+                    own, _greeting(row) if (row["person_name"] or "").strip() else "")
+            else:
+                parts = _parts(tmpl, _greeting(row), row["agency"] or row["name"],
+                               _decision_phrase(row), sender=_sender_name(s),
+                               spec=_spec_of(row))[:WA_OPENER_PARTS]
             if not parts:
                 continue
             # Контакт закрепляем за кампанией сразу: иначе Telegram-заход другой
@@ -1356,8 +1398,16 @@ async def run(cid: int, limit: int, test: bool = False,
         # прогреваемый: «Добрый день, Татьяна?» (warmup._knock_text). Ответит —
         # предложение уйдёт из слушателя (listener._knock_pitch_due), не ответит —
         # молчим: контакт остаётся 'new', дожимы его не видят.
-        knock = bool(not test and s["acc"] and s["acc"].get("quiet"))
-        if knock:
+        own_knock = own_knock_template(camp)
+        knock = bool(not test and s["acc"] and (s["acc"].get("quiet") or own_knock))
+        if own_knock:
+            # На тесте стук уходит обычным первым сообщением (без knock_at): ответ
+            # тест-номера сразу ведёт агент, так видно и стук, и его реплику.
+            # Имя только из person_name: в name у импорта лежит подпись из книжки
+            # («Илья ПП Сочи»), её целиком в «Привет, …!» не подставишь.
+            knock_name = name if (row["person_name"] or "").strip() else ""
+            parts = _own_knock_parts(own_knock, knock_name)
+        elif knock:
             from channels.warmup import _knock_text
             parts = [_knock_text(row)]
         else:
@@ -1473,6 +1523,9 @@ async def run(cid: int, limit: int, test: bool = False,
                         level="warn", contact_id=row["id"], campaign_id=cid)
                 print(f"[{s['label']}] ⛔ {row['name']} → @{row['username']} это «{tg_name}» ({why}) — не шлю")
                 continue
+            if own_knock and not knock_name:
+                # В карточке имени нет (список номеров) — берём его из книжки номера.
+                parts = _own_knock_parts(own_knock, _contact_first_name(entity))
             # ЗДЕСЬ БЫЛО ВТОРОЕ ДОБАВЛЕНИЕ КОНТАКТА В КНИЖКУ — УБРАНО.
             #
             # Тот же контакт уже добавлен внутри _resolve_entity (telegram.py), сразу

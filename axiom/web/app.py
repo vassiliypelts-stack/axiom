@@ -10437,7 +10437,7 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             # Лид виден прямо в списке рассылки: кто ответил и кто уже горячий. Раньше
             # эти люди ничем не отличались от неотвеченных — оператор искал их в
             # «Диалогах» отдельно, хотя решение «кому писать дальше» принимается здесь.
-            f"lead_since, hot_since, owner_contacted_at "
+            f"lead_since, hot_since, owner_contacted_at, outreach_account_id, outreach_channel "
             f"FROM contacts WHERE {where} "
             # Те, КОМУ УЖЕ ПИСАЛИ, идут первыми — иначе их не видно вовсе.
             #
@@ -10465,6 +10465,11 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             "FROM campaign_contacts cc LEFT JOIN accounts a ON a.id=cc.account_id "
             "WHERE cc.campaign_id=?", (cid,)).fetchall()}
         sent = set(sent_rows)
+        # С какого номера пойдёт закреплённый знакомый (contacts.outreach_account_id).
+        pin_labels = {r["id"]: r["label"] for r in conn.execute(
+            "SELECT id, COALESCE(label, phone, '#' || id) AS label FROM accounts "
+            "WHERE id IN (SELECT DISTINCT outreach_account_id FROM contacts "
+            "WHERE outreach_campaign_id=? AND outreach_account_id IS NOT NULL)", (cid,)).fetchall()}
         # ОТВЕТИЛ ЛИ ЧЕЛОВЕК. Без этого список показывал только «ушло/не ушло»: видно,
         # что рассылка работает, но не видно, есть ли с неё хоть какой-то отклик —
         # а это и есть единственный смысл кампании. Берём входящие из messages
@@ -10523,9 +10528,14 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             why = ("уже написали" if d["id"] in sent else f"статус «{d['status']}»")
         elif not (d["username"] or d["phone"]):
             why = "нет ни @username, ни телефона"
-        elif is_tg and (d["has_tg"] or "unknown") == "no":
+        elif (is_tg and d.get("outreach_channel") != "whatsapp"
+              and (d["has_tg"] or "unknown") == "no"):
             why = "в Telegram не найден"
         d["blocked_by"] = why
+        pin_id = d.get("outreach_account_id")
+        d["pin"] = " · ".join(x for x in (
+            pin_labels.get(pin_id, f"#{pin_id}") if pin_id else "",
+            {"telegram": "TG", "whatsapp": "WA"}.get(d.get("outreach_channel") or "", "")) if x)
         d["in_queue"] = why is None
         d["paused"] = d["id"] in paused
         # Лид и горячий лид — отдельными флагами, чтобы список рассылки сразу показывал

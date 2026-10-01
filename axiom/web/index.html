@@ -1542,6 +1542,8 @@ async function openAudience(cid){
         {key:"is_lead",label:"Лид",render:r=>leadHeatBadge(r)},
         {key:"has_tg",label:"TG",render:r=>MSG_MARK[r.has_tg||"unknown"]||MSG_MARK.unknown},
         {key:"has_wa",label:"WA",render:r=>MSG_MARK[r.has_wa||"unknown"]||MSG_MARK.unknown},
+        // Личный знакомый пишется только со своего номера и в своём мессенджере.
+        {key:"pin",label:"С номера",cls:"sub",render:r=>r.pin?`<span title="закреплён: пишет только этот номер">${esc(r.pin)}</span>`:'<span class="hint" title="любой номер команды по кругу">любой</span>'},
         {key:"status",label:"Статус",cls:"sub",render:r=>r.knocked&&r.status==="new"?"стук":esc(r.status||"")},
         // Прогресс отправки прямо здесь: раньше ради «ушло / не ушло» открывали
         // отдельную вкладку «Прогресс» с тем же списком людей.

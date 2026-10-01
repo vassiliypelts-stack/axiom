@@ -204,7 +204,7 @@ def _channels(channel: str | None) -> list[str]:
 
 def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = False,
               exclude_paused: bool = True, verified_only: bool | None = None,
-              only_contacts: list[int] | None = None):
+              only_contacts: list[int] | None = None, sender_id: int | None = None):
     """Аудитория для TG-отправки: контакты со status='new', достижимые по Telegram.
     test=True — ТОЛЬКО тестовые (is_test=1): «кнопка Тест» шлёт исключительно на свои
     номера, боевой аудитории коснуться не может даже при большом лимите.
@@ -219,7 +219,11 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     непробитого номера отправка резолвит его прямо в момент выстрела, и если номера в
     Telegram нет — это промах. Промахов у нас 38% от проверенных, а серия промахов
     подряд с одного аккаунта — самый явный признак спамера. Пробив делает отдельный
-    дозированный phone_resolve (25/аккаунт в сутки, контакт удаляется сразу)."""
+    дозированный phone_resolve (25/аккаунт в сутки, контакт удаляется сразу).
+
+    sender_id — только свои для этого номера: закреплённые за ним
+    (contacts.outreach_account_id) и незакреплённые. Нужен стуку из прогрева, где
+    номер один и чужих знакомых он брать не должен."""
     # Боевая кампания без сегмента никогда не означает «вся база». Старые записи с
     # пустым тегом тоже безопасно остановятся, пока оператор не назначит сегмент.
     if not test and not (tag or "").strip():
@@ -250,7 +254,13 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     # выкидывал их все — свежедобавленный номер не пробит по определению. Наружу это
     # выглядело так: кнопка «🧪 Тест» бодро отвечала «пошло на 3 номера», отправщик
     # молча находил ноль, и в Telegram не приходило ничего.
+    if sender_id is not None:
+        where += " AND (outreach_account_id IS NULL OR outreach_account_id=?)"
+        params.append(int(sender_id))
     if "telegram" in _channels(channel) and not test:
+        # Закреплённый за WhatsApp человек ждёт WhatsApp (queue_whatsapp), даже если
+        # он есть и в Telegram: там с ним и общаются.
+        where += " AND COALESCE(outreach_channel,'telegram')<>'whatsapp'"
         where += " AND has_tg IN ('yes','unknown')"
         # «Не тот человек за ником» остаётся status='new' до правки оператором, а отбор
         # идёт ORDER BY id: 30.09.2026 один такой контакт вставал первым в каждый заход
@@ -790,6 +800,19 @@ def _pick(live: list[dict], rr: int) -> dict | None:
     return avail[rr % len(avail)]
 
 
+def _pick_for(row, live: list[dict], rr: int) -> dict | None:
+    """Отправитель для контакта: закреплённый номер (contacts.outreach_account_id),
+    если он в заходе и норма не выбрана, иначе None — контакт ждёт свой номер.
+    Незакреплённый — по кругу, как раньше (_pick)."""
+    pinned = row["outreach_account_id"] if "outreach_account_id" in row.keys() else None
+    if not pinned:
+        return _pick(live, rr)
+    for s in live:
+        if s["id"] is not None and int(s["id"]) == int(pinned) and s["remaining"] > 0:
+            return s
+    return None
+
+
 def _human_conn_error(e: Exception) -> str:
     """Ошибка подключения Telethon → фраза, по которой понятно, что чинить.
     Сырое «The authorization key (session file) was used under two different IP
@@ -912,8 +935,13 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
              "AND c.id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?) "
              "AND c.id NOT IN (SELECT contact_id FROM wa_outbox WHERE status IN ('pending','sending'))")
     params: list = [cid, cid]
+    if not test:
+        # Закреплённый за Telegram человек ждёт Telegram, а закреплённый за WhatsApp
+        # идёт сюда, даже если в Telegram он тоже есть.
+        where += " AND COALESCE(c.outreach_channel,'')<>'telegram'"
     if tg_too and not test:
-        where += " AND c.has_tg='no'"      # остальных достанет Telegram-часть захода
+        # остальных достанет Telegram-часть захода
+        where += " AND (c.outreach_channel='whatsapp' OR c.has_tg='no')"
     where += " AND COALESCE(c.is_test,0)=" + ("1" if test else "0")
     if test:
         where += " AND (c.test_campaign_id IS NULL OR c.test_campaign_id=?)"
@@ -931,8 +959,9 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
         where += " AND c.tags LIKE ?"
         params += [cid, f"%{tag}%"]
     with database.get_conn() as conn:
+        # С запасом: закреплённые за номером с выбранной нормой пропускаются ниже.
         rows = conn.execute(f"SELECT c.* FROM contacts c WHERE {where} ORDER BY c.id LIMIT ?",
-                            (*params, max(camp_left, 0))).fetchall()
+                            (*params, max(camp_left, 0) * 5)).fetchall()
     if not rows:
         print("[WA] " + ("тест: нет своих номеров (is_test=1) с телефоном" if test
                          else "аудитория для WhatsApp пуста"))
@@ -942,11 +971,20 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
     rr = 0
     with database.get_conn() as conn:
         for row in rows:
+            if queued >= camp_left:
+                break
             avail = [s for s in senders if s["left"] > 0]
             if not avail:
                 break
-            s = avail[rr % len(avail)]
-            rr += 1
+            pinned = row["outreach_account_id"] if not test else None
+            if pinned:
+                # Знакомому пишет только его номер; норма выбрана — ждёт завтра.
+                s = next((x for x in avail if int(x["id"]) == int(pinned)), None)
+                if s is None:
+                    continue
+            else:
+                s = avail[rr % len(avail)]
+                rr += 1
             own = own_knock_template(camp)
             if own:
                 # Свой стук: в WhatsApp первым уходит только он, дальше ведёт агент.
@@ -1037,7 +1075,10 @@ async def run(cid: int, limit: int, test: bool = False,
                     level="info", campaign_id=cid)
             return
         cap = min(cap, left_today)
-    rows = _audience(cid, camp["audience_tag"], camp["channel"], cap, test=test,
+    # С запасом: закреплённые за номером, у которого норма уже выбрана, в этом заходе
+    # пропускаются (см. _pick_for), и без запаса они съели бы весь заход. Стоп по-прежнему
+    # по sent >= cap.
+    rows = _audience(cid, camp["audience_tag"], camp["channel"], max(cap * 5, 50), test=test,
                      only_contacts=test_contacts if test else None)
     if not rows:
         msg = ("тест: нет тест-контактов (is_test=1) в аудитории" if test
@@ -1062,7 +1103,7 @@ async def run(cid: int, limit: int, test: bool = False,
                     level="warn", campaign_id=cid)
         return
     if test:
-        print(f"[ТЕСТ] шлём только на свои номера (is_test=1): {len(rows)} шт.")
+        print(f"[ТЕСТ] шлём только на свои номера (is_test=1): {min(len(rows), cap)} шт.")
     if not _parts(camp["message_template"], "", strict=False):
         print("пустой шаблон сообщения — нечего слать")
         return
@@ -1368,11 +1409,15 @@ async def run(cid: int, limit: int, test: bool = False,
             print(f"кампания #{cid}: рабочие часы закончились посреди захода — "
                   f"дальше {len(rows) - rows.index(row)} контактов достанутся следующему заходу")
             break
-        s = _pick(live, rr)
-        if s is None:
+        if not any(x["remaining"] > 0 for x in live):
             print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
             out_of_quota = True
             break
+        s = _pick_for(row, live, rr)
+        if s is None:
+            # Закреплён за номером, которого нет в заходе или чья норма выбрана.
+            # Чужим номером знакомому не пишем — ждёт следующего захода.
+            continue
         rr += 1
         # ЗАЩИТА ОТ ДУБЛЯ (атомарный захват). Тот же номер мог попасть в этот заход
         # дважды: параллельный запуск, тест сбросил статус в 'new' и боевой заход
@@ -1818,6 +1863,10 @@ async def run(cid: int, limit: int, test: bool = False,
     # Если в аудитории больше никого не осталось — кампания отработана. Пауза не в счёт:
     # контакты на паузе ещё вернутся, из-за них одних "done" ставить нельзя.
     remaining = _audience(cid, camp["audience_tag"], camp["channel"], 1, exclude_paused=False)
+    if not remaining and "whatsapp" in chans:
+        # Telegram-часть разобрана, но люди WhatsApp ещё ждут очереди номера —
+        # кампания не отработана.
+        remaining = _audience(cid, camp["audience_tag"], "whatsapp", 1, exclude_paused=False)
     with database.get_conn() as conn:
         done = not remaining
         conn.execute(

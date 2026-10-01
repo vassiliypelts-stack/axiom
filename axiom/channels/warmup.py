@@ -474,7 +474,7 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     with database.get_conn() as conn:
         camp = conn.execute(
             "SELECT c.* FROM campaigns c JOIN campaign_accounts ca ON ca.campaign_id=c.id "
-            "WHERE ca.account_id=? AND c.channel='telegram' AND IFNULL(c.message_template,'')<>'' "
+            "WHERE ca.account_id=? AND (',' || REPLACE(c.channel,' ','') || ',') LIKE '%,telegram,%' AND IFNULL(c.message_template,'')<>'' "
             "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
         ).fetchone()
     if not camp:
@@ -486,7 +486,7 @@ async def _ca_mix(client, acc: dict, stage: int) -> int:
     if opener_lint.severe(opener_lint.lint(camp["message_template"])):
         print(f"  [ca-mix] пропуск: у кампании #{camp['id']} в первом сообщении промпт, не текст")
         return 0
-    rows = _audience(camp["id"], camp["audience_tag"], "telegram", cap)
+    rows = _audience(camp["id"], camp["audience_tag"], "telegram", cap, sender_id=acc["id"])
     sent = 0
     for row in rows:
         if sent >= cap:
@@ -665,14 +665,15 @@ async def _knock(client, acc: dict) -> int:
         camp = conn.execute(
             "SELECT c.* FROM campaigns c "
             "JOIN campaign_accounts ca ON ca.campaign_id=c.id "
-            "WHERE ca.account_id=? AND c.channel='telegram' AND COALESCE(c.archived,0)=0 "
+            "WHERE ca.account_id=? AND (',' || REPLACE(c.channel,' ','') || ',') LIKE '%,telegram,%' AND COALESCE(c.archived,0)=0 "
             "AND c.status='running' "
             "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
         ).fetchone()
     if not camp or not database.outreach_allowed(camp):
         return 0
-    # Берём с запасом: часть контактов не отрезолвится в Telegram.
-    rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12)
+    # Берём с запасом: часть контактов не отрезолвится в Telegram. Только свои для
+    # номера: знакомый, закреплённый за другим номером, получит стук оттуда.
+    rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12, sender_id=acc["id"])
     # Свой стук кампании важнее общего: общий без имени говорит про «чаты по Крыму»,
     # а «ИИ‑Прорыв» стучится знакомым Василия с его же номеров.
     from channels.campaign_send import (_contact_first_name, _greeting, _own_knock_parts,

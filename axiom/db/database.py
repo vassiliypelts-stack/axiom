@@ -27,6 +27,12 @@ _EXTRA_CONTACT_COLS = {
     # Selected personal contacts belong only to the campaign chosen at import.
     # NULL preserves the existing shared-audience behavior for older contacts.
     "outreach_campaign_id": "INTEGER",
+    # Личный знакомый пишется только с того номера, у которого он в книжке, и в том
+    # мессенджере, где они общаются: одна кампания «ИИ‑Прорыв» ведёт людей 988, 913
+    # и 702 (TG и WA) разом, и ротация команды раздала бы их чужим номерам.
+    # NULL — как раньше: любой номер команды, канал по достижимости.
+    "outreach_account_id": "INTEGER",
+    "outreach_channel": "TEXT",
     # Кем человек был в спарсенном чате: creator|admin|member|active. Владельца и
     # админов видно в CRM отдельным полем, а не растворённым в тексте тега: это ЛПР,
     # и писать им надо иначе, чем рядовому участнику.

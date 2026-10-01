@@ -1509,6 +1509,7 @@ async function openAudience(cid){
         <button id="aud-selall" title="поставить галочки на все строки текущего фильтра, кому это ещё разрешено (не выпавшие по другой причине)">☑ выделить все</button>
         <button id="aud-selnone" title="снять со всех строк текущего фильтра — контакт пропускается ИМЕННО в этой кампании">☐ снять все</button>
         <button id="aud-add" title="Дотянуть людей из CRM прямо сюда: фильтры по источнику, городу, каналу и статусу. Выбранные получают тег этой кампании и попадают в рассылку — в настройки кампании ходить не нужно.">➕ добавить из CRM</button>
+        <button id="aud-google" title="Отметить людей галочками в Google Контактах (по ярлыку или поиску) — они попадут в рассылку этой кампании">➕ из Google Контактов</button>
         <span class="hint">${rows.length} строк</span>
       </div>
       <div id="aud-tbl"></div>
@@ -1715,6 +1716,12 @@ async function openAudience(cid){
         if(m)m.innerHTML=`<span style="color:#2e7d32">✅ добавлено в сегмент «${esc(d.tag)}»: ${updated}</span>`;
       });
     };
+    const gBtn=inner.querySelector("#aud-google");
+    if(gBtn)gBtn.onclick=()=>window.openGoogleContacts({campaignId:cid,onApplied:async r=>{
+      await draw();
+      const m=inner.querySelector("#aud-msg");
+      if(m)m.innerHTML=`<span style="color:#2e7d32">✅ из Google: новых ${r.added}, уже были в CRM ${r.existing}${r.skipped.length?`, пропущено ${r.skipped.length}`:""}</span>`;
+    }});
   };
   await draw();
 }
@@ -5370,9 +5377,8 @@ async function viewContacts(v){
         • <b>выгрузка юрлиц</b> — «Наименование», «ИНН», «ФИО руководителя», «Телефон директора» и др.<br>
         Колонка «Чем занимается» важна: на ней держится заход «вы тоже по этой теме?». Контакт с @ником уходит в рассылку сразу, без пробива номера. Дубли обновляются, а не задваиваются.</div>
     </div>
-    <div id="ct-google-panel" class="card" style="display:none;margin-bottom:12px"></div>
     <div id="ct-body"></div>`;
-  $("#ct-google").onclick=()=>window.showGoogleContacts($("#ct-google-panel"));
+  $("#ct-google").onclick=()=>window.openGoogleContacts({});
   $("#ct-new").onclick=async()=>{const name=prompt("Имя контакта (ФИО):");if(!name)return;
     const r=await api("/api/contacts/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({person_name:name})});
     if(r.error){alert(r.error);return;}route();setTimeout(()=>openDossier(r.id),200);};
@@ -10615,7 +10621,7 @@ function renderWizard(){
       <div class="card" style="background:var(--accent-soft);padding:10px;margin:8px 0">
         <b style="font-size:13px">📇 Выбрать ЦА из базы CRM (обогащённые, проверенные)</b>
         <div class="hint" style="margin:4px 0 8px">Отфильтруй по источнику базы / городу / каналу, отметь нужных (или сними лишних) — им присвоится тег сегмента, и кампания пойдёт именно по ним. Контекст (досье, зацепка) агент возьмёт автоматически.</div>
-        <button class="primary" id="wz-pick-crm">📇 Открыть выбор из CRM</button> <span class="hint" id="wz-pick-msg"></span>
+        <button class="primary" id="wz-pick-crm">📇 Открыть выбор из CRM</button> <button id="wz-pick-google" title="ярлыки и поиск по Google Контактам, выбор галочками">👤 Из Google Контактов</button> <span class="hint" id="wz-pick-msg"></span>
       </div>
       ${wzField("wz-keywords","Ключевые слова (для поиска/прослушки чатов)",d.keywords,"куплю квартиру, ищу риелтора, ипотека",2)}
       <div class="card" style="background:var(--panel2);padding:10px;margin:8px 0">
@@ -10674,6 +10680,11 @@ function renderWizard(){
   const gp=$("#wz-go-parser");if(gp)gp.onclick=()=>{save();WZ=null;location.hash="parser";};
   const g2=$("#wz-go-2gis");if(g2)g2.onclick=()=>{save();WZ=null;location.hash="companies";};
   const pc=$("#wz-pick-crm");if(pc)pc.onclick=()=>{save();showAudiencePicker(d);};
+  const pgg=$("#wz-pick-google");if(pgg)pgg.onclick=()=>{save();window.openGoogleContacts({tag:d.audience_tag||"",onApplied:r=>{
+    d.audience_tag=r.tag;wzPersist();
+    const f=document.getElementById("wz-audience_tag");if(f)f.value=r.tag;
+    const pm=document.getElementById("wz-pick-msg");if(pm)pm.textContent=`✅ из Google: ${r.added+r.existing} в сегменте «${r.tag}»`;
+  }});};
   const pg=$("#wz-phones-go");if(pg)pg.onclick=async()=>{const t=$("#wz-phones").value;if(!t.trim())return;pg.disabled=true;pg.textContent="…";
     const srcEl=$("#wz-phones-source");const source=(srcEl&&srcEl.value.trim())||"";
     const r=await api("/api/import/phones",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:t,tag:d.audience_tag,source})});

@@ -4,6 +4,7 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, Form, UploadFile
@@ -36,17 +37,27 @@ def _phone_index(conn):
     return index
 
 
-def make_preview(rows, query):
-    selected = gc.select_rows(rows, query)
-    if len(selected) > 2000:
-        raise gc.ContactsError("Найдено больше 2000 контактов. Уточните маркеры.")
+def make_preview(rows, query=''):
+    """With markers: only matching rows. Without: the whole address book, which the
+    page filters by label and search as the operator types."""
+    if query:
+        selected = gc.select_rows(rows, query)
+        if len(selected) > 2000:
+            raise gc.ContactsError("Найдено больше 2000 контактов. Уточните маркеры.")
+    else:
+        selected = [{**r, 'matched': [], 'person_name': (r.get('given_name') or '').strip()} for r in rows]
+        if len(selected) > 50000:
+            raise gc.ContactsError("В адресной книге больше 50 000 записей. Используйте поиск по маркерам.")
     database.init_db()
     with database.get_conn() as conn:
         index = _phone_index(conn)
     for i, row in enumerate(selected):
         row['id'] = str(i)
         row['existing'] = {p: index.get(p, []) for p in row['phones']}
-        row.pop('aliases', None)
+        # Other stored names stay searchable on the page; the main one is already in name.
+        row['aliases'] = [a for a in dict.fromkeys(row.get('aliases') or []) if a and a != row['name']]
+        row.setdefault('groups', [])
+    labels = Counter(g for r in selected for g in r['groups'])
     token = secrets.token_urlsafe(24)
     with _lock:
         now = time.time()
@@ -56,7 +67,8 @@ def make_preview(rows, query):
         if len(_previews) >= 10:
             del _previews[next(iter(_previews))]
         _previews[token] = dict(expires=now + TTL, rows=selected, query=query)
-    return dict(token=token, scanned=len(rows), matched=len(selected), items=selected)
+    return dict(token=token, scanned=len(rows), matched=len(selected), items=selected,
+                groups=[dict(name=n, count=c) for n, c in sorted(labels.items(), key=lambda x: x[0].casefold())])
 
 
 @router.get('/assets/google-contacts.js')
@@ -67,7 +79,56 @@ def script():
 
 @router.get('/api/google-contacts/status')
 def status():
-    return {'connected': gc.TOKEN_FILE.exists()}
+    import config
+    return {'connected': gc.TOKEN_FILE.exists(),
+            'client': Path(config.GOOGLE_CREDENTIALS_FILE).exists(),
+            'redirect': gc.LOGIN_REDIRECT}
+
+
+@router.post('/api/google-contacts/connect')
+def connect():
+    try:
+        return {'url': gc.auth_start()}
+    except Exception as exc:
+        return _error(exc)
+
+
+@router.post('/api/google-contacts/connect/finish')
+def connect_finish(payload: dict = Body(...)):
+    try:
+        gc.auth_finish(str(payload.get('url') or ''))
+        with _lock:
+            _previews.clear()
+        return {'ok': True}
+    except Exception as exc:
+        return _error(exc)
+
+
+@router.post('/api/google-contacts/disconnect')
+def disconnect():
+    gc.disconnect()
+    with _lock:
+        _previews.clear()
+    return {'ok': True}
+
+
+@router.post('/api/google-contacts/book')
+def book():
+    try:
+        return make_preview(gc.read_contacts())
+    except Exception as exc:
+        return _error(exc)
+
+
+@router.post('/api/google-contacts/csv-book')
+async def csv_book(file: UploadFile = File(...)):
+    try:
+        raw = await file.read(10 * 1024 * 1024 + 1)
+        if len(raw) > 10 * 1024 * 1024:
+            raise gc.ContactsError('Максимальный размер CSV — 10 МБ.')
+        return await run_in_threadpool(lambda: make_preview(gc.from_csv(raw)))
+    except Exception as exc:
+        return _error(exc)
 
 
 @router.post('/api/google-contacts/token')
@@ -106,8 +167,13 @@ async def csv_preview(file: UploadFile = File(...), markers: str = Form(...)):
         return _error(exc)
 
 
-def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''):
-    """Caller holds a write transaction. Recheck duplicates and campaign state."""
+def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name='', tag='',
+                     allow_running=False):
+    """Caller holds a write transaction. Recheck duplicates and campaign state.
+
+    Destination, in order: an existing campaign (contacts are bound to it); a bare
+    segment tag (the campaign wizard, before the campaign exists; contacts stay
+    unbound, like any CRM contact the wizard tags); otherwise a new draft."""
     if not isinstance(choices, list) or not 1 <= len(choices) <= 500:
         raise gc.ContactsError('Выберите от 1 до 500 контактов.')
     rows = {r['id']: r for r in snapshot['rows']}
@@ -120,7 +186,7 @@ def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''
             raise gc.ContactsError('Выбор не соответствует предпросмотру. Повторите поиск.')
         if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
             raise gc.ContactsError('Заполните имя для обращения у каждого выбранного контакта.')
-        if any(m in gc.compact(name) for m in gc.markers(snapshot['query'])):
+        if snapshot['query'] and any(m in gc.compact(name) for m in gc.markers(snapshot['query'])):
             raise gc.ContactsError('Уберите поисковый маркер из имени для обращения.')
         if phone not in seen:
             selected.append((row, phone, name))
@@ -128,12 +194,16 @@ def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''
     camp = None
     if campaign_id:
         camp = conn.execute('SELECT * FROM campaigns WHERE id=?', (int(campaign_id),)).fetchone()
-        if not camp or camp['status'] not in ('draft', 'paused') or camp['archived']:
-            raise gc.ContactsError('Выберите черновик или кампанию на паузе. Работающую сначала остановите в «Кампаниях».')
+        if not camp or camp['archived'] or (camp['status'] not in ('draft', 'paused') and not allow_running):
+            raise gc.ContactsError('Выберите черновик или кампанию на паузе. Чтобы добавить в идущую рассылку, подтвердите это в окне выбора.')
         if not (camp['audience_tag'] or '').strip():
             raise gc.ContactsError('У этой кампании не задана аудитория. Задайте отдельный тег в настройках кампании или создайте новый черновик.')
         if any(c in camp['audience_tag'] for c in ('%', '_')):
             raise gc.ContactsError('В теге кампании есть шаблонные символы % или _. Выберите отдельный буквенный тег.')
+    elif tag:
+        tag = tag.strip()
+        if not tag or len(tag) > 100 or any(c in tag for c in ('%', '_', ',')):
+            raise gc.ContactsError('Тег сегмента: до 100 символов, без % _ и запятой.')
     elif not campaign_name.strip() or len(campaign_name) > 150:
         raise gc.ContactsError('Введите название нового черновика (до 150 символов).')
     index = _phone_index(conn)
@@ -148,6 +218,7 @@ def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''
             if old['deleted_at'] or old['is_test'] or old['status'] != 'new':
                 reason = 'Контакт уже в работе, тестовый или в корзине; повторную рассылку не включали.'
             elif old['outreach_campaign_id'] and old['outreach_campaign_id'] != campaign_id:
+                # Also for a bare tag: a bound contact would never reach the new campaign.
                 reason = 'Контакт закреплён за другой кампанией.'
         if reason:
             skipped.append(dict(name=row['name'], reason=reason))
@@ -155,13 +226,13 @@ def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''
             ready.append((row, phone, name, matches[0]['id'] if matches else None))
     if not ready:
         return dict(ok=True, added=0, existing=0, campaign_id=campaign_id, skipped=skipped)
-    if camp is None:
+    if camp is not None:
+        tag = camp['audience_tag']
+    elif not tag:
         tag = 'Google-' + secrets.token_hex(8)
         campaign_id = conn.execute(
             "INSERT INTO campaigns (name,audience_tag,status,channel,auto_send,daily_limit) "
             "VALUES (?,?,'draft','telegram',0,5)", (campaign_name.strip(), tag)).lastrowid
-    else:
-        tag = camp['audience_tag']
     added = existing = 0
     ids = []
     for row, phone, name, cid in ready:
@@ -175,12 +246,12 @@ def import_selection(conn, snapshot, choices, campaign_id=None, campaign_name=''
             old = conn.execute('SELECT tags FROM contacts WHERE id=?', (cid,)).fetchone()
             tags = database._merge_tags(old['tags'], tag)
             # Preserve CRM name, conversation, source, and enrichment on repeat import.
-            conn.execute("UPDATE contacts SET tags=?,outreach_campaign_id=?, "
+            conn.execute("UPDATE contacts SET tags=?,outreach_campaign_id=COALESCE(?,outreach_campaign_id), "
                          "person_name=COALESCE(NULLIF(person_name,''),?),updated_at=datetime('now') WHERE id=?",
                          (tags, campaign_id, name, cid))
             existing += 1
         ids.append(cid)
-    return dict(ok=True, added=added, existing=existing, campaign_id=campaign_id,
+    return dict(ok=True, added=added, existing=existing, campaign_id=campaign_id, tag=tag,
                 contact_ids=ids, skipped=skipped)
 
 
@@ -196,7 +267,9 @@ def import_contacts(payload: dict = Body(...)):
             conn.execute('BEGIN IMMEDIATE')
             result = import_selection(conn, snapshot, payload.get('selected'),
                                       int(payload['campaign_id']) if payload.get('campaign_id') else None,
-                                      str(payload.get('campaign_name') or ''))
+                                      str(payload.get('campaign_name') or ''),
+                                      str(payload.get('tag') or ''),
+                                      bool(payload.get('allow_running')))
         return result
     except Exception as exc:
         return _error(exc)

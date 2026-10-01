@@ -137,6 +137,8 @@ class ContactTests(unittest.TestCase):
         for state, deleted, test, bound in [('won',None,0,None),('new','2026-01-01',0,None),
                                           ('new',None,1,None),('new',None,0,99)]:
             with database.get_conn() as conn:
+                # A 'won' contact gets a deal; FK forbids deleting the contact first.
+                conn.execute('DELETE FROM deals')
                 conn.execute('DELETE FROM contacts')
                 conn.execute('INSERT INTO contacts(phone,status,deleted_at,is_test,outreach_campaign_id) VALUES (?,?,?,?,?)',
                              ('+79161234567',state,deleted,test,bound))
@@ -150,6 +152,49 @@ class ContactTests(unittest.TestCase):
         for state, tag in [('running','customers'),('paused',None)]:
             cid = self.campaign(state,tag)
             self.assertEqual(self.send_import(self.preview(),campaign_id=cid).status_code,400)
+        running = self.campaign('running', 'customers')
+        self.assertEqual(self.send_import(self.preview(), campaign_id=running, allow_running=True).status_code, 200)
+
+    def test_whole_book_with_labels_from_google(self):
+        people = [
+            {'names':[{'displayName':'Анна Петрова','givenName':'Анна'}],
+             'phoneNumbers':[{'value':'8 916 123-45-67'}],
+             'memberships':[{'contactGroupMembership':{'contactGroupResourceName':'contactGroups/a1'}},
+                            {'contactGroupMembership':{'contactGroupResourceName':'contactGroups/myContacts'}}]},
+            {'names':[{'displayName':'Борис'}]}]
+        rows = gc.from_people(people, {'contactGroups/a1':'01.07.21 ИЮМ'})
+        self.assertEqual(rows[0]['groups'], ['01.07.21 ИЮМ'])
+        data = web.make_preview(rows)
+        self.assertEqual((data['matched'], data['groups']), (2, [{'name':'01.07.21 ИЮМ','count':1}]))
+        self.assertEqual(data['items'][0]['person_name'], 'Анна')
+
+    def test_csv_labels(self):
+        raw = 'Name,Given Name,Labels,Phone 1 - Value\nАнна,Анна,RESOCHI 02.10 ::: * myContacts,+79161234567\n'
+        response = self.client.post('/api/google-contacts/csv-book', files={'file':('c.csv',raw.encode())})
+        self.assertEqual(response.json()['groups'], [{'name':'RESOCHI 02.10','count':1}])
+
+    def test_tag_for_wizard_keeps_contacts_unbound(self):
+        data = web.make_preview([dict(name='Анна', given_name='Анна', phones=['+79161234567'], email=''),
+                                 dict(name='Борис', given_name='Борис', phones=['+79161234568'], email='')])
+        with database.get_conn() as conn:
+            conn.execute("INSERT INTO contacts(phone,status,outreach_campaign_id) VALUES ('+79161234568','new',99)")
+        result = self.client.post('/api/google-contacts/import', json={'token':data['token'], 'tag':'ЭСК 2025',
+            'selected':[dict(id='0',phone='+79161234567',person_name='Анна'), dict(id='1',phone='+79161234568',person_name='Борис')]}).json()
+        self.assertEqual((result['added'], len(result['skipped']), result['tag'], result['campaign_id']), (1, 1, 'ЭСК 2025', None))
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT tags,outreach_campaign_id FROM contacts WHERE phone='+79161234567'").fetchone()
+            self.assertEqual((row['tags'], row['outreach_campaign_id']), ('ЭСК 2025', None))
+            self.assertEqual(conn.execute('SELECT count(*) FROM campaigns').fetchone()[0], 0)
+        bad = self.client.post('/api/google-contacts/import', json={'token':data['token'], 'tag':'a%b',
+            'selected':[dict(id='0',phone='+79161234567',person_name='Анна')]})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_return_address_parsing_and_stale_login(self):
+        self.assertEqual(gc.parse_return('http://localhost:8765/?state=s1&code=4/0Ab-cd&scope=x'), ('4/0Ab-cd','s1'))
+        for bad in ['', 'http://localhost:8765/?error=access_denied&state=s1', 'привет']:
+            with self.assertRaises(gc.ContactsError): gc.parse_return(bad)
+        with patch.object(gc, '_pending', {}):
+            with self.assertRaises(gc.ContactsError): gc.auth_finish('http://localhost:8765/?state=old&code=4/0Ab-cd')
 
     def test_selection_cannot_inject_phone_or_import_stale_preview(self):
         data = self.preview()

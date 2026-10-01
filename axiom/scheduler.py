@@ -160,6 +160,8 @@ FOLLOWUP_EMOJI_AFTER_HOURS = 3
 FOLLOWUP_FINAL_AFTER_HOURS = 9
 FOLLOWUP_STOP_HOURS = 24
 FOLLOWUP_EMOJI = ("🙂", "😊", "👀", "😉", "👋")
+# Наше последнее сообщение старше стольких дней и ответа нет — один финальный дожим.
+FOLLOWUP_STALE_DAYS = 7
 
 # Окно напоминания: за сколько часов до встречи и не позже скольки. Целимся В ЧАС до
 # старта — именно тогда ссылка нужнее всего: раньше она теряется в переписке, позже
@@ -367,6 +369,12 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         # Воскресенье — отдых на исход: дожим это наша инициатива, ждёт понедельника.
         if paused or not database.outreach_allowed(camp, database.contact_tz(c)):
             continue
+        # Кампания на паузе — дожимы тоже стоят (решение Василия, 02.10.2026). Раньше
+        # пауза останавливала только новые заходы, а дожим шёл дальше: в очереди
+        # висели «тук-тук» людям из кампаний, остановленных ещё в июле. 'done' не в
+        # счёт: «аудитория исчерпана» не значит, что дожимать уже написанных нельзя.
+        if camp["status"] == "paused":
+            continue
         # Стартовая трёхшаговая цепочка управляется opener_queue: второе сообщение
         # ждёт короткую паузу, третье — сутки. Общий дожим 5/7/24 часа сюда нельзя
         # подмешивать, иначе человек получит лишние касания между №2 и №3.
@@ -435,6 +443,21 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if streak > len(steps):
             continue  # уже дожали максимум — оставляем планировщику nurture (ниже)
         step = steps[streak - 1]
+        # ДАВНЯЯ ТИШИНА — ОДИН ФИНАЛЬНЫЙ ДОЖИМ И СТОП (решение Василия, 02.10.2026).
+        # Наше последнее сообщение старше недели, ответа нет: промежуточные шаги
+        # («вы на связи?») после такой паузы звучат как забывчивый бот. Шлём сразу
+        # последний шаг лесенки, followup_n = длина лесенки → apply() переводит
+        # контакт в nurture, и больше планировщик его не трогает. Схему «отвечал и
+        # замолчал после предложения» это не касается: там позже суток уже тишина.
+        stale_dt = _parse_dt(last_ts)
+        if (stale_dt and not step.get("stop_after_day")
+                and (now - stale_dt).total_seconds() / 86400 > FOLLOWUP_STALE_DAYS):
+            actions.append(Action(
+                "followup", c["id"], c["tg_user_id"], c["name"] or "",
+                _followup_text(steps[-1], c, len(steps)),
+                followup_n=len(steps), followup_max=len(steps),
+            ))
+            continue
         if step.get("require_read") and not database.last_out_read(conn, c["id"]):
             continue
         if step.get("after_emoji"):
@@ -477,7 +500,8 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
     ).fetchall()
     for k in knocked:
         camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (k["campaign_id"],)).fetchone()
-        if not camp or not database.outreach_allowed(camp, database.contact_tz(k)):
+        if not camp or camp["status"] == "paused" \
+                or not database.outreach_allowed(camp, database.contact_tz(k)):
             continue
         if conn.execute("SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
                         (k["campaign_id"], k["contact_id"])).fetchone():

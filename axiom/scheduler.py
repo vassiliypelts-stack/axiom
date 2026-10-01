@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -151,6 +152,14 @@ KNOCK_NUDGE_AFTER_HOURS = 24
 # кто молчит с 22.09, — веер одинаковых касаний с каждого номера.
 KNOCK_NUDGE_MAX_AGE_HOURS = 72
 KNOCK_NUDGE_EMOJI = ("👀", "😉", "😇", "🙂", "😊", "👋")
+
+# ДОЖИМ ТОГО, КТО ОТВЕЧАЛ, А ПОСЛЕ ПРЕДЛОЖЕНИЯ ЗАМОЛЧАЛ (схема Василия, 02.10.2026):
+# эмодзи через 3 часа, дополнение кампании последним сообщением примерно к 12 часам
+# от предложения (9 часов после эмодзи), а позже суток с предложения — тишина.
+FOLLOWUP_EMOJI_AFTER_HOURS = 3
+FOLLOWUP_FINAL_AFTER_HOURS = 9
+FOLLOWUP_STOP_HOURS = 24
+FOLLOWUP_EMOJI = ("🙂", "😊", "👀", "😉", "👋")
 
 # Окно напоминания: за сколько часов до встречи и не позже скольки. Целимся В ЧАС до
 # старта — именно тогда ссылка нужнее всего: раньше она теряется в переписке, позже
@@ -413,10 +422,10 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
                 # («добавлю главное…») как последнее сообщение, примерно к 12 часам от
                 # предложения. После этого тишина: занят — значит занят. Раньше здесь
                 # шли текст через 7 часов и ещё одно «последнее напоминание» через 48.
-                steps = [{"after_hours": FOLLOWUP_EMOJI_AFTER_HOURS,
+                steps = [{"after_hours": FOLLOWUP_EMOJI_AFTER_HOURS, "stop_after_day": True,
                           "variants": list(FOLLOWUP_EMOJI), "spec_variants": list(FOLLOWUP_EMOJI)},
                          {"after_hours": FOLLOWUP_FINAL_AFTER_HOURS, "variants": [first],
-                          "spec_variants": [first], "after_emoji": True}]
+                          "spec_variants": [first], "after_emoji": True, "stop_after_day": True}]
             else:
                 steps = [{"after_hours": 7, "variants": [first], "spec_variants": [first]},
                          {"after_hours": 48, "variants": last_pool,
@@ -428,6 +437,17 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         step = steps[streak - 1]
         if step.get("require_read") and not database.last_out_read(conn, c["id"]):
             continue
+        if step.get("after_emoji"):
+            # Дополнение идёт только следом за нашим эмодзи. Если последнее наше —
+            # текст, значит человек живёт по старой лесенке и дополнение уже получил:
+            # повторять его нельзя.
+            if re.search(r"[A-Za-zА-Яа-яЁё]", history[-1]["text"] or ""):
+                continue
+        if step.get("stop_after_day"):
+            # Сутки с предложения прошли (ночь или пауза сдвинули шаги) — уже не пишем.
+            offer_dt = _parse_dt(history[-streak]["ts"])
+            if offer_dt and (now - offer_dt).total_seconds() / 3600 > FOLLOWUP_STOP_HOURS:
+                continue
         last_dt = _parse_dt(last_ts)
         if not last_dt:
             continue

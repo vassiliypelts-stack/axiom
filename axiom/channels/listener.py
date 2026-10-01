@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 from pathlib import Path
 
 from telethon import events
@@ -159,6 +160,30 @@ def _knock_pitch_due(contact_id: int) -> bool:
             "SELECT 1 FROM campaign_contacts WHERE contact_id=? AND knock_at IS NOT NULL "
             "AND sent_at IS NULL LIMIT 1", (contact_id,)).fetchone()
     return bool(row)
+
+
+def _knock_dialog_moved_on(contact_id: int) -> bool:
+    """После стука человеку уже писали что-то кроме самого стука.
+
+    Метку knock_at снимает только ветка питча ниже. Если человек ответил на стук
+    ночью, ответ уходит утром через планировщик ночных ответов, и метка остаётся
+    висеть: 29.09.2026 Ася (#17851) ответила «Здравствуйте, да» в 07:51 МСК, утром
+    агент рассказал ей про проект, а 01.10 на её «Не интересует !!!» система
+    приняла отказ за отклик на стук и отправила питч ещё раз."""
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM messages m JOIN campaign_contacts cc ON cc.contact_id=m.contact_id "
+            "WHERE m.contact_id=? AND cc.knock_at IS NOT NULL AND m.direction='out' "
+            "AND m.ts > datetime(cc.knock_at, '+60 seconds') LIMIT 1", (contact_id,)).fetchone()
+    return bool(row)
+
+
+# Отказ в ответ на стук: «нет», «не интересует», «не пишите». Питч на это — ровно то,
+# за что жалуются в спам. Такой ответ отдаём агенту: он видит историю, ответит
+# по-человечески и сам поставит статус «отказ».
+_KNOCK_REFUSAL = re.compile(
+    r"(^\s*нет\b|не\s*интерес|не\s*надо|не\s*нужн|не\s*пиш|отстань|отпишит|спам|"
+    r"не\s*беспоко|удалите|\bstop\b|\bстоп\b)", re.IGNORECASE)
 
 
 def _own_knock_campaign(contact_id: int) -> int | None:
@@ -413,7 +438,19 @@ async def _handle_private(event, acc_id: int) -> None:
     # сообщением: до ответа мы про проект молчим, в этом весь смысл режима. Дальше
     # диалог ведёт обычный агент кампании, как после любого первого касания, поэтому
     # снимаем метку и выходим — агент подключится со следующей реплики человека.
-    own_knock_cid = _own_knock_campaign(contact["id"]) if _knock_pitch_due(contact["id"]) else None
+    knock_due = _knock_pitch_due(contact["id"])
+    if knock_due and (_knock_dialog_moved_on(contact["id"]) or _KNOCK_REFUSAL.search(text_in or "")):
+        # Стук уже отработал (диалог ушёл дальше) или человек отказался — питч не шлём.
+        # Метку снимаем, и ответ готовит обычный агент кампании ниже: он видит всю
+        # историю и отказ обработает как отказ.
+        with database.get_conn() as conn:
+            conn.execute("UPDATE campaign_contacts SET knock_at=NULL, "
+                         "sent_at=COALESCE(sent_at, datetime('now')) "
+                         "WHERE contact_id=? AND knock_at IS NOT NULL", (contact["id"],))
+        _log(f"[#{acc_id}] контакт {contact['id']}: метка стука снята без питча "
+             f"(диалог уже шёл или это отказ) — отвечает агент")
+        knock_due = False
+    own_knock_cid = _own_knock_campaign(contact["id"]) if knock_due else None
     if own_knock_cid:
         # У кампании свой стук («Привет, Илья! Как поживаешь?»). Общий KNOCK_PITCH про
         # Крым сюда не идёт: человек ответил на дружеский вопрос, и ответить ему должен
@@ -428,7 +465,7 @@ async def _handle_private(event, acc_id: int) -> None:
                 f"Контакт #{contact['id']} откликнулся на приветствие. Дальше отвечает "
                 f"агент кампании.", level="good", contact_id=contact["id"],
                 campaign_id=own_knock_cid, account_id=acc_id)
-    elif _knock_pitch_due(contact["id"]):
+    elif knock_due:
         try:
             from channels.warmup import KNOCK_PITCH
             sent = await event.respond(KNOCK_PITCH)

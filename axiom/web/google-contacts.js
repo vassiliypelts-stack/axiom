@@ -292,7 +292,8 @@
         body.tag = (q('[data-tag]').value || '').trim();
         if (!body.tag) { message('Укажите тег сегмента.', true); return; }
       } else if (t) body.campaign_id = t.id;
-      else body.campaign_name = q('[data-camp-name]').value;
+      else if (q('[data-camp-name]')) body.campaign_name = q('[data-camp-name]').value;
+      else { message('Подождите: ещё загружаю список кампаний.', true); return; }
       if (t && t.status === 'running') {
         if (!confirm(`Кампания «${t.name}» сейчас рассылает. ${selected.length} выбранным начнут уходить сообщения по её лимитам. Добавить?`)) return;
         body.allow_running = true;
@@ -318,11 +319,18 @@
     };
 
     // ---- старт ----
+    // Список кампаний тяжёлый (статистика по каждой) и может отвечать долго — окно
+    // его не ждёт: подключение и книга показываются сразу, назначение дорисуется.
+    showConnect(false); q('[data-reload]').hidden = true;
+    dest.innerHTML = '<span class="hint">загружаю кампании…</span>';
+    request(opts.campaignId ? `/api/campaign/${+opts.campaignId}` : '/api/campaigns')
+      .then(list => { campaigns = Array.isArray(list) ? list : list && list.id ? [list] : []; })
+      .catch(() => { campaigns = []; })
+      .finally(() => { drawDest(); if (BOOK) draw(); });
+    if (opts.tag !== undefined) drawDest();
     try {
-      const [status, list] = await Promise.all([request('/api/google-contacts/status'), request('/api/campaigns')]);
-      campaigns = Array.isArray(list) ? list : [];
+      const status = await request('/api/google-contacts/status');
       q('[data-redirect]').textContent = status.redirect || 'http://localhost:8765/';
-      drawDest();
       if (fresh() && (BOOK.source === 'csv' || status.connected)) {
         q('[data-state]').textContent = BOOK.source === 'csv' ? 'файл CSV' : 'подключено';
         showConnect(!status.connected && BOOK.source !== 'csv'); drawLabels(); draw();

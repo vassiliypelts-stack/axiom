@@ -467,14 +467,16 @@ async def _handle_private(event, acc_id: int) -> None:
                 campaign_id=own_knock_cid, account_id=acc_id)
     elif knock_due:
         try:
-            from channels.warmup import KNOCK_PITCH
-            sent = await event.respond(KNOCK_PITCH)
+            from channels.warmup import personal_knock_pitch
+            # Первая фраза — от профиля человека, если досье есть (модель, до 40 с).
+            pitch = await asyncio.to_thread(personal_knock_pitch, contact["id"])
+            sent = await event.respond(pitch)
         except Exception as e:  # noqa: BLE001
             _log(f"[#{acc_id}] питч после стука не ушёл: {e}")
         else:
             with database.get_conn() as conn:
                 # Без account_id и id сообщения пульт рисует ушедший питч «не доставлено».
-                database.add_message(conn, contact["id"], "out", KNOCK_PITCH, intent=None,
+                database.add_message(conn, contact["id"], "out", pitch, intent=None,
                                      account_id=acc_id,
                                      tg_msg_ids=[sent.id] if getattr(sent, "id", None) else None)
                 database.set_status(conn, contact["id"], "messaged")

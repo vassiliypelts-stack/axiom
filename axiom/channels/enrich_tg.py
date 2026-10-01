@@ -52,7 +52,8 @@ from db import database
 
 POSTS = 8               # сколько последних постов канала читаем (сверх закрепа)
 POST_CHARS = 700        # обрезка одного поста — модели хватает, токены не жжём
-PAUSE = (3.0, 8.0)      # пауза между людьми
+PAUSE = (3.0, 8.0)      # пауза между людьми (чтение боевым номером)
+WEB_PAUSE = (1.0, 2.5)  # пауза между людьми при чтении с публичных страниц t.me
 CONNECT_TIMEOUT = 25
 ACC_TRIES = 4           # сколько аккаунтов перебрать, если у первых мёртвый прокси
 
@@ -69,7 +70,11 @@ class TgProfile(BaseModel):
     niche: str | None = Field(description="Чем занимается, род деятельности. Кратко, до 10 слов.")
     social_role: str | None = Field(description="Позиция в социуме, ОДНО из: предприниматель, эксперт/тренер, наёмный, госслужащий, инвестор, другое. Если непонятно — null.")
     interests: str | None = Field(description="Ключевые темы, о которых пишет, через «; ». До 5 штук.")
-    hook: str | None = Field(description="ОДНА персональная зацепка (1 фраза) для первого сообщения от поставщика ИИ-автоматизации. Опирайся на то, что он реально пишет. Без воды.")
+    # Зацепка — факт о человеке, а не продажа. Раньше поле просило «зацепку для
+    # поставщика ИИ-автоматизации», и путешественнице из ГГКрыма в карточку легло
+    # «могу показать, как делиться моментами автоматически» — к земле в Крыму это
+    # не пришьёшь. Продукт знает кампания; досье описывает человека.
+    hook: str | None = Field(description="ОДНА конкретная деталь о человеке из его текста (чем живёт, что любит, чем гордится, чем занимается), на которую можно естественно сослаться в разговоре. 1 фраза, без продажи и без оценок. Если опереться не на что — null.")
 
 
 def _channel_from_bio(bio: str | None) -> str | None:
@@ -83,18 +88,86 @@ def _channel_from_bio(bio: str | None) -> str | None:
     return None
 
 
-def _targets(ids: list[int] | None, limit: int | None) -> list[dict]:
-    """Кого обогащаем: есть tg_user_id (значит человек в Telegram найден) и ещё не
-    обогащали из TG. Порядок — свежие сверху: их обычно и ждут в работе."""
-    where = ["tg_user_id IS NOT NULL", "deleted_at IS NULL"]
+def _web_page(url: str) -> str | None:
+    """HTML публичной страницы t.me. None — не ответила (сеть, таймаут, блок)."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return resp.read(600_000).decode("utf-8", "ignore")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _html_text(fragment: str) -> str:
+    import html
+    fragment = re.sub(r"<br\s*/?>", "\n", fragment)
+    return html.unescape(re.sub(r"<[^>]+>", " ", fragment)).strip()
+
+
+def _web_bio(username: str) -> tuple[bool, str | None]:
+    """(ответила ли страница, описание профиля) по публичной t.me/<ник>.
+
+    Зачем через веб, а не боевым номером: страницу видит любой браузер без входа,
+    и Telegram не связывает это чтение ни с одним нашим аккаунтом — PeerFlood и
+    заморозку за него не дадут. Раньше bio брался только из пробива по телефону,
+    и люди, импортированные из Telegram по нику (весь ГГКрым, ~1000 человек),
+    оставались без описания: из 80 случайных у 17 оно было, в базе — ни у одного."""
+    page = _web_page(f"https://t.me/{username}")
+    if page is None:
+        return False, None
+    m = re.search(r'<div class="tgme_page_description[^"]*">(.*?)</div>', page, re.S)
+    if not m:
+        return True, None
+    # Ссылки в описании страница рисует тегами <a> — вытаскиваем их как текст, чтобы
+    # _channel_from_bio нашёл канал так же, как в bio из пробива.
+    raw = m.group(1)
+    links = " ".join(re.findall(r'href="(https?://t\.me/[^"]+)"', raw))
+    text = _html_text(raw)
+    if links and links not in text:
+        text = f"{text} {links}".strip()
+    return True, (text or None)
+
+
+def _web_channel(name: str) -> tuple[str | None, list[str]]:
+    """(закреп, последние посты) публичного канала по веб-превью t.me/s/<канал>.
+
+    Превью есть у публичных каналов, у которых владелец его не выключил. Нет превью —
+    (None, []), и дальше решает вызывающий (боевым номером читаем только тех, у кого
+    нет ника, — см. run)."""
+    page = _web_page(f"https://t.me/s/{name}")
+    if not page or "tgme_widget_message_text" not in page:
+        return None, []
+    pinned = None
+    pm = re.search(r'tgme_channel_pinned[^>]*>.*?tgme_widget_message_text[^>]*>(.*?)</div>',
+                   page, re.S)
+    if pm:
+        pinned = _html_text(pm.group(1))[:1200] or None
+    posts = [_html_text(t)[:POST_CHARS] for t in
+             re.findall(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', page, re.S)]
+    posts = [p for p in posts if p]
+    return pinned, posts[-POSTS:][::-1]          # превью идёт от старых к новым
+
+
+def _targets(ids: list[int] | None, limit: int | None, web_only: bool = False) -> list[dict]:
+    """Кого обогащаем: человек в Telegram найден (tg_user_id) ИЛИ известен его ник, и
+    ещё не обогащали из TG. Ник — это импорт из Telegram (парсинг чатов/каналов): там
+    tg_user_id часто пуст, а читать профиль по нику можно с публичной страницы.
+    Порядок: сначала те, кому ещё не писали (status='new'), — им досье нужно до
+    первого сообщения; внутри — свежие сверху."""
+    where = ["(tg_user_id IS NOT NULL OR COALESCE(username,'')<>'')", "deleted_at IS NULL"]
     params: list = []
     if ids:
         where.append(f"id IN ({','.join('?' * len(ids))})")
         params += ids
     else:
         where.append("tg_enriched_at IS NULL")
+        where.append("COALESCE(is_test,0)=0")
+    if web_only:
+        where.append("COALESCE(username,'')<>''")
     sql = ("SELECT id, name, person_name, username, tg_user_id, bio, niche, offer "
-           f"FROM contacts WHERE {' AND '.join(where)} ORDER BY id DESC")
+           f"FROM contacts WHERE {' AND '.join(where)} "
+           "ORDER BY (status='new') DESC, id DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
     with database.get_conn() as conn:
@@ -150,11 +223,27 @@ def _prompt(acc: dict, bio: str | None, pinned: str | None, posts: list[str]) ->
 
 
 async def _one(client, c: dict) -> tuple[bool, str]:
+    """Обогатить одного. client может быть None: у кого есть ник, всё читаем с
+    публичных страниц t.me, боевой номер не нужен."""
     bio = (c.get("bio") or "").strip() or None
+    uname = (c.get("username") or "").strip().lstrip("@")
+    if uname and not bio:
+        answered, web_bio = await asyncio.to_thread(_web_bio, uname)
+        if not answered:
+            # t.me не ответила — это не «пустой профиль». Метку не ставим: человек
+            # останется в очереди и прочитается следующим проходом.
+            return False, "t.me не ответила — попробую позже"
+        if web_bio:
+            bio = web_bio
+            with database.get_conn() as conn:
+                conn.execute("UPDATE contacts SET bio=? WHERE id=? AND COALESCE(bio,'')=''",
+                             (bio, c["id"]))
     chan = _channel_from_bio(bio)
     pinned, posts = (None, [])
     if chan:
-        pinned, posts = await _read_channel(client, chan)
+        pinned, posts = await asyncio.to_thread(_web_channel, chan)
+        if not pinned and not posts and client is not None:
+            pinned, posts = await _read_channel(client, chan)
     if not bio and not pinned and not posts:
         with database.get_conn() as conn:
             conn.execute("UPDATE contacts SET tg_enriched_at=datetime('now'), "
@@ -199,11 +288,12 @@ async def _one(client, c: dict) -> tuple[bool, str]:
     return True, f"{note} → {data.social_role or '?'}; {(data.offer or '—')[:50]}"
 
 
-async def run(ids: list[int] | None, limit: int | None, dry: bool) -> None:
+async def run(ids: list[int] | None, limit: int | None, dry: bool,
+              web_only: bool = False) -> None:
     database.init_db()
-    people = _targets(ids, limit)
+    people = _targets(ids, limit, web_only)
     if not people:
-        print(json.dumps({"ok": False, "error": "некого обогащать: нужен пробитый в TG контакт"},
+        print(json.dumps({"ok": False, "error": "некого обогащать: нужен контакт с ником или пробитый в TG"},
                          ensure_ascii=False))
         return
     if dry:
@@ -213,6 +303,27 @@ async def run(ids: list[int] | None, limit: int | None, dry: bool) -> None:
                   f"канал:{'@' + chan if chan else 'нет'}")
         print(json.dumps({"ok": True, "dry": True, "would": len(people)}, ensure_ascii=False))
         return
+
+    # Люди с ником читаются с публичных страниц t.me — без единого запроса от наших
+    # аккаунтов. Их обрабатываем первыми и без подключения: подключение боевого
+    # номера нужно только тем, у кого ника нет (нашли по телефону, есть tg_user_id).
+    web_people = [c for c in people if (c.get("username") or "").strip()]
+    tg_people = [c for c in people if not (c.get("username") or "").strip()]
+    done = failed = 0
+    for c in web_people:
+        try:
+            ok, msg = await _one(None, c)
+        except Exception as e:  # noqa: BLE001 — один лид не должен рвать проход
+            ok, msg = False, f"ошибка: {str(e)[:70]}"
+        print(f"[#{c['id']}] {c.get('name') or ''}: {'✅' if ok else '✗'} {msg}")
+        done += 1 if ok else 0
+        failed += 0 if ok else 1
+        await asyncio.sleep(random.uniform(*WEB_PAUSE))
+    if not tg_people:
+        print(json.dumps({"ok": True, "enriched": done, "failed": failed, "account": None},
+                         ensure_ascii=False))
+        return
+    people = tg_people
 
     # Аккаунт для чтения: любой живой боевой. Читаем чужие публичные каналы — это
     # безопаснее вступлений, но всё равно с боевого номера, поэтому дозируем.
@@ -272,7 +383,6 @@ async def run(ids: list[int] | None, limit: int | None, dry: bool) -> None:
         return
 
     acc = {"id": acc_id}
-    done = failed = 0
     try:
         for c in people:
             try:
@@ -300,13 +410,15 @@ def main() -> None:
     p.add_argument("--ids", help="через запятую id контактов")
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--dry", action="store_true", help="показать кандидатов, ничего не менять")
+    p.add_argument("--web-only", action="store_true",
+                   help="только люди с ником, чтение с публичных t.me — без наших аккаунтов")
     args = p.parse_args()
     ids = [int(x) for x in args.ids.split(",") if x.strip()] if args.ids else None
     # Последний рубеж: пульт ждёт JSON последней строкой. Без этого любое падение
     # (например ConnectionError от Telethon) прилетало оператору сырым трейсбеком
     # в alert'е и читалось как «не отчитался».
     try:
-        asyncio.run(run(ids, args.limit, args.dry))
+        asyncio.run(run(ids, args.limit, args.dry, args.web_only))
     except KeyboardInterrupt:
         raise
     except Exception as e:  # noqa: BLE001

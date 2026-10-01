@@ -356,6 +356,8 @@ def _contact_dict(row) -> dict:
             "offer",            # что он сам продаёт
             "bio",              # bio из Telegram-профиля
             "hook",             # персональная зацепка
+            "interests",        # о чём пишет в канале (enrich_tg)
+            "social_role",      # предприниматель / наёмный / эксперт… (enrich_tg)
             "person_role")      # должность
     out = {}
     for k in keys:

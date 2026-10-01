@@ -2770,6 +2770,30 @@ def _proxy_scheduler() -> None:
                     _log_run("tgenrich_scheduler", res2)
         except Exception as e:  # noqa: BLE001
             print(f"[tgcheck scheduler] {e}")
+        # --- обогащение досье из Telegram (bio + личный канал) ---
+        # Цепочка «после пробива» выше покрывает только найденных по ТЕЛЕФОНУ, и то
+        # если пробив включён. Импорт из Telegram по нику (парсинг чатов/каналов) в неё
+        # не попадал никогда: на 02.10.2026 из 1030 человек очереди ГГКрыма профиль
+        # открывали у 156. Людей с ником enrich_tg читает с публичных страниц t.me, без
+        # наших аккаунтов, поэтому капаем порциями постоянно: досье должно быть готово
+        # до первого сообщения, а агент опирается на него в разговоре.
+        try:
+            with database.get_conn() as conn:
+                eauto = database.get_setting(conn, "tgenrich_auto", "on")
+                eint = int(database.get_setting(conn, "tgenrich_interval_min", "30"))
+                elast = database.get_setting(conn, "tgenrich_last_run_ts", "0")
+                elimit = int(database.get_setting(conn, "tgenrich_limit", "40"))
+            if eauto != "off" and (time.time() - float(elast or 0)) >= eint * 60:
+                with database.get_conn() as conn:
+                    database.set_setting(conn, "tgenrich_last_run_ts", str(time.time()))
+                res = subprocess.run([sys.executable, "-m", "channels.enrich_tg", "--web-only",
+                                      "--limit", str(max(5, min(elimit, 200)))],
+                                     cwd=str(BASE_DIR.parent), timeout=3600, env=env,
+                                     capture_output=True, text=True, encoding="utf-8",
+                                     errors="replace")
+                _log_run("tgenrich_scheduler", res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[tgenrich scheduler] {e}")
         # --- расписания парсинга (страница «Парсер» → «⏱ Постоянные задачи») ---
         # Несколько независимых задач, каждая со своим интервалом — не общий тумблер,
         # а таблица parse_schedules: заводится/чистится оператором, планировщик только

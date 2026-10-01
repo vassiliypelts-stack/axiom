@@ -608,6 +608,29 @@ def _team_blocked_reason(cid: int) -> str:
     return head + "\n\n" + "\n\n".join(parts)
 
 
+def _tme_user_check(username: str) -> bool | None:
+    """Есть ли такой ник в Telegram — по публичной странице t.me, без аккаунта.
+
+    У существующего ника на странице есть блок tgme_page_title (имя), у свободного —
+    только заглушка «Contact @ник». None — t.me не ответила, вердикта нет."""
+    import re
+    import urllib.request
+    u = (username or "").strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{4,32}", u):
+        return False
+    req = urllib.request.Request(f"https://t.me/{u}", headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read(200_000).decode("utf-8", "ignore")
+    except Exception:  # noqa: BLE001 — сеть/таймаут: не знаем, значит не хороним
+        return None
+    return "tgme_page_title" in html
+
+
+async def _tme_user_exists(username: str) -> bool | None:
+    return await asyncio.to_thread(_tme_user_check, username)
+
+
 def _now_sql() -> str:
     """Текущее UTC-время в том же формате, что datetime('now') в SQLite."""
     import datetime as _d
@@ -1295,6 +1318,7 @@ async def run(cid: int, limit: int, test: bool = False,
     rr = 0
     taken_by_others = 0        # разобрал параллельный заход — это не сбой отправки
     out_of_quota = False       # уперлись в дневные лимиты аккаунтов, а не в бан
+    search_blind: list[str] = []  # номера, от которых Telegram прячет живые ники
     for row in rows:
         if sent >= cap:
             break
@@ -1385,14 +1409,31 @@ async def run(cid: int, limit: int, test: bool = False,
                       f"аккаунт выведен из этого захода, счётчик спама не трогаю")
                 s["remaining"] = 0
             else:
-                print(f"[{s['label']}] ⏭ контакт {row['id']}: не нашёл в Telegram ({e})")
                 # Ника нет в Telegram совсем — это навсегда, а не сбой захода. Без
                 # отметки контакт оставался 'new' и каждый заход вставал в голову
                 # очереди: 28.09 по 9407 три мёртвых ника съедали весь заход «до 4»,
                 # и до живых контактов рассылка не доходила. Заодно номер впустую
                 # долбил поиск — лишние неудачные резолвы тоже признак спамера.
-                if ("No user has" in str(e)
-                        or type(e).__name__ in ("UsernameNotOccupiedError", "UsernameInvalidError")):
+                not_found = ("No user has" in str(e) or type(e).__name__ in
+                             ("UsernameNotOccupiedError", "UsernameInvalidError"))
+                # НО «No user has» — ответ Telegram ЭТОМУ номеру, а не правда о нике.
+                # Придержанному номеру (PeerFlood, заморозка) Telegram отвечает так на
+                # вполне живые ники. 01.10.2026 по 9407 Василий060 за утро «похоронил»
+                # 19 живых людей подряд (@willerhouse_shtory, @mcherkezova…) — у всех
+                # открывается t.me-страница с тем же именем, что в CRM. Перед отметкой
+                # спрашиваем публичную t.me: страница есть — слеп номер, а не ник.
+                tme = (await _tme_user_exists(row["username"])
+                       if not_found and row["username"] else None)
+                if tme:
+                    print(f"[{s['label']}] 🙈 Telegram прячет от этого номера живой ник "
+                          f"@{row['username']} (на t.me он есть) — номер ограничен в поиске, "
+                          f"выведен из захода; контакт не трогаю")
+                    s["remaining"] = 0
+                    search_blind.append(s["label"])
+                    continue
+                print(f"[{s['label']}] ⏭ контакт {row['id']}: не нашёл в Telegram ({e})")
+                # tme is None — t.me не ответила: не знаем, не хороним.
+                if not_found and (tme is False or not row["username"]):
                     with database.get_conn() as conn:
                         # tg_checked_at обязателен: без него database._repair_unverified_has_tg
                         # при следующем init_db считает вердикт мусором и вернёт 'unknown'.
@@ -1740,6 +1781,10 @@ async def run(cid: int, limit: int, test: bool = False,
             # пугающее «отправлено 0 — проверь бан», хотя сообщения уходили.
             why = ("дневные лимиты всех аккаунтов на сегодня исчерпаны — заход продолжится завтра"
                    if out_of_quota else
+                   f"Telegram ограничил поиск людей для {', '.join(search_blind)}: живые ники "
+                   f"этим номерам отвечают «такого нет». Контакты не тронуты, достанутся "
+                   f"номерам без ограничений."
+                   if search_blind else
                    "ни одного не ушло. Причина обычно одна из двух: некому слать (см. разбор ниже) "
                    "или отправка падает на резолве контакта — открой лог сервера. "
                    "Флуд-лимит и бан пишутся в колокольчик отдельными строками.")

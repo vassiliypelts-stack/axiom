@@ -10984,14 +10984,16 @@ def boost_action_cancel(aid: int) -> JSONResponse:
 
 
 @app.post("/api/boost/scan_now")
-def boost_scan_now() -> JSONResponse:
-    """Проверить каналы прямо сейчас (не ждать 5 минут). План строится в фоне:
+def boost_scan_now(payload: dict = Body(default={})) -> JSONResponse:
+    """Проверить каналы прямо сейчас (не ждать 5 минут). {"last": N} — поддержать
+    последние N постов каждого канала, даже старые. План строится в фоне:
     генерация комментариев занимает до минуты на пост."""
     from channels import channel_boost
+    last_n = max(0, min(int(payload.get("last") or 0), 10))
 
     def _go():
         try:
-            print(f"[boost] ручной скан: {channel_boost.scan(force=True)}")
+            print(f"[boost] ручной скан: {channel_boost.scan(force=True, last_n=last_n)}")
         except Exception as e:  # noqa: BLE001
             print(f"[boost] ручной скан упал: {e}")
     threading.Thread(target=_go, daemon=True).start()

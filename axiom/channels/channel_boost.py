@@ -297,7 +297,7 @@ def _run(coro, timeout: float = 90.0):
     return asyncio.run_coroutine_threadsafe(coro, listener._LOOP).result(timeout=timeout)
 
 
-async def _channel_snapshot(client, username: str, max_age_h: float) -> dict:
+async def _channel_snapshot(client, username: str, max_age_h: float, last_n: int = 0) -> dict:
     """Свежие посты канала + число подписчиков + есть ли обсуждение + разрешённые реакции."""
     from telethon.tl.functions.channels import GetFullChannelRequest
     from telethon.tl.types import ChatReactionsNone, ChatReactionsSome, ReactionEmoji
@@ -312,9 +312,11 @@ async def _channel_snapshot(client, username: str, max_age_h: float) -> dict:
         allowed = {r.emoticon.replace("️", "") for r in ar.reactions if isinstance(r, ReactionEmoji)}
     else:
         allowed = None
-    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=max_age_h)
+    # last_n — разовая поддержка последних постов кнопкой, без оглядки на возраст.
+    cutoff = (_dt.datetime.min.replace(tzinfo=_dt.timezone.utc) if last_n
+              else _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=max_age_h))
     posts: dict[object, dict] = {}
-    async for m in client.iter_messages(ent, limit=15):
+    async for m in client.iter_messages(ent, limit=max(15, last_n * 4)):
         if getattr(m, "action", None) or not m.date or m.date < cutoff:
             continue
         # Альбом = несколько сообщений с одним grouped_id; поддерживаем его один раз,
@@ -326,7 +328,7 @@ async def _channel_snapshot(client, username: str, max_age_h: float) -> dict:
             posts[key] = {"msg_id": m.id, "text": txt, "date": m.date.replace(tzinfo=None)}
     return {"title": getattr(ent, "title", username), "subs": int(getattr(fc, "participants_count", 0) or 0),
             "linked": bool(getattr(fc, "linked_chat_id", None)), "allowed": allowed,
-            "posts": sorted(posts.values(), key=lambda p: p["msg_id"])}
+            "posts": sorted(posts.values(), key=lambda p: p["msg_id"])[-last_n if last_n else 0:]}
 
 
 async def _ensure_joined(client, ent) -> None:
@@ -389,8 +391,10 @@ async def _do_comment(client, username: str, msg_id: int, text: str) -> int:
 
 # ------------------------------------------------------------------- план --
 
-def scan(force: bool = False) -> dict:
-    """Найти новые посты своих каналов и расписать под ними реакции/комментарии."""
+def scan(force: bool = False, last_n: int = 0) -> dict:
+    """Найти новые посты своих каналов и расписать под ними реакции/комментарии.
+    last_n > 0 — взять последние N постов каждого канала независимо от возраста
+    (кнопка «Поддержать последние посты»). Уже поддержанные посты не повторяются."""
     from channels import listener
 
     with database.get_conn() as conn:
@@ -406,16 +410,21 @@ def scan(force: bool = False) -> dict:
 
     result = {"planned_posts": 0, "reacts": 0, "comments": 0, "channels": {}}
     for ch in cfg["channels"]:
-        # Смотреть канал берём случайный аккаунт, каждый раз другой.
-        reader = random.choice(accs)
-        client = listener.CLIENTS.get(reader["id"])
-        if client is None:
-            continue
-        try:
-            snap = _run(_channel_snapshot(client, ch, cfg["max_age_h"]))
-        except Exception as e:  # noqa: BLE001
-            result["channels"][ch] = f"не прочитался: {str(e)[:120]}"
-            print(f"[boost] @{ch}: {e}")
+        # Смотреть канал берём случайный аккаунт, каждый раз другой. Не прочитал —
+        # пробуем следующего: у отдельного номера бывает свой лимит на поиск по
+        # username (01.10.2026 @mindcode50 у одного «не существовал», у другого нашёлся).
+        snap = None
+        for reader in random.sample(accs, k=min(3, len(accs))):
+            client = listener.CLIENTS.get(reader["id"])
+            if client is None:
+                continue
+            try:
+                snap = _run(_channel_snapshot(client, ch, cfg["max_age_h"], last_n))
+                break
+            except Exception as e:  # noqa: BLE001
+                result["channels"][ch] = f"не прочитался: {str(e)[:120]}"
+                print(f"[boost] @{ch} (#{reader['id']}): {e}")
+        if snap is None:
             continue
         with database.get_conn() as conn:
             done = {r["msg_id"] for r in conn.execute(

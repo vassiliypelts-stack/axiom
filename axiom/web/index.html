@@ -2297,6 +2297,7 @@ async function viewAgents(v){
         <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="bs-q"> только вопросы по сути</label>
         <button id="bs-save">сохранить</button>
         <button id="bs-scan" title="Проверить каналы сейчас, не дожидаясь 5 минут">🔄 Проверить посты</button>
+        <button id="bs-last" title="Расписать реакции под последними постами каждого канала, даже старыми. Уже поддержанные не повторяются">⚡ Поддержать 3 последних поста</button>
         <button id="bs-log">🧾 Журнал</button>
         <span class="hint" id="bs-msg"></span>
       </div>
@@ -2521,6 +2522,8 @@ async function viewAgents(v){
     $("#bs-msg").textContent="✓ сохранено · "+(r.enabled?"включено, каналов: "+(r.channels||[]).length:"выключено");};
   $("#bs-scan").onclick=async()=>{await api("/api/boost/scan_now",{method:"POST"});
     $("#bs-msg").textContent="проверяю каналы… новые посты появятся в журнале через минуту";};
+  $("#bs-last").onclick=async()=>{await api("/api/boost/scan_now",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({last:3})});
+    $("#bs-msg").textContent="расписываю реакции под последними постами… через минуту смотри журнал, первые реакции через несколько минут";};
   $("#bs-log").onclick=async()=>{
     const wrap=document.createElement("div");wrap.className="org-mform-wrap";
     wrap.innerHTML='<div class="org-mform-inner" style="max-width:820px"><div style="display:flex;justify-content:space-between;gap:12px"><b style="font-size:17px">📣 Поддержка каналов: журнал</b><button class="bl-close">✕</button></div><div class="hint" style="margin:6px 0 10px">Время по плану. «в очереди» ещё не сделано, комментарий можно снять до отправки.</div><div id="bl-list">загружаю…</div></div>';

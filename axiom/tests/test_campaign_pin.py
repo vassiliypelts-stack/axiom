@@ -61,6 +61,23 @@ class PinTests(unittest.TestCase):
         self.assertEqual(cs._pick_for(rows[self.tg_a], live, 1)['id'], self.a)
         self.assertIsNone(cs._pick_for(rows[self.tg_b], live, 0))
 
+    def test_window_follows_contacts_own_timezone(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        h = datetime.now(ZoneInfo('Asia/Almaty')).hour
+        with database.get_conn() as conn:
+            # Окно — текущий час по Алматы; в Москве сейчас на 2 часа раньше.
+            conn.execute("UPDATE campaigns SET work_hours_start=?, work_hours_end=?, "
+                         "work_hours_tz='Europe/Moscow' WHERE id=?",
+                         (f"{h:02d}:00", f"{h:02d}:59", self.cid))
+            conn.execute("UPDATE contacts SET work_tz='Asia/Almaty' WHERE id=?", (self.wa_b,))
+            camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (self.cid,)).fetchone()
+            kz = conn.execute("SELECT * FROM contacts WHERE id=?", (self.wa_b,)).fetchone()
+            ru = conn.execute("SELECT * FROM contacts WHERE id=?", (self.tg_a,)).fetchone()
+            self.assertEqual(database.campaign_tzs(conn, camp), [None, 'Asia/Almaty'])
+        self.assertTrue(database.in_work_hours(camp, database.contact_tz(kz)))
+        self.assertFalse(database.in_work_hours(camp, database.contact_tz(ru)))
+
     def test_whatsapp_queue_takes_only_whatsapp_people_from_their_number(self):
         camp = cs._load_campaign(self.cid)
         queued = cs.queue_whatsapp(self.cid, camp, 10, tg_too=True)

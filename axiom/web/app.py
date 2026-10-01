@@ -3334,12 +3334,14 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
 
     # Сколько рабочего времени осталось. Часы кампании заданы в её поясе, поэтому
     # «сейчас» берём там же — иначе на границе суток план съезжает.
-    tz = camp["work_hours_tz"] or "Europe/Moscow"
-    try:
-        from zoneinfo import ZoneInfo
-        now_local = _dt.datetime.now(ZoneInfo(tz))
-    except Exception:  # noqa: BLE001 — нет tzdata: считаем по МСК, как раньше
-        now_local = _dt.datetime.utcnow() + _dt.timedelta(hours=3)
+    # У людей кампании бывают свои пояса (contacts.work_tz, Казахстан): план идёт по
+    # тому, где день продвинулся дальше всего, а кому сейчас рано — отсеет заход.
+    def _now_in(tz):
+        try:
+            from zoneinfo import ZoneInfo
+            return _dt.datetime.now(ZoneInfo(tz))
+        except Exception:  # noqa: BLE001 — нет tzdata: считаем по МСК, как раньше
+            return _dt.datetime.utcnow() + _dt.timedelta(hours=3)
 
     def _hm(raw, default):
         try:
@@ -3351,9 +3353,14 @@ def _auto_send_plan(conn, camp) -> tuple[int, str]:
 
     start = _hm(camp["work_hours_start"], "09:00")
     end = _hm(camp["work_hours_end"], "21:00")
-    cur = now_local.hour * 60 + now_local.minute
-    if not (start <= cur <= end):
+    curs = []
+    for z in database.campaign_tzs(conn, camp):
+        now_local = _now_in(z or camp["work_hours_tz"] or "Europe/Moscow")
+        curs.append(now_local.hour * 60 + now_local.minute)
+    open_now = [c for c in curs if start <= c <= end]
+    if not open_now:
         return 0, "вне рабочих часов"
+    cur = max(open_now)
 
     # Доля окна, которая уже прошла → сколько сообщений «должно было» уйти к этому
     # моменту. Берём разницу с фактом: отстали — досылаем, идём по плану — ждём.
@@ -3510,7 +3517,9 @@ def _campaign_scheduler() -> None:
                     "ORDER BY COALESCE(auto_last_run_ts,0)"
                 ).fetchall()
             for camp in rows:
-                if not database.outreach_allowed(camp):
+                with database.get_conn() as conn:
+                    open_now = database.outreach_open_anywhere(conn, camp)
+                if not open_now:
                     continue          # вне окна кампании или воскресенье — молча ждём, это не сбой
                 if camp["auto_daily"]:
                     # НОВЫЙ режим: одно число «сколько в день», темп считает планировщик.

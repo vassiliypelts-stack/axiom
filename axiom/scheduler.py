@@ -356,7 +356,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
             "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
             (camp["id"], c["id"])).fetchone() is not None
         # Воскресенье — отдых на исход: дожим это наша инициатива, ждёт понедельника.
-        if paused or not database.outreach_allowed(camp):
+        if paused or not database.outreach_allowed(camp, database.contact_tz(c)):
             continue
         # Стартовая трёхшаговая цепочка управляется opener_queue: второе сообщение
         # ждёт короткую паузу, третье — сутки. Общий дожим 5/7/24 часа сюда нельзя
@@ -405,9 +405,22 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
             # «ИИ‑Прорыв» пишет знакомым Василия на «ты», и «вы» от друга режет глаз.
             first, _, last = (p.strip() for p in _split_extra(extra))
             last_pool = [last] if last else deslop.LAST_NUDGE
-            steps = [{"after_hours": 7, "variants": [first], "spec_variants": [first]},
-                     {"after_hours": 48, "variants": last_pool,
-                      "spec_variants": last_pool, "require_read": True}]
+            if any(r["direction"] == "in" for r in history):
+                # ЧЕЛОВЕК УЖЕ ОТВЕЧАЛ, а после нашего предложения замолчал (схема
+                # Василия, 02.10.2026). Он живой и личку читает — длинный дожим тут
+                # лишний. Через 3 часа одно эмодзи: поднимает чат и выглядит как
+                # человек, а не рассылка. Молчит дальше — дополнение кампании
+                # («добавлю главное…») как последнее сообщение, примерно к 12 часам от
+                # предложения. После этого тишина: занят — значит занят. Раньше здесь
+                # шли текст через 7 часов и ещё одно «последнее напоминание» через 48.
+                steps = [{"after_hours": FOLLOWUP_EMOJI_AFTER_HOURS,
+                          "variants": list(FOLLOWUP_EMOJI), "spec_variants": list(FOLLOWUP_EMOJI)},
+                         {"after_hours": FOLLOWUP_FINAL_AFTER_HOURS, "variants": [first],
+                          "spec_variants": [first], "after_emoji": True}]
+            else:
+                steps = [{"after_hours": 7, "variants": [first], "spec_variants": [first]},
+                         {"after_hours": 48, "variants": last_pool,
+                          "spec_variants": last_pool, "require_read": True}]
         else:
             steps = FOLLOWUP_STEPS
         if streak > len(steps):
@@ -433,7 +446,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
     # выбор аккаунта по последнему исходящему такого человека не находил.
     fmt = "%Y-%m-%d %H:%M:%S"
     knocked = conn.execute(
-        "SELECT cc.campaign_id, cc.contact_id, cc.account_id, c.name, c.tg_user_id "
+        "SELECT cc.campaign_id, cc.contact_id, cc.account_id, c.name, c.tg_user_id, c.work_tz "
         "FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id "
         "WHERE cc.knock_at IS NOT NULL AND cc.sent_at IS NULL AND cc.knock_nudge_at IS NULL "
         "AND cc.knock_at <= ? AND cc.knock_at >= ? AND cc.account_id IS NOT NULL "
@@ -444,7 +457,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
     ).fetchall()
     for k in knocked:
         camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (k["campaign_id"],)).fetchone()
-        if not camp or not database.outreach_allowed(camp):
+        if not camp or not database.outreach_allowed(camp, database.contact_tz(k)):
             continue
         if conn.execute("SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
                         (k["campaign_id"], k["contact_id"])).fetchone():

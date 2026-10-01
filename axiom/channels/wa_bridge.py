@@ -146,8 +146,9 @@ def wa_outbox(account_id: int) -> JSONResponse:
         conn.execute("UPDATE wa_outbox SET status='pending', taken_at=NULL "
                      "WHERE status='sending' AND taken_at < datetime('now','-15 minutes')")
         rows = conn.execute(
-            "SELECT * FROM wa_outbox WHERE account_id=? AND status='pending' "
-            "ORDER BY is_test DESC, id", (account_id,)).fetchall()
+            "SELECT o.*, c.work_tz FROM wa_outbox o LEFT JOIN contacts c ON c.id=o.contact_id "
+            "WHERE o.account_id=? AND o.status='pending' "
+            "ORDER BY o.is_test DESC, o.id", (account_id,)).fetchall()
         last = conn.execute(
             "SELECT MAX(sent_at) t FROM wa_outbox WHERE account_id=? AND status='sent' "
             "AND is_test=0", (account_id,)).fetchone()["t"]
@@ -165,8 +166,8 @@ def wa_outbox(account_id: int) -> JSONResponse:
                 if not camp or camp["status"] not in ("running", "active"):
                     conn.execute("DELETE FROM wa_outbox WHERE id=?", (r["id"],))
                     continue
-                if not database.outreach_allowed(camp):
-                    return JSONResponse({"item": None, "wait": "вне рабочих часов кампании"})
+                if not database.outreach_allowed(camp, database.contact_tz(r)):
+                    continue      # по часам этого человека сейчас не рабочее время
             conn.execute("UPDATE wa_outbox SET status='sending', taken_at=datetime('now') "
                          "WHERE id=?", (r["id"],))
             return JSONResponse({"item": {
@@ -288,7 +289,7 @@ def reply(req: ReplyReq) -> JSONResponse:
     if not history or history[-1]["role"] != "user":
         return JSONResponse({"skip": "нечего отвечать"})
     is_test = bool(contact["is_test"]) if "is_test" in contact.keys() else False
-    if camp and not is_test and not database.in_work_hours(camp):
+    if camp and not is_test and not database.in_work_hours(camp, database.contact_tz(contact)):
         return JSONResponse({"skip": "вне рабочих часов кампании"})
 
     try:

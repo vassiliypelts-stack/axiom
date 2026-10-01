@@ -33,6 +33,10 @@ _EXTRA_CONTACT_COLS = {
     # NULL — как раньше: любой номер команды, канал по достижимости.
     "outreach_account_id": "INTEGER",
     "outreach_channel": "TEXT",
+    # Свой часовой пояс человека (IANA, напр. Asia/Almaty). Окно кампании «10–19»
+    # тогда считается по ЕГО часам: знакомые 702 в Казахстане получают письмо в 10
+    # по Алматы, а не в 12. NULL — по поясу кампании, как раньше.
+    "work_tz": "TEXT",
     # Кем человек был в спарсенном чате: creator|admin|member|active. Владельца и
     # админов видно в CRM отдельным полем, а не растворённым в тексте тега: это ЛПР,
     # и писать им надо иначе, чем рядовому участнику.
@@ -718,9 +722,18 @@ def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE deals_new RENAME TO deals")
 
 
-def in_work_hours(camp_row) -> bool:
+def contact_tz(row) -> str | None:
+    """Свой часовой пояс контакта (contacts.work_tz) из любой строки, где он выбран."""
+    try:
+        return (row["work_tz"] or None) if row is not None and "work_tz" in row.keys() else None
+    except (KeyError, IndexError):
+        return None
+
+
+def in_work_hours(camp_row, tz: str | None = None) -> bool:
     """Сейчас можно писать/отвечать по этой кампании? Пусто в start/end = ограничений
     нет (старое поведение). Часовой пояс — IANA-имя (Europe/Moscow); пусто = UTC.
+    tz — пояс самого человека (contact_tz): окно то же, но по его часам.
 
     Окно, переходящее через полночь (start > end, напр. 20:00-02:00), тоже
     поддержано — просто two-side сравнение вместо одностороннего."""
@@ -731,9 +744,9 @@ def in_work_hours(camp_row) -> bool:
     import datetime as _dt
     try:
         from zoneinfo import ZoneInfo
-        tz_name = camp_row["work_hours_tz"] if "work_hours_tz" in camp_row.keys() else None
-        tz = ZoneInfo(tz_name) if tz_name else _dt.timezone.utc
-        now = _dt.datetime.now(tz).time()
+        tz_name = tz or (camp_row["work_hours_tz"] if "work_hours_tz" in camp_row.keys() else None)
+        zone = ZoneInfo(tz_name) if tz_name else _dt.timezone.utc
+        now = _dt.datetime.now(zone).time()
         t_start = _dt.time.fromisoformat(start)
         t_end = _dt.time.fromisoformat(end)
     except (ValueError, KeyError):
@@ -743,7 +756,7 @@ def in_work_hours(camp_row) -> bool:
     return now >= t_start or now <= t_end   # окно через полночь
 
 
-def is_rest_day(camp_row) -> bool:
+def is_rest_day(camp_row, tz: str | None = None) -> bool:
     """Воскресенье по часовому поясу кампании — день без исходящей инициативы.
 
     Правило Василия (24.09.2026): суббота рабочая, воскресенье — отдых на исход.
@@ -753,11 +766,11 @@ def is_rest_day(camp_row) -> bool:
     import datetime as _dt
     try:
         from zoneinfo import ZoneInfo
-        tz_name = camp_row["work_hours_tz"] if camp_row and "work_hours_tz" in camp_row.keys() else None
-        tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("Europe/Moscow")
+        tz_name = tz or (camp_row["work_hours_tz"] if camp_row and "work_hours_tz" in camp_row.keys() else None)
+        zone = ZoneInfo(tz_name) if tz_name else ZoneInfo("Europe/Moscow")
     except (ValueError, KeyError):
-        tz = _dt.timezone(_dt.timedelta(hours=3))
-    return _dt.datetime.now(tz).weekday() == 6
+        zone = _dt.timezone(_dt.timedelta(hours=3))
+    return _dt.datetime.now(zone).weekday() == 6
 
 
 def last_out_read(conn: sqlite3.Connection, contact_id: int) -> bool:
@@ -770,9 +783,26 @@ def last_out_read(conn: sqlite3.Connection, contact_id: int) -> bool:
     return bool(row and row["read_at"])
 
 
-def outreach_allowed(camp_row) -> bool:
-    """Можно ли сейчас писать ПЕРВЫМИ: рабочие часы и не воскресенье."""
-    return in_work_hours(camp_row) and not is_rest_day(camp_row)
+def outreach_allowed(camp_row, tz: str | None = None) -> bool:
+    """Можно ли сейчас писать ПЕРВЫМИ: рабочие часы и не воскресенье (по поясу
+    человека, если он задан, иначе по поясу кампании)."""
+    return in_work_hours(camp_row, tz) and not is_rest_day(camp_row, tz)
+
+
+def campaign_tzs(conn: sqlite3.Connection, camp_row) -> list[str | None]:
+    """Пояса, по которым живут люди кампании: пояс кампании (None) и свои пояса
+    закреплённых за ней контактов. Заход кампании открыт, если окно открыто хоть
+    в одном, а дальше каждый человек проверяется по своим часам."""
+    zones: list[str | None] = [None]
+    zones += [r["work_tz"] for r in conn.execute(
+        "SELECT DISTINCT work_tz FROM contacts WHERE outreach_campaign_id=? "
+        "AND work_tz IS NOT NULL AND work_tz<>''", (camp_row["id"],)).fetchall()]
+    return zones
+
+
+def outreach_open_anywhere(conn: sqlite3.Connection, camp_row) -> bool:
+    """Писать первыми можно хотя бы кому-то из людей кампании."""
+    return any(outreach_allowed(camp_row, z) for z in campaign_tzs(conn, camp_row))
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

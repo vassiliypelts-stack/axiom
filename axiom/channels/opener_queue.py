@@ -41,7 +41,7 @@ LAST_NUDGE_AFTER = (44 * 60 * 60, 52 * 60 * 60)
 
 def _due_rows(conn) -> list[dict]:
     rows = conn.execute(
-        "SELECT q.*, c.status AS contact_status, c.tg_user_id, c.username, c.phone, c.name, "
+        "SELECT q.*, c.status AS contact_status, c.tg_user_id, c.username, c.phone, c.name, c.work_tz, "
         "       cm.status AS campaign_status, cm.name AS campaign_name, cm.work_hours_tz, "
         "       cm.work_hours_start, cm.work_hours_end "
         "FROM opener_queue q JOIN contacts c ON c.id = q.contact_id "
@@ -241,11 +241,14 @@ async def tick() -> int:
     for row in due:
         # Воскресенье — отдых на исход: остаток опенера (третье касание через сутки)
         # это наша инициатива, строка просто полежит в очереди до понедельника.
-        if database.is_rest_day(row):
+        tz = database.contact_tz(row)
+        if database.is_rest_day(row, tz):
             continue
         # Ночью не шлём: раньше очередь смотрела только на «прошли сутки», и третье
         # касание уходило в 02:07 (ГГКрым, 25.09.2026). Строка ждёт утра в очереди.
-        if not (database.in_work_hours(row) and antiban.within_work_hours()):
+        # Свой пояс у человека — окно кампании по его часам и есть ночной гейт:
+        # общий МСК 9–21 отрезал бы утро Алматы (10:00 там — 08:00 МСК).
+        if not (database.in_work_hours(row, tz) and (tz or antiban.within_work_hours())):
             continue
         await _send_next_line(row)
         await asyncio.sleep(random.uniform(2.0, 6.0))

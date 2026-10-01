@@ -669,8 +669,11 @@ async def _knock(client, acc: dict) -> int:
             "AND c.status='running' "
             "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
         ).fetchone()
-    if not camp or not database.outreach_allowed(camp):
+    if not camp:
         return 0
+    with database.get_conn() as conn:
+        if not database.outreach_open_anywhere(conn, camp):
+            return 0
     # Берём с запасом: часть контактов не отрезолвится в Telegram. Только свои для
     # номера: знакомый, закреплённый за другим номером, получит стук оттуда.
     rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12, sender_id=acc["id"])
@@ -680,6 +683,8 @@ async def _knock(client, acc: dict) -> int:
                                         own_knock_template)
     own = own_knock_template(dict(camp))
     for row in rows:
+        if not database.outreach_allowed(camp, database.contact_tz(row)):
+            continue                      # у человека сейчас не рабочее время
         try:
             ent = await _resolve_entity(client, row)
             if own:

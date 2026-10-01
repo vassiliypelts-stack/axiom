@@ -976,6 +976,8 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
             avail = [s for s in senders if s["left"] > 0]
             if not avail:
                 break
+            if not test and not database.outreach_allowed(camp, database.contact_tz(row)):
+                continue          # по часам человека сейчас не рабочее время
             pinned = row["outreach_account_id"] if not test else None
             if pinned:
                 # Знакомому пишет только его номер; норма выбрана — ждёт завтра.
@@ -1026,7 +1028,11 @@ async def run(cid: int, limit: int, test: bool = False,
     if not camp:
         print(f"кампания #{cid} не найдена")
         return
-    if not test and not database.in_work_hours(camp):
+    # Окно открыто хоть в одном поясе людей кампании (у знакомых в Казахстане свои
+    # часы, contacts.work_tz) — заход идёт, а каждый человек проверяется по своим.
+    with database.get_conn() as conn:
+        zones = database.campaign_tzs(conn, camp)
+    if not test and not any(database.in_work_hours(camp, z) for z in zones):
         print(f"кампания #{cid} «{camp['name']}»: сейчас вне рабочих часов "
               f"({camp.get('work_hours_start')}–{camp.get('work_hours_end')} "
               f"{camp.get('work_hours_tz') or 'UTC'}) — не шлём, живым людям ночью не пишем")
@@ -1036,7 +1042,7 @@ async def run(cid: int, limit: int, test: bool = False,
                                "Запусти снова в рабочие часы, или поправь их в настройках кампании.",
                                level="warn", campaign_id=cid)
         return
-    if not test and database.is_rest_day(camp):
+    if not test and all(database.is_rest_day(camp, z) for z in zones):
         print(f"кампания #{cid} «{camp['name']}»: воскресенье — первыми не пишем "
               f"(ответы на входящие идут как обычно)")
         return
@@ -1405,10 +1411,9 @@ async def run(cid: int, limit: int, test: bool = False,
     for row in rows:
         if sent >= cap:
             break
-        if not test and not database.outreach_allowed(camp):
-            print(f"кампания #{cid}: рабочие часы закончились посреди захода — "
-                  f"дальше {len(rows) - rows.index(row)} контактов достанутся следующему заходу")
-            break
+        if not test and not database.outreach_allowed(camp, database.contact_tz(row)):
+            # У этого человека сейчас не рабочее время (по его поясу) — ждёт своего окна.
+            continue
         if not any(x["remaining"] > 0 for x in live):
             print("дневные квоты всех аккаунтов исчерпаны — стоп до следующего захода")
             out_of_quota = True

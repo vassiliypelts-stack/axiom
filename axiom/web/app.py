@@ -3678,6 +3678,26 @@ def _hot_lead_scheduler() -> None:
                     continue
                 if not acc:
                     continue
+                # С РОДНОГО номера писал сам владелец, и «наш представитель уже написал
+                # вам, вот его ник» от него же звучит как бред: «ИИ‑Прорыв» пишет знакомым
+                # Василия с его номеров, ник в тексте — тот же самый 988. Человеку ничего
+                # не шлём. Созвон уже назначен — молчим и владельцу: ждать до звонка нормально.
+                with database.get_conn() as conn:
+                    own = conn.execute("SELECT COALESCE(protected,0) p FROM accounts WHERE id=?",
+                                       (acc["account_id"],)).fetchone()
+                    booked = conn.execute(
+                        "SELECT 1 FROM deals WHERE contact_id=? AND stage IN ('meeting_set','met','won')",
+                        (r["id"],)).fetchone()
+                if own and own["p"]:
+                    if not booked:
+                        try:
+                            from channels import notify
+                            asyncio.run(notify.notify_hot_stale(
+                                r["id"], HOT_LEAD_RECHECK_HOURS, r["campaign_id"]))
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[hot] аларм владельцу не ушёл (contact {r['id']}): {e}")
+                    print(f"[hot] contact {r['id']}: родной номер — человеку не пишу")
+                    continue
                 # Текст на случай «сообщение не дошло»: у человека мог сработать фильтр
                 # спама или закрытая личка. Поэтому не просто спрашиваем, а даём ему
                 # СПОСОБ дотянуться самому — контакт представителя, и сразу говорим,

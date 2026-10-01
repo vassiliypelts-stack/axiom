@@ -169,7 +169,28 @@ def generate_reply(
         # Интерес должен сразу попасть представителю в личку через notify_hot(),
         # а не затеряться среди обычных событий пульта.
         reply.hot = True
+    if _own_knock(campaign_id):
+        # Кампания со своим стуком пишет знакомым Василия с его же номеров, и КЭВ здесь
+        # — конкретное время созвона, которое бот назначает сам. «Горячий» лид глушит
+        # бота (listener._should_reply), поэтому на «ну давай, интересно» он замолкал,
+        # не спросив время. Горячим лид становится, только когда время согласовано.
+        reply.hot = bool(reply.meeting_agreed)
+        # Пишет Василий, а Haiku в разговоре с женщиной сбивается на «Рада слышать»
+        # даже при прямом запрете в промпте (прогон 01.10.2026).
+        import re
+        reply.reply_parts = [re.sub(r"\b([Рр])ада\b", r"\1ад", p) for p in reply.reply_parts]
     return reply
+
+
+def _own_knock(campaign_id: int | None) -> bool:
+    """У кампании свой стук (campaigns.quiet_opener_template, см. campaign_send)."""
+    if not campaign_id:
+        return False
+    from db import database
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT quiet_opener_template FROM campaigns WHERE id=?",
+                           (campaign_id,)).fetchone()
+    return bool(row and (row["quiet_opener_template"] or "").strip())
 
 
 

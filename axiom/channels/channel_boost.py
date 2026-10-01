@@ -491,7 +491,9 @@ def _top_up(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> int
                      (snap["subs"], pct, target, ch, post["msg_id"]))
         acts = conn.execute(
             "SELECT account_id, status FROM boost_actions WHERE channel=? AND msg_id=? AND kind='react' "
-            "AND status IN ('pending','done')", (ch, post["msg_id"])).fetchall()
+            "AND status IN ('pending','done','failed')", (ch, post["msg_id"])).fetchall()
+    # Упавших под этим постом не зовём снова: замороженный номер, например, канал
+    # по username не находит вовсе («No user has …»), второй раз будет то же.
     used = {r["account_id"] for r in acts}
     pending = sum(1 for r in acts if r["status"] == "pending")
     # Наши уже поставленные реакции сидят в post["reactions"], ждущие — ещё нет.
@@ -524,9 +526,12 @@ def _plan_post(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> 
     commenters_pool = [a for a in accs if a["status"] == "active"
                        and load.get(a["id"], 0) < COMMENTS_PER_ACC_DAY]
     with database.get_conn() as conn:
+        # Неудачные тоже в счёт: 01.10.2026 чат обсуждения @winresult запрещал текст
+        # (CHAT_SEND_PLAIN_FORBIDDEN), и без этого каждый скан заново заказывал
+        # комментарии у модели и снова упирался в тот же запрет.
         today = conn.execute(
             "SELECT COUNT(*) c FROM boost_actions WHERE kind='comment' "
-            "AND status IN ('pending','done') AND due_at > datetime('now','-1 day')").fetchone()["c"]
+            "AND status IN ('pending','done','failed') AND due_at > datetime('now','-1 day')").fetchone()["c"]
     left = max(0, cfg["comments_day"] - today)
     pct = random.uniform(cfg["react_min"], cfg["react_max"])
     target, n_react, n_comm = plan_counts(snap["subs"], post.get("reactions", 0),

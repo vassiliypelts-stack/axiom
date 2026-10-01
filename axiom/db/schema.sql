@@ -388,6 +388,33 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT
 );
 
+-- Поддержка своих каналов (channels/channel_boost.py): какие посты уже расписаны
+-- и что каждый аккаунт под ними делает. Пост попадает сюда один раз — повторный
+-- скан его не трогает, даже если план вышел пустым.
+CREATE TABLE IF NOT EXISTS boost_posts (
+    channel     TEXT NOT NULL,              -- username канала без @
+    msg_id      INTEGER NOT NULL,
+    subs        INTEGER,                    -- подписчиков на момент плана
+    reacts      INTEGER,
+    comments    INTEGER,
+    post_text   TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (channel, msg_id)
+);
+CREATE TABLE IF NOT EXISTS boost_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel     TEXT NOT NULL,
+    msg_id      INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    kind        TEXT NOT NULL,              -- react | comment
+    payload     TEXT,                       -- эмодзи или текст комментария
+    due_at      TEXT NOT NULL,              -- когда сделать (UTC)
+    status      TEXT DEFAULT 'pending',     -- pending | done | failed | cancelled
+    error       TEXT,
+    done_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_boost_actions_due ON boost_actions(status, due_at);
+
 -- Инбокс: то, что ты надиктовал/написал личному боту, ИИ разобрал (agent/inbox.py).
 -- Лиды уходят в contacts, заметки к лиду — в contacts.agent_context; ЗДЕСЬ живут
 -- задачи/напоминания и свободные заметки — у них есть срок и признак «сделано»,

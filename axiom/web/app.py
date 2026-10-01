@@ -3743,6 +3743,21 @@ def _read_status_scheduler() -> None:
             print(f"[read status] {e}")
 
 
+def _boost_scheduler() -> None:
+    """Раз в минуту: поддержка своих каналов (channels/channel_boost). Новые посты
+    ищет раз в 5 минут, а расписанные реакции/комментарии исполняет по времени.
+    Ходит через клиентов слушателя, своих сессий не поднимает."""
+    import time
+    time.sleep(90)   # дать слушателю подключить аккаунты
+    while True:
+        try:
+            from channels import channel_boost
+            channel_boost.tick()
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[boost] {e}")
+        time.sleep(60)
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
@@ -3759,6 +3774,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_session_check_scheduler, daemon=True).start()
     threading.Thread(target=_listener_watchdog, daemon=True).start()
     threading.Thread(target=_read_status_scheduler, daemon=True).start()
+    threading.Thread(target=_boost_scheduler, daemon=True).start()
     threading.Thread(target=_wa_supervisor, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).
@@ -10910,6 +10926,75 @@ def warmup_settings_set(payload: dict = Body(...)) -> JSONResponse:
             database.set_setting(conn, "warm_ca_mix", "on" if payload.get("ca_mix") else "off")
         if "knock" in payload:
             database.set_setting(conn, "warm_knock", "on" if payload.get("knock") else "off")
+    return JSONResponse({"ok": True})
+
+
+# ── Поддержка своих каналов: реакции и комментарии к постам (channels/channel_boost.py) ──
+
+@app.get("/api/boost/settings")
+def boost_settings_get() -> JSONResponse:
+    from channels import channel_boost
+    with database.get_conn() as conn:
+        cfg = channel_boost.settings(conn)
+        day = conn.execute(
+            "SELECT kind, status, COUNT(*) c FROM boost_actions WHERE due_at > datetime('now','-1 day') "
+            "GROUP BY kind, status").fetchall()
+    cfg["day"] = [dict(r) for r in day]
+    return JSONResponse(cfg)
+
+
+@app.post("/api/boost/settings")
+def boost_settings_set(payload: dict = Body(...)) -> JSONResponse:
+    import re
+    from channels import channel_boost
+    with database.get_conn() as conn:
+        if "enabled" in payload:
+            database.set_setting(conn, "boost_enabled", "on" if payload.get("enabled") else "off")
+        if "channels" in payload:
+            raw = payload.get("channels") or ""
+            chans = [c for c in (channel_boost._norm_channel(x) for x in re.split(r"[\s,;]+", raw)) if c]
+            database.set_setting(conn, "boost_channels", ",".join(dict.fromkeys(chans)))
+        for key in ("react_pct", "comments_max", "max_age_h", "comments_day"):
+            if key in payload:
+                database.set_setting(conn, f"boost_{key}", str(payload.get(key)))
+        if "questions_only" in payload:
+            database.set_setting(conn, "boost_questions_only", "on" if payload.get("questions_only") else "off")
+        cfg = channel_boost.settings(conn)
+    return JSONResponse({"ok": True, **cfg})
+
+
+@app.get("/api/boost/actions")
+def boost_actions(limit: int = 300) -> JSONResponse:
+    limit = max(1, min(int(limit), 1000))
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT b.*, COALESCE(a.tg_name,a.label,a.username,'#'||b.account_id) account_label "
+            "FROM boost_actions b LEFT JOIN accounts a ON a.id=b.account_id "
+            "ORDER BY b.due_at DESC LIMIT ?", (limit,)).fetchall()
+    return JSONResponse({"actions": [dict(r) for r in rows]})
+
+
+@app.post("/api/boost/action/{aid}/cancel")
+def boost_action_cancel(aid: int) -> JSONResponse:
+    """Снять запланированное действие — например, комментарий, который не нравится."""
+    with database.get_conn() as conn:
+        n = conn.execute("UPDATE boost_actions SET status='cancelled', error='снят вручную' "
+                         "WHERE id=? AND status='pending'", (aid,)).rowcount
+    return JSONResponse({"ok": bool(n)})
+
+
+@app.post("/api/boost/scan_now")
+def boost_scan_now() -> JSONResponse:
+    """Проверить каналы прямо сейчас (не ждать 5 минут). План строится в фоне:
+    генерация комментариев занимает до минуты на пост."""
+    from channels import channel_boost
+
+    def _go():
+        try:
+            print(f"[boost] ручной скан: {channel_boost.scan(force=True)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[boost] ручной скан упал: {e}")
+    threading.Thread(target=_go, daemon=True).start()
     return JSONResponse({"ok": True})
 
 

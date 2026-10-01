@@ -603,13 +603,19 @@ async def _knock(client, acc: dict) -> int:
     with database.get_conn() as conn:
         if _knock_sent_today(conn, acc["id"]):
             return 0                      # суточная норма уже выбрана
+        # Стук — холодное касание аудитории кампании, поэтому подчиняется её же
+        # правилам: только запущенная кампания и только в её рабочие часы. Раньше
+        # стук не смотрел ни на то, ни на другое: 01.10.2026 9413/9414/9415 стучались
+        # людям ГГКрыма в 04:30 МСК, а пауза кампании (номера отлёживаются после
+        # волны PeerFlood) не остановила бы холодные ЛС с этих же номеров.
         camp = conn.execute(
-            "SELECT c.id, c.audience_tag FROM campaigns c "
+            "SELECT c.* FROM campaigns c "
             "JOIN campaign_accounts ca ON ca.campaign_id=c.id "
             "WHERE ca.account_id=? AND c.channel='telegram' AND COALESCE(c.archived,0)=0 "
+            "AND c.status='running' "
             "ORDER BY c.id DESC LIMIT 1", (acc["id"],),
         ).fetchone()
-    if not camp:
+    if not camp or not database.outreach_allowed(camp):
         return 0
     # Берём с запасом: часть контактов не отрезолвится в Telegram.
     rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12)

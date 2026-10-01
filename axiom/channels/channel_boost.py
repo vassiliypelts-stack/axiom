@@ -6,9 +6,13 @@
 пусть они ведут себя как обычные подписчики своих же каналов.
 
 Как не спалиться:
-  • Количество реакций — от числа подписчиков (boost_react_pct, по умолчанию 3%), с
-    разбросом ±40% от поста к посту: одинаковые «14 реакций» под каждым постом
-    видны сразу.
+  • Реакций под постом В ИТОГЕ 6-8% от подписчиков (boost_react_min/max): процент
+    свой у каждого поста, одинаковые «14 реакций» под каждым постом видны сразу.
+    Живые реакции входят в этот итог: добавляем только недостающее, а перед каждой
+    реакцией ещё раз сверяем счёт под постом.
+  • Новые посты ловим раз в 5 минут, а 2 раза в день (boost_sweep_hours, МСК) идёт
+    обход последних постов: подписчиков стало больше или реакцию сняли — доливаем
+    до цели аккаунтами, которых под этим постом ещё не было.
   • Реакции растягиваются на 1-3 часа, гуще в первые минуты, как у живой ленты:
     подписчики видят пост в разное время. Каждый реагирующий сначала «смотрит»
     пост (+1 просмотр), потом ставит реакцию.
@@ -67,10 +71,14 @@ _EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
 def settings(conn) -> dict:
     g = lambda k, d: database.get_setting(conn, k, d)  # noqa: E731
     chans = [c for c in (_norm_channel(x) for x in re.split(r"[\s,;]+", g("boost_channels", DEFAULT_CHANNELS) or "")) if c]
-    return {
+    cfg = {
         "enabled": g("boost_enabled", "off") == "on",
         "channels": chans,
-        "react_pct": _num(g("boost_react_pct", "3"), 3.0, 0.0, 50.0),
+        "react_min": _num(g("boost_react_min", "6"), 6.0, 0.0, 50.0),
+        "react_max": _num(g("boost_react_max", "8"), 8.0, 0.0, 50.0),
+        "sweep_hours": sorted({int(h) for h in re.findall(r"\d+", g("boost_sweep_hours", "10,19") or "")
+                               if 0 <= int(h) <= 23}),
+        "sweep_posts": int(_num(g("boost_sweep_posts", "5"), 5, 1, 20)),
         "comments_max": int(_num(g("boost_comments_max", "3"), 3, 0, 5)),
         "max_age_h": _num(g("boost_max_age_h", "6"), 6.0, 0.5, 72.0),
         # Общий потолок комментариев в сутки на все каналы и «только вопросы по
@@ -78,6 +86,9 @@ def settings(conn) -> dict:
         "comments_day": int(_num(g("boost_comments_day", "2"), 2, 0, 50)),
         "questions_only": g("boost_questions_only", "on") == "on",
     }
+    if cfg["react_min"] > cfg["react_max"]:
+        cfg["react_min"], cfg["react_max"] = cfg["react_max"], cfg["react_min"]
+    return cfg
 
 
 def _num(v, default, lo, hi):
@@ -136,19 +147,29 @@ def _comment_load(conn) -> dict[int, int]:
 
 # ------------------------------------------------------------------ расчёт --
 
-def plan_counts(subs: int, n_react: int, n_comment: int, pct: float, cmax: int) -> tuple[int, int]:
-    """Сколько реакций и комментариев дать посту канала с subs подписчиками."""
-    base = subs * pct / 100.0
-    reacts = round(base * random.uniform(0.6, 1.4))
-    if pct > 0:
-        reacts = max(reacts, 2 if subs >= 50 else 1)
-    reacts = min(reacts, n_react)
+def react_target(subs: int, pct: float) -> int:
+    """Сколько реакций должно быть под постом в итоге (вместе с живыми)."""
+    if pct <= 0:
+        return 0
+    return max(1, round(subs * pct / 100.0))
+
+
+def plan_counts(subs: int, existing: int, n_react: int, n_comment: int, pct: float,
+                cmax: int) -> tuple[int, int, int]:
+    """(цель реакций, сколько реакций добавить, сколько комментариев) для поста."""
+    target = react_target(subs, pct)
+    reacts = max(0, min(target - existing, n_react))
     # Ступени по размеру канала: под постом маленького канала три комментария
     # подряд выглядят подозрительнее, чем ни одного.
     hi = 1 if subs < 300 else 2 if subs < 1500 else 3
     hi = min(hi, cmax, n_comment)
     comments = random.randint(1, hi) if hi >= 1 else 0
-    return reacts, comments
+    return target, reacts, comments
+
+
+def reactions_total(m) -> int:
+    r = getattr(m, "reactions", None)
+    return sum(int(getattr(x, "count", 0) or 0) for x in (getattr(r, "results", None) or []))
 
 
 def _react_delays(n: int) -> list[float]:
@@ -325,7 +346,8 @@ async def _channel_snapshot(client, username: str, max_age_h: float, last_n: int
         cur = posts.get(key)
         txt = m.message or ""
         if cur is None or (txt and not cur["text"]) or (not txt and not cur["text"] and m.id < cur["msg_id"]):
-            posts[key] = {"msg_id": m.id, "text": txt, "date": m.date.replace(tzinfo=None)}
+            posts[key] = {"msg_id": m.id, "text": txt, "date": m.date.replace(tzinfo=None),
+                          "reactions": reactions_total(m)}
     return {"title": getattr(ent, "title", username), "subs": int(getattr(fc, "participants_count", 0) or 0),
             "linked": bool(getattr(fc, "linked_chat_id", None)), "allowed": allowed,
             "posts": sorted(posts.values(), key=lambda p: p["msg_id"])[-last_n if last_n else 0:]}
@@ -338,7 +360,8 @@ async def _ensure_joined(client, ent) -> None:
         await asyncio.sleep(random.uniform(2, 6))
 
 
-async def _do_react(client, username: str, msg_id: int, emoji: str) -> str:
+async def _do_react(client, username: str, msg_id: int, emoji: str, target: int | None = None) -> str | None:
+    """Поставить реакцию. None — не ставили: под постом цель уже набрана."""
     from telethon.errors import RPCError
     from telethon.tl.functions.messages import GetMessagesViewsRequest, SendReactionRequest
     from telethon.tl.types import ReactionEmoji
@@ -351,6 +374,11 @@ async def _do_react(client, username: str, msg_id: int, emoji: str) -> str:
     except RPCError:
         pass
     await asyncio.sleep(random.uniform(4, 15))
+    if target:
+        # За час-другой люди могли наставить своих: итог важнее нашего плана.
+        cur = await client.get_messages(ent, ids=msg_id)
+        if cur is not None and reactions_total(cur) >= target:
+            return None
     try:
         await client(SendReactionRequest(peer=ent, msg_id=msg_id, reaction=[ReactionEmoji(emoticon=emoji)]))
     except RPCError as e:
@@ -391,10 +419,11 @@ async def _do_comment(client, username: str, msg_id: int, text: str) -> int:
 
 # ------------------------------------------------------------------- план --
 
-def scan(force: bool = False, last_n: int = 0) -> dict:
+def scan(force: bool = False, last_n: int = 0, sweep: bool = False) -> dict:
     """Найти новые посты своих каналов и расписать под ними реакции/комментарии.
-    last_n > 0 — взять последние N постов каждого канала независимо от возраста
-    (кнопка «Поддержать последние посты»). Уже поддержанные посты не повторяются."""
+    last_n > 0 — взять последние N постов каждого канала независимо от возраста.
+    sweep — обход: последние sweep_posts постов, уже известным доливаем реакции
+    до цели (комментарии только под новыми постами, при первом плане)."""
     from channels import listener
 
     with database.get_conn() as conn:
@@ -405,10 +434,12 @@ def scan(force: bool = False, last_n: int = 0) -> dict:
                 return {"skipped": "рано"}
         database.set_setting(conn, "boost_last_scan_ts", str(time.time()))
         accs = _eligible(conn, list(listener.CLIENTS.keys()))
+    if sweep:
+        last_n = max(last_n, cfg["sweep_posts"])
     if not accs:
         return {"error": "нет подключённых слушателем аккаунтов, пригодных для поддержки"}
 
-    result = {"planned_posts": 0, "reacts": 0, "comments": 0, "channels": {}}
+    result = {"planned_posts": 0, "reacts": 0, "comments": 0, "topped_up": 0, "channels": {}}
     for ch in cfg["channels"]:
         # Смотреть канал берём случайный аккаунт, каждый раз другой. Не прочитал —
         # пробуем следующего: у отдельного номера бывает свой лимит на поиск по
@@ -436,7 +467,53 @@ def scan(force: bool = False, last_n: int = 0) -> dict:
             result["planned_posts"] += 1
             result["reacts"] += r
             result["comments"] += c
+        if sweep:
+            for p in snap["posts"]:
+                if p["msg_id"] in done:
+                    n = _top_up(ch, snap, p, accs, cfg)
+                    result["topped_up"] += n
+                    result["reacts"] += n
     return result
+
+
+def _top_up(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> int:
+    """Обход: долить реакции под уже известным постом до цели. Цель считается от
+    ТЕКУЩЕГО числа подписчиков, процент у поста свой и не меняется между обходами."""
+    allowed = snap["allowed"]
+    if not (allowed is None or allowed & {e for e, _ in POSITIVE}):
+        return 0
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT target_pct FROM boost_posts WHERE channel=? AND msg_id=?",
+                           (ch, post["msg_id"])).fetchone()
+        pct = (row["target_pct"] if row else None) or random.uniform(cfg["react_min"], cfg["react_max"])
+        target = react_target(snap["subs"], pct)
+        conn.execute("UPDATE boost_posts SET subs=?, target_pct=?, target=? WHERE channel=? AND msg_id=?",
+                     (snap["subs"], pct, target, ch, post["msg_id"]))
+        acts = conn.execute(
+            "SELECT account_id, status FROM boost_actions WHERE channel=? AND msg_id=? AND kind='react' "
+            "AND status IN ('pending','done')", (ch, post["msg_id"])).fetchall()
+    used = {r["account_id"] for r in acts}
+    pending = sum(1 for r in acts if r["status"] == "pending")
+    # Наши уже поставленные реакции сидят в post["reactions"], ждущие — ещё нет.
+    need = target - post["reactions"] - pending
+    pool = [a for a in accs if a["id"] not in used]
+    random.shuffle(pool)
+    pool = pool[:max(0, need)]
+    if not pool:
+        return 0
+    base = _now()
+    rows = []
+    for a, d in zip(pool, _react_delays(len(pool))):
+        emoji = pick_reaction(allowed)
+        if emoji:
+            rows.append((ch, post["msg_id"], a["id"], "react", emoji, _utc(base + _dt.timedelta(minutes=d))))
+    with database.get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO boost_actions (channel, msg_id, account_id, kind, payload, due_at) "
+            "VALUES (?,?,?,?,?,?)", rows)
+    print(f"[boost] обход @{ch}/{post['msg_id']}: есть {post['reactions']}, цель {target}, "
+          f"ждут {pending}, доливаю {len(rows)}")
+    return len(rows)
 
 
 def _plan_post(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> tuple[int, int]:
@@ -451,9 +528,11 @@ def _plan_post(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> 
             "SELECT COUNT(*) c FROM boost_actions WHERE kind='comment' "
             "AND status IN ('pending','done') AND due_at > datetime('now','-1 day')").fetchone()["c"]
     left = max(0, cfg["comments_day"] - today)
-    n_react, n_comm = plan_counts(snap["subs"], len(accs) if react_ok else 0,
-                                  min(len(commenters_pool), left) if snap["linked"] else 0,
-                                  cfg["react_pct"], cfg["comments_max"])
+    pct = random.uniform(cfg["react_min"], cfg["react_max"])
+    target, n_react, n_comm = plan_counts(snap["subs"], post.get("reactions", 0),
+                                          len(accs) if react_ok else 0,
+                                          min(len(commenters_pool), left) if snap["linked"] else 0,
+                                          pct, cfg["comments_max"])
     texts = generate_comments(post["text"], snap["title"], n_comm,
                               cfg["questions_only"]) if n_comm else []
 
@@ -479,15 +558,15 @@ def _plan_post(ch: str, snap: dict, post: dict, accs: list[dict], cfg: dict) -> 
 
     with database.get_conn() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO boost_posts (channel, msg_id, subs, reacts, comments, post_text) "
-            "VALUES (?,?,?,?,?,?)",
-            (ch, post["msg_id"], snap["subs"], sum(1 for r in rows if r[3] == "react"),
+            "INSERT OR IGNORE INTO boost_posts (channel, msg_id, subs, target_pct, target, reacts, comments, post_text) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (ch, post["msg_id"], snap["subs"], pct, target, sum(1 for r in rows if r[3] == "react"),
              len(texts), (post["text"] or "")[:500]))
         conn.executemany(
             "INSERT INTO boost_actions (channel, msg_id, account_id, kind, payload, due_at) "
             "VALUES (?,?,?,?,?,?)", rows)
-    print(f"[boost] @{ch}/{post['msg_id']} ({snap['subs']} подп.): "
-          f"{sum(1 for r in rows if r[3] == 'react')} реакций, {len(texts)} комм.")
+    print(f"[boost] @{ch}/{post['msg_id']} ({snap['subs']} подп., есть {post.get('reactions', 0)}, "
+          f"цель {target}): +{sum(1 for r in rows if r[3] == 'react')} реакций, {len(texts)} комм.")
     return sum(1 for r in rows if r[3] == "react"), len(texts)
 
 
@@ -505,12 +584,15 @@ def execute_due() -> dict:
         # Только аккаунты, которые слушатель держит прямо сейчас: остальные ждут, но
         # не занимают места в пачке и не блокируют чужие задания.
         due = [dict(r) for r in conn.execute(
-            f"SELECT * FROM boost_actions WHERE status='pending' AND due_at <= datetime('now') "
-            f"AND account_id IN ({q}) ORDER BY due_at LIMIT ?", (*ids, MAX_ACTIONS_PER_TICK)).fetchall()]
+            f"SELECT b.*, p.target FROM boost_actions b LEFT JOIN boost_posts p "
+            f"ON p.channel=b.channel AND p.msg_id=b.msg_id "
+            f"WHERE b.status='pending' AND b.due_at <= datetime('now') "
+            f"AND b.account_id IN ({q}) ORDER BY b.due_at LIMIT ?", (*ids, MAX_ACTIONS_PER_TICK)).fetchall()]
         # Совсем протухшее (сервер лежал полдня) не догоняем пачкой — отменяем.
         conn.execute(
             "UPDATE boost_actions SET status='cancelled', error='просрочено' "
             "WHERE status='pending' AND due_at < datetime('now','-6 hours')")
+    due = [a for a in due if a["due_at"] >= _utc(_now() - _dt.timedelta(hours=6))]
     stats = {"done": 0, "failed": 0, "skipped": 0}
     for i, a in enumerate(due):
         client = listener.CLIENTS.get(a["account_id"])
@@ -521,7 +603,13 @@ def execute_due() -> dict:
             time.sleep(random.uniform(2, 7))
         try:
             if a["kind"] == "react":
-                used = _run(_do_react(client, a["channel"], a["msg_id"], a["payload"]))
+                used = _run(_do_react(client, a["channel"], a["msg_id"], a["payload"], a.get("target")))
+                if used is None:
+                    with database.get_conn() as conn:
+                        conn.execute("UPDATE boost_actions SET status='cancelled', done_at=datetime('now'), "
+                                     "error=? WHERE id=?", (f"цель {a['target']} уже набрана", a["id"]))
+                    stats["skipped"] += 1
+                    continue
                 note = used
             else:
                 mid = _run(_do_comment(client, a["channel"], a["msg_id"], a["payload"]), timeout=180)
@@ -554,4 +642,20 @@ def tick() -> None:
     if not on:
         return
     scan()
+    if _sweep_due():
+        print(f"[boost] обход каналов: {scan(force=True, sweep=True)}")
     execute_due()
+
+
+def _sweep_due() -> bool:
+    """Пора ли обход: текущий час МСК в boost_sweep_hours и в этот час ещё не ходили."""
+    msk = _now() + _dt.timedelta(hours=3)
+    with database.get_conn() as conn:
+        hours = settings(conn)["sweep_hours"]
+        if msk.hour not in hours:
+            return False
+        slot = msk.strftime("%Y-%m-%d %H")
+        if database.get_setting(conn, "boost_last_sweep", "") == slot:
+            return False
+        database.set_setting(conn, "boost_last_sweep", slot)
+    return True

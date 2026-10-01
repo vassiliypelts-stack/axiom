@@ -574,6 +574,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} {typ}")
     # До этой даты номер в ЭТОЙ кампании не шлёт питч, а только стучится
     # («Добрый день, Татьяна?»), см. campaign_send.run — решение владельца 25.09.2026.
+    # Цель реакций под постом своего канала (channels/channel_boost): таблица
+    # появилась днём раньше этих колонок.
+    bp = {r["name"] for r in conn.execute("PRAGMA table_info(boost_posts)")}
+    for col, typ in (("target_pct", "REAL"), ("target", "INTEGER")):
+        if bp and col not in bp:
+            conn.execute(f"ALTER TABLE boost_posts ADD COLUMN {col} {typ}")
     ca = {r["name"] for r in conn.execute("PRAGMA table_info(campaign_accounts)")}
     if ca and "quiet_until" not in ca:
         conn.execute("ALTER TABLE campaign_accounts ADD COLUMN quiet_until TEXT")

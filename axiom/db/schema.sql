@@ -394,7 +394,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
 CREATE TABLE IF NOT EXISTS boost_posts (
     channel     TEXT NOT NULL,              -- username канала без @
     msg_id      INTEGER NOT NULL,
-    subs        INTEGER,                    -- подписчиков на момент плана
+    subs        INTEGER,                    -- подписчиков на момент плана/обхода
+    target_pct  REAL,                       -- свой процент поста (6-8%), между обходами не меняется
+    target      INTEGER,                    -- сколько реакций должно быть в итоге
     reacts      INTEGER,
     comments    INTEGER,
     post_text   TEXT,

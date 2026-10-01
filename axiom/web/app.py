@@ -10954,7 +10954,8 @@ def boost_settings_set(payload: dict = Body(...)) -> JSONResponse:
             raw = payload.get("channels") or ""
             chans = [c for c in (channel_boost._norm_channel(x) for x in re.split(r"[\s,;]+", raw)) if c]
             database.set_setting(conn, "boost_channels", ",".join(dict.fromkeys(chans)))
-        for key in ("react_pct", "comments_max", "max_age_h", "comments_day"):
+        for key in ("react_min", "react_max", "comments_max", "max_age_h", "comments_day",
+                    "sweep_hours", "sweep_posts"):
             if key in payload:
                 database.set_setting(conn, f"boost_{key}", str(payload.get(key)))
         if "questions_only" in payload:
@@ -10990,10 +10991,11 @@ def boost_scan_now(payload: dict = Body(default={})) -> JSONResponse:
     генерация комментариев занимает до минуты на пост."""
     from channels import channel_boost
     last_n = max(0, min(int(payload.get("last") or 0), 10))
+    sweep = bool(payload.get("sweep"))
 
     def _go():
         try:
-            print(f"[boost] ручной скан: {channel_boost.scan(force=True, last_n=last_n)}")
+            print(f"[boost] ручной скан: {channel_boost.scan(force=True, last_n=last_n, sweep=sweep)}")
         except Exception as e:  # noqa: BLE001
             print(f"[boost] ручной скан упал: {e}")
     threading.Thread(target=_go, daemon=True).start()

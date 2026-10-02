@@ -1216,10 +1216,11 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         # (безопасный отказ, так же ведёт себя proxy_pool.assign) и оператор увидит,
         # сколько именно адресов не хватило.
         with database.get_conn() as conn:
-            taken = {r["proxy"] for r in conn.execute(
+            from channels.telegram import proxy_key
+            taken = {proxy_key(r["proxy"]) for r in conn.execute(
                 "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' "
                 f"AND id NOT IN ({qm})", ids).fetchall()}
-            free = [p for p in dict.fromkeys(proxies) if p not in taken]
+            free = [p for p in dict.fromkeys(proxies) if proxy_key(p) not in taken]
             n = 0
             for aid in ids:
                 if not free:
@@ -1717,7 +1718,8 @@ def account_proxy_auto(acc_id: int) -> JSONResponse:
         acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
         if not acc:
             return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
-        taken = {r["proxy"] for r in conn.execute(
+        from channels.telegram import proxy_key
+        taken = {proxy_key(r["proxy"]) for r in conn.execute(
             "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND id<>?",
             (acc_id,)).fetchall()}
         chosen = None
@@ -1789,7 +1791,8 @@ async def account_proxy_renew(acc_id: int) -> JSONResponse:
         acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
         if not acc:
             return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
-        taken = {r["proxy"] for r in conn.execute(
+        from channels.telegram import proxy_key
+        taken = {proxy_key(r["proxy"]) for r in conn.execute(
             "SELECT proxy FROM accounts WHERE IFNULL(proxy,'')<>'' AND id<>?", (acc_id,))}
 
     api_id, api_hash = int(config.TG_API_ID), config.TG_API_HASH

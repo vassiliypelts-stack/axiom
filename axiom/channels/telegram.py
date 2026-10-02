@@ -166,6 +166,48 @@ def parse_mtproxy(raw: str | None):
     return None   # faketls (ee…) / нестандартный — telethon не потянет, идём напрямую
 
 
+# ЗАКРЕПЛЕНИЕ MTProto-ПРОКСИ ЗА ОДНИМ СЕРВЕРОМ. Бесплатные tg://proxy почти все раздаются
+# доменом, за которым стоит 2–16 серверов (на 03.10.2026 — у 55 из 77 живых аккаунтов).
+# Каждое подключение заново резолвит домен и попадает на случайный сервер, то есть на
+# другой IP. Слушатель отдаёт аккаунт прогреву/защите/обслуживанию и забирает обратно по
+# многу раз в сутки, и каждая передача — лотерея: Telegram видит ключ с нового IP, пока
+# старое соединение у него ещё не закрыто, и жжёт ключ навсегда. Так 02.10 в 21:36 сгорел
+# #9416: обрыв, переподключение через 2 с — AuthKeyDuplicatedError. Поэтому после первого
+# удачного входа ссылка переписывается на IP того сервера, через который вошли, а домен
+# остаётся в параметре host — по нему пул узнаёт, что прокси занят (proxy_key).
+
+def pin_mtproxy(raw: str | None, ip: str) -> str | None:
+    """tg://proxy?server=<домен>… → та же ссылка с server=<ip>&host=<домен>.
+    None — если закреплять нечего: не MTProto или server уже IP."""
+    import ipaddress
+    mt = parse_mtproxy(raw)
+    if not mt or not ip:
+        return None
+    server, port, secret = mt
+    try:
+        ipaddress.ip_address(server)
+        return None
+    except ValueError:
+        pass
+    return f"tg://proxy?server={ip}&port={port}&secret={secret}&host={server}"
+
+
+def proxy_key(raw: str | None) -> str:
+    """Ссылка, под которой прокси лежит в пуле: у закреплённой — с доменом вместо IP.
+    Пул считает прокси занятым по точному совпадению строки, и без этого закреплённый
+    адрес выглядел бы свободным и уехал бы второму аккаунту."""
+    raw = (raw or "").strip()
+    if "proxy?" not in raw or "host=" not in raw:
+        return raw
+    from urllib.parse import parse_qs, urlparse
+    q = parse_qs(urlparse(raw).query)
+    host = (q.get("host") or [None])[0]
+    mt = parse_mtproxy(raw)
+    if not host or not mt:
+        return raw
+    return f"tg://proxy?server={host}&port={mt[1]}&secret={mt[2]}"
+
+
 # Как часто подключённый клиент сверяет, что бронь всё ещё его: потерявший бронь
 # клиент уходит из эфира не позже чем через столько секунд.
 LEASE_GUARD_SEC = 5
@@ -189,6 +231,7 @@ class LeasedClient(TelegramClient):
         self._ax_owner = lease_owner
         self._ax_leased: int | None = None
         self._ax_guard: asyncio.Task | None = None
+        self._ax_proxy_raw: str | None = None   # ставит build_client, нужен для pin
 
     async def connect(self):
         if self._ax_lease_on and self._ax_leased is None:
@@ -207,7 +250,48 @@ class LeasedClient(TelegramClient):
             raise
         if self._ax_leased is not None and self._ax_guard is None:
             self._ax_guard = asyncio.get_running_loop().create_task(self._ax_guard_loop())
+        await self._ax_pin_proxy()
         return res
+
+    async def _ax_pin_proxy(self) -> None:
+        """Закрепить доменный MTProto-прокси аккаунта за сервером, через который вошли
+        (см. pin_mtproxy). Правит и базу — для всех следующих подключений любым модулем,
+        — и сам клиент: внутренний автореконнект Telethon резолвит домен заново."""
+        raw, acc = self._ax_proxy_raw, self._ax_leased or self._ax_acc
+        if not raw or not acc:
+            return
+        try:
+            conn_obj = self._sender._connection
+            ip = conn_obj._writer.get_extra_info("peername")[0]
+        except Exception:  # noqa: BLE001
+            return
+        pinned = pin_mtproxy(raw, ip)
+        if not pinned:
+            return
+        # Автореконнект Telethon (MTProtoSender._reconnect) поднимает то же соединение
+        # по его _ip, а новый connect() клиента строит соединение из self._proxy —
+        # правим оба, иначе следующий заход снова резолвит домен.
+        try:
+            mt = parse_mtproxy(pinned)
+            conn_obj._ip = ip
+            if mt and isinstance(self._proxy, tuple):
+                self._proxy = mt
+        except Exception:  # noqa: BLE001
+            pass
+        self._ax_proxy_raw = pinned
+
+        def _save() -> int:
+            from db import database
+            with database.get_conn() as conn:
+                # proxy=? — только если прокси не сменили, пока мы подключались
+                return conn.execute("UPDATE accounts SET proxy=? WHERE id=? AND proxy=?",
+                                    (pinned, acc, raw)).rowcount or 0
+        try:
+            if await asyncio.to_thread(_save):
+                print(f"[#{acc}] прокси закреплён за сервером {ip} (домен давал разные IP — "
+                      f"ключ сгорел бы на переподключении)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[#{acc}] не смог закрепить прокси за {ip}: {e}")
 
     async def _ax_guard_loop(self) -> None:
         # Telethon сам переподключает оборванного клиента, минуя connect(), то есть
@@ -279,7 +363,10 @@ def build_client(session, proxy_raw: str | None = None,
         kwargs["proxy"] = own or _parse_proxy()
     aid = int(api_id) if api_id else int(config.TG_API_ID)
     ahash = api_hash or config.TG_API_HASH
-    return LeasedClient(session, aid, ahash, account_id=account_id, lease=lease, **kwargs)
+    client = LeasedClient(session, aid, ahash, account_id=account_id, lease=lease, **kwargs)
+    if mt:
+        client._ax_proxy_raw = proxy_raw
+    return client
 
 
 def client_for_account(acc_id: int | None):

@@ -659,7 +659,8 @@ def pick_free_mt(exclude: set[str] | None = None) -> str | None:
 
     Имя историческое (mt = MTProto), но с появлением платных socks5 в пуле функция
     отдаёт ЛЮБОЙ пригодный формат — какой лежит в kind, такой и вернём."""
-    exclude = exclude or set()
+    from channels.telegram import proxy_key
+    exclude = {proxy_key(x) for x in (exclude or set())}
     with database.get_conn() as conn:
         live = conn.execute(
             "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
@@ -726,7 +727,8 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
         # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
         # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
         # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
-        taken = {r["proxy"] for r in conn.execute(
+        from channels.telegram import proxy_key
+        taken = {proxy_key(r["proxy"]) for r in conn.execute(
             "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
         free = [lk for _p, lk in live if lk not in taken]
@@ -917,7 +919,8 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
         # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
         # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
-        taken = {r["proxy"] for r in conn.execute(
+        from channels.telegram import proxy_key
+        taken = {proxy_key(r["proxy"]) for r in conn.execute(
             "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
         ).fetchall()}
         free = [lk for lk in pool if lk not in taken]

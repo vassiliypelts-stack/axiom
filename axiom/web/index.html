@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
 <title>AXIOM — пульт</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg width='32' height='32' viewBox='0 0 64 64' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%2300B4D8'/%3E%3Cstop offset='1' stop-color='%23CCFF00'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M13 53 L32 11 L51 53' stroke='url(%23g)' stroke-width='6' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M35 21 L24 37 L30 37 L27 50 L41 31 L33 31 L37 21 Z' fill='%23CCFF00'/%3E%3C/svg%3E">
 <script>document.documentElement.dataset.theme=localStorage.getItem("axiom_theme")||"dark";</script>
@@ -485,9 +485,35 @@
   .thread{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);display:flex;flex-direction:column;box-shadow:var(--shadow);}
   .thread .th-hd{padding:15px 17px;border-bottom:1px solid var(--border);font-weight:600;}
   .th-body{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:9px;background:var(--panel2);}
-  .bubble{max-width:70%;padding:10px 14px;border-radius:16px;font-size:13px;white-space:pre-wrap;box-shadow:var(--shadow-sm);}
+  /* pre-wrap только у самого текста: на весь пузырь он сохранял переносы и отступы
+     разметки шаблона, и каждое сообщение начиналось с пустой строки и абзацного отступа. */
+  .bubble{max-width:70%;padding:10px 14px;border-radius:16px;font-size:13px;box-shadow:var(--shadow-sm);}
+  .bubble-text{white-space:pre-wrap;}
   .bubble.in{background:var(--panel);border:1px solid var(--border);align-self:flex-start;border-bottom-left-radius:5px;}
   .bubble.out{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);align-self:flex-end;border-bottom-right-radius:5px;}
+  .th-back{display:none;}
+  /* «Диалоги» на телефоне — как в самом Telegram: либо список, либо переписка на
+     весь экран. Раньше рядом стояли список 310px и переписка, и на экране 400px
+     пузыри сообщений сжимались в столбик по слову (жалоба с Android, 03.10.2026). */
+  @media(max-width:880px){
+    .chat-wrap{display:block;height:auto;}
+    .chat-list{width:100%;flex:none;max-height:none;overflow:visible;}
+    .thread{display:none;}
+    .chat-page.th-open #ch-listen,.chat-page.th-open .chat-toolbar,.chat-page.th-open .chat-list{display:none !important;}
+    .chat-page.th-open .chat-wrap{height:calc(100dvh - var(--topbar-h,62px) - 24px);}
+    .chat-page.th-open .thread{display:flex;height:100%;min-height:0;}
+    .chat-toolbar select{flex:1 1 45%;min-width:0;}
+    .th-back{display:inline-flex;align-items:center;justify-content:center;min-width:40px;
+      min-height:40px;padding:0 10px;font-size:20px;line-height:1;}
+    .thread .th-hd{padding:8px 10px;font-size:14px;}
+    .thread .th-hd .ttoolbar button{padding:8px 10px;font-size:12.5px;}
+    .th-body{padding:10px;gap:7px;}
+    .bubble{max-width:88%;font-size:14px;padding:9px 12px;word-break:break-word;}
+    .th-send{padding:8px !important;}
+    .th-send .th-send-note{display:none;}
+    .th-send-tip{margin-top:4px !important;}
+    #th-text{font-size:16px;}   /* меньше 16px Android/iOS зумят страницу при фокусе */
+  }
   .bubble .t{font-size:10px;color:var(--muted);margin-top:5px;}
   .bubble-del{cursor:pointer;opacity:.55;padding:0 2px;}
   .bubble-del:hover{opacity:1;color:#c0392b;}
@@ -8581,7 +8607,7 @@ async function viewChats(v){
   CHATS_ALL=await api("/api/chats");
   const accs=[...new Map(CHATS_ALL.filter(c=>c.account_id).map(c=>[c.account_id,c.account_label||("#"+c.account_id)])).entries()];
   const camps=[...new Map(CHATS_ALL.filter(c=>c.campaign_id).map(c=>[c.campaign_id,c.campaign_name||("#"+c.campaign_id)])).entries()];
-  v.innerHTML=`<div class="card" id="ch-listen" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px;font-size:12px">загружаю приём ответов…</div>
+  v.innerHTML=`<div class="chat-page" id="chat-page"><div class="card" id="ch-listen" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px;font-size:12px">загружаю приём ответов…</div>
     <div class="chat-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       <input id="ch-q" placeholder="🔍 поиск: имя / @ник / текст" style="flex:1;min-width:180px">
       <select id="ch-status">
@@ -8603,7 +8629,7 @@ async function viewChats(v){
     <div class="chat-wrap">
       <div class="chat-list" id="clist"></div>
       <div class="thread" id="thread"><div class="empty" style="margin:auto">Выбери диалог слева</div></div>
-    </div>`;
+    </div></div>`;
   const drawList=()=>{
     const q=($("#ch-q").value||"").toLowerCase().trim();
     const st=$("#ch-status").value, acc=$("#ch-acc").value, camp=$("#ch-camp").value, sort=$("#ch-sort").value;
@@ -8666,6 +8692,22 @@ async function viewChats(v){
     try{draw(await api("/api/listener/status"));}catch(e){draw(null);}
   })();
 }
+// Телефон: переписка открывается поверх списка на весь экран. Запись в историю
+// нужна, чтобы системная кнопка «назад» на Android возвращала к списку диалогов,
+// а не уводила со страницы. hashchange она не вызывает, поэтому роутер не трогается.
+const _chatIsMobile=()=>window.matchMedia("(max-width:880px)").matches;
+function _chatMobileOpen(){
+  const pg=$("#chat-page");if(!pg||!_chatIsMobile()||pg.classList.contains("th-open"))return;
+  pg.classList.add("th-open");
+  history.pushState({chatThread:true},"",location.href);
+  window.scrollTo(0,0);
+}
+function _chatMobileClose(){
+  const pg=$("#chat-page");if(pg)pg.classList.remove("th-open");
+}
+window.addEventListener("popstate",()=>{
+  const pg=$("#chat-page");if(pg&&pg.classList.contains("th-open"))_chatMobileClose();
+});
 async function openThread(id){
   const c=await api(`/api/contact/${id}`);const th=$("#thread");
   // Без username/телефона в шапке нельзя открыть человека в самом Telegram и
@@ -8676,7 +8718,7 @@ async function openThread(id){
   const activeMsg=[...(c.history||[])].reverse().find(m=>m.account_id);
   const accountLink=activeMsg?` · <a href="#agents/${activeMsg.account_id}" class="hint" title="Открыть карточку аккаунта">📱 ${esc(activeMsg.account_label||("аккаунт #"+activeMsg.account_id))} ↗</a>`:"";
   th.innerHTML=`<div class="th-hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <span><a id="th-name" href="javascript:void(0)" style="color:inherit;text-decoration:underline dotted;cursor:pointer" title="Открыть карточку контакта">${esc(c.name)||"@"+esc(c.username||id)}</a> · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}${accountLink}${c.company_id?` · <a id="th-company" href="javascript:void(0)" class="hint" style="text-decoration:underline dotted;cursor:pointer" title="Открыть карточку компании">🏢 ${esc(c.company_name||"компания")}</a>`:""}</span>
+      <span><button type="button" class="th-back" id="th-back" title="К списку диалогов">←</button> <a id="th-name" href="javascript:void(0)" style="color:inherit;text-decoration:underline dotted;cursor:pointer" title="Открыть карточку контакта">${esc(c.name)||"@"+esc(c.username||id)}</a> · ${statusBadge(c.status)}${who?` · <span class="hint">${who}</span>`:""}${accountLink}${c.company_id?` · <a id="th-company" href="javascript:void(0)" class="hint" style="text-decoration:underline dotted;cursor:pointer" title="Открыть карточку компании">🏢 ${esc(c.company_name||"компания")}</a>`:""}</span>
       <span class="ttoolbar" style="margin:0">
         ${c.campaign_id?`<button id="th-pause" class="bot-control ${c.bot_paused?"paused":"running"}" title="${c.bot_paused?"Бот на паузе: нажмите Play, чтобы он снова отвечал":"Бот отвечает: нажмите Pause, чтобы вести этот диалог вручную"}"><span class="transport">${c.bot_paused?"Ⅱ":"▶"}</span>${c.bot_paused?"Бот на паузе":"Бот отвечает"}</button>`:""}
         <button id="th-dossier">📂 Досье</button><button class="primary" id="th-deal">✅ В сделку</button></span></div>
@@ -8704,10 +8746,13 @@ async function openThread(id){
         <textarea id="th-text" rows="2" placeholder="Написать самому — уйдёт с того же аккаунта, что вёл диалог. Enter — отправить, Shift+Enter — новая строка" style="flex:1;resize:vertical"></textarea>
         <button class="primary" id="th-send">Отправить</button>
       </div>
-      <div class="hint" style="margin-top:6px">Сообщение ляжет в ту же переписку, что и реплики бота — подключившись позже, он увидит его как своё и продолжит с этого места, а не начнёт заново. <span id="th-send-msg"></span></div>
+      <div class="hint th-send-tip" style="margin-top:6px"><span class="th-send-note">Сообщение ляжет в ту же переписку, что и реплики бота — подключившись позже, он увидит его как своё и продолжит с этого места, а не начнёт заново. </span><span id="th-send-msg"></span></div>
     </div>`;
+  _chatMobileOpen();
   const b=th.querySelector(".th-body");b.scrollTop=b.scrollHeight;
+  const bk=$("#th-back");if(bk)bk.onclick=()=>{if(history.state&&history.state.chatThread)history.back();else _chatMobileClose();};
   const ta=$("#th-text"), sendBtn=$("#th-send"), sendMsg=$("#th-send-msg");
+  if(ta&&_chatIsMobile())ta.placeholder="Написать самому…";
   const doSend=async()=>{
     const text=(ta.value||"").trim();
     if(!text)return;

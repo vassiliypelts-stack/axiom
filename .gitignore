@@ -84,3 +84,6 @@ axiom/data/private_exports/
 
 # Выгрузки каналов конкурентов (tools/export_competitor_channels.py) — не в репозиторий
 axiom/data/competitor/
+
+# Обложки вкладки «Тренды доноров» — кэш, пересоздаётся сам
+axiom/data/trend_thumbs/

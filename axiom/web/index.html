@@ -866,6 +866,52 @@
     .topbar{padding:10px;}
     button,.btn{padding:9px 12px;font-size:12.5px;}
   }
+  /* ═══════════ Видео-завод → Тренды доноров (tr-*) ═══════════ */
+  .tr-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px;}
+  .tr-stat{padding:14px 16px;}
+  .tr-stat .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
+  .tr-stat .val{font-size:24px;font-weight:700;margin-top:4px;}
+  .tr-stat .sub{font-size:12px;}
+  .tr-filters{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:12px 16px;margin-bottom:14px;}
+  .tr-fg{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .tr-fg>span{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
+  .tr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr));gap:14px;}
+  .tr-card{display:flex;flex-direction:column;overflow:hidden;border-radius:16px;}
+  .tr-card.r-да{border-color:var(--green);}
+  .tr-card.r-нет{opacity:.55;}
+  .tr-cover{position:relative;display:block;aspect-ratio:4/5;background:var(--panel2);overflow:hidden;}
+  .tr-cover img{width:100%;height:100%;object-fit:cover;display:block;}
+  .tr-noimg{position:absolute;inset:0;padding:16px;font-size:13.5px;line-height:1.45;color:var(--text);overflow:hidden;display:flex;align-items:center;}
+  .tr-spike{position:absolute;left:10px;top:10px;background:var(--accent);color:var(--primary-txt);font-weight:800;font-size:17px;border-radius:8px;padding:3px 9px;}
+  .tr-spike.mid{background:#E8B04B;color:#2a1f08;}.tr-spike.low{background:#cfd6de;color:#1a2230;}
+  .tr-plat{position:absolute;right:10px;top:10px;background:rgba(0,0,0,.7);color:#fff;border-radius:999px;padding:4px 10px;font-size:11.5px;}
+  .tr-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:8px;flex:1;}
+  .tr-who{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);}
+  .tr-title{font-size:13.5px;font-weight:650;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+  .tr-nums{display:flex;flex-wrap:wrap;gap:3px 12px;font-size:12px;color:var(--muted);}
+  .tr-nums b{color:var(--text);font-weight:650;}
+  .tr-seg{font-size:12px;}
+  .tr-angle{font-size:12.5px;background:var(--panel2);border-left:3px solid var(--accent);border-radius:6px;padding:8px 10px;}
+  .tr-angle small{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:2px;}
+  .tr-rate{display:flex;gap:6px;margin-top:auto;}
+  .tr-rate button{flex:1;padding:7px 0;}
+  .tr-rate button.on.tr-yes{background:var(--green);border-color:var(--green);color:#0d1f17;font-weight:700;}
+  .tr-rate button.on.tr-later{background:#E8B04B;border-color:#E8B04B;color:#2a1f08;font-weight:700;}
+  .tr-rate button.on.tr-no{background:var(--faint);border-color:var(--faint);color:var(--text);}
+  .tr-note{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);padding:7px 9px;font:inherit;font-size:12.5px;resize:vertical;min-height:34px;}
+  .tr-links{display:flex;justify-content:space-between;font-size:12px;}
+  .tr-links a{color:var(--accent);text-decoration:none;}
+  .tr-chosen{display:grid;grid-template-columns:80px 1fr;gap:14px;padding:14px 0;border-top:1px solid var(--border);}
+  .tr-chosen:first-child{border-top:0;}
+  .tr-chosen img{width:80px;aspect-ratio:4/5;object-fit:cover;border-radius:8px;background:var(--panel2);}
+  .tr-donors{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(240px,100%),1fr));gap:10px;}
+  .tr-donor{padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--panel2);display:flex;flex-direction:column;gap:4px;}
+  .tr-donor.paused{opacity:.5;}
+  .tr-donor a{color:var(--muted);font-size:12px;word-break:break-all;}
+  .tr-donor .row{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);}
+  .tr-donor button{padding:2px 8px;font-size:12px;}
+  .tr-form{display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:9px;}
+  @media(max-width:900px){.tr-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.tr-form{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -4037,13 +4083,14 @@ let VCF_TAB="summary";
 function vcfTabs(){
   return `<div class="ttoolbar" style="margin-bottom:14px">
     <button id="vcf-summary" class="${VCF_TAB==='summary'?'primary':'ghost'}">Сводка</button>
+    <button id="vcf-trends" class="${VCF_TAB==='trends'?'primary':'ghost'}">Тренды доноров</button>
     <button id="vcf-sources" class="${VCF_TAB==='sources'?'primary':'ghost'}">Источники и доноры</button>
     <button id="vcf-create" class="${VCF_TAB==='create'?'primary':'ghost'}">Создание контента</button>
     <button id="vcf-plan" class="${VCF_TAB==='plan'?'primary':'ghost'}">План и публикации</button>
   </div>`;
 }
 function vcfBindTabs(v){
-  [["summary","#vcf-summary"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
+  [["summary","#vcf-summary"],["trends","#vcf-trends"],["sources","#vcf-sources"],["create","#vcf-create"],["plan","#vcf-plan"]].forEach(([tab,sel])=>{
     const b=v.querySelector(sel);if(b)b.onclick=()=>{VCF_TAB=tab;viewContentVideo(v);};
   });
 }
@@ -4051,7 +4098,114 @@ function vcfStatus(status){
   const map={discovered:"найден",downloaded:"загружен",rendered:"preview",approved:"одобрен",published:"опубликован",failed:"ошибка",skipped:"пропуск"};
   return `<span class="tag">${esc(map[status]||status||"—")}</span>`;
 }
+/* ── Тренды доноров: лист ТРЕНДЫ (парсер контент-завода) + ДОНОРЫ + ПРОГОНЫ ──
+   Пишем в таблицу только по нажатию: оценка/комментарий темы, добавление/пауза донора. */
+let TR_SUB="cards",TR_ITEMS=[],TR_RUNS=[];
+const TR_PLAT={youtube:"YouTube",instagram:"Instagram",tiktok:"TikTok",vk:"VK",tg:"Telegram"};
+const TR_F=(()=>{const d={plat:[],fmt:["видео","карусель"],seg:"all",spike:3,days:30,rating:"none",sort:"spike"};try{return Object.assign(d,JSON.parse(localStorage.getItem("axiom_trend_filters")||"{}"));}catch(e){return d;}})();
+const trNum=v=>{const n=parseFloat(String(v??"").replace(/[^\d.]/g,""));return isNaN(n)?0:n;};
+const trFmt=n=>n>=1e6?(n/1e6).toFixed(1)+" млн":n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+" тыс":String(Math.round(n));
+function trSeg(p){const m=String(p["боль"]||"").split(" · ");return["масса","собственники","оба"].includes(m[0])?{seg:m[0],pain:m.slice(1).join(" · ")}:{seg:"",pain:p["боль"]||""};}
+function trCover(p){const yt=String(p["ссылка"]||"").match(/(?:shorts\/|v=|youtu\.be\/)([\w-]{11})/);const u=p["картинка"]||(yt?`https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg`:"");return u?"/api/content/trends/thumb?u="+encodeURIComponent(u):"";}
+function trAge(p){const d=new Date(String(p["дата"]||"").replace(" ","T"));return isNaN(d)?999:(Date.now()-d)/864e5;}
+function trFiltered(){
+  const out=TR_ITEMS.filter(p=>{
+    if(TR_F.plat.length&&!TR_F.plat.includes(p["площадка"]))return false;
+    if(TR_F.fmt.length&&!TR_F.fmt.includes(p["формат"]))return false;
+    const s=trSeg(p).seg;if(TR_F.seg!=="all"&&!(s===TR_F.seg||s==="оба"))return false;
+    if(trNum(p["всплеск"])<TR_F.spike||trAge(p)>TR_F.days)return false;
+    const r=p["оценка"]||"";if(TR_F.rating==="none"&&r)return false;if(!["all","none"].includes(TR_F.rating)&&r!==TR_F.rating)return false;
+    return true;});
+  const key={spike:p=>trNum(p["всплеск"]),date:p=>-trAge(p),views:p=>trNum(p["охват"])||trNum(p["реакции"])}[TR_F.sort]||(p=>0);
+  return out.sort((a,b)=>key(b)-key(a));
+}
+function trChips(group,values,multi){return values.map(([val,label])=>{const on=multi?TR_F[group].includes(val):TR_F[group]===val;return `<button class="cf-chip${on?" on":""}" data-trg="${group}" data-trv="${esc(val)}" data-trm="${multi?1:0}">${esc(label)}</button>`;}).join("");}
+function trCard(p){
+  const sp=trNum(p["всплеск"]),s=trSeg(p),img=trCover(p),r=p["оценка"]||"",car=p["формат"]==="карусель",views=trNum(p["охват"]);
+  const nums=[views?`<span>охват <b>${trFmt(views)}</b></span>`:"",`<span>лайки <b>${trFmt(trNum(p["реакции"]))}</b></span>`,p["комменты"]?`<span>комм. <b>${trFmt(trNum(p["комменты"]))}</b></span>`:"",p["норма"]?`<span title="${car?"медиана вовлечения автора: лайки + 3×комментарии":"медиана охвата автора за 30 дней"}">норма автора <b>${trFmt(trNum(p["норма"]))}</b></span>`:""].join("");
+  return `<article class="dash-glass tr-card r-${esc(r)}" data-link="${esc(p["ссылка"])}">
+    <a class="tr-cover" href="${esc(p["ссылка"])}" target="_blank" rel="noopener">${img?`<img loading="lazy" src="${img}" alt="" data-t="${esc(String(p["тема"]||"").slice(0,260))}">`:`<div class="tr-noimg">${esc(String(p["тема"]||"").slice(0,260))}</div>`}
+      <span class="tr-spike ${sp>=10?"":sp>=5?"mid":"low"}">${esc(p["всплеск"])}</span><span class="tr-plat">${esc(TR_PLAT[p["площадка"]]||p["площадка"])} · ${esc(p["формат"])}</span></a>
+    <div class="tr-body">
+      <div class="tr-who"><span>${esc(p["автор"])}</span><span>${esc(String(p["дата"]||"").slice(0,10))}</span></div>
+      <div class="tr-title">${esc(p["тема"])}</div>
+      <div class="tr-nums">${nums}</div>
+      <div class="tr-seg">${s.seg?`<span class="tag">${esc(s.seg)}</span> `:""}${esc(s.pain)}</div>
+      ${p["угол"]?`<div class="tr-angle"><small>Наш угол</small>${esc(p["угол"])}</div>`:""}
+      <div class="tr-rate"><button class="ghost tr-yes${r==="да"?" on":""}" data-r="да">Да</button><button class="ghost tr-later${r==="потом"?" on":""}" data-r="потом">Потом</button><button class="ghost tr-no${r==="нет"?" on":""}" data-r="нет">Нет</button></div>
+      <textarea class="tr-note" rows="1" placeholder="Комментарий: как развернуть, что взять">${esc(p["комментарий"])}</textarea>
+      <div class="tr-links"><a href="${esc(p["ссылка"])}" target="_blank" rel="noopener">открыть оригинал ↗</a><span class="sub tr-saved"></span></div>
+    </div></article>`;
+}
+function trHead(){
+  const media=TR_ITEMS.filter(p=>p["формат"]!=="текст"),yes=TR_ITEMS.filter(p=>p["оценка"]==="да"),run=TR_RUNS[0];
+  const top=[...TR_ITEMS].sort((a,b)=>trNum(b["всплеск"])-trNum(a["всплеск"]))[0];
+  return `<div class="tr-stats">
+    <div class="dash-glass tr-stat"><div class="lbl">Ждут оценки</div><div class="val">${media.filter(p=>!p["оценка"]).length}</div><div class="sub">из ${TR_ITEMS.length} тем в листе</div></div>
+    <div class="dash-glass tr-stat"><div class="lbl">Выбрано «да»</div><div class="val">${yes.length}</div><div class="sub">пойдут в сценарии</div></div>
+    <div class="dash-glass tr-stat"><div class="lbl">Сильнейший всплеск</div><div class="val">${top?esc(top["всплеск"]):"—"}</div><div class="sub">${top?esc(top["автор"]):""}</div></div>
+    <div class="dash-glass tr-stat"><div class="lbl">Последний прогон</div><div class="val" style="font-size:17px">${run?esc(run["дата"]):"—"}</div><div class="sub">${run?`записано ${esc(run["записано"])} · Instagram: ${esc(run["instagram"]||"—")}${run["apify $"]?` · Apify $${esc(run["apify $"])}`:""}`:"парсер запускается на компьютере Василия"}</div></div>
+  </div>
+  <div class="ttoolbar"><button class="cf-chip${TR_SUB==="cards"?" on":""}" data-trsub="cards">Темы</button><button class="cf-chip${TR_SUB==="chosen"?" on":""}" data-trsub="chosen">Выбранные · ${yes.length}</button><button class="cf-chip${TR_SUB==="donors"?" on":""}" data-trsub="donors">Доноры</button><span class="sub">Всплеск — во сколько раз пост обогнал обычный охват этого же автора за 30 дней.</span></div>`;
+}
+async function viewVideoTrends(v){
+  v.innerHTML=vcfTabs()+`<div class="empty">Читаю лист ТРЕНДЫ…</div>`;vcfBindTabs(v);
+  let d;try{d=await api("/api/content/trends");}catch(e){d={error:e.message};}
+  if(d.error){v.innerHTML=vcfTabs()+`<div class="empty">⚠️ ${esc(d.error)}</div>`;vcfBindTabs(v);return;}
+  TR_ITEMS=d.items||[];TR_RUNS=d.runs||[];trRender(v);
+}
+function trRender(v){
+  const shell=body=>{v.innerHTML=vcfTabs()+trHead()+body;vcfBindTabs(v);v.querySelectorAll("[data-trsub]").forEach(b=>b.onclick=()=>{TR_SUB=b.dataset.trsub;trRender(v);});};
+  if(TR_SUB==="donors")return trDonors(v,shell);
+  if(TR_SUB==="chosen"){
+    const yes=TR_ITEMS.filter(p=>p["оценка"]==="да");
+    shell(`<section class="dash-glass dash-card">${yes.length?yes.map(p=>{const img=trCover(p);return `<div class="tr-chosen">${img?`<img src="${img}" alt="">`:"<div></div>"}<div><b>${esc(p["тема"])}</b><div class="sub">${esc(p["всплеск"])} · ${esc(TR_PLAT[p["площадка"]]||p["площадка"])} · ${esc(p["автор"])} · <a href="${esc(p["ссылка"])}" target="_blank" rel="noopener">оригинал ↗</a></div><div class="tr-angle" style="margin-top:8px"><small>Угол</small>${esc(p["угол"]||"—")}</div>${p["комментарий"]?`<div class="tr-angle" style="margin-top:6px;border-left-color:var(--green)"><small>Комментарий</small>${esc(p["комментарий"])}</div>`:""}</div></div>`;}).join(""):`<div class="empty">Пока ничего не выбрано. Отметьте «Да» на вкладке «Темы».</div>`}</section>`);
+    return;
+  }
+  const plats=[...new Set(TR_ITEMS.map(p=>p["площадка"]))].filter(Boolean),list=trFiltered();
+  shell(`<section class="dash-glass tr-filters">
+      <div class="tr-fg"><span>Площадка</span>${trChips("plat",plats.map(p=>[p,TR_PLAT[p]||p]),true)}</div>
+      <div class="tr-fg"><span>Формат</span>${trChips("fmt",[["видео","видео"],["карусель","карусели"],["текст","тексты TG"]],true)}</div>
+      <div class="tr-fg"><span>Для кого</span>${trChips("seg",[["all","все"],["масса","масса"],["собственники","собственники"]])}</div>
+      <div class="tr-fg"><span>Всплеск</span>${trChips("spike",[[3,"от 3×"],[5,"от 5×"],[10,"от 10×"]])}</div>
+      <div class="tr-fg"><span>Период</span>${trChips("days",[[7,"7 дн"],[14,"14 дн"],[30,"30 дн"],[365,"всё"]])}</div>
+      <div class="tr-fg"><span>Оценка</span>${trChips("rating",[["none","без оценки"],["да","да"],["потом","потом"],["нет","нет"],["all","все"]])}</div>
+      <div class="tr-fg"><span>Сортировка</span><select id="tr-sort" class="cf-date"><option value="spike">по всплеску</option><option value="date">по дате</option><option value="views">по охвату</option></select></div>
+    </section>
+    <div class="tr-grid">${list.length?list.map(trCard).join(""):`<div class="empty" style="grid-column:1/-1">По этим фильтрам тем нет — ослабьте фильтры.</div>`}</div>`);
+  const sort=v.querySelector("#tr-sort");sort.value=TR_F.sort;sort.onchange=()=>{TR_F.sort=sort.value;trSave(v);};
+  v.querySelectorAll("[data-trg]").forEach(c=>c.onclick=()=>{const g=c.dataset.trg;let val=c.dataset.trv;if(g==="spike"||g==="days")val=+val;
+    if(c.dataset.trm==="1")TR_F[g]=TR_F[g].includes(val)?TR_F[g].filter(x=>x!==val):[...TR_F[g],val];else TR_F[g]=val;trSave(v);});
+  v.querySelectorAll(".tr-cover img").forEach(img=>img.onerror=()=>{const d=document.createElement("div");d.className="tr-noimg";d.textContent=img.dataset.t||"";img.replaceWith(d);});
+  v.querySelectorAll(".tr-card").forEach(el=>{
+    const p=TR_ITEMS.find(x=>x["ссылка"]===el.dataset.link);if(!p)return;
+    const save=async(rating,comment)=>{const s=el.querySelector(".tr-saved");s.textContent="сохраняю…";
+      try{const r=await api("/api/content/trends/rate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({link:p["ссылка"],rating,comment})});
+        if(r.error){s.textContent="⚠️ "+r.error;return;}p["оценка"]=rating;if(comment!==null)p["комментарий"]=comment;s.textContent="сохранено в таблицу";if(comment===null)setTimeout(()=>trRender(v),350);}
+      catch(e){s.textContent="⚠️ "+e.message;}};
+    el.querySelectorAll(".tr-rate button").forEach(b=>b.onclick=()=>save(p["оценка"]===b.dataset.r?"":b.dataset.r,null));
+    const note=el.querySelector(".tr-note");note.onchange=()=>save(p["оценка"]||"",note.value);
+  });
+}
+function trSave(v){try{localStorage.setItem("axiom_trend_filters",JSON.stringify(TR_F));}catch(e){}trRender(v);}
+async function trDonors(v,shell){
+  let d;try{d=await api("/api/content/trends/donors");}catch(e){d={error:e.message};}
+  const list=d.donors||[];
+  const group=(k,label)=>{const items=list.filter(x=>x.platform===k);if(!items.length)return "";return `<h3 style="margin:16px 0 8px">${label} · ${items.filter(x=>x.status==="active").length}</h3><div class="tr-donors">${items.map(x=>`<div class="tr-donor${x.status==="paused"?" paused":""}"><b>${esc(x.name)}</b><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a>${x.note?`<div class="row">${esc(x.note)}</div>`:""}<div class="row"><span>${x.status==="paused"?"на паузе":x.added?"добавлен "+esc(x.added):"проверяется"}</span><button class="ghost" data-trdonor="${esc(x.url)}" data-trst="${x.status==="paused"?"active":"paused"}">${x.status==="paused"?"вернуть":"на паузу"}</button></div></div>`).join("")}</div>`;};
+  shell(`<section class="dash-glass dash-card">
+      <div class="dash-chh"><h3>Доноры парсера трендов</h3><span class="sub">Общий список с парсером — лист ДОНОРЫ. Новый донор попадёт в следующий прогон.</span></div>
+      <div class="tr-form"><input id="tr-d-url" class="cf-date" placeholder="Ссылка на профиль: instagram.com/имя или youtube.com/@имя"><select id="tr-d-plat" class="cf-date"><option value="">площадка — по ссылке</option><option value="instagram">Instagram</option><option value="youtube">YouTube</option></select><input id="tr-d-note" class="cf-date" placeholder="Заметка: почему этот донор"><button class="primary" id="tr-d-add">Добавить</button></div>
+      <div class="sub" id="tr-d-msg" style="margin-top:8px">${d.error?"⚠️ "+esc(d.error):"Каждый Instagram-донор удорожает прогон Apify (бесплатный лимит $5 в месяц) — добавляйте тех, кто реально делает похожий контент."}</div>
+      ${group("instagram","Instagram")}${group("youtube","YouTube")}${group("tiktok","TikTok")}
+    </section>`);
+  const msg=v.querySelector("#tr-d-msg");
+  v.querySelector("#tr-d-add").onclick=async()=>{const url=v.querySelector("#tr-d-url").value.trim();if(!url){msg.textContent="Вставьте ссылку на профиль.";return;}
+    msg.textContent="сохраняю…";const r=await api("/api/content/trends/donors",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,platform:v.querySelector("#tr-d-plat").value,note:v.querySelector("#tr-d-note").value.trim()})});
+    if(r.error)msg.textContent="⚠️ "+r.error;else trRender(v);};
+  v.querySelectorAll("[data-trdonor]").forEach(b=>b.onclick=async()=>{b.disabled=true;const r=await api("/api/content/trends/donors/status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:b.dataset.trdonor,status:b.dataset.trst})});if(r.error){msg.textContent="⚠️ "+r.error;b.disabled=false;}else trRender(v);});
+}
 async function viewContentVideo(v){
+  if(VCF_TAB==="trends")return viewVideoTrends(v);
   if(VCF_TAB==="sources")return viewVideoSources(v);
   if(VCF_TAB==="create")return viewVideoCreate(v);
   if(VCF_TAB==="plan")return viewVideoPlan(v);

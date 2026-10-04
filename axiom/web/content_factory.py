@@ -2,7 +2,8 @@
 
 Текстовый завод читает Google-таблицу проекта Kontent-zavod-traffic-machine
 (см. integrations/content_sheet.py) — Axiom здесь только витрина, не источник
-правды и не пишет туда.
+правды и не пишет туда. Исключение — «Тренды доноров» (integrations/content_trends.py):
+оценка темы и добавление/пауза донора, только по явному нажатию в интерфейсе.
 
 Видео-завод — отдельный подраздел, пока не подключен ни к какому источнику
 данных (см. ROADMAP.md, волна «Контент завод»); ручка отдаёт заглушку, чтобы
@@ -26,10 +27,11 @@ from urllib.parse import quote, urlparse
 from urllib.request import urlopen
 
 from fastapi import APIRouter, Body, File, Form, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from integrations import content_sheet, content_writer, speech
+from integrations import content_trends as content_trends_mod
 from agent import llm
 
 router = APIRouter()
@@ -85,6 +87,65 @@ async def content_text_take_trend(trend_id: str, body: dict = Body(...)) -> JSON
         return JSONResponse({"draft": draft})
     except Exception as e:
         return _fail(e, 502)
+
+
+# ---------- Тренды доноров (видео-завод): лист ТРЕНДЫ + ДОНОРЫ + ПРОГОНЫ ----------
+
+@router.get("/api/content/trends")
+def content_trends() -> JSONResponse:
+    try:
+        return JSONResponse(content_trends_mod.trends())
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.post("/api/content/trends/rate")
+def content_trends_rate(body: dict = Body(...)) -> JSONResponse:
+    try:
+        content_trends_mod.rate(str(body.get("link", "")), str(body.get("rating", "")), body.get("comment"))
+        return JSONResponse({"ok": True})
+    except ValueError as e:
+        return _fail(e)
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.get("/api/content/trends/donors")
+def content_trends_donors() -> JSONResponse:
+    try:
+        return JSONResponse(content_trends_mod.donors())
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.post("/api/content/trends/donors")
+def content_trends_add_donor(body: dict = Body(...)) -> JSONResponse:
+    try:
+        content_trends_mod.add_donor(str(body.get("url", "")), str(body.get("platform", "")), str(body.get("note", "")))
+        return JSONResponse(content_trends_mod.donors())
+    except ValueError as e:
+        return _fail(e)
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.post("/api/content/trends/donors/status")
+def content_trends_donor_status(body: dict = Body(...)) -> JSONResponse:
+    try:
+        content_trends_mod.set_donor_status(str(body.get("url", "")), str(body.get("status", "")))
+        return JSONResponse(content_trends_mod.donors())
+    except ValueError as e:
+        return _fail(e)
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
+@router.get("/api/content/trends/thumb")
+def content_trends_thumb(u: str = "") -> Response:
+    data = content_trends_mod.thumb(u)
+    if not data:
+        return Response(status_code=404)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
 @router.post("/api/content/text/write")

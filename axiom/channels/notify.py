@@ -790,11 +790,26 @@ async def notify_sending_resumed(campaign_id: int) -> None:
             row = conn.execute("SELECT name FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
             if not row:
                 return
+            # sent_at хранится в UTC, отчётные сутки — московские. Считаем
+            # границы суток как UTC-моменты, чтобы уведомление совпадало с рабочим днём.
+            day_bounds = conn.execute(
+                "SELECT datetime(date('now','+3 hours'),'-3 hours') AS today_start, "
+                "datetime(date('now','+3 hours','+1 day'),'-3 hours') AS tomorrow_start, "
+                "datetime(date('now','+3 hours','-1 day'),'-3 hours') AS yesterday_start"
+            ).fetchone()
+            today_start = day_bounds["today_start"]
+            tomorrow_start = day_bounds["tomorrow_start"]
+            yesterday_start = day_bounds["yesterday_start"]
             sent = conn.execute(
                 "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-                "AND date(sent_at)=date('now')", (campaign_id,)).fetchone()["c"]
+                "AND sent_at>=? AND sent_at<?",
+                (campaign_id, today_start, tomorrow_start)).fetchone()["c"]
             if not sent:
                 return                      # отправок сегодня ещё нет — отчитываться не о чем
+            yesterday_sent = conn.execute(
+                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
+                "AND sent_at>=? AND sent_at<?",
+                (campaign_id, yesterday_start, today_start)).fetchone()["c"]
             total = conn.execute(
                 "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?",
                 (campaign_id,)).fetchone()["c"]
@@ -811,10 +826,12 @@ async def notify_sending_resumed(campaign_id: int) -> None:
             who = conn.execute(
                 "SELECT COALESCE(a.label, a.phone, '#'||a.id) AS who, COUNT(*) n "
                 "FROM campaign_contacts cc JOIN accounts a ON a.id=cc.account_id "
-                "WHERE cc.campaign_id=? AND date(cc.sent_at)=date('now') "
-                "GROUP BY cc.account_id ORDER BY n DESC", (campaign_id,)).fetchall()
+                "WHERE cc.campaign_id=? AND cc.sent_at>=? AND cc.sent_at<? "
+                "GROUP BY cc.account_id ORDER BY n DESC",
+                (campaign_id, today_start, tomorrow_start)).fetchall()
         lines = [f"✅ Пошла рассылка: «{row['name']}»",
-                 f"Сегодня отправлено: {sent}"]
+                 f"Сегодня отправлено: {sent}",
+                 f"Вчера отправлено: {yesterday_sent}"]
         if who:
             lines.append("С аккаунтов: " + ", ".join(f"{r['who']} ({r['n']})" for r in who))
         lines.append(f"Всего по кампании: {total} · прочитали {read} · ответили {replied}")

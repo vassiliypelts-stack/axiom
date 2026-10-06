@@ -61,6 +61,41 @@ class PinTests(unittest.TestCase):
         self.assertEqual(cs._pick_for(rows[self.tg_a], live, 1)['id'], self.a)
         self.assertIsNone(cs._pick_for(rows[self.tg_b], live, 0))
 
+    def test_shared_test_contact_ignores_previous_campaign(self):
+        with database.get_conn() as conn:
+            other = conn.execute("INSERT INTO campaigns(name) VALUES ('Other')").lastrowid
+            conn.execute("UPDATE contacts SET is_test=1, outreach_campaign_id=? WHERE id=?",
+                         (other, self.tg_a))
+            conn.execute("UPDATE contacts SET is_test=1, test_campaign_id=? WHERE id=?",
+                         (other, self.tg_b))
+        rows = cs._audience(self.cid, 'unused', 'telegram', 100, test=True,
+                            only_contacts=[self.tg_a, self.tg_b])
+        self.assertEqual(self.ids(rows), {self.tg_a})
+        self.assertEqual(cs._audience(self.cid, 'unused', 'telegram', 100, test=True,
+                                     only_contacts=[self.wa_b]), [])
+
+    def test_whatsapp_shared_test_ignores_previous_campaign(self):
+        with database.get_conn() as conn:
+            other = conn.execute("INSERT INTO campaigns(name) VALUES ('Other')").lastrowid
+            conn.execute("UPDATE contacts SET is_test=1, outreach_campaign_id=? WHERE id=?",
+                         (other, self.wa_b))
+            conn.execute("UPDATE contacts SET is_test=1, test_campaign_id=? WHERE id=?",
+                         (other, self.tg_b))
+        queued = cs.queue_whatsapp(self.cid, cs._load_campaign(self.cid), 10, test=True,
+                                  test_account=self.b,
+                                  test_contacts=[self.wa_b, self.tg_a, self.tg_b], tg_too=True)
+        self.assertEqual(queued, 1)
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT contact_id, account_id, is_test FROM wa_outbox").fetchone()
+        self.assertEqual(tuple(row), (self.wa_b, self.b, 1))
+
+    def test_production_still_excludes_other_campaign(self):
+        with database.get_conn() as conn:
+            other = conn.execute("INSERT INTO campaigns(name) VALUES ('Other')").lastrowid
+            conn.execute("UPDATE contacts SET outreach_campaign_id=?", (other,))
+        self.assertEqual(cs._audience(self.cid, 'ИИ-Прорыв', 'telegram', 100), [])
+        self.assertEqual(cs.queue_whatsapp(self.cid, cs._load_campaign(self.cid), 10), 0)
+
     def test_window_follows_contacts_own_timezone(self):
         from datetime import datetime
         from zoneinfo import ZoneInfo

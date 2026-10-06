@@ -232,9 +232,13 @@ def _audience(cid: int, tag: str | None, channel: str, cap: int, test: bool = Fa
     # жива и восстановима, но писать ей нельзя: выделенный по ошибке и удалённый
     # человек не должен получить сообщение только потому, что рассылка не знает о
     # корзине.
-    where = ("status='new' AND deleted_at IS NULL AND (username IS NOT NULL OR phone IS NOT NULL) "
-             "AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)")
-    params: list = [cid]
+    where = "status='new' AND deleted_at IS NULL AND (username IS NOT NULL OR phone IS NOT NULL)"
+    params: list = []
+    # Общие тестовые номера могут хранить привязку от прошлого прогона другой
+    # кампании. Их область задаёт test_campaign_id ниже, а не боевая привязка.
+    if not test:
+        where += " AND (outreach_campaign_id IS NULL OR outreach_campaign_id=?)"
+        params.append(cid)
     if exclude_paused:
         where += " AND id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?)"
         params.append(cid)
@@ -931,11 +935,12 @@ def queue_whatsapp(cid: int, camp: dict, limit: int, test: bool = False,
 
     where = ("c.status='new' AND c.deleted_at IS NULL AND c.phone IS NOT NULL AND c.phone<>'' "
              "AND COALESCE(c.has_wa,'unknown') IN ('yes','unknown') "
-             "AND (c.outreach_campaign_id IS NULL OR c.outreach_campaign_id=?) "
              "AND c.id NOT IN (SELECT contact_id FROM campaign_paused_contacts WHERE campaign_id=?) "
              "AND c.id NOT IN (SELECT contact_id FROM wa_outbox WHERE status IN ('pending','sending'))")
-    params: list = [cid, cid]
+    params: list = [cid]
     if not test:
+        where += " AND (c.outreach_campaign_id IS NULL OR c.outreach_campaign_id=?)"
+        params.append(cid)
         # Закреплённый за Telegram человек ждёт Telegram, а закреплённый за WhatsApp
         # идёт сюда, даже если в Telegram он тоже есть.
         where += " AND COALESCE(c.outreach_channel,'')<>'telegram'"

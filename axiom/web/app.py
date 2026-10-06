@@ -11316,8 +11316,9 @@ def campaign_test_options(cid: int) -> JSONResponse:
         # служебного от боевого было нельзя, а выбор мёртвого означал тест, который
         # молча никуда не уйдёт. Берём те же условия, по которым отправитель проходит
         # в реальный заход: живая сессия + свой живой прокси (общий IP жжёт ключ) +
-        # не забанен. Служебный (уведомления/пробив) и родной личный исключаем совсем:
-        # сгоревший нотификатор — это пропущенные встречи.
+        # не забанен. Служебный (уведомления/пробив) исключаем. Личный номер
+        # доступен только если владелец уже включил его в команду этой кампании:
+        # «ИИ-Прорыв» пишет знакомым именно с личных номеров.
         # ВАЖНО: аккаунт, придержанный Telegram'ом, из списка НЕ убираем, а помечаем.
         # Убрать — значит снова соврать оператору: номер просто исчезал бы из выбора
         # без объяснения, а «Василий938» вчера был и сегодня нет — это выглядит как
@@ -11337,7 +11338,9 @@ def campaign_test_options(cid: int) -> JSONResponse:
             "AND session_state='alive' "
             "AND status<>'banned' "
             "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
-            "AND COALESCE(acc_role,'')<>'service' AND COALESCE(protected,0)=0 "
+            "AND COALESCE(acc_role,'')<>'service' "
+            "AND (COALESCE(protected,0)=0 OR id IN "
+            "(SELECT account_id FROM campaign_accounts WHERE campaign_id=?)) "
             # Придержанные — в конец списка: выбирать из них можно, но первым под
             # курсор должен попадать тот, кем реально уйдёт сообщение.
             "ORDER BY CASE WHEN (spam_pause_until IS NOT NULL "
@@ -11345,7 +11348,7 @@ def campaign_test_options(cid: int) -> JSONResponse:
             "            OR (flood_wait_until IS NOT NULL "
             "                    AND flood_wait_until > datetime('now')) THEN 1 ELSE 0 END, "
             "CASE status WHEN 'active' THEN 0 WHEN 'warming' THEN 1 ELSE 2 END, "
-            "COALESCE(label, username, phone)").fetchall()
+            "COALESCE(label, username, phone)", (cid,)).fetchall()
         main_row = conn.execute("SELECT account_id FROM campaigns WHERE id=?", (cid,)).fetchone()
         # Кто в команде ИМЕННО этой кампании и кто занят чужой активной рассылкой.
         # Без этого диалог теста показывал плоский список без различий, а настройки

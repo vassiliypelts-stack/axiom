@@ -102,3 +102,38 @@ def last_nudge(name: str) -> str:
     if first and first[0].isalpha():
         return text.replace("{name}", first)
     return text.replace("{name}, ", "")[:1].upper() + text.replace("{name}, ", "")[1:]
+
+
+# Включается только явно в сценарии кампании. Остальные кампании могут
+# намеренно использовать абзацы, поэтому clean() сохраняет прежнее поведение.
+SHORT_PERSONAL_MARKER = "РЕЖИМ: КОРОТКИЙ ЛИЧНЫЙ ДИАЛОГ"
+
+
+def personal_parts(parts: list[str]) -> list[str]:
+    """Отдельные абзацы -> отдельные реплики, без типографики и разметки."""
+    result = []
+    for part in parts:
+        for paragraph in re.split(r"\n\s*\n", part or ""):
+            text = clean(paragraph)
+            text = re.sub(r"(?<!\w)[*`#]+|[*`#]+(?!\w)", "", text)
+            text = re.sub(r"^[-•]\s+", "", text)
+            text = re.sub(r"\s+-\s+", ", ", text)
+            text = re.sub(r"([.!?:;,])\s*,", r"\1", text)
+            text = _SPACES.sub(" ", text).strip()
+            if text:
+                result.append(text)
+    return result
+
+
+def personal_problem(parts: list[str], first_reply: bool = False) -> str | None:
+    """Проверяет длину без обрезания смысла, встречи или ответа на вопрос."""
+    if not 1 <= len(parts) <= 2:
+        return "нужны одна или две реплики"
+    per_part, total = (160, 240) if first_reply else (200, 320)
+    if any(len(p) > per_part for p in parts) or sum(map(len, parts)) > total:
+        return f"слишком длинно: до {per_part} знаков на реплику и {total} всего"
+    if sum(p.count("?") for p in parts) > 1:
+        return "задай только один вопрос"
+    if any("\n" in p for p in parts):
+        return "внутри реплики не должно быть абзацев"
+    return None

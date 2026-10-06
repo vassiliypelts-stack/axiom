@@ -400,6 +400,12 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if conn.execute("SELECT 1 FROM deals WHERE contact_id=? AND stage IN "
                         "('meeting_set','met','won')", (c["id"],)).fetchone():
             continue
+        # Личный разговор со знакомым не превращаем в рекламную цепочку
+        # после его приветствия. Напоминания о согласованной встрече выше
+        # остаются; один стук молчащему контакту обрабатывается отдельно ниже.
+        if (deslop.SHORT_PERSONAL_MARKER in (camp["agent_prompt"] or "")
+                and any(r["direction"] == "in" for r in history)):
+            continue
         extra = _campaign_extra_followup(conn, c["id"])
         # ТЕКСТ КАМПАНИИ ЗАМЕНЯЕТ ОБЩУЮ ЛЕСЕНКУ, А НЕ ДОБАВЛЯЕТСЯ К НЕЙ.
         #

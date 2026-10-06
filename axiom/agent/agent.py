@@ -161,10 +161,36 @@ def generate_reply(
     if llm.is_anthropic(model) and "haiku" not in model:
         kwargs["thinking"] = {"type": "adaptive"}
 
-    reply = llm.structured(
-        model, system=llm.cached(system, personal), messages=history,
-        output_format=Reply, max_tokens=1000, **kwargs,
-    )
+    from channels import deslop
+    short_personal = deslop.SHORT_PERSONAL_MARKER in (campaign_prompt or "")
+    first_reply = not any(m.get("role") == "assistant" for m in history)
+    if short_personal:
+        # Последнее правило уточняет общий формат 1-3 сообщений именно для
+        # личного диалога. Первый ответ не должен превращаться в презентацию.
+        personal += (
+            "\n\nФОРМАТ ЭТОГО ДИАЛОГА: одна или две короткие реплики, один вопрос максимум. "
+            + ("До 160 знаков на реплику, до 240 всего. " if first_reply
+               else "До 200 знаков на реплику, до 320 всего. ")
+            + "Одна мысль на реплику. Без абзацев, списков и рекламных вступлений. "
+              "Правила сценария кампании важнее общего совета быстрее предлагать встречу."
+        )
+    for attempt in range(2):
+        reply = llm.structured(
+            model, system=llm.cached(system, personal), messages=history,
+            output_format=Reply, max_tokens=1000, **kwargs,
+        )
+        if not short_personal:
+            break
+        parts = deslop.personal_parts(reply.reply_parts)
+        problem = deslop.personal_problem(parts, first_reply)
+        if not problem:
+            reply.reply_parts = parts
+            break
+        if attempt == 1:
+            raise ValueError("Короткий личный ответ не прошел проверку: " + problem)
+        # Перегенерируем ответ целиком, вместо обрезания, которое могло бы
+        # потерять вопрос, отказ или подтверждение конкретного времени.
+        personal += "\nПЕРЕПИШИ ОТВЕТ КОРОЧЕ: " + problem + ". Сохрани смысл и ответь по существу."
     # Модель иногда дописывает в notes хвост собственного JSON («...','send_kp':false,»),
     # и он уезжал владельцу в уведомление о встрече. Отрезаем с первого такого шва.
     if reply.notes:

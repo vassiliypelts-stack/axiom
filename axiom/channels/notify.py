@@ -801,32 +801,44 @@ async def notify_sending_resumed(campaign_id: int) -> None:
             tomorrow_start = day_bounds["tomorrow_start"]
             yesterday_start = day_bounds["yesterday_start"]
             sent = conn.execute(
-                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-                "AND sent_at>=? AND sent_at<?",
+                "SELECT COUNT(*) c FROM campaign_contacts cc "
+                "JOIN contacts c ON c.id=cc.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0 "
+                "AND cc.sent_at>=? AND cc.sent_at<?",
                 (campaign_id, today_start, tomorrow_start)).fetchone()["c"]
             if not sent:
                 return                      # отправок сегодня ещё нет — отчитываться не о чем
             yesterday_sent = conn.execute(
-                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=? "
-                "AND sent_at>=? AND sent_at<?",
+                "SELECT COUNT(*) c FROM campaign_contacts cc "
+                "JOIN contacts c ON c.id=cc.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0 "
+                "AND cc.sent_at>=? AND cc.sent_at<?",
                 (campaign_id, yesterday_start, today_start)).fetchone()["c"]
             total = conn.execute(
-                "SELECT COUNT(*) c FROM campaign_contacts WHERE campaign_id=?",
+                "SELECT COUNT(*) c FROM campaign_contacts cc "
+                "JOIN contacts c ON c.id=cc.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0",
                 (campaign_id,)).fetchone()["c"]
             read = conn.execute(
-                "SELECT COUNT(DISTINCT contact_id) c FROM messages WHERE direction='out' "
-                "AND read_at IS NOT NULL AND contact_id IN "
-                "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)",
+                "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
+                "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id "
+                "JOIN contacts c ON c.id=m.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0 "
+                "AND m.direction='out' AND m.read_at IS NOT NULL",
                 (campaign_id,)).fetchone()["c"]
             replied = conn.execute(
-                "SELECT COUNT(DISTINCT contact_id) c FROM messages WHERE direction='in' "
-                "AND contact_id IN "
-                "(SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)",
+                "SELECT COUNT(DISTINCT m.contact_id) c FROM messages m "
+                "JOIN campaign_contacts cc ON cc.contact_id=m.contact_id "
+                "JOIN contacts c ON c.id=m.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0 "
+                "AND m.direction='in'",
                 (campaign_id,)).fetchone()["c"]
             who = conn.execute(
                 "SELECT COALESCE(a.label, a.phone, '#'||a.id) AS who, COUNT(*) n "
                 "FROM campaign_contacts cc JOIN accounts a ON a.id=cc.account_id "
-                "WHERE cc.campaign_id=? AND cc.sent_at>=? AND cc.sent_at<? "
+                "JOIN contacts c ON c.id=cc.contact_id "
+                "WHERE cc.campaign_id=? AND COALESCE(c.is_test,0)=0 "
+                "AND cc.sent_at>=? AND cc.sent_at<? "
                 "GROUP BY cc.account_id ORDER BY n DESC",
                 (campaign_id, today_start, tomorrow_start)).fetchall()
         lines = [f"✅ Пошла рассылка: «{row['name']}»",

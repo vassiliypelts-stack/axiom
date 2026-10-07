@@ -149,6 +149,33 @@ def _sender_candidates(conn, preferred_id) -> list[int]:
     return out
 
 
+TG_MESSAGE_MAX = 4000   # у Telegram 4096; запас на разметку ссылок
+
+
+def _split_message(text: str, limit: int = TG_MESSAGE_MAX) -> list[str]:
+    """Длинный текст → части не длиннее limit, по границам строк. Сводка по
+    кампаниям выросла за 4096 знаков, и с 03.10 Telegram отбивал её у пяти
+    отправителей из шести («Message was too long»)."""
+    parts: list[str] = []
+    cur = ""
+    for line in text.split("\n"):
+        while len(line) > limit:            # одна строка длиннее лимита — режем её
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        cand = f"{cur}\n{line}" if cur else line
+        if len(cand) > limit:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = cand
+    if cur.strip():
+        parts.append(cur)
+    return parts or [text]
+
+
 async def _send_to_owner(sender_id, target: str, text: str, what: str, contact_id: int) -> None:
     """Доставка уведомления: перебираем отправителей, пока кто-то не отправит, и шлём
     ВСЕМ получателям. Успехом считается хотя бы одна доставка.
@@ -182,7 +209,8 @@ async def _send_to_owner(sender_id, target: str, text: str, what: str, contact_i
             still: list[str] = []
             for t in pending:
                 try:
-                    await client.send_message(t, text)
+                    for part in _split_message(text):
+                        await client.send_message(t, part)
                     delivered.append(f"{t} (акк #{acc_id})")
                 except Exception as e:  # noqa: BLE001 — этот получатель не вышел, копим на ретрай
                     print(f"[notify] «{t}» с акк #{acc_id} не вышло: {str(e)[:70]}")
@@ -252,7 +280,7 @@ async def send_daily_report() -> None:
                       "«уведомляет о встречах»")
                 return
             camps = conn.execute(
-                "SELECT id, name, audience_tag, channel, tg_verified_only FROM campaigns "
+                "SELECT id, name, status, audience_tag, channel, tg_verified_only FROM campaigns "
                 "WHERE archived=0 AND status != 'draft' ORDER BY id"
             ).fetchall()
             if not camps:
@@ -281,7 +309,12 @@ async def send_daily_report() -> None:
             if tot:
                 lines.append(f"⏱ ждут звонка: 🟢 {heat.get('green', 0)} · 🟡 {heat.get('yellow', 0)} · "
                              f"🔴 {heat.get('red', 0)} · ✅ связался: {heat.get('done', 0)}")
+            # Подробный блок — только по идущим кампаниям: остановленные месяцами
+            # давали одни нули и раздували сводку. Их лиды, ждущие звонка, остаются
+            # в общем счётчике выше.
             for camp in camps:
+                if camp["status"] != "running":
+                    continue
                 # Тот же расчёт, что у отчёта по одной кампании (кнопка «📤 Отчёт в ЛС»
                 # и экран кампании) — не заводим второй, похожий, который потом
                 # разъедется с первым.

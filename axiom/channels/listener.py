@@ -931,8 +931,24 @@ def send_via_listener(acc_id: int, tg_user_id: int, parts: list[str], timeout: f
         return None
     from channels.telegram import _send_parts, input_peer
 
+    async def _peer():
+        try:
+            return await input_peer(client, tg_user_id)
+        except ValueError:
+            # Собеседника нет и в диалогах этого номера (переписку вёл другой номер
+            # или диалог удалён) — по голому id Telegram писать не даёт. 07.10.2026
+            # так весь день не уходили 9 дожимов людям, которые уже отвечали.
+            # Ник из карточки контакта находит его заново.
+            with database.get_conn() as conn:
+                row = conn.execute(
+                    "SELECT username FROM contacts WHERE tg_user_id=? "
+                    "AND COALESCE(username,'')<>'' LIMIT 1", (str(tg_user_id),)).fetchone()
+            if not row:
+                raise
+            return await client.get_input_entity(row["username"].lstrip("@"))
+
     async def _go():
-        return await _send_parts(client, await input_peer(client, tg_user_id), parts)
+        return await _send_parts(client, await _peer(), parts)
 
     fut = asyncio.run_coroutine_threadsafe(_go(), loop)
     try:

@@ -142,7 +142,7 @@
       if (!BOOK) { box.innerHTML = ''; return; }
       const items = BOOK.data.items;
       const none = items.filter(r => !r.groups.length).length;
-      const item = (key, title, n) => `<div data-label="${escape(key === null ? '\u0000' : key)}" style="padding:7px 16px;cursor:pointer;display:flex;gap:8px;justify-content:space-between;${label === key ? 'background:var(--accent-soft);font-weight:700;border-radius:0 16px 16px 0' : ''}">
+      const item = (key, title, n) => `<div data-label="${escape(key === null ? '' : key)}"${key === null ? ' data-any-label' : ''} style="padding:7px 16px;cursor:pointer;display:flex;gap:8px;justify-content:space-between;${label === key ? 'background:var(--accent-soft);font-weight:700;border-radius:0 16px 16px 0' : ''}">
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escape(title)}">${escape(title)}</span><span class="hint">${n}</span></div>`;
       box.innerHTML = item(null, 'Все контакты', items.length)
         + `<div class="hint" style="padding:10px 16px 4px;font-weight:600">Ярлыки</div>`
@@ -150,7 +150,9 @@
           : `<div class="hint" style="padding:4px 16px">ярлыков нет${BOOK.source === 'csv' ? ' в файле' : ''}</div>`)
         + (none && BOOK.data.groups.length ? item('', 'Без ярлыка', none) : '');
       box.querySelectorAll('[data-label]').forEach(el => el.onclick = () => {
-        label = el.dataset.label === '\u0000' ? null : el.dataset.label;
+        // «Все контакты» помечены отдельным атрибутом: нулевой символ в атрибуте
+        // браузер заменяет на U+FFFD, и клик фильтровал по несуществующему ярлыку.
+        label = 'anyLabel' in el.dataset ? null : el.dataset.label;
         drawLabels(); draw();
       });
     };

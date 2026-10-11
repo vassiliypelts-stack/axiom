@@ -405,6 +405,116 @@ def _usable_link(link: str) -> bool:
     return bool(parse_proxy_str(link))
 
 
+# ОДИН СЕРВЕР — ОДИН АККАУНТ. Пул хранит прокси доменами, а домен — не сервер: за одним
+# доменом стоит до 22 серверов, и одни и те же серверы розданы под десятками доменов.
+# «Занят» считался по ссылке, то есть по имени, поэтому два аккаунта с разными доменами
+# после закрепления (telegram.pin_mtproxy) оказывались на одном IP: на 11.10.2026 так
+# сидели 60 из 92 живых аккаунтов, до шести на сервере. Для Telegram это одна связка.
+# Поэтому свободным считаем сервер, а не имя, и ссылку отдаём уже закреплённой за IP,
+# на котором никого нет.
+
+_DNS_TTL = 600
+_dns_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _server_ips(server: str | None) -> list[str]:
+    """IPv4-адреса, стоящие за сервером прокси; IP возвращается как есть."""
+    import ipaddress
+    import socket
+    server = (server or "").strip().rstrip(".").lower()
+    if not server:
+        return []
+    try:
+        ipaddress.ip_address(server)
+        return [server]
+    except ValueError:
+        pass
+    hit = _dns_cache.get(server)
+    if hit and time.time() - hit[0] < _DNS_TTL:
+        return hit[1]
+    try:
+        ips = sorted({ai[4][0] for ai in socket.getaddrinfo(server, None, socket.AF_INET)})
+    except OSError:
+        ips = []
+    _dns_cache[server] = (time.time(), ips)
+    return ips
+
+
+def _tcp_alive(ip: str, port: int, timeout: float = 2.0) -> bool:
+    """Отвечает ли КОНКРЕТНЫЙ сервер. Пул проверяет домен, то есть один случайный
+    сервер из стоящих за ним; закрепляя аккаунт за другим, убеждаемся, что он жив."""
+    import socket
+    try:
+        with socket.create_connection((ip, int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def pick_free(n: int = 1, exclude: set[str] | None = None,
+              skip_id: int | None = None) -> list[str]:
+    """До n ссылок из живого пула, каждая на сервере, через который не выходит ни один
+    аккаунт. MTProto-ссылка возвращается закреплённой (server=<ip>&host=<домен>).
+
+    exclude — ссылки, уже отданные вызывающим в этой же пачке; skip_id — аккаунт,
+    которому ищем замену (его нынешний прокси занятым не считаем).
+
+    Резолвит домены и стучится в серверы, то есть блокирует на секунды: из event loop
+    звать через asyncio.to_thread, а соединение с базой на это время не держать.
+
+    Если серверов без аккаунтов не хватило, добираем по-старому — прокси со свободным
+    именем, чей сервер уже с кем-то делится: аккаунт без прокси не выходит в сеть
+    вовсе, это хуже общего IP. В лог об этом пишем."""
+    from channels.telegram import pin_mtproxy, proxy_key
+    if n <= 0:
+        return []
+    with database.get_conn() as conn:
+        live = conn.execute(
+            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
+        ).fetchall()
+        held = [r["proxy"] for r in conn.execute(
+            "SELECT id, proxy FROM accounts WHERE COALESCE(proxy,'')<>''").fetchall()
+            if r["id"] != skip_id]
+    held += list(exclude or ())
+    taken = {proxy_key(px) for px in held}
+    used: set[str] = set()
+    for px in held:
+        hp = _hostport(px)
+        if hp:
+            # незакреплённая ссылка выйдет через любой сервер своего домена — заняты все
+            used.update(_server_ips(hp[0]))
+    links = [lk for lk in (_link(p) for p in live) if _usable_link(lk)]
+    # Сначала имена, которые никто не держит (порядок по пингу внутри сохраняется).
+    # Занятое имя тоже годится, если за ним остался сервер без аккаунта.
+    links.sort(key=lambda lk: lk in taken)
+    out: list[str] = []
+    for lk in links:
+        if len(out) >= n:
+            break
+        hp = _hostport(lk)
+        if not hp:
+            continue
+        for ip in _server_ips(hp[0]):
+            if ip in used:
+                continue
+            pinned = pin_mtproxy(lk, ip)
+            if not pinned and lk in taken:
+                break   # закрепить нечем (socks или уже IP) — вышла бы та же занятая ссылка
+            if not _tcp_alive(ip, hp[1]):
+                continue
+            used.add(ip)
+            out.append(pinned or lk)
+            break
+    if len(out) < n:
+        given = {proxy_key(lk) for lk in out}
+        rest = [lk for lk in links if lk not in taken and lk not in given]
+        if rest:
+            print(f"[pool] серверов без аккаунтов хватило на {len(out)} из {n} — остальным "
+                  f"выдаю прокси, чей сервер уже делит другой аккаунт")
+            out += rest[:n - len(out)]
+    return out
+
+
 async def _harvest_client():
     """Клиент для СБОРА прокси из публичных каналов. Возвращает (client, как_подписан).
 
@@ -625,7 +735,7 @@ async def refresh(target: int | None = None, ids: list[int] | None = None) -> di
         top = sorted(_FAIL_STATS.items(), key=lambda kv: -kv[1])[:6]
         print("[refresh] причины отказов: " + " · ".join(f"{k} ×{n}" for k, n in top))
         _FAIL_STATS.clear()
-    assigned = assign(ids=ids)
+    assigned = await asyncio.to_thread(assign, ids)
 
     # Хватило ли собранного на весь парк. Раньше target_alive был мёртвым параметром:
     # он передавался в refresh() и нигде не использовался, поэтому «пул недобран» никак
@@ -658,20 +768,11 @@ def pick_free_mt(exclude: set[str] | None = None) -> str | None:
     None — в пуле нет живых совместимых прокси.
 
     Имя историческое (mt = MTProto), но с появлением платных socks5 в пуле функция
-    отдаёт ЛЮБОЙ пригодный формат — какой лежит в kind, такой и вернём."""
-    from channels.telegram import proxy_key
-    exclude = {proxy_key(x) for x in (exclude or set())}
-    with database.get_conn() as conn:
-        live = conn.execute(
-            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms LIMIT 40"
-        ).fetchall()
-    for p in live:
-        link = _link(p)
-        if link in exclude:
-            continue
-        if _usable_link(link):
-            return link
-    return None
+    отдаёт ЛЮБОЙ пригодный формат — какой лежит в kind, такой и вернём.
+
+    Сервер выбирается так же, как при раздаче (pick_free): без аккаунтов на нём."""
+    got = pick_free(1, exclude=exclude)
+    return got[0] if got else None
 
 
 def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
@@ -720,31 +821,26 @@ def assign(ids: list[int] | None = None, replace_dead: bool = True) -> int:
             where += f" AND id IN ({qm})"
             params.extend(ids)
         accs = conn.execute(f"SELECT id FROM accounts WHERE {where}", params).fetchall()
-        # уже занятые прокси (кем-то ДРУГИМ, живым в проверке) — не раздаём их же ещё раз:
-        # антибан держится на «1 прокси = 1 аккаунт», зацикленный round-robin по кругу
-        # (i % len(live)) при нехватке пула молча сажал по 10+ аккаунтов на один IP.
-        # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
-        # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
-        # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
-        # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
-        from channels.telegram import proxy_key
-        taken = {proxy_key(r["proxy"]) for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
-        ).fetchall()}
-        free = [lk for _p, lk in live if lk not in taken]
-        n = 0
-        for a in accs:
-            if not free:
-                left = len(accs) - n
-                print(f"[assign] прокси кончились: назначено {n}, ещё {left} аккаунт(ов) "
-                      f"БЕЗ прокси — докупи прокси, дублировать один на несколько аккаунтов не буду (антибан)")
-                break
-            link = free.pop(0)
+    # уже занятые прокси (кем-то ДРУГИМ, живым в проверке) — не раздаём их же ещё раз:
+    # антибан держится на «1 прокси = 1 аккаунт», зацикленный round-robin по кругу
+    # (i % len(live)) при нехватке пула молча сажал по 10+ аккаунтов на один IP.
+    # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
+    # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
+    # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
+    # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
+    # Всё это — внутри pick_free, и считает он по серверам, а не по именам. Зовём его
+    # вне соединения с базой: он резолвит домены и стучится в серверы.
+    links = pick_free(len(accs))
+    with database.get_conn() as conn:
+        for a, link in zip(accs, links):
             conn.execute(
                 "UPDATE accounts SET proxy=?, proxy_alive=NULL, proxy_checked_at=NULL WHERE id=?",
                 (link, a["id"]),
             )
-            n += 1
+    n = len(links)
+    if n < len(accs):
+        print(f"[assign] прокси кончились: назначено {n}, ещё {len(accs) - n} аккаунт(ов) "
+              f"БЕЗ прокси — докупи прокси, дублировать один на несколько аккаунтов не буду (антибан)")
     print(f"[assign] прокси выдан аккаунтам: {n}")
     return n
 
@@ -818,17 +914,7 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
         if released:
             print(f"[heal] освободил {released} прокси у архивных/забаненных аккаунтов")
 
-        # Пул Telethon-живых прокси для подстановки
-        # Тот же потолок, что и в assign(): LIMIT отсекал хвост пула, и лечение
-        # упиралось в него раньше, чем в реальный запас адресов.
-        # Держим уже ГОТОВЫЕ ссылки, а не (server,port,secret): формат зависит от kind,
-        # и склейка на месте превращала бы платный socks5 в нерабочий tg://proxy.
-        pool = [_link(p) for p in conn.execute(
-            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' ORDER BY ping_ms"
-        ).fetchall()]
-        pool = [lk for lk in pool if _usable_link(lk)]
-
-        where = "tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0"
+        where ="tg_session IS NOT NULL AND tg_session<>'' AND COALESCE(protected,0)=0"
         if warming_only:
             where += " AND status='warming'"
         params: list = []
@@ -908,22 +994,21 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
     ])
 
     alive_kept = healed = no_pool = 0
+    # прокси, уже живьём подтверждённые за ДРУГИМИ аккаунтами в этом же прогоне —
+    # не сажаем второго на тот же IP. Старый rr%len(pool) зацикливался по кругу и
+    # копил по 10+ аккаунтов на один прокси при каждом плановом --heal (антибан).
+    # COALESCE, а не «proxy_alive=1»: у ТОЛЬКО ЧТО выданного прокси alive ещё NULL
+    # (см. assign()), и такой прокси не попадал в «занятые» — heal тут же сажал на
+    # него второй аккаунт. Ровно так #9329 и #9331 из свежей пачки оказались на одном IP.
+    # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
+    # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
+    # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
+    # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
+    # Замену подбирает pick_free — по серверам, а не по именам. В поток: heal зовут
+    # и из event loop слушателя, а подбор резолвит домены и стучится в серверы.
+    dead = sum(1 for ok in results if not ok)
+    free = await asyncio.to_thread(pick_free, dead) if dead else []
     with database.get_conn() as conn:
-        # прокси, уже живьём подтверждённые за ДРУГИМИ аккаунтами в этом же прогоне —
-        # не сажаем второго на тот же IP. Старый rr%len(pool) зацикливался по кругу и
-        # копил по 10+ аккаунтов на один прокси при каждом плановом --heal (антибан).
-        # COALESCE, а не «proxy_alive=1»: у ТОЛЬКО ЧТО выданного прокси alive ещё NULL
-        # (см. assign()), и такой прокси не попадал в «занятые» — heal тут же сажал на
-        # него второй аккаунт. Ровно так #9329 и #9331 из свежей пачки оказались на одном IP.
-        # Занятым считаем ЛЮБОЙ назначенный прокси, даже помеченный мёртвым. Условие
-        # «proxy_alive<>0» освобождало адрес, на котором аккаунт всё ещё сидит: прокси
-        # моргнул, его пометили мёртвым, отдали второму аккаунту — а первый ожил, и оба
-        # оказались на одном выходе. Сессия, увиденная с двух IP, жжётся навсегда.
-        from channels.telegram import proxy_key
-        taken = {proxy_key(r["proxy"]) for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>''"
-        ).fetchall()}
-        free = [lk for lk in pool if lk not in taken]
         for (aid, label, px), ok in zip(accs, results):
             if ok:
                 conn.execute(
@@ -938,7 +1023,6 @@ async def heal(ids: list[int] | None = None, warming_only: bool = True) -> dict:
                     "UPDATE accounts SET proxy=?, proxy_alive=1, proxy_checked_at=datetime('now') WHERE id=?",
                     (link, aid),
                 )
-                taken.add(link)
                 healed += 1
                 print(f"  [{label}] прокси мёртв → заменён на {_hostport(link) or link}")
             else:

@@ -1713,32 +1713,26 @@ def account_proxy_auto(acc_id: int) -> JSONResponse:
     • берём только НЕ занятый адрес. Раньше брался первый живой по сортировке, и
       аккаунт мог получить прокси, на котором уже сидит другой: две сессии с одного
       IP — это и есть тот сценарий, что жжёт аккаунты."""
-    from channels.proxy_pool import _link, _usable_link
+    from channels.proxy_pool import _hostport, pick_free
+    from channels.telegram import proxy_key
     with database.get_conn() as conn:
         acc = conn.execute("SELECT id FROM accounts WHERE id=?", (acc_id,)).fetchone()
         if not acc:
             return JSONResponse({"error": "аккаунт не найден"}, status_code=404)
-        from channels.telegram import proxy_key
-        taken = {proxy_key(r["proxy"]) for r in conn.execute(
-            "SELECT proxy FROM accounts WHERE proxy IS NOT NULL AND proxy<>'' AND id<>?",
-            (acc_id,)).fetchall()}
-        chosen = None
-        for row in conn.execute(
-            "SELECT kind, server, port, secret FROM proxies WHERE status='alive' "
-            "ORDER BY (assigned_to IS NOT NULL), ping_ms"
-        ).fetchall():
-            link = _link(row)
-            if link not in taken and _usable_link(link):
-                chosen = (row, link)
-                break
-        if not chosen:
-            return JSONResponse({"error": "в пуле нет СВОБОДНЫХ живых прокси — обнови пул "
-                                          "или загрузи свой список в разделе «Прокси»"},
-                                status_code=400)
-        p, link = chosen
+    # Свободным считается сервер, а не доменное имя (см. proxy_pool.pick_free): разные
+    # имена одного сервера сажали разные аккаунты на один IP.
+    got = pick_free(1, skip_id=acc_id)
+    if not got:
+        return JSONResponse({"error": "в пуле нет СВОБОДНЫХ живых прокси — обнови пул "
+                                      "или загрузи свой список в разделе «Прокси»"},
+                            status_code=400)
+    link = got[0]
+    hp = _hostport(proxy_key(link))      # запись пула лежит под доменом, не под IP
+    with database.get_conn() as conn:
         conn.execute("UPDATE accounts SET proxy=? WHERE id=?", (link, acc_id))
-        conn.execute("UPDATE proxies SET assigned_to=? WHERE server=? AND port=? AND secret=?",
-                     (acc_id, p["server"], p["port"], p["secret"]))
+        if hp:
+            conn.execute("UPDATE proxies SET assigned_to=? WHERE server=? AND port=?",
+                         (acc_id, hp[0], hp[1]))
     return JSONResponse({"ok": True, "proxy": link})
 
 
@@ -1801,12 +1795,9 @@ async def account_proxy_renew(acc_id: int) -> JSONResponse:
     seen: set[str] = set(taken)
     # 1) бесплатный MTProto из пула — свободных берём сразу пачкой и проверяем
     # параллельно: последовательно это до 8с на кандидата прямо в запросе.
-    mts: list[str] = []
-    for _ in range(4):
-        mt = proxy_pool.pick_free_mt(exclude=seen | set(mts))
-        if not mt:
-            break
-        mts.append(mt)
+    # Занятость pick_free считает сам, по серверам; в поток — он резолвит домены и
+    # стучится в серверы.
+    mts: list[str] = await asyncio.to_thread(proxy_pool.pick_free, 4, None, acc_id)
     if mts:
         tried += len(mts)
         checks = await asyncio.gather(*[

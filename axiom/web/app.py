@@ -5156,6 +5156,18 @@ def _spawn(*args: str) -> None:
                          stdout=f, stderr=subprocess.STDOUT)
 
 
+@app.post("/api/contacts/book_names")
+def contacts_book_names(payload: dict = Body(default={})) -> JSONResponse:
+    """Подтянуть имена знакомых из телефонной книжки их номера (channels.book_names):
+    карточки, заведённые списком номеров, получают подпись вместо заглушки «lead».
+    Лог — data/logs/channels_book_names.log."""
+    args = ["channels.book_names"]
+    if payload.get("account_id"):
+        args += ["--account", str(int(payload["account_id"]))]
+    _spawn(*args)
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/contact/{contact_id}/enrich")
 def enrich_one(contact_id: int) -> JSONResponse:
     _spawn("agent.enrich", "--id", str(contact_id))

@@ -611,7 +611,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE deals ADD COLUMN {col} {typ}")
     _relax_deals_contact_notnull(conn)
     _repair_unverified_has_tg(conn)
-    chat = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
+    _repair_placeholder_names(conn)
+    chat ={r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
     if chat:  # таблица существует
         for col, typ in _EXTRA_CHAT_COLS.items():
             if col not in chat:
@@ -695,6 +696,53 @@ def _repair_unverified_has_tg(conn: sqlite3.Connection) -> None:
     if n:
         print(f"[db] снят непроверенный вердикт «нет в Telegram» с {n} контактов — "
               f"уйдут в обычную очередь пробива")
+
+
+def adopt_book_name(conn: sqlite3.Connection, contact_id: int, label: str | None) -> bool:
+    """Подпись из телефонной книжки номера → в карточку, если своего имени в ней нет.
+
+    Знакомые владельца заведены списком номеров: в contacts.name у них заглушка
+    «lead» или пусто, а настоящее имя живёт только в книжке номера, за которым человек
+    закреплён (outreach_account_id). Пульт показывал «lead» в «Кто в рассылке» и в
+    колокольчике («💬 Новый ответ: lead»), стук уходил без обращения. Подпись пишем в
+    name, имя из неё — в person_name: по нему обращаются стук, агент и напоминания.
+
+    Только закреплённые за номером: у холодного контакта подпись — это его собственный
+    профиль в Telegram, обращаться по нему рассылка не должна. Имя, заданное в карточке
+    вручную или импортом, не трогаем. True — карточка изменилась."""
+    label = (label or "").strip()
+    if not label:
+        return False
+    row = conn.execute(
+        "SELECT name, person_name FROM contacts WHERE id=? AND outreach_account_id IS NOT NULL",
+        (contact_id,)).fetchone()
+    if not row:
+        return False
+    from channels import fio
+    sets: dict[str, str] = {}
+    if (row["name"] or "").strip().lower() in ("", "lead"):
+        sets["name"] = label
+    first = fio.first_in_label(label)
+    if first and not (row["person_name"] or "").strip():
+        sets["person_name"] = first
+    if not sets:
+        return False
+    conn.execute(f"UPDATE contacts SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                 (*sets.values(), contact_id))
+    return True
+
+
+def _repair_placeholder_names(conn: sqlite3.Connection) -> None:
+    """Карточки с заглушкой вместо имени, у которых подпись из книжки уже известна
+    (contacts.tg_name записан при стуке), получают её в name. Идемпотентно."""
+    rows = conn.execute(
+        "SELECT id, tg_name FROM contacts WHERE outreach_account_id IS NOT NULL "
+        "AND COALESCE(tg_name,'')<>'' "
+        "AND (lower(trim(COALESCE(name,''))) IN ('', 'lead') OR COALESCE(person_name,'')='')"
+    ).fetchall()
+    n = sum(adopt_book_name(conn, r["id"], r["tg_name"]) for r in rows)
+    if n:
+        print(f"[db] имя из телефонной книжки записано в {n} карточек с заглушкой")
 
 
 def _relax_deals_contact_notnull(conn: sqlite3.Connection) -> None:

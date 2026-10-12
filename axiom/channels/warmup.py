@@ -679,8 +679,8 @@ async def _knock(client, acc: dict) -> int:
     rows = _audience(camp["id"], camp["audience_tag"], "telegram", 12, sender_id=acc["id"])
     # Свой стук кампании важнее общего: общий без имени говорит про «чаты по Крыму»,
     # а «ИИ‑Прорыв» стучится знакомым Василия с его же номеров.
-    from channels.campaign_send import (_contact_first_name, _greeting, _own_knock_parts,
-                                        own_knock_template)
+    from channels.campaign_send import (_book_label, _contact_first_name, _greeting,
+                                        _own_knock_parts, own_knock_template)
     own = own_knock_template(dict(camp))
     for row in rows:
         if not database.outreach_allowed(camp, database.contact_tz(row)):
@@ -688,6 +688,8 @@ async def _knock(client, acc: dict) -> int:
         try:
             ent = await _resolve_entity(client, row)
             if own:
+                with database.get_conn() as conn:   # «lead» в карточке → подпись из книжки
+                    database.adopt_book_name(conn, row["id"], _book_label(ent))
                 name = (_greeting(row) or "").strip() if (row["person_name"] or "").strip() else ""
                 text = _own_knock_parts(own, name or _contact_first_name(ent))[0]
             else:

@@ -274,8 +274,7 @@ def _reminder_text(row, time: str, link: str) -> str:
     if not fio.parse(name).patronymic:
         # Без отчества оставляем одно имя: «Руслан», а не «Руслан Хисматуллин Ппмск».
         tg_name = (row["tg_name"] if "tg_name" in keys else "") or ""
-        name = next((w for w in ((name.split() or [""])[0], (tg_name.split() or [""])[0])
-                     if w.isalpha() and fio._is_known_first(w)), "")
+        name = fio.first_in_label(name) or fio.first_in_label(tg_name)
     text = REMINDER_TEMPLATE.format(name=name, time=time,
                                     link=f"\n\nссылка: {link}" if link else "")
     if not name:

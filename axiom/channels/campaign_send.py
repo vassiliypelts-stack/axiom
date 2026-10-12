@@ -187,9 +187,15 @@ def _contact_first_name(entity) -> str:
 
     У номера, в чьей книжке человек записан, first_name — это подпись из книжки
     («Илья ПП Сочи»), то есть ровно то имя, которым владелец номера зовёт
-    человека. Берём первое слово и только если это имя, а не «ПП» или ник."""
-    first = ((getattr(entity, "first_name", "") or "").strip().split() or [""])[0]
-    return first if first and first.isalpha() and fio._is_known_first(first) else ""
+    человека. Ищем имя во всей подписи, а не в первом слове: половина книжки
+    записана с фамилии («Зырянов Сергей ИЮМ»)."""
+    return fio.first_in_label(_book_label(entity))
+
+
+def _book_label(entity) -> str:
+    """Как человек подписан у номера: имя и фамилия из Telegram одной строкой."""
+    return " ".join(x for x in (getattr(entity, "first_name", "") or "",
+                                getattr(entity, "last_name", "") or "") if x).strip()
 
 
 def _load_campaign(cid: int) -> dict | None:
@@ -1557,14 +1563,14 @@ async def run(cid: int, limit: int, test: bool = False,
             #
             # При явном расхождении НЕ ШЛЁМ: написать не тому хуже, чем пропустить.
             # Контакт не удаляем и не хороним — метим и оставляем оператору.
-            tg_name = " ".join(x for x in (getattr(entity, "first_name", "") or "",
-                                           getattr(entity, "last_name", "") or "") if x).strip()
+            tg_name = _book_label(entity)
             crm_name = (row["name"] or "") or (row["person_name"] if "person_name" in row.keys() else "")
             verdict, why = name_check.compare(crm_name, tg_name)
             with database.get_conn() as conn:
                 conn.execute(
                     "UPDATE contacts SET tg_name=?, name_match=?, name_checked_at=datetime('now') "
                     "WHERE id=?", (tg_name or None, verdict, row["id"]))
+                database.adopt_book_name(conn, row["id"], tg_name)
             if verdict == "mismatch":
                 with database.get_conn() as conn:
                     conn.execute("UPDATE contacts SET status='new' WHERE id=?", (row["id"],))

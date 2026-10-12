@@ -45,6 +45,13 @@ class Reply(BaseModel):
         description="Согласованное время созвона в ISO 8601 (YYYY-MM-DDTHH:MM:SS), иначе null. "
         "Сегодняшнюю дату см. в системном промпте: «завтра в 11» и «в пятницу к 16» переводи "
         "в конкретную дату САМ. По этому полю создаётся Zoom-ссылка и напоминание.")
+    meeting_cancelled: bool = Field(
+        default=False,
+        description="True, если встреча уже была назначена, а человек её отменил или пишет, "
+        "что в это время не может, и НОВОЕ время в этом ответе ещё не согласовано. По этому "
+        "полю снимается напоминание о старом времени. Перенос на новое согласованное время — "
+        "это meeting_agreed=true с новым proposed_datetime, а не отмена.",
+    )
     send_kp: bool = Field(
         default=False,
         description="True ТОЛЬКО если уместно отправить коммерческое предложение (КП) файлом — "
@@ -151,6 +158,18 @@ def generate_reply(
         "\n\nПРЕЗЕНТАЦИИ И БИЗНЕС-ПЛАНЫ ОТПРАВЛЯЕТ ТОЛЬКО ЧЕЛОВЕК ВРУЧНУЮ. "
         "Никогда не отправляй файлы автоматически: send_kp=false, kp_choice=null."
     )
+    from integrations import meetings
+    if meetings.call_without_link(campaign_id):
+        # 10.10.2026 агент «ИИ‑Прорыва» на вопрос «в каком видео сервисе?» выдумал
+        # «Zoom, ссылку пришлю за час до созвона», а за десять минут до начала повторил
+        # это же слово в слово. Ссылки у кампании нет вовсе: владелец звонит сам.
+        system += (
+            "\n\nФОРМАТ СОЗВОНА: ссылки на встречу в этой кампании нет и не будет. Это "
+            "звонок голосом, человека набирают в согласованное время так, как сказано в "
+            "сценарии (если не сказано, то в этом же мессенджере). Не называй Zoom, Meet, "
+            "Телемост и не обещай прислать ссылку. Спросили, где созвон или когда будет "
+            "ссылка: ответь, что наберешь здесь же и ссылка не нужна."
+        )
 
     # adaptive thinking есть только у Anthropic 4.6+/Opus. На Haiku 4.5 и у чужих
     # провайдеров параметр не передаём (дал бы ошибку и лишний расход). Короткие
@@ -179,18 +198,28 @@ def generate_reply(
             model, system=llm.cached(system, personal), messages=history,
             output_format=Reply, max_tokens=1000, **kwargs,
         )
-        if not short_personal:
-            break
-        parts = deslop.personal_parts(reply.reply_parts)
-        problem = deslop.personal_problem(parts, first_reply)
-        if not problem:
-            reply.reply_parts = parts
+        error = fix = None
+        if short_personal:
+            parts = deslop.personal_parts(reply.reply_parts)
+            problem = deslop.personal_problem(parts, first_reply)
+            if problem:
+                error = "Короткий личный ответ не прошел проверку: " + problem
+                # Перегенерируем ответ целиком, вместо обрезания, которое могло бы
+                # потерять вопрос, отказ или подтверждение конкретного времени.
+                fix = "\nПЕРЕПИШИ ОТВЕТ КОРОЧЕ: " + problem + ". Сохрани смысл и ответь по существу."
+            else:
+                reply.reply_parts = parts
+        if not fix and reply.meeting_agreed and not _time_on_table(history):
+            error = "Агент назначил созвон сам: время человеку не предлагали, и он его не называл"
+            fix = ("\nТЫ НАЗНАЧИЛ ВРЕМЯ САМ, ЭТО ОШИБКА: человек еще не видел ни одного "
+                   "предложенного времени и своего не называл. Перепиши ответ: предложи время "
+                   "вопросом и жди его ответа. meeting_agreed=false, proposed_datetime=null, "
+                   "intent=\"question\".")
+        if not fix:
             break
         if attempt == 1:
-            raise ValueError("Короткий личный ответ не прошел проверку: " + problem)
-        # Перегенерируем ответ целиком, вместо обрезания, которое могло бы
-        # потерять вопрос, отказ или подтверждение конкретного времени.
-        personal += "\nПЕРЕПИШИ ОТВЕТ КОРОЧЕ: " + problem + ". Сохрани смысл и ответь по существу."
+            raise ValueError(error)
+        personal += fix
     # Модель иногда дописывает в notes хвост собственного JSON («...','send_kp':false,»),
     # и он уезжал владельцу в уведомление о встрече. Отрезаем с первого такого шва.
     if reply.notes:
@@ -231,6 +260,33 @@ def _own_knock(campaign_id: int | None) -> bool:
         row = conn.execute("SELECT quiet_opener_template FROM campaigns WHERE id=?",
                            (campaign_id,)).fetchone()
     return bool(row and (row["quiet_opener_template"] or "").strip())
+
+
+# Конкретное время в нашей реплике: «в 12:00», «завтра», «в понедельник», «после обеда».
+_OUR_TIME = (r"\b\d{1,2}[:.]\d{2}\b|\bв\s+\d{1,2}\b|сегодня|завтра|понедельник|вторник|"
+             r"\bсред[ауы]\b|четверг|пятниц|суббот|воскресень|утром|вечером|обеда")
+# Человек называет время свободнее: «набери сейчас», «через час», «в любое время».
+_THEIR_TIME = _OUR_TIME + r"|сейчас|через\s+\S+|\bк\s+\d{1,2}\b|любое|когда угодно|на неделе"
+
+
+def _time_on_table(history: list[dict]) -> bool:
+    """Было ли время созвона на столе ДО ответа агента: мы предлагали его раньше или
+    человек сам назвал его в последних репликах.
+
+    09.10.2026 знакомый Василия написал «Давай, можно посмотреть», а агент ответил
+    «Договорились, завтра в 12:00 по Москве наберу тебя здесь же»: время впервые
+    прозвучало уже в подтверждении. Человек ответил «Нет, я в выходные занят», встреча
+    осталась в базе, и утром ему ушло напоминание о созвоне, на который он не соглашался."""
+    import re
+    theirs = []
+    for m in reversed(history):
+        if m.get("role") != "user":
+            break
+        theirs.append(str(m.get("content") or ""))
+    if re.search(_THEIR_TIME, " ".join(theirs), re.IGNORECASE):
+        return True
+    return any(re.search(_OUR_TIME, str(m.get("content") or ""), re.IGNORECASE)
+               for m in history if m.get("role") == "assistant")
 
 
 

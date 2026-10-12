@@ -1438,11 +1438,17 @@ def record_meeting(
         "SELECT id FROM deals WHERE contact_id = ? ORDER BY id DESC LIMIT 1", (contact_id,)
     ).fetchone()
     if row:
+        # Перенос на другое время — напоминание нужно заново. Раньше reminder_sent
+        # оставался 1 от старого времени: 10.10.2026 человеку напомнили про субботу,
+        # он перенёс на понедельник 11:00, и в понедельник напоминание уже не ушло.
         conn.execute(
-            "UPDATE deals SET stage = 'meeting_set', meeting_at = COALESCE(?, meeting_at), "
+            "UPDATE deals SET stage = 'meeting_set', "
+            "reminder_sent = CASE WHEN ? IS NOT NULL AND ? <> COALESCE(meeting_at, '') "
+            "THEN 0 ELSE reminder_sent END, "
+            "meeting_at = COALESCE(?, meeting_at), "
             "notes = ?, zoom_link = COALESCE(?, zoom_link), "
             "calendar_event_id = COALESCE(?, calendar_event_id) WHERE id = ?",
-            (meeting_at, notes, zoom_link, calendar_event_id, row["id"]),
+            (meeting_at, meeting_at, meeting_at, notes, zoom_link, calendar_event_id, row["id"]),
         )
     else:
         conn.execute(
@@ -1451,6 +1457,24 @@ def record_meeting(
             (contact_id, meeting_at, notes, zoom_link, calendar_event_id),
         )
     set_status(conn, contact_id, "meeting_set")
+
+
+def cancel_meeting(conn: sqlite3.Connection, contact_id: int) -> bool:
+    """Человек отменил назначенный созвон. Снимает время со сделки, чтобы планировщик
+    не слал напоминание и «не дошёл» по встрече, которой уже нет. True — встреча была.
+
+    calendar_event_id оставляем: при новом согласованном времени meetings.arrange
+    передвинет то же событие в календаре, а не заведёт второе."""
+    row = conn.execute(
+        "SELECT id FROM deals WHERE contact_id = ? AND stage = 'meeting_set' "
+        "ORDER BY id DESC LIMIT 1", (contact_id,)
+    ).fetchone()
+    if not row:
+        return False
+    conn.execute("UPDATE deals SET stage = 'in_dialog', meeting_at = NULL, reminder_sent = 0 "
+                 "WHERE id = ?", (row["id"],))
+    set_status(conn, contact_id, "in_dialog")
+    return True
 
 
 if __name__ == "__main__":

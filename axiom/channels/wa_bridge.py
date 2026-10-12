@@ -320,7 +320,10 @@ def reply(req: ReplyReq) -> JSONResponse:
 
     text_in = history[-1]["content"]
     meeting = None
-    if r.meeting_agreed:
+    # Те же правила, что в Telegram (_agent_reply): повтор уже записанного времени не
+    # новая встреча, отмена снимает встречу, после договорённости агент не глохнет.
+    same_meeting = bool(r.meeting_agreed) and meetings.already_set(contact_id, r.proposed_datetime)
+    if r.meeting_agreed and not same_meeting:
         try:
             meeting = meetings.arrange(contact_info, r.proposed_datetime,
                                        camp["id"] if camp else None, r.notes, contact_id,
@@ -333,6 +336,16 @@ def reply(req: ReplyReq) -> JSONResponse:
         conn.execute("UPDATE messages SET intent=? WHERE id=(SELECT id FROM messages "
                      "WHERE contact_id=? AND direction='in' ORDER BY id DESC LIMIT 1)",
                      (r.intent, contact_id))
+        cancelled = (meeting is None and not same_meeting and r.meeting_cancelled
+                     and database.cancel_meeting(conn, contact_id))
+        if cancelled:
+            database.add_event(conn, "meeting", f"❌ Созвон отменён (WA): {who}",
+                               (text_in or "").strip()[:160] or "Человек отменил созвон.",
+                               level="warn", contact_id=contact_id,
+                               campaign_id=camp["id"] if camp else None)
+        booked = same_meeting or conn.execute(
+            "SELECT 1 FROM deals WHERE contact_id=? AND stage='meeting_set'",
+            (contact_id,)).fetchone() is not None
         if meeting is not None:
             database.record_meeting(conn, contact_id, meeting.meeting_at_iso, r.notes,
                                     zoom_link=meeting.zoom_link,
@@ -340,12 +353,15 @@ def reply(req: ReplyReq) -> JSONResponse:
             database.add_event(conn, "meeting", f"📅 Встреча назначена (WA): {who}",
                                f"{meeting.meeting_at_iso}", level="good", contact_id=contact_id)
         elif r.intent == "not_interested":
+            database.cancel_meeting(conn, contact_id)
             database.set_status(conn, contact_id, "refused")
             conn.execute("DELETE FROM opener_queue WHERE contact_id=?", (contact_id,))
             database.add_event(conn, "refused", f"🚫 Отказ (WA): {who}",
                                (text_in or "").strip()[:160], level="info",
                                contact_id=contact_id, campaign_id=camp["id"] if camp else None,
                                account_id=req.account_id)
+        elif booked:
+            pass
         else:
             database.set_status(conn, contact_id, "in_dialog")
             if r.intent in ("positive", "agreed"):
@@ -353,15 +369,20 @@ def reply(req: ReplyReq) -> JSONResponse:
                                    (text_in or "").strip()[:160], level="good",
                                    contact_id=contact_id)
         if r.hot:
-            conn.execute("UPDATE contacts SET hot_since=datetime('now'), "
+            stay = bool(camp and (camp["quiet_opener_template"] or "").strip())
+            conn.execute("UPDATE contacts SET "
+                         "hot_since=CASE WHEN ? THEN NULL ELSE datetime('now') END, "
                          "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",
-                         (contact_id,))
+                         (1 if stay else 0, contact_id))
 
     # FastAPI гонит синхронный эндпоинт в threadpool — своего event loop тут нет.
     import asyncio
     from channels import notify
-    if r.hot:
+    if r.hot and not same_meeting:
         asyncio.run(notify.notify_hot(contact_id, text_in, camp["id"] if camp else None))
+    if cancelled:
+        asyncio.run(notify.notify_meeting_cancelled(contact_id, text_in,
+                                                    camp["id"] if camp else None))
     if meeting is not None:
         asyncio.run(notify.notify_meeting(contact_id, meeting.meeting_at_iso, r.notes,
                                           meeting.zoom_link, camp["id"] if camp else None))

@@ -262,6 +262,32 @@ async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | N
         print(f"[notify] сбой отправки владельцу: {e}")
 
 
+async def notify_meeting_cancelled(contact_id: int, last_message: str | None,
+                                   campaign_id: int | None = None) -> None:
+    """Человек отменил назначенный созвон. Владелец уже получил «Договорились о
+    встрече» со временем и без этого сообщения пришёл бы звонить впустую."""
+    try:
+        with database.get_conn() as conn:
+            sender_id, target = _owner_route(conn, campaign_id)
+            if not sender_id or not target:
+                return  # не настроено — тихо пропускаем
+            row = conn.execute("SELECT id, name, person_name, username FROM contacts WHERE id=?",
+                               (contact_id,)).fetchone()
+        if not row:
+            return
+        who = (row["person_name"] or row["name"] or "контакт").strip()
+        lines = [f"❌ Созвон отменён: {who}"]
+        if row["username"]:
+            lines.append(f"TG: @{row['username']}")
+        if last_message and last_message.strip():
+            lines.append(f"Что написал: {last_message.strip()[:300]}")
+        lines.append("Агент предложит другое время. Старое событие в календаре убери сам.")
+        lines.append(_chat_link(row["id"]))
+        await _send_to_owner(sender_id, target, "\n".join(lines), "созвон отменён", contact_id)
+    except Exception as e:  # noqa: BLE001 — вспомогательное уведомление, не должно ронять диалог
+        print(f"[notify] сбой отправки владельцу: {e}")
+
+
 DAILY_REPORT_TARGET_SETTING = "daily_report_target"
 
 

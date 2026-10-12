@@ -125,6 +125,40 @@ def _meeting_url(campaign_id: int | None = None) -> str:
     return config.PERMANENT_MEETING_URL or ""
 
 
+def call_without_link(campaign_id: int | None) -> bool:
+    """У кампании созвон без ссылки вовсе: campaigns.meeting_url='-' (звонок голосом)."""
+    if not campaign_id:
+        return False
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT meeting_url FROM campaigns WHERE id=?",
+                               (campaign_id,)).fetchone()
+        return bool(row and (row["meeting_url"] or "").strip() == "-")
+    except Exception:  # noqa: BLE001 — БД недоступна: ведём себя как раньше
+        return False
+
+
+def already_set(contact_id: int | None, slot: str | None) -> bool:
+    """Встреча с этим человеком уже записана в сделке на это же время.
+
+    Агент, который после договорённости остаётся в диалоге, на «ок, до встречи» снова
+    ставит meeting_agreed=true: без этой проверки каждый такой ответ заново уведомлял
+    бы владельца и заводил встречу."""
+    dt = parse_slot(slot)
+    if not contact_id or dt is None:
+        return False
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            row = conn.execute(
+                "SELECT meeting_at FROM deals WHERE contact_id=? AND stage='meeting_set' "
+                "ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+    except Exception:  # noqa: BLE001 — БД недоступна: ведём себя как раньше
+        return False
+    return bool(row) and _same_slot(row["meeting_at"], dt)
+
+
 def parse_slot(slot: str | None) -> datetime | None:
     """Слот из диалога → aware datetime в MEETING_TZ. Не распарсил → None.
 
@@ -202,6 +236,10 @@ def arrange(contact: dict, slot: str | None, campaign_id: int | None = None,
     permanent = (_meeting_url(campaign_id) or "").strip()
     if permanent:
         zoom_link = permanent
+    elif call_without_link(campaign_id):
+        # Звонок голосом: Zoom не заводим, иначе напоминание унесло бы человеку ссылку
+        # на комнату, в которую никто не придёт.
+        zoom_link = None
     else:
         z = zoom.create_meeting(topic, dt, config.MEETING_DURATION_MIN, config.MEETING_TZ)
         zoom_link = z["join_url"] if z else None

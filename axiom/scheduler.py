@@ -260,6 +260,30 @@ def _name(row) -> str:
     return fio.address_soft((row["name"] or "").strip())
 
 
+def _reminder_text(row, time: str, link: str) -> str:
+    """Напоминание о созвоне с обращением по имени, только если имя настоящее.
+
+    В карточках, заведённых списком номеров, в contacts.name лежит заглушка, и
+    10.10.2026 знакомому Василия ушло «lead, напоминаю про созвон сегодня в 12:00».
+    Берём имя из карточки, иначе из подписи в Telegram (contacts.tg_name: так человек
+    записан в книжке номера, по ней же обращается стук кампании). Имя не опознано —
+    пишем без обращения, это лучше любой заглушки."""
+    from channels import fio
+    keys = row.keys()
+    name = _name(row)
+    if not fio.parse(name).patronymic:
+        # Без отчества оставляем одно имя: «Руслан», а не «Руслан Хисматуллин Ппмск».
+        tg_name = (row["tg_name"] if "tg_name" in keys else "") or ""
+        name = next((w for w in ((name.split() or [""])[0], (tg_name.split() or [""])[0])
+                     if w.isalpha() and fio._is_known_first(w)), "")
+    text = REMINDER_TEMPLATE.format(name=name, time=time,
+                                    link=f"\n\nссылка: {link}" if link else "")
+    if not name:
+        text = text.lstrip(" ,")
+        text = text[:1].upper() + text[1:]
+    return text
+
+
 def _trailing_out_streak(history) -> tuple[int, str | None]:
     """Сколько наших сообщений подряд в хвосте диалога (без ответа) и ts последнего.
     Если хвост — входящее, значит ждём НЕ мы → (0, _)."""
@@ -308,7 +332,8 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
 
     # --- НАПОМИНАНИЯ о встрече ---
     deals = conn.execute(
-        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, d.zoom_link, c.name, c.tg_user_id "
+        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, d.zoom_link, c.name, "
+        "c.person_name, c.tg_name, c.tg_user_id "
         "FROM deals d JOIN contacts c ON c.id = d.contact_id "
         "WHERE d.stage = 'meeting_set' AND d.reminder_sent = 0 AND d.meeting_at IS NOT NULL"
     ).fetchall()
@@ -321,8 +346,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
             link = (d["zoom_link"] or "").strip()
             actions.append(Action(
                 "reminder", d["contact_id"], d["tg_user_id"], d["name"] or "",
-                REMINDER_TEMPLATE.format(name=_name(d), time=_local_hhmm(dt),
-                                         link=f"\n\nссылка: {link}" if link else ""),
+                _reminder_text(d, _local_hhmm(dt), link),
                 deal_id=d["deal_id"],
             ))
 

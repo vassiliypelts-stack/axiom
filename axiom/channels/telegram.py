@@ -907,8 +907,8 @@ async def _agent_reply(event, contact_id: int, username: str | None,
     if (camp and not database.in_work_hours(camp, database.contact_tz(contact))
             and not _col(contact, "is_test")):
         print(f"[work hours] contact {contact_id}: кампания «{camp['name']}» молчит вне "
-              f"{camp.get('work_hours_start')}–{camp.get('work_hours_end')} "
-              f"{camp.get('work_hours_tz') or 'UTC'} — ответ отложен")
+              f"{camp['work_hours_start']}–{camp['work_hours_end']} "
+              f"{camp['work_hours_tz'] or 'UTC'} — ответ отложен")
         return
 
     # Оператор взял диалог на себя (кнопка «✋ Ручное» в «Диалогах») — агент молчит,
@@ -1076,7 +1076,11 @@ async def _agent_reply(event, contact_id: int, username: str | None,
 
     # Согласие на встречу → создаём Zoom + событие (сетевые вызовы вне БД-блока)
     meeting = None
-    if reply.meeting_agreed:
+    # То же время уже записано — это не новая договорённость, а «ок, до встречи»
+    # после неё: второй раз встречу не заводим и владельца не дёргаем.
+    same_meeting = bool(reply.meeting_agreed) and await asyncio.to_thread(
+        meetings.already_set, contact_id, reply.proposed_datetime)
+    if reply.meeting_agreed and not same_meeting:
         meeting = await asyncio.to_thread(
             meetings.arrange, contact_info, reply.proposed_datetime,
             camp["id"] if camp else None, reply.notes, contact_id, username, contact["phone"],
@@ -1112,6 +1116,19 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         database.add_message(conn, contact_id, "out", reply_text, intent=None,
                              account_id=account_id, tg_msg_ids=reply_ids)
         who = contact_info.get("name") or contact_info.get("person_name") or (f"@{username}" if username else str(contact_id))
+        # Человек отменил созвон и нового времени пока нет: снимаем встречу, иначе
+        # планировщик напомнит ему о ней (10.10.2026: «напоминаю про созвон сегодня в
+        # 12:00» после вчерашнего «Нет, я в выходные занят»).
+        cancelled = (meeting is None and not same_meeting and reply.meeting_cancelled
+                     and database.cancel_meeting(conn, contact_id))
+        if cancelled:
+            database.add_event(conn, "meeting", f"❌ Созвон отменён: {who}",
+                               (text_in or "").strip()[:160] or "Человек отменил созвон.",
+                               level="warn", contact_id=contact_id,
+                               campaign_id=camp["id"] if camp else None)
+        booked = same_meeting or conn.execute(
+            "SELECT 1 FROM deals WHERE contact_id=? AND stage='meeting_set'",
+            (contact_id,)).fetchone() is not None
         if meeting is not None:
             database.record_meeting(
                 conn, contact_id, meeting.meeting_at_iso, reply.notes,
@@ -1141,6 +1158,7 @@ async def _agent_reply(event, contact_id: int, username: str | None,
         elif reply.intent == "not_interested":
             # Не «nurture»: отказ не является поводом для будущего дожима. Отдельный
             # статус исключает человека из любых выборок на рассылку и виден в отчёте.
+            database.cancel_meeting(conn, contact_id)  # отказавшемуся о созвоне не напоминаем
             database.set_status(conn, contact_id, "refused")
             conn.execute("DELETE FROM opener_queue WHERE contact_id=?", (contact_id,))
             database.add_event(
@@ -1149,6 +1167,10 @@ async def _agent_reply(event, contact_id: int, username: str | None,
                 level="info", contact_id=contact_id, campaign_id=camp["id"] if camp else None,
                 account_id=account_id,
             )
+        elif booked:
+            # Встреча в силе, человек просто что-то дописал: статус «встреча
+            # назначена» не откатываем и второй раз тёплым лидом не объявляем.
+            pass
         else:
             database.set_status(conn, contact_id, "in_dialog")
             if reply.intent in ("positive", "agreed"):
@@ -1163,19 +1185,31 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             # lead_since — сам ФАКТ согласия, ставится один раз и не стирается: по
             # нему отчёт кампании показывает лидов (иначе после снятия hot_since
             # согласившийся человек исчезал из всех сводок).
+            #
+            # В кампании со своим стуком время созвона ведёт сам агент, владельцу до
+            # звонка делать нечего. Метка «жду владельца» глушит бота на несколько часов
+            # (listener._should_reply), и 09.10.2026 «Нет, я в выходные занят» сразу
+            # после «договорились» осталось без ответа. Там метку не ставим.
+            stay = bool(camp and (camp["quiet_opener_template"] or "").strip())
             conn.execute(
-                "UPDATE contacts SET hot_since=datetime('now'), "
-                "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?", (contact_id,))
+                "UPDATE contacts SET hot_since=CASE WHEN ? THEN NULL ELSE datetime('now') END, "
+                "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",
+                (1 if stay else 0, contact_id))
         else:
             conn.execute("UPDATE contacts SET hot_since=NULL WHERE id=?", (contact_id,))
 
     # Договорились о встрече в этом же ответе — владельцу придёт «Договорились о
     # встрече» со временем; второе уведомление «горячий лид» про то же сообщение
     # только дублирует его (25.09.2026 владелец получил оба подряд).
-    if reply.hot and meeting is None:
+    if reply.hot and meeting is None and not same_meeting:
         print(f"[HOT] contact {contact_id}: {who} готов действовать сейчас")
         from channels import notify
         await notify.notify_hot(contact_id, text_in, camp["id"] if camp else None)
+
+    if cancelled:
+        print(f"[MEETING] contact {contact_id}: созвон отменён человеком")
+        from channels import notify
+        await notify.notify_meeting_cancelled(contact_id, text_in, camp["id"] if camp else None)
 
     if meeting is not None:
         print(f"[MEETING] contact {contact_id}: {meeting.meeting_at_iso} | "

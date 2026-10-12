@@ -617,6 +617,140 @@ async def _scan_group(event, acc_id: int) -> None:
                 _log(f"[#{acc_id}] 🎯 запрос «{kw}» от {name} в «{title}» → Запросы")
 
 
+# ВЛАДЕЛЕЦ НАПИСАЛ САМ → АГЕНТ В ЭТОМ ДИАЛОГЕ НА ПАУЗЕ.
+#
+# Слушатель видел только входящие. Когда владелец со своего телефона сам вёл диалог
+# (звал в Zoom, переносил созвон), система об этом не знала: в книжке последним
+# оставалось сообщение человека «без ответа», и догон отвечал поверх живой переписки.
+# 11.10.2026 знакомой Василия в разгар такого разговора ушло «Понял, не переживай.
+# Когда вернешься, напиши» — на «Я вылетела» из созвона.
+#
+# Telegram присылает и наши исходящие, в том числе отправленные с других устройств.
+# Своё от ручного отличаем по книжке: всё, что шлёт система, она записывает сама
+# (database.add_message c tg_msg_id). Ждём, пока запись ляжет, и если её нет — это
+# писал человек: кладём сообщение в историю и ставим контакт на «✋ Ручное». Вернуть
+# агента — «🤖 Авто» в «Диалогах».
+OWNER_CHECK_DELAY = 45    # сек: отправка системы успевает лечь в messages
+OWNER_NEAR_SEC = 30       # исходящее вплотную к записи системы считаем её же частью
+                          # (файл или голос к ответу). Шире нельзя: владелец как раз и
+                          # вмешивается через минуту-другую после неудачной реплики агента
+
+
+def _owner_account(acc: dict) -> bool:
+    """Номер, с которого владелец пишет и руками. Купленные аккаунты живут только на
+    сервере, ручных сообщений с них не бывает — там любое исходящее наше."""
+    return bool(acc.get("protected")) or (acc.get("acc_role") or "") in ("own", "service")
+
+
+def _contact_of_peer(peer) -> dict | None:
+    """Карточка собеседника: по id, нику или номеру из книжки (знакомые заведены
+    списком номеров, id и ника у них до первого ответа нет)."""
+    with database.get_conn() as conn:
+        row = database.find_contact_by_tg(conn, tg_user_id=int(peer.id),
+                                          username=getattr(peer, "username", None))
+        tail = "".join(ch for ch in (getattr(peer, "phone", None) or "") if ch.isdigit())[-10:]
+        if row is None and len(tail) == 10:
+            row = conn.execute(
+                "SELECT * FROM contacts WHERE deleted_at IS NULL AND "
+                "replace(replace(replace(replace(replace(COALESCE(phone,''),' ',''),'-',''),"
+                "'(',''),')',''),'+','') LIKE ? ORDER BY id LIMIT 1", ("%" + tail,)).fetchone()
+    return dict(row) if row else None
+
+
+def _we_wrote(acc_id: int, contact_id: int) -> bool:
+    """Кампания писала этому человеку с этого номера. Остальная переписка номера —
+    личная, её не читаем и не записываем."""
+    with database.get_conn() as conn:
+        return bool(conn.execute(
+            "SELECT 1 FROM campaign_contacts WHERE contact_id=? AND account_id=? LIMIT 1",
+            (contact_id, acc_id)).fetchone() or conn.execute(
+            "SELECT 1 FROM messages WHERE contact_id=? AND account_id=? AND direction='out' "
+            "AND COALESCE(intent,'')<>'owner' LIMIT 1", (contact_id, acc_id)).fetchone())
+
+
+def _sent_by_system(contact_id: int, msg_id: int, text: str,
+                    sent_at: datetime.datetime) -> bool:
+    """Это исходящее записала сама система (или это повтор уже учтённого ручного)."""
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT tg_msg_id, text, ts, COALESCE(intent,'') intent FROM messages "
+            "WHERE contact_id=? AND direction='out' ORDER BY id DESC LIMIT 30",
+            (contact_id,)).fetchall()
+    norm = " ".join((text or "").split()).lower()
+    for r in rows:
+        if str(msg_id) in (r["tg_msg_id"] or "").split(","):
+            return True
+        if r["intent"] == "owner":
+            continue                    # ручные реплики друг друга не заслоняют
+        theirs = " ".join((r["text"] or "").split()).lower()
+        # короткое «да» или «привет» есть в любом нашем тексте — по вхождению
+        # сверяем только длинные реплики (части ответа хранятся одной записью)
+        if norm and (norm == theirs or (len(norm) >= 25 and norm in theirs)):
+            return True
+        try:
+            ts = datetime.datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            continue
+        if abs((ts - sent_at).total_seconds()) <= OWNER_NEAR_SEC:
+            return True                 # часть ответа, файл или голос рядом с записью
+    return False
+
+
+def _owner_wrote(acc_id: int, contact: dict, msg_id: int, text: str) -> bool:
+    """Ручное сообщение владельца: в историю и на паузу. True — пауза поставлена сейчас."""
+    cid = contact["id"]
+    with database.get_conn() as conn:
+        database.add_message(conn, cid, "out", text, intent="owner", account_id=acc_id,
+                             tg_msg_ids=[msg_id])
+        # Владелец подхватил разговор сам: горячая метка и напоминание «с вами
+        # связались?» больше не нужны (то же делает кнопка «Связался» в пульте).
+        conn.execute("UPDATE contacts SET hot_since=NULL, owner_contacted_at="
+                     "COALESCE(owner_contacted_at, datetime('now')) WHERE id=?", (cid,))
+        camp = database.get_contact_campaign(conn, cid)
+        if not camp or cid in database.paused_contact_ids(conn, camp["id"]):
+            return False
+        database.pause_campaign_contacts(conn, camp["id"], [cid])
+        who = contact.get("person_name") or contact.get("name") or contact.get("tg_name") or f"#{cid}"
+        database.add_event(
+            conn, "owner_took_over", f"✋ Вы написали сами: {who}",
+            "Агент в этом диалоге на паузе: не отвечает и не дожимает. "
+            "Вернуть его — «🤖 Авто» в «Диалогах».",
+            contact_id=cid, campaign_id=camp["id"], account_id=acc_id)
+    return True
+
+
+async def _handle_own_outgoing(event, acc_id: int) -> None:
+    if not event.is_private:
+        return
+    peer = await event.get_chat()
+    if not isinstance(peer, User) or peer.bot or getattr(peer, "is_self", False):
+        return
+    contact = _contact_of_peer(peer)
+    if not contact or not _we_wrote(acc_id, contact["id"]):
+        return
+    text = (event.raw_text or "").strip()
+    if not text:
+        text = ("[голосовое]" if getattr(event, "voice", False) else
+                "[видео-кружок]" if getattr(event, "video_note", False) else
+                "[фото]" if getattr(event, "photo", False) else "[файл]")
+    sent_at = event.message.date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    await asyncio.sleep(OWNER_CHECK_DELAY)
+    if _sent_by_system(contact["id"], int(event.message.id), text, sent_at):
+        return
+    paused = _owner_wrote(acc_id, contact, int(event.message.id), text)
+    _log(f"[#{acc_id}] ✋ владелец сам написал контакту {contact['id']}: {text[:40]!r}"
+         + (" — агент на паузе" if paused else ""))
+
+
+def _make_own_out_handler(acc_id: int):
+    async def handler(event) -> None:
+        try:
+            await _handle_own_outgoing(event, acc_id)
+        except Exception as e:  # noqa: BLE001
+            _log(f"[#{acc_id}] ошибка разбора своего исходящего: {e}")
+    return handler
+
+
 def _make_handler(acc_id: int, role: str | None = None):
     """role — что этому аккаунту разрешено (accounts.listen_role):
     'dialogs' — только личка (ответы клиентов), 'hits' — только чаты (ключи),
@@ -673,6 +807,9 @@ async def _connect(acc: dict):
             raise RuntimeError("сессия не авторизована — нужен повторный вход")
         client.add_event_handler(_make_handler(acc["id"], acc.get("listen_role")),
                                  events.NewMessage(incoming=True, forwards=False))
+        if _owner_account(acc):
+            client.add_event_handler(_make_own_out_handler(acc["id"]),
+                                     events.NewMessage(outgoing=True))
         # Что пришло, пока клиент был отключён (рестарт сервиса деплоем, обрыв сети,
         # supervise переподключал аккаунт) — Telethon САМ не доливает, событие теряется
         # НАВСЕГДА и без единой ошибки в логе. Со стороны это неотличимо от «агент

@@ -67,6 +67,15 @@ class Incoming(BaseModel):
     push_name: str | None = None
     text: str
     account_id: int | None = None
+    # Голосовое: Node присылает саму запись (base64), пульт её расшифровывает (_voice).
+    voice_b64: str | None = None
+    voice_mime: str | None = None
+
+
+class Probe(BaseModel):
+    jid: str
+    phone: str | None = None
+    account_id: int | None = None
 
 
 class Sent(BaseModel):
@@ -232,6 +241,39 @@ def _our_dialog(conn, contact_id: int, acc_id: int | None) -> bool:
                         "AND direction='out' LIMIT 1", (contact_id, acc_id)).fetchone() is not None
 
 
+@router.post("/wa/ours")
+def ours(p: Probe) -> JSONResponse:
+    """Наш ли это диалог. Node спрашивает ДО того, как скачивать голосовое: на номере
+    идёт и личная переписка хозяина, её записи скачивать и расшифровывать незачем."""
+    with database.get_conn() as conn:
+        contact = database.find_contact_by_wa(conn, jid=p.jid, phone=p.phone)
+        return JSONResponse({"ours": bool(contact is not None
+                                          and _our_dialog(conn, contact["id"], p.account_id))})
+
+
+def _voice(msg: Incoming, contact_id: int) -> tuple[str, dict]:
+    """Голосовое из WhatsApp → (текст для книжки, поля media_* для add_message).
+
+    Запись кладём рядом с телеграмными вложениями, чтобы оператор мог прослушать её в
+    «Диалогах», и расшифровываем тем же integrations/stt, что и Telegram-слушатель.
+    Раньше голосовое в WhatsApp не доходило до пульта вовсе: человек наговорил ответ,
+    а в «Диалогах» пусто и агент молчит."""
+    import base64
+    import time
+    from channels.listener import _MEDIA_DIR
+    from integrations import stt
+    try:
+        _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        path = _MEDIA_DIR / f"wa{msg.account_id}_{contact_id}_{int(time.time() * 1000)}.ogg"
+        path.write_bytes(base64.b64decode(msg.voice_b64))
+    except Exception as e:  # noqa: BLE001 — без записи остаётся метка, входящее не теряем
+        print(f"[wa voice] contact {contact_id}: запись не сохранена: {e}")
+        return msg.text, {}
+    said = stt.transcribe(path, msg.voice_mime)
+    return (f"{msg.text} {said}" if said else msg.text,
+            {"media_path": path.name, "media_name": path.name, "media_mime": msg.voice_mime})
+
+
 @router.post("/wa/incoming")
 def incoming(msg: Incoming) -> JSONResponse:
     """Входящее от человека. Пишем в книжку (если это наш диалог) и говорим Node,
@@ -245,10 +287,13 @@ def incoming(msg: Incoming) -> JSONResponse:
         contact_id = contact["id"]
         if not _our_dialog(conn, contact_id, msg.account_id):
             return JSONResponse({"ignore": True, "reason": "не наш диалог (кампания не писала)"})
+    # Расшифровка идёт в сеть на несколько секунд — вне БД-блока.
+    text, media = _voice(msg, contact_id) if msg.voice_b64 else (msg.text, {})
+    with database.get_conn() as conn:
         if not contact["wa_jid"]:
             database.set_wa_jid(conn, contact_id, msg.jid)
-        database.add_message(conn, contact_id, "in", msg.text, account_id=msg.account_id,
-                             channel="whatsapp")
+        database.add_message(conn, contact_id, "in", text, account_id=msg.account_id,
+                             channel="whatsapp", **media)
         conn.execute("UPDATE messages SET delivered_at=COALESCE(delivered_at, datetime('now')), "
                      "read_at=COALESCE(read_at, datetime('now')) WHERE contact_id=? "
                      "AND direction='out' AND account_id=?", (contact_id, msg.account_id))

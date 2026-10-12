@@ -96,6 +96,31 @@ function extractText(m) {
   ).trim();
 }
 
+/** Голосовое сообщение (в том числе в чате с исчезающими сообщениями), иначе null. */
+function voiceOf(m) {
+  const c = m.message || {};
+  return c.audioMessage || c.ephemeralMessage?.message?.audioMessage || null;
+}
+
+const MAX_VOICE_BYTES = 20 * 1024 * 1024;
+
+/** Запись голосового для расшифровки в пульте, либо null. Скачиваем только после того,
+ *  как пульт подтвердил, что диалог наш: на номере идёт и личная переписка хозяина. */
+async function fetchVoice(sock, m, audio, jid, phone) {
+  try {
+    const probe = await bridgePost("/wa/ours", { jid, phone, account_id: ACCOUNT_ID || null });
+    if (!probe.ours || Number(String(audio.fileLength ?? 0)) > MAX_VOICE_BYTES) return null;
+    // Импорт здесь, а не в шапке: если в установленной версии Baileys функции нет,
+    // это ошибка одного голосового, а не падение всего WhatsApp-процесса на старте.
+    const { downloadMediaMessage } = await import("@whiskeysockets/baileys");
+    const buf = await downloadMediaMessage(m, "buffer", {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    return { voice_b64: buf.toString("base64"), voice_mime: audio.mimetype || "audio/ogg" };
+  } catch (e) {
+    console.error(`[voice] не скачал голосовое от ${jid}: ${e.message}`);
+    return null;
+  }
+}
+
 /** Отправляет части как живой человек: «печатает…», паузы ∝ длине, паузы между. */
 async function sendParts(sock, jid, parts) {
   const clean = (parts || []).map((p) => (p || "").trim()).filter(Boolean);
@@ -330,15 +355,23 @@ async function handleIncoming(sock, m) {
   if (m.key.fromMe) return;
   const rawJid = m.key.remoteJid || "";
   if (rawJid.endsWith("@g.us") || rawJid === "status@broadcast" || rawJid.endsWith("@newsletter")) return;
-  const text = extractText(m);
-  if (!text) return;
   const jid = phoneJidOf(m.key);
   const phone = jid.split("@")[0].replace(/\D/g, "");
+  let text = extractText(m);
+  let voice = null;
+  if (!text) {
+    // Голосовое без текста раньше молча отбрасывалось: человек наговорил ответ, а в
+    // пульте пусто. Теперь уходит меткой, а запись — на расшифровку (wa_bridge._voice).
+    const audio = voiceOf(m);
+    if (!audio) return;
+    text = "[голосовое]";
+    voice = await fetchVoice(sock, m, audio, jid, phone);
+  }
 
   let res;
   try {
     res = await bridgePost("/wa/incoming", {
-      jid, phone, push_name: m.pushName || null, text, account_id: ACCOUNT_ID || null,
+      jid, phone, push_name: m.pushName || null, text, account_id: ACCOUNT_ID || null, ...(voice || {}),
     });
   } catch (e) {
     console.error(`[incoming] пульт недоступен: ${e.message}`);

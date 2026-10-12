@@ -58,5 +58,60 @@ class VoiceTranscriptTests(unittest.TestCase):
             self.assertIn("расшифровка", prompt)
 
 
+class WhatsAppVoiceTests(unittest.TestCase):
+    def setUp(self):
+        from channels import listener, wa_bridge
+        from db import database
+        self.wa, self.database = wa_bridge, database
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        for target, name, value in ((config, "DB_PATH", Path(self.tmp.name) / "test.db"),
+                                    (listener, "_MEDIA_DIR", Path(self.tmp.name) / "media")):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        database.init_db()
+        with database.get_conn() as conn:
+            self.acc = conn.execute("INSERT INTO accounts(label,status) VALUES ('wa','active')").lastrowid
+            camp = conn.execute("INSERT INTO campaigns(name,status) VALUES ('c','running')").lastrowid
+            self.ours = conn.execute("INSERT INTO contacts(name,phone,status) "
+                                     "VALUES ('Илья','79990000001','messaged')").lastrowid
+            self.personal = conn.execute("INSERT INTO contacts(name,phone,status) "
+                                         "VALUES ('Мама','79990000002','new')").lastrowid
+            conn.execute("INSERT INTO campaign_contacts(campaign_id,contact_id,account_id) VALUES (?,?,?)",
+                         (camp, self.ours, self.acc))
+
+    def incoming(self, phone):
+        return self.wa.incoming(self.wa.Incoming(
+            jid=f"{phone}@s.whatsapp.net", phone=phone, text="[голосовое]", account_id=self.acc,
+            voice_b64="T2dnUw==", voice_mime="audio/ogg; codecs=opus"))
+
+    def test_only_campaign_dialogs_are_offered_for_download(self):
+        probe = lambda phone: self.wa.ours(self.wa.Probe(
+            jid=f"{phone}@s.whatsapp.net", phone=phone, account_id=self.acc)).body
+        self.assertIn(b"true", probe("79990000001"))
+        self.assertIn(b"false", probe("79990000002"))
+        self.assertIn(b"false", probe("79990000003"))
+
+    def test_voice_is_stored_with_its_text_and_the_recording(self):
+        with patch.object(stt, "transcribe", return_value="Привет, занимаюсь стройкой.") as said:
+            self.incoming("79990000001")
+        with self.database.get_conn() as conn:
+            row = conn.execute("SELECT text, media_path, channel FROM messages").fetchone()
+        self.assertEqual(row["text"], "[голосовое] Привет, занимаюсь стройкой.")
+        self.assertEqual(row["channel"], "whatsapp")
+        self.assertEqual((Path(self.tmp.name) / "media" / row["media_path"]).read_bytes(), b"OggS")
+        self.assertEqual(said.call_args.args[1], "audio/ogg; codecs=opus")
+
+    def test_untranscribed_voice_keeps_the_marker_and_personal_voice_is_not_touched(self):
+        with patch.object(stt, "transcribe", return_value=None) as said:
+            self.incoming("79990000001")
+            self.assertEqual(said.call_count, 1)
+            self.incoming("79990000002")
+            self.assertEqual(said.call_count, 1)
+        with self.database.get_conn() as conn:
+            self.assertEqual([r["text"] for r in conn.execute("SELECT text FROM messages")], ["[голосовое]"])
+
+
 if __name__ == "__main__":
     unittest.main()

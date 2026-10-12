@@ -2345,6 +2345,15 @@ async function viewAgents(v){
       </div>
       <div class="hint" style="margin-top:8px">Как только человек согласился на конкретное время, агент сразу присылает ему эту ссылку. Пока поле пустое, встреча фиксируется <b>без адреса подключения</b> — в колокольчик падает «📅 Встреча назначена (без ссылки)», и ссылку придётся отправлять руками. Заведи в Телемосте постоянную комнату и вставь её сюда.</div></div>
     <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <b style="font-size:13px">🎙 Расшифровка голосовых</b>
+        <span class="hint">ключ Deepgram</span>
+        <input id="dg-key" type="password" autocomplete="off" placeholder="вставь ключ Deepgram" style="flex:1;min-width:260px">
+        <button id="dg-save">сохранить</button>
+        <span class="hint" id="dg-msg"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">Когда человек отвечает голосовым или кружком, запись расшифровывается, и агент отвечает на сказанное. Без ключа агент просит написать текстом. Расшифровываются только диалоги тех, кому писала кампания; остальная личная переписка номеров никуда не уходит.</div></div>
+    <div class="card" style="margin:0 0 12px;background:var(--panel2);padding:12px">
       <div class="cardh" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <b style="font-size:13px">🔔 Уведомления о встречах</b>
         <span class="hint">кому слать в личку, когда агент договорился о звонке</span>
@@ -2557,6 +2566,14 @@ async function viewAgents(v){
     const r=await api("/api/settings/meeting_url",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:$("#mu-url").value.trim()})});
     if(r.error){$("#mu-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
     $("#mu-msg").textContent=r.url?"✓ сохранено — агент будет присылать её сразу после согласия":"✓ очищено — ссылка не уйдёт";};
+  // ── ключ Deepgram: расшифровка входящих голосовых ──
+  api("/api/settings/deepgram_key").then(s=>{const m=$("#dg-msg");if(!m)return;
+    m.innerHTML=s.set?`✓ ключ задан (…${esc(s.tail)})`:'<span style="color:#c0392b">не задан — голосовые не расшифровываются</span>';});
+  $("#dg-save").onclick=async()=>{
+    const r=await api("/api/settings/deepgram_key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:$("#dg-key").value.trim()})});
+    if(r.error){$("#dg-msg").innerHTML='<span style="color:#c0392b">'+esc(r.error)+'</span>';return;}
+    $("#dg-key").value="";
+    $("#dg-msg").textContent=!r.set?"✓ очищено — голосовые не расшифровываются":r.checked?"✓ сохранено, ключ рабочий":"✓ сохранено (проверить ключ не удалось: Deepgram не ответил)";};
   // ── уведомления о встречах: кому слать ──
   api("/api/settings/notify").then(s=>{const t=$("#ntf-target");if(t)t.value=s.target||"";});
   $("#ntf-save").onclick=async()=>{

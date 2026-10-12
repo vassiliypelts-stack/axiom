@@ -873,6 +873,28 @@ def settings_meeting_url_set(payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "url": url})
 
 
+@app.get("/api/settings/deepgram_key")
+def settings_deepgram_key_get() -> JSONResponse:
+    """Задан ли ключ Deepgram для расшифровки входящих голосовых (integrations/stt).
+    Сам ключ наружу не отдаём — только хвост, чтобы было видно, какой стоит."""
+    from integrations import stt
+    key = stt.api_key()
+    return JSONResponse({"set": bool(key), "tail": key[-4:] if key else ""})
+
+
+@app.post("/api/settings/deepgram_key")
+def settings_deepgram_key_set(payload: dict = Body(...)) -> JSONResponse:
+    from integrations import stt
+    key = (payload.get("key") or "").strip()
+    ok = stt.check_key(key) if key else None
+    if key and ok is False:
+        return JSONResponse({"error": "Deepgram не принял этот ключ — проверь, что скопирован целиком"},
+                            status_code=400)
+    with database.get_conn() as conn:
+        database.set_setting(conn, stt.SETTING, key)
+    return JSONResponse({"ok": True, "set": bool(key), "checked": ok is True})
+
+
 @app.get("/api/settings/org_notes")
 def settings_org_notes_get() -> JSONResponse:
     """Свободные заметки к оргструктуре — план по департаментам, цели, расчёты."""

@@ -359,6 +359,19 @@ def _unknown_sender_notice(acc_id: int, sender, username: str | None, text: str)
         pass
 
 
+async def _transcribe_voice(contact_id: int, path: Path, mime: str | None) -> str | None:
+    """Текст голосового или None. Расшифровываем только тех, кому писала кампания:
+    слушатель стоит и на личных номерах владельца, а голосовые его близких во внешний
+    сервис уходить не должны."""
+    with database.get_conn() as conn:
+        ours = conn.execute("SELECT 1 FROM campaign_contacts WHERE contact_id=? LIMIT 1",
+                            (contact_id,)).fetchone()
+    if not ours:
+        return None
+    from integrations import stt
+    return await asyncio.to_thread(stt.transcribe, path, mime)
+
+
 async def _handle_private(event, acc_id: int) -> None:
     """Личка: ответ известного контакта → в «Диалоги» (+ авто-ответ с активных)."""
     sender = await event.get_sender()
@@ -408,6 +421,13 @@ async def _handle_private(event, acc_id: int) -> None:
                          "mime": getattr(getattr(event.message, "file", None), "mime_type", None)}
         except Exception as exc:  # сохранение не должно задержать ответ клиенту
             _log(f"[#{acc_id}] не сохранил вложение от {username or sender.id}: {exc}")
+    if media and text_in in ("[голосовое]", "[видео-кружок]"):
+        said = await _transcribe_voice(contact["id"], _MEDIA_DIR / media["path"], media["mime"])
+        if said:
+            # Метку оставляем: оператор в «Диалогах» видит, что это было голосом, а
+            # агент по правилу из промпта отвечает на текст после неё.
+            text_in = f"{text_in} {said}"
+            _log(f"[#{acc_id}] 🎙 расшифровал голос от {username or sender.id}")
     _record_incoming(contact["id"], text_in, username, account_id=acc_id, media=media)
     _log(f"[#{acc_id}] ← {username or sender.id}: {text_in[:60]!r} (сохранено в Диалоги)")
     # НОЧЬЮ ЖИВЫМ ЛЮДЯМ НЕ ПИШЕМ (09:00–21:30 МСК). Ответ в три часа ночи — это и

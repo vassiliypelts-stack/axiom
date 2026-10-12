@@ -70,6 +70,9 @@ def agent_model(campaign_id: int | None = None) -> str:
 # Ключ DeepSeek (platform.deepseek.com) — дешёвая модель на массовое обогащение.
 # Gemini берёт ключ из GEMINI_API_KEY (см. ниже, он же для авто-фото).
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+# Deepgram — расшифровка входящих голосовых (integrations/stt). Основное место для
+# ключа — настройка пульта, .env здесь запасной.
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 
 # --- TGStat (каталог каналов/чатов) ---
 # Официальный API (api.tgstat.ru), а не парсинг сайта: tgstat.ru отдаёт 403 на

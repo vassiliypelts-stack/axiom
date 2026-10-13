@@ -11,8 +11,8 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
-import random
 import json
 import re
 import subprocess
@@ -81,8 +81,10 @@ def content_text_plan(weeks: int = 4) -> JSONResponse:
 async def content_text_take_trend(trend_id: str, body: dict = Body(...)) -> JSONResponse:
     """Explicit click: create a draft, then mark this source as taken."""
     try:
+        # «Угол» темы придумал дайджест, а не Василий: как его пожелание не передаём,
+        # иначе агент снова уведёт пост от хука донора.
         draft = await run_in_threadpool(content_writer.from_source, body.get("title", ""),
-            body.get("excerpt", ""), body.get("author", ""), body.get("angle", ""), body.get("link", ""), random.choice(content_writer.FORMS))
+            body.get("excerpt", ""), body.get("author", ""), "", body.get("link", ""))
         await run_in_threadpool(content_sheet.mark_trend_taken, trend_id)
         return JSONResponse({"draft": draft})
     except Exception as e:
@@ -155,29 +157,29 @@ async def content_text_write(body: dict = Body(...)) -> JSONResponse:
     idea = (body.get("idea") or "").strip()
     picked = body.get("sources") or []
 
-    # Форму назначаем снаружи и разную: пачку постов модель иначе пишет под
-    # копирку — одна длина, одна структура, и лента читается как робот.
-    forms = random.sample(content_writer.FORMS, k=len(content_writer.FORMS))
-    nth = 0
+    jobs = []
+    if idea:
+        jobs.append(run_in_threadpool(content_writer.from_idea, idea, note))
+    for s in picked[:5]:              # больше пяти за раз — это уже не черновик, а поток
+        jobs.append(run_in_threadpool(
+            content_writer.from_source,
+            (s.get("title") or "").strip(),
+            (s.get("excerpt") or s.get("text") or "").strip(),
+            (s.get("channel") or "").strip(), note,
+            (s.get("link") or "").strip()))
+    if not jobs:
+        return JSONResponse({"error": "Нечего писать: отметьте находки или продиктуйте мысль."},
+                            status_code=400)
 
     try:
-        drafts = []
-        if idea:
-            drafts.append(await run_in_threadpool(
-                content_writer.from_idea, idea, note, forms[nth % len(forms)]))
-            nth += 1
-        for s in picked[:5]:          # больше пяти за раз — это уже не черновик, а поток
-            drafts.append(await run_in_threadpool(
-                content_writer.from_source,
-                (s.get("title") or "").strip(),
-                (s.get("excerpt") or s.get("text") or "").strip(),
-                (s.get("channel") or "").strip(), note,
-                (s.get("link") or "").strip(), forms[nth % len(forms)]))
-            nth += 1
+        # Разом, а не по очереди: один черновик агент пишет около минуты.
+        # Сорвался один — остальные всё равно отдаём, ошибку показываем рядом.
+        done = await asyncio.gather(*jobs, return_exceptions=True)
+        drafts = [d for d in done if not isinstance(d, BaseException)]
+        failed = [str(d)[:200] for d in done if isinstance(d, BaseException)]
         if not drafts:
-            return JSONResponse({"error": "Нечего писать: отметьте находки или продиктуйте мысль."},
-                                status_code=400)
-        return JSONResponse({"drafts": drafts})
+            return JSONResponse({"error": failed[0]}, status_code=502)
+        return JSONResponse({"drafts": drafts, "failed": failed})
     except content_writer.WriterError as e:
         return _fail(e)
     except Exception as e:  # noqa: BLE001

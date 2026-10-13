@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
+import time
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -31,11 +32,40 @@ class ContentSheetError(RuntimeError):
     pass
 
 
+# Google даёт 60 чтений в минуту на ключ. Открыть книгу, найти лист, прочитать
+# его — три запроса на каждый лист при каждом открытии вкладки. 14.10.2026
+# Василий пощёлкал вкладки и получил 429 «Quota exceeded». Поэтому книгу
+# держим открытой, а прочитанный лист помним минуту. Запись сбрасывает память
+# своего листа, так что своё изменение видно сразу.
+BOOK_TTL, ROWS_TTL = 600, 60
+_book_cache: dict = {"at": 0.0, "book": None}
+_rows_cache: dict[str, tuple[float, list[list[str]]]] = {}
+
+
 def _book():
     if not config.CONTENT_SHEET_ID:
         raise ContentSheetError("CONTENT_SHEET_ID не задан в .env — не знаю, какую таблицу читать.")
-    creds = Credentials.from_service_account_file(config.CONTENT_GOOGLE_KEY_FILE, scopes=SCOPES)
-    return gspread.authorize(creds).open_by_key(config.CONTENT_SHEET_ID)
+    if _book_cache["book"] is None or time.monotonic() - _book_cache["at"] > BOOK_TTL:
+        creds = Credentials.from_service_account_file(config.CONTENT_GOOGLE_KEY_FILE, scopes=SCOPES)
+        _book_cache["book"] = gspread.authorize(creds).open_by_key(config.CONTENT_SHEET_ID)
+        _book_cache["at"] = time.monotonic()
+    return _book_cache["book"]
+
+
+def _rows(name: str) -> list[list[str]]:
+    """Все строки листа, с памятью на минуту. Строки не менять: они общие."""
+    hit = _rows_cache.get(name)
+    if hit and time.monotonic() - hit[0] < ROWS_TTL:
+        return hit[1]
+    rows = _book().worksheet(name).get_all_values()
+    _rows_cache[name] = (time.monotonic(), rows)
+    return rows
+
+
+def _forget(*names: str) -> None:
+    """После записи в лист: следующее чтение пойдёт в таблицу, а не в память."""
+    for name in names:
+        _rows_cache.pop(name, None)
 
 
 def _first_line(text: str, limit: int = 110) -> str:
@@ -129,6 +159,9 @@ def _daily(posts: list[dict], now: datetime, days: int = 30) -> list[dict]:
     return [buckets[k] for k in sorted(buckets)]
 
 
+FIND_TEXT, FINDS_MAX = 3000, 1500
+
+
 def sources() -> dict:
     """
     Что дайджест нашёл в чужих каналах, и какие темы из этого выросли.
@@ -137,24 +170,28 @@ def sources() -> dict:
     накопленная БАЗА-ТЕМ со ссылками на оригиналы — чтобы можно было зайти
     и прочитать то, что зацепило внимание, а не только заголовок из сводки.
     """
-    book = _book()
-
     finds = []
     try:
-        rows = book.worksheet("БАЗА-ТЕМ").get_all_values()
+        rows = _rows("БАЗА-ТЕМ")
     except Exception:
         rows = []
     for r in rows[1:]:
         r = r + [""] * (13 - len(r))
         if not (r[3] or r[4]):
             continue
+        views, reactions = _to_int(r[5]), _to_int(r[6])
         finds.append({
             "date": r[1],
             "channel": r[2],
             "title": r[3] or _first_line(r[4]),
-            "text": (r[4] or "")[:600],
-            "views": _to_int(r[5]),
-            "reactions": _to_int(r[6]),
+            # Текст уходит агенту как донор: обрезанный на 600 знаках пост
+            # терял шаги инструкции, ради которых его и отметили.
+            "text": (r[4] or "")[:FIND_TEXT],
+            "views": views,
+            "reactions": reactions,
+            # Отклик: доля читателей, которые отреагировали. По нему видно,
+            # что зацепило, а не у кого канал больше.
+            "rate": round(reactions / views * 100, 2) if views else 0.0,
             "forwards": _to_int(r[7]),
             "weight": _to_int(r[8]),
             "link": _abs_link(r[9]),
@@ -168,7 +205,7 @@ def sources() -> dict:
 
     themes = []
     try:
-        rows = book.worksheet("ПЛАН").get_all_values()
+        rows = _rows("ПЛАН")
     except Exception:
         rows = []
     # Из чего выросла тема: находка по её ссылке. Без куска исходного поста
@@ -207,7 +244,9 @@ def sources() -> dict:
             pains[f["pain"]] = pains.get(f["pain"], 0) + 1
 
     return {
-        "finds": finds[:200],
+        # Фильтры, сортировка и группировка работают в браузере по всему, что
+        # отдано: при 200 свежих находках «лучшие за месяц» искались бы в неделе.
+        "finds": finds[:FINDS_MAX],
         "themes": themes[-40:],
         "channels": sorted(channels.values(), key=lambda c: c["count"], reverse=True),
         "total_finds": len(finds),
@@ -220,7 +259,7 @@ def sources() -> dict:
 def trends() -> dict:
     """Read-only projection of the ТРЕНДЫ worksheet for the dashboard."""
     try:
-        rows = _book().worksheet("ТРЕНДЫ").get_all_values()
+        rows = _rows("ТРЕНДЫ")
     except Exception as e:
         raise ContentSheetError(f"Не удалось прочитать лист ТРЕНДЫ: {e}") from e
     out = []
@@ -241,6 +280,7 @@ def mark_trend_taken(trend_id: str) -> None:
     for row, values in enumerate(ws.get_all_values()[1:], start=2):
         if values and values[0] == str(trend_id):
             ws.update_cell(row, 14, datetime.now().strftime("%Y-%m-%d"))
+            _forget("ТРЕНДЫ")
             return
     raise ContentSheetError("Тренд не найден.")
 
@@ -284,10 +324,9 @@ def _next_schedule_slots(schedule: str, now: datetime, count: int) -> list[datet
 def plan(weeks: int = 4) -> dict:
     """Календарь очереди на 1–4 недели. Только читает таблицу."""
     weeks = max(1, min(int(weeks), 4))
-    book = _book()
-    rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()[1:]
+    rows = _rows("ОЧЕРЕДЬ")[1:]
     try:
-        settings = {r[0]: r[1] for r in book.worksheet("НАСТРОЙКИ").get_all_values()[1:]
+        settings = {r[0]: r[1] for r in _rows("НАСТРОЙКИ")[1:]
                     if len(r) >= 2 and r[0]}
     except Exception:
         settings = {}
@@ -347,9 +386,31 @@ def add_to_queue(text: str, kind: str = "", platforms: str = "threads,vk,tg",
         if r and r[0].strip().isdigit():
             next_id = max(next_id, int(r[0].strip()) + 1)
 
-    ws.append_row([str(next_id), "", platforms, kind, text, str(len(text)),
+    # Звёздочки жирного видны только в Telegram, в длину поста они не идут.
+    length = len(text.replace("**", ""))
+    ws.append_row([str(next_id), "", platforms, kind, text, str(length),
                    "ждёт", "", "", "", image])
-    return {"id": next_id, "len": len(text)}
+    _forget("ОЧЕРЕДЬ")
+    return {"id": next_id, "len": length}
+
+
+def writer_context() -> tuple[list[str], list[str]]:
+    """Что агенту нужно знать перед черновиком: последние посты очереди и лист ПАМЯТЬ.
+
+    Тот же вид, что отдают queue_texts() и memory_rows() в autopost/sheet.py
+    контент-завода: по этим текстам детектор ловит повторы.
+    """
+    history = [r[Q_TEXT] for r in _rows("ОЧЕРЕДЬ")[1:]
+               if len(r) > Q_TEXT and (r[Q_TEXT] or "").strip()][-10:]
+    memory = []
+    try:
+        for r in _rows("ПАМЯТЬ")[1:][-30:]:
+            r = r + [""] * (9 - len(r))
+            if r[1].strip():
+                memory.append(" | ".join([r[1], r[2], r[3], r[4], r[5], r[8]]))
+    except Exception:  # noqa: BLE001 — листа ПАМЯТЬ может не быть
+        pass
+    return history, memory
 
 
 # Лист ВХОДЯЩИЕ ведёт пульт в мессенджере (Kontent-zavod: autopost/pult.py и
@@ -362,7 +423,7 @@ INBOX_KEYS = ["id", "created", "source", "material", "image", "draft", "len", "s
 def inbox(limit: int = 30) -> dict:
     """Материалы с телефона, свежие сверху. Листа ещё нет — значит, пультом не пользовались."""
     try:
-        rows = _book().worksheet("ВХОДЯЩИЕ").get_all_values()[1:]
+        rows = _rows("ВХОДЯЩИЕ")[1:]
     except gspread.WorksheetNotFound:
         return {"items": []}
     items = []
@@ -376,10 +437,9 @@ def inbox(limit: int = 30) -> dict:
 
 
 def summary() -> dict:
-    book = _book()
-    queue_rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()
-    metrics_rows = book.worksheet("МЕТРИКИ").get_all_values()
-    weeks_rows = book.worksheet("НЕДЕЛИ").get_all_values()
+    queue_rows = _rows("ОЧЕРЕДЬ")
+    metrics_rows = _rows("МЕТРИКИ")
+    weeks_rows = _rows("НЕДЕЛИ")
 
     threads = threads_posts(metrics_rows)
 

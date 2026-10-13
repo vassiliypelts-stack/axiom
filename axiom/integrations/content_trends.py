@@ -18,7 +18,8 @@ from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 import config
-from integrations.content_sheet import ContentSheetError, _book
+from integrations import content_sheet
+from integrations.content_sheet import ContentSheetError, _book, _forget
 
 RATINGS = ("да", "потом", "нет", "")
 DONOR_HEADER = ["площадка", "имя", "ссылка", "статус", "добавлен", "заметка"]
@@ -30,7 +31,7 @@ THUMBS = Path(config.BASE_DIR) / "data" / "trend_thumbs"
 
 def _rows(name: str) -> list[list[str]]:
     try:
-        return _book().worksheet(name).get_all_values()
+        return content_sheet._rows(name)      # с памятью на минуту, см. там же
     except Exception as e:
         raise ContentSheetError(f"Не удалось прочитать лист {name}: {e}") from e
 
@@ -48,7 +49,7 @@ def trends() -> dict:
 
 def runs(limit: int = 5) -> list[dict]:
     try:
-        rows = _book().worksheet("ПРОГОНЫ").get_all_values()
+        rows = content_sheet._rows("ПРОГОНЫ")
     except Exception:
         return []
     header = rows[0] if rows else []
@@ -72,6 +73,7 @@ def rate(link: str, rating: str, comment: str | None) -> None:
     ws.update_cell(row, c_rate, rating)
     if comment is not None:
         ws.update_cell(row, c_note, comment[:500])
+    _forget("ТРЕНДЫ")
 
 
 # ---------- доноры ----------
@@ -87,7 +89,10 @@ def _donor_ws():
 
 
 def donors() -> dict:
-    rows = _donor_ws().get_all_values()
+    try:
+        rows = content_sheet._rows("ДОНОРЫ")
+    except Exception:
+        rows = _donor_ws().get_all_values()     # листа ещё нет — создаём
     out = []
     for r in rows[1:]:
         r = r + [""] * (len(DONOR_HEADER) - len(r))
@@ -127,6 +132,7 @@ def _normalize(raw: str, platform: str = "") -> tuple[str, str, str]:
 def add_donor(raw: str, platform: str = "", note: str = "") -> None:
     platform, url, name = _normalize(raw, platform)
     ws = _donor_ws()
+    _forget("ДОНОРЫ")
     for row, r in enumerate(ws.get_all_values()[1:], start=2):
         if len(r) > 2 and r[2].strip().rstrip("/").lower() == url.rstrip("/").lower():
             if (r[3].strip() if len(r) > 3 else "active") in ("", "active"):
@@ -141,6 +147,7 @@ def set_donor_status(url: str, status: str) -> None:
     if status not in ("active", "paused"):
         raise ValueError("статус: active или paused")
     ws = _donor_ws()
+    _forget("ДОНОРЫ")
     for row, r in enumerate(ws.get_all_values()[1:], start=2):
         if len(r) > 2 and r[2].strip() == url:
             ws.update_cell(row, 4, status)

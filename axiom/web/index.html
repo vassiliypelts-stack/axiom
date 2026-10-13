@@ -272,6 +272,15 @@
   .cf-chart-switch{display:flex;gap:6px;margin-left:auto;}
   /* Каналов два десятка: в одну строку не помещаются и уезжают за край экрана. */
   .cf-chans{display:flex;flex-wrap:wrap;gap:6px;}
+  /* Выбор каналов и доноров: свёрнут в одну кнопку, раскрытый занимает всю строку панели. */
+  .cf-dd>summary{list-style:none;display:inline-block;}
+  .cf-dd>summary::-webkit-details-marker{display:none;}
+  .cf-dd[open]{flex-basis:100%;}
+  .cf-dd-body{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;max-height:190px;overflow:auto;}
+  .cf-group-h{display:flex;align-items:center;gap:8px;margin:14px 0 6px;padding-bottom:5px;
+    border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--text);}
+  .cf-group-h:first-child{margin-top:0;}
+  .cf-search{min-width:210px;flex:1;max-width:340px;}
   /* Темы из дайджеста — живые предложения, а не ярлыки: им нужен перенос. */
   .cf-wrap-text{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.5;}
   /* Строка находки с галочкой: сама строка не ссылка, иначе клик по галочке уводил бы. */
@@ -3715,34 +3724,52 @@ async function viewContentPlan(v){
 }
 
 /** Источники: что дайджест нашёл в чужих каналах и во что это выросло. */
-let CF_SRC_CHAN="", CF_SRC_PAIN="";
-async function viewContentSources(v){
-  v.innerHTML=cfTabs()+`<div class="empty">Загружаю находки дайджеста…</div>`;
-  cfBindTabs(v);
-  let s;
-  try{ s=await api("/api/content/text/sources"); }
-  catch(e){ v.innerHTML=cfTabs()+`<div class="empty">Ошибка: ${esc(e.message)}</div>`; cfBindTabs(v); return; }
-  if(s.error){ v.innerHTML=cfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`; cfBindTabs(v); return; }
-
-  let finds=CF_SRC_CHAN?s.finds.filter(f=>f.channel===CF_SRC_CHAN):s.finds;
-  if(CF_SRC_PAIN==="__any")finds=finds.filter(f=>f.pain);
-  else if(CF_SRC_PAIN)finds=finds.filter(f=>f.pain===CF_SRC_PAIN);
-
-  const chips=[`<button class="cf-chip${CF_SRC_CHAN?"":" on"}" data-chan="">все</button>`]
-    .concat(s.channels.map(c=>
-      `<button class="cf-chip${CF_SRC_CHAN===c.channel?" on":""}" data-chan="${esc(c.channel)}">${esc(c.channel)} · ${c.count}</button>`))
-    .join("");
-
-  // Галочка отбирает находку в работу, ссылка открывает оригинал — поэтому
-  // строка не целиком ссылка: иначе клик по галочке уводил бы со страницы.
-  const list=finds.map((f,i)=>`<div class="cf-find cf-find-pick">
-      <label class="cf-pick"><input type="checkbox" data-pick="${i}"
+// Фильтры находок, как на сайте объявлений: поиск, каналы, боль, период,
+// просмотры, сортировка, группировка. Данные читаются один раз, дальше всё
+// считается в браузере: каждый щелчок по фильтру не ходит в Google-таблицу.
+const CF_SRC_DEF={q:"",chans:[],pain:"",days:0,views:0,used:"all",picked:false,sort:"date",dir:"desc",group:"none"};
+const CF_SRC=(()=>{try{return Object.assign({},CF_SRC_DEF,JSON.parse(localStorage.getItem("axiom_src_filters")||"{}"));}catch(e){return Object.assign({},CF_SRC_DEF);}})();
+let CF_SRC_DATA=null, CF_SRC_DD=false, CF_SRC_SHOW=200;
+function cfSrcKeep(){try{localStorage.setItem("axiom_src_filters",JSON.stringify(CF_SRC));}catch(e){}}
+function cfSrcSave(v){cfSrcKeep();CF_SRC_SHOW=200;cfSrcRender(v);}
+function cfSrcAge(f){const d=new Date(String(f.date||"").slice(0,10)+"T00:00:00");return isNaN(d)?9999:(Date.now()-d)/864e5;}
+function cfSrcFiltered(){
+  const q=CF_SRC.q.trim().toLowerCase();
+  const out=CF_SRC_DATA.finds.filter(f=>{
+    if(CF_SRC.chans.length&&!CF_SRC.chans.includes(f.channel))return false;
+    if(CF_SRC.pain==="__any"&&!f.pain)return false;
+    if(CF_SRC.pain&&CF_SRC.pain!=="__any"&&f.pain!==CF_SRC.pain)return false;
+    if(CF_SRC.days&&cfSrcAge(f)>CF_SRC.days)return false;
+    if(f.views<CF_SRC.views)return false;
+    if(CF_SRC.used==="new"&&f.used)return false;
+    if(CF_SRC.used==="used"&&!f.used)return false;
+    if(CF_SRC.picked&&!CF_PICKED.some(p=>p.link===f.link))return false;
+    if(q&&!(f.title+" "+f.text+" "+f.channel).toLowerCase().includes(q))return false;
+    return true;});
+  const key={date:f=>f.date||"",views:f=>f.views,reactions:f=>f.reactions,forwards:f=>f.forwards,
+             rate:f=>f.rate||0,weight:f=>f.weight}[CF_SRC.sort]||(f=>f.date||"");
+  const sign=CF_SRC.dir==="asc"?1:-1;
+  return out.sort((a,b)=>{const x=key(a),y=key(b);return (x<y?-1:x>y?1:0)*sign;});
+}
+function cfSrcChips(group,values,multi){
+  return values.map(([val,label])=>{
+    const on=multi?CF_SRC[group].includes(val):CF_SRC[group]===val;
+    return `<button class="cf-chip${on?" on":""}" data-sg="${group}" data-sv="${esc(String(val))}" data-sm="${multi?1:0}">${esc(label)}</button>`;
+  }).join("");
+}
+// Галочка отбирает находку в работу, ссылка открывает оригинал — поэтому
+// строка не целиком ссылка: иначе клик по галочке уводил бы со страницы.
+// Галочка привязана к номеру находки в общем списке, а не в отфильтрованном:
+// после смены фильтра номер в списке на экране уже другой.
+function cfSrcItem(f){
+  return `<div class="cf-find cf-find-pick">
+      <label class="cf-pick"><input type="checkbox" data-pick="${f._i}"
         ${CF_PICKED.some(p=>p.link===f.link)?"checked":""}></label>
       <div style="flex:1;min-width:0">
         <div class="cf-find-head">
           <span class="tag">${esc(f.channel)}</span>
           <span class="sub mono">${esc((f.date||"").slice(0,10))}</span>
-          <span class="sub mono">${f.views.toLocaleString("ru-RU")} просм · ${f.reactions} реакц</span>
+          <span class="sub mono">${f.views.toLocaleString("ru-RU")} просм · ${f.reactions} реакц${f.forwards?` · ${f.forwards} пересл`:""}${f.rate?` · отклик ${String(f.rate).replace(".",",")}%`:""}</span>
           ${f.pain?`<span class="tag" style="border-color:var(--accent2);color:var(--accent2)">🎯 ${esc(f.pain)}</span>`:""}
           ${f.used?'<span class="tag" style="border-color:var(--green);color:var(--green)">взято</span>':""}
         </div>
@@ -3750,7 +3777,41 @@ async function viewContentSources(v){
         ${f.pain_why?`<div class="cf-theme-angle">${esc(f.pain_why)}</div>`:""}
       </div>
       <a class="cf-open" href="${esc(f.link)}" target="_blank" rel="noopener" title="открыть оригинал">↗</a>
-    </div>`).join("");
+    </div>`;
+}
+function cfSrcListHtml(list){
+  if(!list.length)return '<div class="empty">По этим фильтрам находок нет. Ослабьте фильтры или нажмите «Сбросить».</div>';
+  // Полторы тысячи строк разом браузер рисует с задержкой — показываем порциями.
+  const shown=list.slice(0,CF_SRC_SHOW), rest=list.length-shown.length;
+  const more=rest>0?`<button class="ghost" id="cf-src-more" style="margin-top:10px">Показать ещё ${Math.min(200,rest)} из ${rest}</button>`:"";
+  if(CF_SRC.group==="none")return shown.map(cfSrcItem).join("")+more;
+  const keyOf={channel:f=>f.channel||"без канала",pain:f=>f.pain||"без боли",
+               day:f=>(f.date||"").slice(0,10)||"без даты"}[CF_SRC.group];
+  // Группы идут в порядке сортировки: первой та, чья находка стоит выше.
+  const groups=new Map(), totals=new Map();
+  list.forEach(f=>{const k=keyOf(f);totals.set(k,(totals.get(k)||0)+1);});
+  shown.forEach(f=>{const k=keyOf(f);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(f);});
+  return [...groups].map(([k,items])=>
+    `<div class="cf-group-h">${esc(k)}<span class="tag">${totals.get(k)}</span></div>${items.map(cfSrcItem).join("")}`).join("")+more;
+}
+async function viewContentSources(v){
+  v.innerHTML=cfTabs()+`<div class="empty">Загружаю находки дайджеста…</div>`;
+  cfBindTabs(v);
+  let s;
+  try{ s=await api("/api/content/text/sources"); }
+  catch(e){ v.innerHTML=cfTabs()+`<div class="empty">Ошибка: ${esc(e.message)}</div>`; cfBindTabs(v); return; }
+  if(s.error){ v.innerHTML=cfTabs()+`<div class="empty">⚠️ ${esc(s.error)}</div>`; cfBindTabs(v); return; }
+  s.finds.forEach((f,i)=>{f._i=i;});
+  CF_SRC_DATA=s; CF_SRC_SHOW=200;
+  // Канал или боль могли исчезнуть из таблицы — запомненный фильтр по ним дал бы пустой список.
+  CF_SRC.chans=(CF_SRC.chans||[]).filter(c=>s.channels.some(x=>x.channel===c));
+  if(CF_SRC.pain&&CF_SRC.pain!=="__any"&&!(s.pains||[]).some(p=>p.pain===CF_SRC.pain))CF_SRC.pain="";
+  cfSrcRender(v);
+}
+function cfSrcRender(v){
+  const s=CF_SRC_DATA, list=cfSrcFiltered();
+  const chanLabel=!CF_SRC.chans.length?"все":CF_SRC.chans.length>3?CF_SRC.chans.length+" выбрано":CF_SRC.chans.join(", ");
+  const opt=(cur,pairs)=>pairs.map(([val,label])=>`<option value="${val}"${cur===val?" selected":""}>${esc(label)}</option>`).join("");
 
   const themes=s.themes.filter(t=>t.from_digest).slice(-20).reverse()
     .map(t=>{
@@ -3772,28 +3833,33 @@ async function viewContentSources(v){
 
   v.innerHTML=cfTabs()+`<div class="dash"><div class="dash-grid">
       <section class="dash-glass dash-card" style="grid-column:1/-1">
-        <div class="dash-chh"><h3>Боли клиентов</h3>
-          <span class="tag">${s.total_pains||0} из ${s.total_finds}</span>
-          <span class="sub">эти темы конвертируются в посты</span></div>
-        <div class="cf-chans" id="cf-pains">
-          <button class="cf-chip${CF_SRC_PAIN?"":" on"}" data-pain="">все находки</button>
-          <button class="cf-chip${CF_SRC_PAIN==="__any"?" on":""}" data-pain="__any">🎯 только с болью</button>
-          ${(s.pains||[]).map(p=>`<button class="cf-chip${CF_SRC_PAIN===p.pain?" on":""}" data-pain="${esc(p.pain)}">${esc(p.pain)} · ${p.count}</button>`).join("")}
+        <div class="dash-chh"><h3>Находки</h3>
+          <span class="tag" id="cf-src-count">${list.length} из ${s.finds.length}</span>
+          <span class="sub">с болью ${s.total_pains||0} из ${s.total_finds} · дайджест собирает раз в сутки</span>
+          <button class="cf-chip" id="cf-src-reset" style="margin-left:auto">Сбросить</button></div>
+        <div class="tr-filters" style="padding:0;margin:10px 0 0">
+          <input id="cf-src-q" class="cf-date cf-search" placeholder="Поиск по тексту находок" value="${esc(CF_SRC.q)}">
+          <details class="cf-dd" id="cf-src-dd"${CF_SRC_DD?" open":""}>
+            <summary class="cf-chip${CF_SRC.chans.length?" on":""}">Каналы: ${esc(chanLabel)} ▾</summary>
+            <div class="cf-dd-body"><button class="cf-chip${CF_SRC.chans.length?"":" on"}" id="cf-src-allch">все</button>${cfSrcChips("chans",s.channels.map(c=>[c.channel,`${c.channel} · ${c.count}`]),true)}</div>
+          </details>
+          <div class="tr-fg"><span>Боль</span>${cfSrcChips("pain",[["","все"],["__any","🎯 с болью"]].concat((s.pains||[]).map(p=>[p.pain,`${p.pain} · ${p.count}`])))}</div>
+          <div class="tr-fg"><span>Период</span>${cfSrcChips("days",[[1,"сегодня"],[7,"7 дн"],[30,"30 дн"],[0,"всё"]])}</div>
+          <div class="tr-fg"><span>Просмотры</span>${cfSrcChips("views",[[0,"любые"],[1000,"от 1 тыс"],[5000,"от 5 тыс"],[10000,"от 10 тыс"]])}</div>
+          <div class="tr-fg"><span>Статус</span>${cfSrcChips("used",[["all","все"],["new","не взято"],["used","взято"]])}
+            <button class="cf-chip${CF_SRC.picked?" on":""}" id="cf-src-picked">отмеченные · ${CF_PICKED.length}</button></div>
+          <div class="tr-fg"><span>Сортировка</span>
+            <select id="cf-src-sort" class="cf-date">${opt(CF_SRC.sort,[["date","по дате"],["views","по просмотрам"],["reactions","по реакциям"],["forwards","по пересылкам"],["rate","по отклику %"],["weight","по весу"]])}</select>
+            <button class="cf-chip" id="cf-src-dir">${CF_SRC.dir==="asc"?"↑ по возрастанию":"↓ по убыванию"}</button></div>
+          <div class="tr-fg"><span>Группировать</span>
+            <select id="cf-src-group" class="cf-date">${opt(CF_SRC.group,[["none","без групп"],["channel","по каналу"],["pain","по боли"],["day","по дню"]])}</select></div>
         </div>
-      </section>
-
-      <section class="dash-glass dash-card" style="grid-column:1/-1">
-        <div class="dash-chh"><h3>Каналы</h3>
-          <span class="tag">${s.total_finds} находок</span>
-          <span class="sub">дайджест собирает раз в сутки</span></div>
-        <div class="cf-chans" id="cf-chans">${chips}</div>
       </section>
 
       <section class="dash-glass dash-card" style="grid-column:span 7">
         <div class="dash-chh"><h3>Что зацепило внимание</h3>
-          <span class="tag">${finds.length}</span>
-          <span class="sub">клик — открыть оригинал</span></div>
-        <div class="cf-postlist">${list||'<div class="empty">Дайджест ещё ничего не собрал.</div>'}</div>
+          <span class="sub">галочка — в работу, ↗ — открыть оригинал</span></div>
+        <div class="cf-postlist" id="cf-src-list">${cfSrcListHtml(list)}</div>
       </section>
 
       <section class="dash-glass dash-card" style="grid-column:span 5">
@@ -3803,19 +3869,40 @@ async function viewContentSources(v){
     </div></div>`;
 
   cfBindTabs(v);
-  v.querySelectorAll("#cf-chans .cf-chip").forEach(b=>{
-    b.onclick=()=>{CF_SRC_CHAN=b.dataset.chan;viewContentSources(v);};
-  });
-  v.querySelectorAll("#cf-pains .cf-chip").forEach(b=>{
-    b.onclick=()=>{CF_SRC_PAIN=b.dataset.pain;viewContentSources(v);};
-  });
+  const q=s2=>v.querySelector(s2);
+  q("#cf-src-reset").onclick=()=>{Object.assign(CF_SRC,CF_SRC_DEF,{chans:[]});cfSrcSave(v);};
+  q("#cf-src-allch").onclick=()=>{CF_SRC.chans=[];cfSrcSave(v);};
+  q("#cf-src-picked").onclick=()=>{CF_SRC.picked=!CF_SRC.picked;cfSrcSave(v);};
+  q("#cf-src-dir").onclick=()=>{CF_SRC.dir=CF_SRC.dir==="asc"?"desc":"asc";cfSrcSave(v);};
+  q("#cf-src-sort").onchange=e=>{CF_SRC.sort=e.target.value;cfSrcSave(v);};
+  q("#cf-src-group").onchange=e=>{CF_SRC.group=e.target.value;cfSrcSave(v);};
+  const dd=q("#cf-src-dd");dd.ontoggle=()=>{CF_SRC_DD=dd.open;};
+  v.querySelectorAll("[data-sg]").forEach(c=>c.onclick=()=>{
+    const g=c.dataset.sg;let val=c.dataset.sv;if(g==="days"||g==="views")val=+val;
+    if(c.dataset.sm==="1")CF_SRC[g]=CF_SRC[g].includes(val)?CF_SRC[g].filter(x=>x!==val):[...CF_SRC[g],val];
+    else CF_SRC[g]=val;
+    cfSrcSave(v);});
+  // Поиск перерисовывает только список: при полной перерисовке поле теряло бы курсор.
+  q("#cf-src-q").oninput=e=>{CF_SRC.q=e.target.value;cfSrcKeep();CF_SRC_SHOW=200;cfSrcList(v);};
+  cfSrcBindList(v);
+}
+function cfSrcList(v){
+  const list=cfSrcFiltered();
+  v.querySelector("#cf-src-list").innerHTML=cfSrcListHtml(list);
+  v.querySelector("#cf-src-count").textContent=`${list.length} из ${CF_SRC_DATA.finds.length}`;
+  cfSrcBindList(v);
+}
+function cfSrcBindList(v){
+  const more=v.querySelector("#cf-src-more");
+  if(more)more.onclick=()=>{CF_SRC_SHOW+=200;cfSrcList(v);};
   v.querySelectorAll("[data-pick]").forEach(cb=>{
     cb.onchange=()=>{
-      const f=finds[+cb.dataset.pick];
+      const f=CF_SRC_DATA.finds[+cb.dataset.pick];
       if(cb.checked){ if(!CF_PICKED.some(p=>p.link===f.link))CF_PICKED.push(f); }
       else CF_PICKED=CF_PICKED.filter(p=>p.link!==f.link);
-      const b=$("#cf-t-write");
+      const b=$("#cf-t-write"), p=v.querySelector("#cf-src-picked");
       if(b)b.textContent="Создание"+(CF_PICKED.length?` · ${CF_PICKED.length}`:"");
+      if(p)p.textContent=`отмеченные · ${CF_PICKED.length}`;
     };
   });
 }
@@ -3903,6 +3990,8 @@ function cfInboxHtml(items){
   }).join("");
 }
 
+// Звёздочки жирного видны только в Telegram: в длину поста они не идут.
+const cfLen=t=>String(t||"").replace(/\*\*/g,"").length;
 function cfDraftsHtml(images){
   if(!CF_DRAFTS.length)
     return '<div class="empty">Пока пусто. Отметьте находки или продиктуйте мысль.</div>';
@@ -3917,22 +4006,23 @@ function cfDraftsHtml(images){
       + names.map(n=>`<option value="${esc(n)}"${sel(n)}>${esc(n)}</option>`).join("");
   };
   return CF_DRAFTS.map((d,i)=>{
-    const len=d.text.length, over=len>500;
+    const len=cfLen(d.text), over=len>500, bad=d.ok===false&&!d.edited;
     return `<div class="cf-draft">
       <div class="cf-find-head">
         <span class="tag">${esc(d.source||"")}</span>
         <span class="mono" data-len="${i}" style="${over?"color:var(--red);font-weight:700":"color:var(--muted)"}">${len}/500</span>
+        ${d.score!=null?`<span class="tag" title="ИИ-детектор завода, порог 20%" style="${bad?"border-color:var(--red);color:var(--red)":""}">ИИ ${d.score}%</span>`:""}
         ${over?`<button class="cf-chip" data-short="${i}">Укоротить</button>`:""}
         ${d.origin?`<button class="cf-chip" data-orig="${i}">Исходник</button>`:""}
         ${d.link?`<a class="cf-chip" href="${esc(d.link)}" target="_blank" rel="noopener">Оригинал ↗</a>`:""}
       </div>
       ${d.origin?`<div class="cf-origin" data-origbox="${i}" hidden>${esc(d.origin)}</div>`:""}
       <textarea class="cf-area" rows="8" data-draft="${i}">${esc(d.text)}</textarea>
+      ${bad?`<div class="cf-theme-angle" style="color:var(--red)">⚠️ Детектор не пропустил: ${esc((d.found||[]).slice(0,3).join("; "))}. Поправьте текст перед очередью.</div>`:""}
+      ${d.comment?`<div class="cf-theme-angle"><b>Агент:</b> ${esc(d.comment)}</div>`:""}
       <div class="ttoolbar" style="margin-top:8px">
         <select class="cf-date" data-kind="${i}">
-          <option value="экспертный">экспертный</option>
-          <option value="личный">личный</option>
-          <option value="продающий">продающий</option>
+          ${["экспертный","личный","продающий"].map(k=>`<option value="${k}"${d.kind===k?" selected":""}>${k}</option>`).join("")}
         </select>
         <select class="cf-date" data-img="${i}">${imgOpts(d.image)}</select>
         <label class="cf-chip" style="cursor:pointer">📎 Фото с компа
@@ -3986,13 +4076,18 @@ function wireContentWrite(v,images){
 
   q("#cfw-go").onclick=async()=>{
     const go=q("#cfw-go"), gn=q("#cfw-go-note");
-    go.disabled=true; gn.textContent="пишу, это занимает до минуты…";
+    go.disabled=true; gn.textContent="пишу и проверяю детектором, обычно минута-две…";
     try{
       const r=await api("/api/content/text/write",{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({idea:idea.value,note:note.value,sources:CF_PICKED})});
       if(r.error){ gn.textContent="⚠️ "+r.error; }
-      else{ CF_DRAFTS=CF_DRAFTS.concat(r.drafts||[]); gn.textContent=""; viewContentWrite(v); }
+      else{
+        CF_DRAFTS=CF_DRAFTS.concat(r.drafts||[]);
+        await viewContentWrite(v);
+        const failed=r.failed||[], n2=v.querySelector("#cfw-go-note");
+        if(failed.length&&n2)n2.textContent=`⚠️ не написано: ${failed.length}. ${failed[0]}`;
+      }
     }catch(e){ gn.textContent="⚠️ "+e.message; }
     finally{ go.disabled=false; }
   };
@@ -4001,10 +4096,11 @@ function wireContentWrite(v,images){
     ta.oninput=()=>{
       const i=+ta.dataset.draft;
       CF_DRAFTS[i].text=ta.value;
+      CF_DRAFTS[i].edited=true;       // оценка детектора относилась к прежнему тексту
       const l=v.querySelector(`[data-len="${i}"]`);
       if(l){
-        const over=ta.value.length>500;
-        l.textContent=ta.value.length+"/500";
+        const over=cfLen(ta.value)>500;
+        l.textContent=cfLen(ta.value)+"/500";
         l.style.color=over?"var(--red)":"var(--muted)";
         l.style.fontWeight=over?"700":"";
       }
@@ -4053,6 +4149,9 @@ function wireContentWrite(v,images){
   v.querySelectorAll("[data-img]").forEach(sel=>{
     sel.onchange=()=>{CF_DRAFTS[+sel.dataset.img].image=sel.value;};
   });
+  v.querySelectorAll("[data-kind]").forEach(sel=>{
+    sel.onchange=()=>{CF_DRAFTS[+sel.dataset.kind].kind=sel.value;};
+  });
   v.querySelectorAll("[data-drop]").forEach(b=>{
     b.onclick=()=>{CF_DRAFTS.splice(+b.dataset.drop,1);viewContentWrite(v);};
   });
@@ -4061,7 +4160,8 @@ function wireContentWrite(v,images){
       const i=+b.dataset.queue, n=v.querySelector(`[data-note="${i}"]`);
       const kind=v.querySelector(`[data-kind="${i}"]`).value;
       const image=v.querySelector(`[data-img="${i}"]`).value;
-      if(CF_DRAFTS[i].text.length>500 && !confirm("Длиннее 500 знаков — Threads не возьмёт. Всё равно в очередь?"))return;
+      if(cfLen(CF_DRAFTS[i].text)>500 && !confirm("Длиннее 500 знаков — Threads не возьмёт. Всё равно в очередь?"))return;
+      if(CF_DRAFTS[i].ok===false && !CF_DRAFTS[i].edited && !confirm("ИИ-детектор этот текст не пропустил. Всё равно в очередь?"))return;
       b.disabled=true; n.textContent="записываю…";
       try{
         const r=await api("/api/content/text/queue",{method:"POST",
@@ -4155,9 +4255,9 @@ function vcfStatus(status){
 }
 /* ── Тренды доноров: лист ТРЕНДЫ (парсер контент-завода) + ДОНОРЫ + ПРОГОНЫ ──
    Пишем в таблицу только по нажатию: оценка/комментарий темы, добавление/пауза донора. */
-let TR_SUB="cards",TR_ITEMS=[],TR_RUNS=[];
+let TR_SUB="cards",TR_ITEMS=[],TR_RUNS=[],TR_DD=false;
 const TR_PLAT={youtube:"YouTube",instagram:"Instagram",tiktok:"TikTok",vk:"VK",tg:"Telegram"};
-const TR_F=(()=>{const d={plat:[],fmt:["видео","карусель"],seg:"all",spike:3,days:30,rating:"none",sort:"spike"};try{return Object.assign(d,JSON.parse(localStorage.getItem("axiom_trend_filters")||"{}"));}catch(e){return d;}})();
+const TR_F=(()=>{const d={plat:[],author:[],fmt:["видео","карусель"],seg:"all",spike:3,days:30,rating:"none",sort:"spike"};try{return Object.assign(d,JSON.parse(localStorage.getItem("axiom_trend_filters")||"{}"));}catch(e){return d;}})();
 const trNum=v=>{const n=parseFloat(String(v??"").replace(/[^\d.]/g,""));return isNaN(n)?0:n;};
 const trFmt=n=>n>=1e6?(n/1e6).toFixed(1)+" млн":n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+" тыс":String(Math.round(n));
 function trSeg(p){const m=String(p["боль"]||"").split(" · ");return["масса","собственники","оба"].includes(m[0])?{seg:m[0],pain:m.slice(1).join(" · ")}:{seg:"",pain:p["боль"]||""};}
@@ -4166,6 +4266,7 @@ function trAge(p){const d=new Date(String(p["дата"]||"").replace(" ","T"));r
 function trFiltered(){
   const out=TR_ITEMS.filter(p=>{
     if(TR_F.plat.length&&!TR_F.plat.includes(p["площадка"]))return false;
+    if(TR_F.author.length&&!TR_F.author.includes(p["автор"]))return false;
     if(TR_F.fmt.length&&!TR_F.fmt.includes(p["формат"]))return false;
     const s=trSeg(p).seg;if(TR_F.seg!=="all"&&!(s===TR_F.seg||s==="оба"))return false;
     if(trNum(p["всплеск"])<TR_F.spike||trAge(p)>TR_F.days)return false;
@@ -4217,9 +4318,20 @@ function trRender(v){
     shell(`<section class="dash-glass dash-card">${yes.length?yes.map(p=>{const img=trCover(p);return `<div class="tr-chosen">${img?`<img src="${img}" alt="">`:"<div></div>"}<div><b>${esc(p["тема"])}</b><div class="sub">${esc(p["всплеск"])} · ${esc(TR_PLAT[p["площадка"]]||p["площадка"])} · ${esc(p["автор"])} · <a href="${esc(p["ссылка"])}" target="_blank" rel="noopener">оригинал ↗</a></div><div class="tr-angle" style="margin-top:8px"><small>Угол</small>${esc(p["угол"]||"—")}</div>${p["комментарий"]?`<div class="tr-angle" style="margin-top:6px;border-left-color:var(--green)"><small>Комментарий</small>${esc(p["комментарий"])}</div>`:""}</div></div>`;}).join(""):`<div class="empty">Пока ничего не выбрано. Отметьте «Да» на вкладке «Темы».</div>`}</section>`);
     return;
   }
-  const plats=[...new Set(TR_ITEMS.map(p=>p["площадка"]))].filter(Boolean),list=trFiltered();
+  const plats=[...new Set(TR_ITEMS.map(p=>p["площадка"]))].filter(Boolean);
+  // Доноры только с выбранных площадок: при Instagram авторы YouTube в списке не нужны.
+  const byAuthor=new Map();
+  TR_ITEMS.forEach(p=>{if(p["автор"]&&(!TR_F.plat.length||TR_F.plat.includes(p["площадка"])))byAuthor.set(p["автор"],(byAuthor.get(p["автор"])||0)+1);});
+  const authors=[...byAuthor].sort((a,b)=>b[1]-a[1]);
+  TR_F.author=(TR_F.author||[]).filter(a=>byAuthor.has(a));
+  const authorLabel=!TR_F.author.length?"все":TR_F.author.length>3?TR_F.author.length+" выбрано":TR_F.author.join(", ");
+  const list=trFiltered();
   shell(`<section class="dash-glass tr-filters">
       <div class="tr-fg"><span>Площадка</span>${trChips("plat",plats.map(p=>[p,TR_PLAT[p]||p]),true)}</div>
+      <details class="cf-dd" id="tr-dd"${TR_DD?" open":""}>
+        <summary class="cf-chip${TR_F.author.length?" on":""}">Доноры: ${esc(authorLabel)} ▾</summary>
+        <div class="cf-dd-body"><button class="cf-chip${TR_F.author.length?"":" on"}" id="tr-allauth">все</button>${trChips("author",authors.map(([a,n])=>[a,`${a} · ${n}`]),true)}</div>
+      </details>
       <div class="tr-fg"><span>Формат</span>${trChips("fmt",[["видео","видео"],["карусель","карусели"],["текст","тексты TG"]],true)}</div>
       <div class="tr-fg"><span>Для кого</span>${trChips("seg",[["all","все"],["масса","масса"],["собственники","собственники"]])}</div>
       <div class="tr-fg"><span>Всплеск</span>${trChips("spike",[[3,"от 3×"],[5,"от 5×"],[10,"от 10×"]])}</div>
@@ -4229,6 +4341,8 @@ function trRender(v){
     </section>
     <div class="tr-grid">${list.length?list.map(trCard).join(""):`<div class="empty" style="grid-column:1/-1">По этим фильтрам тем нет — ослабьте фильтры.</div>`}</div>`);
   const sort=v.querySelector("#tr-sort");sort.value=TR_F.sort;sort.onchange=()=>{TR_F.sort=sort.value;trSave(v);};
+  const dd=v.querySelector("#tr-dd");dd.ontoggle=()=>{TR_DD=dd.open;};
+  v.querySelector("#tr-allauth").onclick=()=>{TR_F.author=[];trSave(v);};
   v.querySelectorAll("[data-trg]").forEach(c=>c.onclick=()=>{const g=c.dataset.trg;let val=c.dataset.trv;if(g==="spike"||g==="days")val=+val;
     if(c.dataset.trm==="1")TR_F[g]=TR_F[g].includes(val)?TR_F[g].filter(x=>x!==val):[...TR_F[g],val];else TR_F[g]=val;trSave(v);});
   v.querySelectorAll(".tr-cover img").forEach(img=>img.onerror=()=>{const d=document.createElement("div");d.className="tr-noimg";d.textContent=img.dataset.t||"";img.replaceWith(d);});

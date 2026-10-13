@@ -3818,8 +3818,9 @@ async function viewContentSources(v){
 /** Создание: отмеченные находки и своя мысль → черновики постов. */
 let CF_DRAFTS=[], CF_REC=null;
 async function viewContentWrite(v){
-  let imgs={images:[]};
+  let imgs={images:[]}, inbox={items:[]};
   try{ imgs=await api("/api/content/text/images"); }catch(e){}
+  try{ inbox=await api("/api/content/text/inbox"); }catch(e){}
 
   const picked=CF_PICKED.map((f,i)=>`<div class="cf-plain-post" style="align-items:flex-start;gap:8px">
       <span class="tag" style="flex:none">${esc(f.channel)}</span>
@@ -3859,10 +3860,42 @@ async function viewContentWrite(v){
           <span class="sub">правьте прямо здесь, потом — в очередь</span></div>
         <div id="cfw-drafts">${cfDraftsHtml(imgs.images||[])}</div>
       </section>
+
+      <section class="dash-glass dash-card" style="grid-column:span 12">
+        <div class="dash-chh"><h3>С телефона</h3>
+          <span class="sub">что прислано боту @vassiliycontent_bot и что с этим стало</span>
+          <span class="tag">${(inbox.items||[]).length}</span></div>
+        <div class="cf-postlist">${cfInboxHtml(inbox.items||[])}</div>
+      </section>
     </div></div>`;
 
   cfBindTabs(v);
   wireContentWrite(v,imgs.images||[]);
+}
+
+/** Лента пульта: материал из мессенджера, черновик агента, статус и ссылки. */
+function cfInboxHtml(items){
+  if(!items.length)
+    return '<div class="empty">Пока пусто. Пришлите боту мысль, голосовое или фото, и запись появится здесь.</div>';
+  const tone={"опубликован":"var(--green)","в очереди":"var(--accent)","удалён":"var(--muted)"};
+  return items.map(it=>{
+    const bad=/ошибка|не прошёл/.test(it.status);
+    const color=bad?"var(--red)":(tone[it.status]||"var(--muted)");
+    const links=(it.links||[]).map((l,i)=>
+      `<a class="cf-chip" href="${esc(l)}" target="_blank" rel="noopener">ссылка ${i+1} ↗</a>`).join("");
+    const meta=[it.created, it.kind, it.len?`${it.len}/500`:"", it.score!==""?`ИИ ${it.score}%`:"",
+                it.image?"с фото":"", it.queue_id?`очередь №${it.queue_id}`:""].filter(Boolean).join(" · ");
+    return `<div class="cf-draft">
+      <div class="cf-find-head">
+        <span class="tag" style="color:${color};border-color:${color}">${esc(it.status||"")}</span>
+        <span class="sub">${esc(meta)}</span>${links}
+      </div>
+      <div class="cf-post-text cf-wrap-text" style="white-space:pre-wrap">${esc((it.draft||"").replace(/\*\*/g,""))||'<span class="sub">черновика ещё нет</span>'}</div>
+      <details style="margin-top:6px"><summary class="sub" style="cursor:pointer">Исходный материал${it.edits?" и правки":""}</summary>
+        <div class="cf-origin">${esc(it.material||"")}${it.edits?`<br><br><b>Правки:</b> ${esc(it.edits)}`:""}${it.comment?`<br><br><b>Агент:</b> ${esc(it.comment)}`:""}</div>
+      </details>
+    </div>`;
+  }).join("");
 }
 
 function cfDraftsHtml(images){

@@ -352,6 +352,29 @@ def add_to_queue(text: str, kind: str = "", platforms: str = "threads,vk,tg",
     return {"id": next_id, "len": len(text)}
 
 
+# Лист ВХОДЯЩИЕ ведёт пульт в мессенджере (Kontent-zavod: autopost/pult.py и
+# sheet.py, там же порядок колонок). Сюда попадает всё, что Василий прислал
+# боту с телефона, и что из этого вышло.
+INBOX_KEYS = ["id", "created", "source", "material", "image", "draft", "len", "score",
+              "kind", "formula", "status", "queue_id", "links", "edits", "comment"]
+
+
+def inbox(limit: int = 30) -> dict:
+    """Материалы с телефона, свежие сверху. Листа ещё нет — значит, пультом не пользовались."""
+    try:
+        rows = _book().worksheet("ВХОДЯЩИЕ").get_all_values()[1:]
+    except gspread.WorksheetNotFound:
+        return {"items": []}
+    items = []
+    for r in reversed(rows[-limit:]):
+        if not r or not r[0].strip():
+            continue
+        item = dict(zip(INBOX_KEYS, r + [""] * (len(INBOX_KEYS) - len(r))))
+        item["links"] = [_abs_link(x) for x in item["links"].split() if x]
+        items.append(item)
+    return {"items": items}
+
+
 def summary() -> dict:
     book = _book()
     queue_rows = book.worksheet("ОЧЕРЕДЬ").get_all_values()

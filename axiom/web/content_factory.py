@@ -228,6 +228,17 @@ async def content_text_queue(body: dict = Body(...)) -> JSONResponse:
         return _fail(e, 502)
 
 
+@router.get("/api/content/text/inbox")
+def content_text_inbox() -> JSONResponse:
+    """Что Василий прислал боту с телефона и что с этим стало."""
+    try:
+        return JSONResponse(content_sheet.inbox())
+    except content_sheet.ContentSheetError as e:
+        return _fail(e)
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
+
+
 @router.get("/api/content/text/images")
 def content_text_images() -> JSONResponse:
     """Что лежит в папке с фото — чтобы выбрать картинку, а не вспоминать имя файла."""

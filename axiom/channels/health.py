@@ -43,7 +43,9 @@ async def _check(client) -> tuple[str, str]:
         return "banned", text[:300]
     if not text:
         return "unknown", "пустой ответ"
-    return "limited", text[:300]
+    # Ограничение отдаём целиком: срок («limited until …») стоит в середине ответа,
+    # и по обрезку не понять, снимется блок сам или он бессрочный.
+    return "limited", text[:1500]
 
 
 def _save(acc_id: int, status: str) -> None:
@@ -74,7 +76,8 @@ async def _check_account(acc: dict) -> None:
         return
     status, text = await _check(client)
     _save(acc["id"], status)
-    print(f"[#{acc['id']} {acc.get('label') or acc.get('phone')}] {status} — {text[:80]}")
+    shown = " ".join(text.split()) if status == "limited" else text[:80]
+    print(f"[#{acc['id']} {acc.get('label') or acc.get('phone')}] {status} — {shown}")
     await client.disconnect()
 
 

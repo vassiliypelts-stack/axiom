@@ -603,6 +603,7 @@ def _team_blocked_reason(cid: int) -> str:
             "     THEN a.frozen_at END AS frozen_at, "
             "COALESCE(a.acc_role,'') AS acc_role, "
             "COALESCE(a.spam_flood_count,0) AS spam_flood_count, "
+            "COALESCE(a.spam_status,'') AS spam_status, "
             "CAST(julianday('now') - julianday(COALESCE(a.bought_at, a.created_at)) "
             "     AS INTEGER) AS days_alive "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
@@ -611,6 +612,7 @@ def _team_blocked_reason(cid: int) -> str:
         return ("в команде кампании нет ни одного аккаунта — добавь отправителей "
                 "в «Кто в рассылке»")
     paused, warming, flood, no_sess, banned, service = [], [], [], [], [], []
+    spamblock: list[str] = []  # @SpamBot: бессрочное ограничение, первым писать нельзя
     young: list[str] = []      # моложе MIN_COMBAT_AGE_DAYS — дозревают в прогреве
     dead, frozen = [], []
     for r in rows:
@@ -623,6 +625,8 @@ def _team_blocked_reason(cid: int) -> str:
             dead.append(who)
         elif r["acc_role"] == "service":
             service.append(who)
+        elif r["spam_status"] == "limited":
+            spamblock.append(who)
         elif r["status"] == "warming":
             warming.append(who)
         elif (r["days_alive"] is not None
@@ -658,6 +662,9 @@ def _team_blocked_reason(cid: int) -> str:
         parts.append("сессия сожжена (поднять запаску или войти заново): " + ", ".join(dead))
     if service:
         parts.append("служебные, в холодную рассылку не идут: " + ", ".join(service))
+    if spamblock:
+        parts.append("СПАМБЛОК (@SpamBot: писать первым незнакомым запрещено; годятся "
+                     "только под ответы, чаты и комментарии): " + ", ".join(spamblock))
     head = (f"ни один из {len(rows)} аккаунтов команды сейчас не может слать холодную.")
     if not parts:
         return head
@@ -735,6 +742,10 @@ def _team(cid: int) -> list[dict]:
             # уведомлений — и владелец перестанет узнавать о встречах (так 24.08 был
             # пропущен живой созвон). Родной (own) сюда и так не попадал по protected.
             "AND COALESCE(a.acc_role,'') <> 'service' "
+            # Спамблок от @SpamBot: первое ЛС незнакомому Telegram не доставит, а
+            # каждая попытка копит отказы на номере. 13.10.2026 так приехали 11 из
+            # 15 купленных «без спамблока». В чатах и комментариях они работают.
+            "AND COALESCE(a.spam_status,'') <> 'limited' "
             # Тихие номера — первыми в очереди. Заход берёт первого с остатком нормы
             # (_pick, rr=0), и 25.09.2026 каждый заход уходил на старый номер, у
             # которого только что истекла пауза: он тут же снова ловил PeerFlood,

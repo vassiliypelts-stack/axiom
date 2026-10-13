@@ -1011,6 +1011,11 @@ function rel(ts){const d=parseTs(ts);if(!d)return"";const now=new Date(),day=864
   if(days>=0&&days<7)return days+" дн назад";
   return d.toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit",year:"2-digit"});}
 function statusBadge(s){return `<span class="badge b-${s}">${STATUS_RU[s]||s}</span>`;}
+// Спамблок (@SpamBot: limited): номер не может писать первым незнакомым и звать в
+// группы, но отвечает, пишет в чатах и комментирует. Плашка стоит везде, где
+// аккаунт выбирают под задачу, — чтобы его не поставили в холодную рассылку.
+const SB_TIP="Спамблок @SpamBot: писать первым незнакомым и звать в группы нельзя. Отвечать, писать в чатах и комментировать в каналах — можно.";
+function sbBadge(a){return a&&a.spam_status==="limited"?` <span class="badge b-stop" title="${SB_TIP}">🚫 СПАМБЛОК</span>`:"";}
 function chCell(c){if(c.username)return `<span class="tg">@${esc(c.username)}</span>`;if(c.phone)return `<span class="sub mono">${esc(c.phone)}</span>`;return '<span class="no">—</span>';}
 
 // Быстрый просмотр из кампании: оператору важен контекст, а не переход в отдельный
@@ -2685,7 +2690,7 @@ async function viewAgents(v){
     onRowClick:openAgent,
     columns:[
       {key:"sel",label:"",render:r=>`<input type="checkbox" class="acc-sel" data-id="${r.id}" ${selAcc.has(r.id)?"checked":""}>`},
-      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}<span style="display:inline-flex;gap:3px;flex:none">${accChIcons(r)}</span>${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
+      {key:"label",label:"Ярлык",cls:"name",render:r=>`<span style="display:inline-flex;align-items:center;gap:8px">${r.avatar?`<img src="/api/account/${r.id}/avatar?t=${Date.now()}" style="width:26px;height:26px;border-radius:50%;object-fit:cover">`:`<span style="width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:#7A530A;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${esc((r.label||r.phone||"?").slice(0,1).toUpperCase())}</span>`}${esc(r.label)||'<span class="no">—</span>'}${sbBadge(r)}<span style="display:inline-flex;gap:3px;flex:none">${accChIcons(r)}</span>${r.tg_connected?` <button class="acc-eye" data-id="${r.id}" data-label="${esc(r.label||r.username||('#'+r.id))}" title="Заглянуть внутрь: профиль + переписки, без входа в Telegram">👁</button>`:''}</span>`},
       {key:"phone",label:"Телефон",cls:"mono",render:r=>`${esc(r.phone)||'<span class="no">—</span>'}`},
       // Назначение: родной / служебный / боевой. Пустое acc_role сервер выводит сам
       // (по protected и флагам уведомителя), такие помечаем «авто» — видно, что
@@ -2705,7 +2710,7 @@ async function viewAgents(v){
             :`<span class="badge b-nurture" style="color:var(--warn,#c90)" title="${esc(WA_ST[r.wa_state]||r.wa_state||'процесс не запущен')}">WA ⚠</span>`)
           :'<span class="badge b-nurture">WA —</span>';
         const spam=r.spam_status==='ok'?' <span class="badge b-active" title="@SpamBot: чисто">SB✓</span>'
-          :(r.spam_status&&r.spam_status!=='unknown'?` <span class="badge b-stop" title="@SpamBot: ${esc(r.spam_status)}">SB⚠</span>`:'');
+          :(r.spam_status&&r.spam_status!=='unknown'&&r.spam_status!=='limited'?` <span class="badge b-stop" title="@SpamBot: ${esc(r.spam_status)}">SB⚠</span>`:'');
         const conn=r.tg_connected?'':` <button class="acc-login" data-id="${r.id}" data-phone="${esc(r.phone||'')}" data-label="${esc(r.label||r.username||('#'+r.id))}" style="font-size:11px;padding:2px 8px">🔌 Подключить</button>`;
         return tg+" "+wa+spam+conn;}},
       {key:"session_alive",label:"Живость",render:r=>{
@@ -3427,7 +3432,7 @@ function showProxy6BuyDialog(ids,bulk){
 const AI_TASKS={leadgen:"Лидген (поиск клиентов)",networking:"Нетворкинг",inviting:"Инвайтинг",qualify:"Квалификация",support:"Поддержка",other:"Другое"};
 async function viewAiAgents(v){
   const [agents,accounts]=await Promise.all([api("/api/aiagents"),api("/api/accounts")]);
-  const accOpts=a=>`<option value="">— аккаунт не задан —</option>`+accounts.map(x=>`<option value="${x.id}" ${a&&String(a.account_id)===String(x.id)?"selected":""}>${esc(x.label||x.username||("#"+x.id))}${x.phone?(" · "+esc(x.phone)):""}</option>`).join("");
+  const accOpts=a=>`<option value="">— аккаунт не задан —</option>`+accounts.map(x=>`<option value="${x.id}" ${a&&String(a.account_id)===String(x.id)?"selected":""}>${esc(x.label||x.username||("#"+x.id))}${x.phone?(" · "+esc(x.phone)):""}${x.spam_status==="limited"?" · 🚫 спамблок":""}</option>`).join("");
   const taskOpts=a=>Object.entries(AI_TASKS).map(([k,l])=>`<option value="${k}" ${a&&a.task===k?"selected":""}>${l}</option>`).join("");
   v.innerHTML=`<p class="sub" style="margin-top:0">ИИ-агенты — роли с разными промптами и задачами (нетворкинг, лидген, инвайтинг…). Привяжи к аккаунту-исполнителю.</p>
     <div class="card" style="margin-bottom:16px">
@@ -4397,7 +4402,7 @@ function accMark(a){return a.session_alive===1?'<span class="sdot g"></span>':(a
 function orgAccOptions(selId,showAll){
   let list=showAll?ORG_ACCOUNTS:ORG_ACCOUNTS.filter(isAccLive);
   if(selId&&!list.some(a=>String(a.id)===String(selId))){const cur=ORG_ACCOUNTS.find(a=>String(a.id)===String(selId));if(cur)list=[cur,...list];}
-  return `<option value="">— аккаунт не назначен —</option>`+list.map(a=>`<option value="${a.id}" ${String(selId)===String(a.id)?'selected':''}>${accMark(a)} ${esc(a.label||a.username||('#'+a.id))}${a.phone?(' · '+esc(a.phone)):''}</option>`).join('');
+  return `<option value="">— аккаунт не назначен —</option>`+list.map(a=>`<option value="${a.id}" ${String(selId)===String(a.id)?'selected':''}>${accMark(a)} ${esc(a.label||a.username||('#'+a.id))}${a.phone?(' · '+esc(a.phone)):''}${a.spam_status==="limited"?' · 🚫 спамблок':''}</option>`).join('');
 }
 function orgTaskOptions(sel){return `<option value="">— задача —</option>`+Object.entries(AI_TASKS).map(([k,l])=>`<option value="${k}" ${sel===k?'selected':''}>${l}</option>`).join('');}
 async function renderOrgBody(){
@@ -5971,8 +5976,14 @@ async function openAgent(id){
       <span class="hint" id="ag-spare-msg"></span><br><br>`:""}
       <button class="acc-login" data-id="${id}" data-phone="${esc(a.phone||"")}" data-label="${esc(a.label||a.username||("#"+id))}">🔌 Перелогинить (код придёт в Telegram)</button>
     </div>`:"";
+  const sbBlock=a.spam_status==="limited"?`
+    <div class="card" style="margin-bottom:12px;border-left:3px solid #c0392b;padding:12px">
+      <b>🚫 Спамблок @SpamBot</b>
+      <div class="hint" style="margin-top:6px;line-height:1.5"><b>Нельзя:</b> писать первым незнакомым, звать в группы и каналы — в холодную рассылку номер не идёт.<br>
+        <b>Можно:</b> отвечать тем, кто написал сам, писать в чатах, комментировать в каналах, читать и изучать группы.</div>
+    </div>`:"";
   $("#dr-body").innerHTML=`
-    ${spareBlock}
+    ${sbBlock}${spareBlock}
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px">
       ${ava}
       <div><button id="ag-ava-btn">📷 Загрузить фото</button><input type="file" id="ag-ava-file" accept="image/*" style="display:none">
@@ -7743,7 +7754,7 @@ async function viewCampaigns(v){
         +(blocked?` · <span class="badge b-stop" title="Номера моложе ${AGE_MIN_COMBAT} дней в холодную рассылку не идут — они в команде, но отправлять начнут, когда дозреют">${blocked} ещё дозревают</span>`:"");
     }
     box.innerHTML=list.length?list.map(a=>{
-      const ch=accChan(a);const spam=a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"";
+      const ch=accChan(a);const spam=a.spam_status==="limited"?sbBadge(a):(a.spam_status&&a.spam_status!=="ok"?` · ⚠️${esc(a.spam_status)}`:"");
       const ready=isAccReady(a);
       const otherCampaigns=(a.active_campaigns||[]).filter(x=>String(x.id)!==String(form.dataset.edit||""));
       const busy=otherCampaigns.length>0;
@@ -8225,6 +8236,7 @@ async function showTestDialog(id){
         why:"Telegram запретил отправку с этого номера до "+fmt(a.flood_wait_until)};
       if(until(a.spam_pause_until)) return {kind:"PeerFlood", till:a.spam_pause_until,
         why:`PeerFlood ×${a.spam_flood_count||1} — номер на автопаузе до `+fmt(a.spam_pause_until)};
+      if(a.spam_status==="limited") return {kind:"Спамблок", till:null, why:SB_TIP};
       return null;
     };
     // Автовыбор только доступных отправителей команды: удержанные Telegram
@@ -8242,7 +8254,7 @@ async function showTestDialog(id){
       const d=a.session_age_days;
       const age=stale(a)?` · сессия не проверялась ${d} дн.`:"";
       const note=h
-        ? `<span style="color:#c0392b">⛔ ${h.kind} до ${esc(fmt(h.till))}</span>`
+        ? `<span style="color:#c0392b">⛔ ${h.kind}${h.till?" до "+esc(fmt(h.till)):" — первым не пишет"}</span>`
         : `<span class="sub">${esc(age)}</span>`;
       // Те же бейджи, что в настройках кампании: назначение номера, состоит ли он
       // в команде ЭТОЙ кампании и не занят ли чужой активной рассылкой. Раньше
@@ -9512,7 +9524,7 @@ async function viewParser(v){
       return `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer" ${warn}>
         <input type="checkbox" value="${a.id}"${chosen.has(String(a.id))?" checked":""}>
         <span>#${a.id} ${nm}</span>
-        <span class="sub" style="font-size:11px">${esc(a.kind_ru||"")}</span>${warm}${chatHint(a)}
+        <span class="sub" style="font-size:11px">${esc(a.kind_ru||"")}</span>${warm}${sbBadge(a)}${chatHint(a)}
       </label>`;}).join("");
   };
   api("/api/parse/accounts").then(accs=>{

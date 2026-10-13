@@ -3632,6 +3632,8 @@ def _cold_outreach_state(a: dict) -> dict:
         return blocked("protected", "родной/защищённый — автоматика не использует")
     if (a.get("acc_role") or "").strip() == "service":
         return blocked("service", "служебный — холодная рассылка запрещена")
+    if (a.get("spam_status") or "") == "limited":
+        return blocked("spamblock", "спамблок — писать первым нельзя, только ответы, чаты и комментарии")
     if not (a.get("tg_session") or "").strip():
         return blocked("no_session", "нет Telegram-сессии")
     if a.get("session_alive") != 1 or (a.get("session_state") or "") not in ("", "alive"):

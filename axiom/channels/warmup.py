@@ -42,6 +42,9 @@ CHATTER = ["привет)", "как дела?", "ты тут?", "норм всё
 CHANNELS = ["telegram", "durov", "tginfo", "telegram_tips", "trends"]
 # Эмодзи-реакции (лайки постов) — как живой пользователь.
 LIKE_EMOJIS = ["👍", "❤️", "🔥", "👌", "😁", "🙏"]
+# Доля просмотренных сторис, под которыми ставим «сердечко». Живой человек лайкает
+# не каждую историю: лайк на всём подряд выглядит как накрутка.
+STORY_LIKE_CHANCE = 0.4
 
 # План прогрева на ~2 недели (один запуск = одна «ступень»/день). Плавно нарастает.
 # Первые дни — ТОЛЬКО пассив: вступил в канал, почитал ленту, лайкнул, был онлайн.
@@ -371,6 +374,7 @@ async def _view_stories(client, n: int, account_id: int | None = None) -> int:
         return 0
     try:
         from telethon.tl.functions.stories import GetPeerStoriesRequest, ReadStoriesRequest
+        from telethon.tl.functions.stories import SendReactionRequest as StoryReactionRequest
         from telethon.tl.functions.contacts import AddContactRequest
         from telethon.tl.types import User
     except Exception:  # noqa: BLE001
@@ -389,6 +393,14 @@ async def _view_stories(client, n: int, account_id: int | None = None) -> int:
                 items = getattr(getattr(res, "stories", None), "stories", None) or []
                 if items:
                     await client(ReadStoriesRequest(peer=d.entity, max_id=max(s.id for s in items)))
+                    if random.random() < STORY_LIKE_CHANCE:
+                        try:
+                            await asyncio.sleep(random.uniform(1.5, 4.0))
+                            await client(StoryReactionRequest(peer=d.entity, story_id=max(s.id for s in items),
+                                                              reaction=ReactionEmoji(emoticon="❤")))
+                            print(f"  лайк сторис «{getattr(d, 'name', '?')}»")
+                        except Exception:  # noqa: BLE001 — реакции на сторис могут быть закрыты
+                            pass
                     if account_id:
                         name = " ".join(x for x in [getattr(d.entity, "first_name", ""),
                                                        getattr(d.entity, "last_name", "")] if x).strip()

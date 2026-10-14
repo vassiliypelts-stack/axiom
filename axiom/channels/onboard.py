@@ -70,14 +70,57 @@ async def run(ids: list[int]) -> None:
     print(f"\nИтого оформлено: {ok} из {len(ids)}")
 
 
+async def _push_bio(acc: dict) -> tuple[bool, str]:
+    """Только описание профиля из карточки. Полное оформление (_setup_profile с force)
+    заново снимает и грузит фото и перебирает ник — ради одной строчки bio это лишние
+    правки профиля на свежем аккаунте."""
+    label = acc.get("label") or acc.get("phone") or f"#{acc['id']}"
+    about = (acc.get("description") or "").strip()[:70]
+    if not acc.get("tg_session") or not about:
+        return False, f"{label}: нет сессии или пустое описание"
+    from telethon.tl.functions.account import UpdateProfileRequest
+    client = build_client(StringSession(acc["tg_session"]), acc.get("proxy"),
+                          acc.get("api_id"), acc.get("api_hash"))
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return False, f"{label}: сессия слетела"
+        await client(UpdateProfileRequest(about=about))
+        return True, f"{label}: bio «{about}»"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{label}: ошибка — {e}"
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def run_bio(ids: list[int]) -> None:
+    database.init_db()
+    ok = 0
+    for i, acc_id in enumerate(ids):
+        with database.get_conn() as conn:
+            row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not row:
+            continue
+        success, msg = await _push_bio(dict(row))
+        print(("[ok] " if success else "[skip] ") + msg)
+        ok += int(success)
+        if i < len(ids) - 1:
+            await asyncio.sleep(random.uniform(2.0, 5.0))
+    print(f"\nИтого bio: {ok} из {len(ids)}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Массовое оформление профиля + приватность")
     p.add_argument("--ids", required=True, help="через запятую: 1,2,3")
+    p.add_argument("--bio-only", action="store_true", help="поставить только описание из карточки")
     args = p.parse_args()
     ids = [int(x) for x in args.ids.split(",") if x.strip().isdigit()]
     if not ids:
         p.error("пустой список --ids")
-    asyncio.run(run(ids))
+    asyncio.run(run_bio(ids) if args.bio_only else run(ids))
 
 
 if __name__ == "__main__":

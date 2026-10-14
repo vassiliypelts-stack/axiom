@@ -1216,7 +1216,10 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
         queued = [r["id"] for r in rows]
         skipped = len(ids) - len(queued)
         if queued:
-            _spawn("channels.onboard", "--ids", ",".join(str(i) for i in queued))
+            args = ["channels.onboard", "--ids", ",".join(str(i) for i in queued)]
+            if payload.get("bio_only"):
+                args.append("--bio-only")
+            _spawn(*args)
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_no_session": skipped})
     if action == "inventory":
         with database.get_conn() as conn:

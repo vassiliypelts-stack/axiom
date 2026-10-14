@@ -920,6 +920,13 @@
   .tr-donor .row{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);}
   .tr-donor button{padding:2px 8px;font-size:12px;}
   .tr-form{display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:9px;}
+  /* карусели контент завод */
+  .car-sec{margin-bottom:14px;}
+  .car-thumb{width:40px;height:50px;object-fit:cover;border-radius:6px;background:var(--panel2);display:block;}
+  .car-rate{min-width:170px;}
+  .car-rate button{padding:4px 0;font-size:12px;}
+  .car-form{display:grid;grid-template-columns:2fr 2fr auto;gap:9px;}
+  @media(max-width:900px){.car-form{grid-template-columns:1fr;}}
   @media(max-width:900px){.tr-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.tr-form{grid-template-columns:1fr;}}
 </style>
 </head>
@@ -1082,6 +1089,7 @@ const NAV_GROUPS=[
   {title:"Контент завод",collapsible:true,items:[
     {id:"content-text",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="1.5"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="9.5" x2="14" y2="9.5"/><line x1="6" y1="13" x2="11" y2="13"/></svg>',label:"Текстовой контент завод"},
     {id:"content-video",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="12" height="12" rx="1.5"/><path d="M14 8l4-2.5v9L14 12"/></svg>',label:"Видео контент завод"},
+    {id:"content-carousel",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="3" width="10" height="13" rx="1.5"/><path d="M2 5v9M18 5v9"/><circle cx="8.5" cy="18" r=".8" fill="currentColor"/><circle cx="11.5" cy="18" r=".8" fill="currentColor"/></svg>',label:"Карусели контент завод"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
@@ -4373,6 +4381,177 @@ async function trDonors(v,shell){
     if(r.error)msg.textContent="⚠️ "+r.error;else trRender(v);};
   v.querySelectorAll("[data-trdonor]").forEach(b=>b.onclick=async()=>{b.disabled=true;const r=await api("/api/content/trends/donors/status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:b.dataset.trdonor,status:b.dataset.trst})});if(r.error){msg.textContent="⚠️ "+r.error;b.disabled=false;}else trRender(v);});
 }
+// ---------------------------------------------------- карусели контент завод
+// Свои аккаунты Instagram и карусели доноров. Данные готовит контент-завод:
+// autopost/carousels.py пишет лист ИНСТАГРАМ (снаружи через Apify: лайки и
+// комментарии, без охвата и сохранений), парсер трендов — лист ТРЕНДЫ.
+// Здесь витрина: фильтр по аккаунту, сортировка и группировка таблиц.
+let CAR_TAB="summary",CAR_SUM=null,CAR_SRC=null;
+const CAR_F=(()=>{const d={acc:"all",days:30,fmt:"карусель",authors:[],sdays:30,spike:3,rating:"all"};try{return Object.assign(d,JSON.parse(localStorage.getItem("axiom_carousel_filters")||"{}"));}catch(e){return d;}})();
+const CAR_FMT={"карусель":"карусели","видео":"видео","пост":"посты"};
+const carKey=s=>String(s||"").replace(/^@/,"").toLowerCase();
+// Даты в листах в UTC: «2026-10-09 19:00» или просто «2026-10-09».
+const carAge=d=>{const s=String(d||"").trim().replace(" ","T"),t=new Date(s.length>10?s+"Z":s);return isNaN(t)?9999:(Date.now()-t)/864e5;};
+const carMedian=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;};
+const carNum=n=>Number(n||0).toLocaleString("ru-RU");
+function carThumb(u){return u?`<img class="car-thumb" loading="lazy" src="/api/content/trends/thumb?u=${encodeURIComponent(u)}" alt="" onerror="this.style.visibility='hidden'">`:"";}
+function carSpike(p){if(p.spike==null)return `<span class="sub" title="у аккаунта меньше ${CAR_SUM?CAR_SUM.min_posts:5} постов этого формата">мало данных</span>`;
+  return `<span class="tag${p.hit?" lime":""}">×${String(p.spike).replace(".",",")}</span>`;}
+function carTabs(){return `<div class="ttoolbar" style="margin-bottom:14px">${[["summary","Сводка"],["sources","Источники"],["accounts","Аккаунты"]].map(([k,l])=>`<button data-cartab="${k}" class="${CAR_TAB===k?"primary":"ghost"}">${l}</button>`).join("")}</div>`;}
+function carBindTabs(v){v.querySelectorAll("[data-cartab]").forEach(b=>b.onclick=()=>{CAR_TAB=b.dataset.cartab;viewContentCarousel(v);});}
+function carChips(group,values,multi){return values.map(([val,label])=>{const on=multi?CAR_F[group].includes(val):CAR_F[group]===val;return `<button class="cf-chip${on?" on":""}" data-carg="${group}" data-carv="${esc(val)}" data-carm="${multi?1:0}">${esc(label)}</button>`;}).join("");}
+// Фильтры переживают перезагрузку страницы; данные при смене фильтра заново не читаются.
+function carSave(v){try{localStorage.setItem("axiom_carousel_filters",JSON.stringify(CAR_F));}catch(e){}viewContentCarousel(v,true);}
+function carBindChips(v){v.querySelectorAll("[data-carg]").forEach(c=>c.onclick=()=>{const g=c.dataset.carg;let val=c.dataset.carv;if(["days","sdays","spike"].includes(g))val=+val;
+  if(c.dataset.carm==="1")CAR_F[g]=CAR_F[g].includes(val)?CAR_F[g].filter(x=>x!==val):[...CAR_F[g],val];else CAR_F[g]=val;carSave(v);});}
+async function carLoad(v,url,hint){
+  v.innerHTML=carTabs()+`<div class="empty">${esc(hint)}</div>`;carBindTabs(v);
+  let d;try{d=await api(url);}catch(e){d={error:e.message};}
+  if(d.error){v.innerHTML=carTabs()+`<div class="empty">⚠️ ${esc(d.error)}</div>`;carBindTabs(v);return null;}
+  return d;
+}
+async function viewContentCarousel(v,cached){
+  if(CAR_TAB==="sources")return viewCarouselSources(v,cached);
+  if(CAR_TAB==="accounts")return viewCarouselAccounts(v);
+  if(!cached||!CAR_SUM){const d=await carLoad(v,"/api/content/carousel/summary","Читаю лист ИНСТАГРАМ…");if(!d)return;CAR_SUM=d;}
+  const s=CAR_SUM,accs=(s.accounts||[]).filter(a=>a.platform==="instagram");
+  const names=[...new Set([...accs.map(a=>a.name),...s.posts.map(p=>p.account)])].filter(Boolean);
+  if(CAR_F.acc!=="all"&&!names.includes(CAR_F.acc))CAR_F.acc="all";
+  const inPeriod=p=>!CAR_F.days||carAge(p.date)<=CAR_F.days;
+  const ofFmt=p=>CAR_F.fmt==="all"||p.format===CAR_F.fmt;
+  const scope=s.posts.filter(p=>(CAR_F.acc==="all"||p.account===CAR_F.acc)&&inPeriod(p));
+  const list=scope.filter(ofFmt).map((p,i)=>({...p,id:i,day:p.date.slice(0,10),month:p.date.slice(0,7)}));
+  const total=k=>list.reduce((a,p)=>a+p[k],0),hits=list.filter(p=>p.hit);
+  const best=[...list].sort((a,b)=>(b.spike||0)-(a.spike||0)||b.metric-a.metric)[0];
+  const word=CAR_F.fmt==="all"?"постов":CAR_FMT[CAR_F.fmt]||"постов";
+  const other=Object.entries(CAR_FMT).filter(([k])=>k!==CAR_F.fmt).map(([k,l])=>[l,scope.filter(p=>p.format===k).length]).filter(x=>x[1]);
+  const emptyText=s.posts.length?`За этот период ${word} нет.${other.length?" Есть: "+other.map(([l,n])=>`${l} · ${n}`).join(", ")+".":""}`
+    :"Лист ИНСТАГРАМ пуст. Его заполняет autopost/carousels.py раз в сутки; новый аккаунт появится после ближайшего запуска.";
+  v.innerHTML=carTabs()+`
+    <section class="dash-glass tr-filters">
+      <div class="tr-fg"><span>Аккаунт</span>${carChips("acc",[["all","все"],...names.map(n=>[n,n])])}</div>
+      <div class="tr-fg"><span>Период</span>${carChips("days",[[7,"7 дн"],[30,"30 дн"],[90,"90 дн"],[0,"всё время"]])}</div>
+      <div class="tr-fg"><span>Формат</span>${carChips("fmt",[["карусель","карусели"],["видео","видео"],["пост","посты"],["all","все"]])}</div>
+    </section>
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Сводка · ${esc(CAR_F.acc==="all"?"все аккаунты":CAR_F.acc)}</h3>
+        <span class="sub">обновлено ${esc(s.updated||"—")} UTC · цифры снаружи через Apify, раз в 3 дня</span></div>
+      <div class="dash-tiles">
+        ${cfTile(list.length,word)}${cfTile(carNum(total("likes")),"лайков")}${cfTile(carNum(total("comments")),"комментариев")}
+        ${cfTile(carNum(Math.round(carMedian(list.map(p=>p.metric)))),"обычный отклик","accent")}
+        ${cfTile(hits.length,`залетело (×${s.spike||3})`,hits.length?"lime":"")}
+      </div>
+      ${best?`<div class="cf-best">🏆 Лучший: ${best.link?`<a href="${esc(best.link)}" target="_blank" rel="noopener">${esc(best.topic||"без подписи")}</a>`:esc(best.topic)} · ${esc(best.account)} · отклик ${carNum(best.metric)}${best.spike!=null?` · ×${String(best.spike).replace(".",",")} к норме`:""}</div>`:""}
+      <div class="sub" style="margin-top:8px">Отклик = лайки + 3 × комментарии (у видео — просмотры). «Залетела» — отклик в ${s.spike||3} раза выше обычного для этого аккаунта и формата. Охват и сохранения Instagram снаружи не отдаёт.</div>
+    </section>
+    ${CAR_F.acc==="all"&&names.length>1?`<section class="dash-glass dash-card car-sec"><div class="dash-chh"><h3>Аккаунты</h3><span class="sub">клик по строке — смотреть один аккаунт</span></div><div id="car-accs"></div></section>`:""}
+    <section class="dash-glass dash-card car-sec"><div class="dash-chh"><h3>${esc(word[0].toUpperCase()+word.slice(1))}</h3></div><div id="car-posts"></div></section>`;
+  carBindTabs(v);carBindChips(v);
+  const accMount=v.querySelector("#car-accs");
+  if(accMount){
+    const rows=names.map((n,i)=>{const ps=s.posts.filter(p=>p.account===n&&inPeriod(p)&&ofFmt(p)),a=accs.find(x=>x.name===n);
+      return {id:i,name:n,status:a?(a.status==="paused"?"на паузе":"активен"):"не в списке",posts:ps.length,likes:ps.reduce((x,p)=>x+p.likes,0),
+        comments:ps.reduce((x,p)=>x+p.comments,0),norm:Math.round(carMedian(ps.map(p=>p.metric))),hits:ps.filter(p=>p.hit).length,last:ps.map(p=>p.date.slice(0,10)).sort().pop()||"—"};});
+    smartTable(accMount,{tableKey:"car_accounts",rows,searchKeys:["name"],onRowClick:id=>{CAR_F.acc=rows[id].name;carSave(v);},
+      columns:[{key:"name",label:"Аккаунт"},{key:"status",label:"Статус",cls:"sub"},{key:"posts",label:"Постов",cls:"mono right"},
+        {key:"likes",label:"Лайки",cls:"mono right"},{key:"comments",label:"Комм.",cls:"mono right"},{key:"norm",label:"Обычный отклик",cls:"mono right"},
+        {key:"hits",label:"Залетело",cls:"mono right"},{key:"last",label:"Последний",cls:"mono sub"}]});
+  }
+  smartTable(v.querySelector("#car-posts"),{tableKey:"car_posts",rows:list,searchKeys:["topic","account"],emptyText,
+    groupOptions:[{key:"account",label:"аккаунт"},{key:"month",label:"месяц"},{key:"format",label:"формат"}],
+    hiddenByDefault:["format","views","norm","reach","saves","shares"],
+    columns:[{key:"day",label:"Дата",cls:"mono sub"},{key:"account",label:"Аккаунт"},{key:"image",label:"Обложка",render:p=>carThumb(p.image)},
+      {key:"topic",label:"Тема",render:p=>esc(p.topic||"—")},{key:"format",label:"Формат"},{key:"slides",label:"Слайдов",cls:"mono right"},
+      {key:"likes",label:"Лайки",cls:"mono right"},{key:"comments",label:"Комм.",cls:"mono right"},{key:"views",label:"Просмотры",cls:"mono right"},
+      {key:"metric",label:"Отклик",cls:"mono right"},{key:"norm",label:"Норма",cls:"mono right"},{key:"spike",label:"× к норме",cls:"right",render:carSpike},
+      {key:"reach",label:"Охват",cls:"mono right"},{key:"saves",label:"Сохранения",cls:"mono right"},{key:"shares",label:"Репосты",cls:"mono right"},
+      {key:"link",label:"",cls:"right",render:p=>cfOpenIcon(p.link)}]});
+}
+async function viewCarouselSources(v,cached){
+  if(!cached||!CAR_SRC){const d=await carLoad(v,"/api/content/carousel/sources","Читаю карусели доноров из листа ТРЕНДЫ…");if(!d)return;CAR_SRC=d;}
+  const all=CAR_SRC.items||[],donors=CAR_SRC.donors||[];
+  const authors=[...new Set(all.map(p=>p.author))].filter(Boolean).sort((a,b)=>a.localeCompare(b,"ru"));
+  CAR_F.authors=CAR_F.authors.filter(a=>authors.includes(a));
+  const rateOk=p=>CAR_F.rating==="all"||(CAR_F.rating==="none"?!p.rating:p.rating===CAR_F.rating);
+  const base=all.filter(p=>(!CAR_F.sdays||carAge(p.date)<=CAR_F.sdays)&&p.spike>=CAR_F.spike&&rateOk(p));
+  const list=base.filter(p=>!CAR_F.authors.length||CAR_F.authors.includes(p.author))
+    .map((p,i)=>({...p,id:i,day:p.date.slice(0,10),month:p.date.slice(0,7),metric:p.likes+3*p.comments}));
+  // Донор из списка без залётов за период тоже виден: строка с нулём говорит, что он молчит.
+  const known=new Map(donors.map(d=>[carKey(d.name),d]));
+  const keys=[...new Set([...donors.map(d=>carKey(d.name)),...base.map(p=>carKey(p.author))])];
+  const drows=keys.map((k,i)=>{const ps=base.filter(p=>carKey(p.author)===k),d=known.get(k);
+    return {id:i,author:ps[0]?ps[0].author:(d?d.name.replace(/^@/,""):k),status:d?(d.status==="paused"?"на паузе":"в базе"):"не в базе",hits:ps.length,
+      best:ps.length?Math.max(...ps.map(p=>p.spike)):0,norm:ps.length?Math.max(...ps.map(p=>p.norm)):0,yes:ps.filter(p=>p.rating==="да").length,last:ps.map(p=>p.day||p.date.slice(0,10)).sort().pop()||"—"};})
+    .sort((a,b)=>b.hits-a.hits||b.best-a.best);
+  const authorLabel=!CAR_F.authors.length?"все":CAR_F.authors.length>3?CAR_F.authors.length+" выбрано":CAR_F.authors.join(", ");
+  v.innerHTML=carTabs()+`
+    <section class="dash-glass tr-filters">
+      <details class="cf-dd"><summary class="cf-chip${CAR_F.authors.length?" on":""}">Доноры: ${esc(authorLabel)} ▾</summary>
+        <div class="cf-dd-body"><button class="cf-chip${CAR_F.authors.length?"":" on"}" id="car-allauth">все</button>${carChips("authors",authors.map(a=>[a,a]),true)}</div></details>
+      <div class="tr-fg"><span>Период</span>${carChips("sdays",[[7,"7 дн"],[14,"14 дн"],[30,"30 дн"],[0,"всё"]])}</div>
+      <div class="tr-fg"><span>Всплеск</span>${carChips("spike",[[3,"от 3×"],[5,"от 5×"],[10,"от 10×"]])}</div>
+      <div class="tr-fg"><span>Оценка</span>${carChips("rating",[["all","все"],["none","без оценки"],["да","да"],["потом","потом"],["нет","нет"]])}</div>
+    </section>
+    <section class="dash-glass dash-card car-sec"><div class="dash-chh"><h3>Доноры</h3><span class="sub">залёты за выбранный период · клик по строке — только этот донор</span></div><div id="car-donors"></div></section>
+    <section class="dash-glass dash-card car-sec"><div class="dash-chh"><h3>Залетевшие карусели · ${list.length}</h3>
+      <span class="sub">В листе ТРЕНДЫ только залёты: всю ленту донора парсер не хранит. Карусель из идеи собирается в Claude Code: /carousel и ссылка.</span></div><div id="car-src"></div><div class="sub" id="car-src-msg"></div></section>`;
+  carBindTabs(v);carBindChips(v);
+  v.querySelector("#car-allauth").onclick=()=>{CAR_F.authors=[];carSave(v);};
+  smartTable(v.querySelector("#car-donors"),{tableKey:"car_donors",rows:drows,searchKeys:["author"],
+    onRowClick:id=>{const a=drows[id].author;CAR_F.authors=authors.includes(a)?[a]:[];carSave(v);},
+    columns:[{key:"author",label:"Донор"},{key:"status",label:"Статус",cls:"sub"},{key:"hits",label:"Залётов",cls:"mono right"},
+      {key:"best",label:"Лучший всплеск",cls:"mono right",render:r=>r.best?"×"+String(r.best).replace(".",","):"—"},
+      {key:"norm",label:"Обычный отклик",cls:"mono right",render:r=>r.norm?carNum(r.norm):"—"},{key:"yes",label:"Взято «да»",cls:"mono right"},{key:"last",label:"Последний",cls:"mono sub"}]});
+  const rate=p=>`<div class="tr-rate car-rate" data-link="${esc(p.link)}">${[["да","tr-yes","да"],["потом","tr-later","потом"],["нет","tr-no","нет"]].map(([r,c,l])=>`<button class="ghost ${c}${p.rating===r?" on":""}" data-r="${r}">${l}</button>`).join("")}</div>`;
+  const mount=v.querySelector("#car-src");
+  smartTable(mount,{tableKey:"car_sources",rows:list,searchKeys:["topic","author","angle"],emptyText:"По этим фильтрам залётов нет — ослабьте фильтры.",
+    groupOptions:[{key:"author",label:"донор"},{key:"rating",label:"оценка"},{key:"month",label:"месяц"}],hiddenByDefault:["metric","pain","angle"],
+    columns:[{key:"day",label:"Дата",cls:"mono sub"},{key:"author",label:"Донор"},{key:"image",label:"Обложка",render:p=>carThumb(p.image)},
+      {key:"topic",label:"Тема",render:p=>esc(p.topic||"—")},{key:"spike",label:"Всплеск",cls:"right",render:p=>`<span class="tag${p.spike>=5?" lime":""}">×${String(p.spike).replace(".",",")}</span>`},
+      {key:"likes",label:"Лайки",cls:"mono right"},{key:"comments",label:"Комм.",cls:"mono right"},{key:"metric",label:"Отклик",cls:"mono right"},
+      {key:"norm",label:"Норма донора",cls:"mono right"},{key:"pain",label:"Боль",cls:"sub"},{key:"angle",label:"Наш угол",cls:"sub"},
+      {key:"rating",label:"Оценка",render:rate,filterBucket:p=>p.rating||"без оценки"},{key:"link",label:"",cls:"right",render:p=>cfOpenIcon(p.link)}]});
+  // Оценка пишется в лист ТРЕНДЫ той же ручкой, что во «Видео → Тренды доноров».
+  // Кнопки подсвечиваются на месте: перерисовка таблицы сбросила бы сортировку.
+  const msg=v.querySelector("#car-src-msg");
+  mount.onclick=async e=>{const b=e.target.closest(".car-rate button");if(!b)return;
+    const box=b.closest(".car-rate"),p=all.find(x=>x.link===box.dataset.link);if(!p)return;
+    const rating=p.rating===b.dataset.r?"":b.dataset.r;msg.textContent="сохраняю оценку…";
+    try{const r=await api("/api/content/trends/rate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({link:p.link,rating,comment:null})});
+      if(r.error){msg.textContent="⚠️ "+r.error;return;}
+      p.rating=rating;box.querySelectorAll("button").forEach(x=>x.classList.toggle("on",x.dataset.r===rating));msg.textContent="оценка сохранена в лист ТРЕНДЫ";}
+    catch(err){msg.textContent="⚠️ "+err.message;}};
+}
+async function viewCarouselAccounts(v){
+  v.innerHTML=carTabs()+`<div class="empty">Читаю листы АККАУНТЫ и ДОНОРЫ…</div>`;carBindTabs(v);
+  let a,d;try{[a,d]=await Promise.all([api("/api/content/carousel/accounts"),api("/api/content/trends/donors")]);}catch(e){a={error:e.message};d={};}
+  const card=(x,attr)=>`<div class="tr-donor${x.status==="paused"?" paused":""}"><b>${esc(x.name)}</b><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url)}</a>${x.note?`<div class="row">${esc(x.note)}</div>`:""}<div class="row"><span>${x.status==="paused"?"на паузе":x.added?"добавлен "+esc(x.added):""}</span><button class="ghost" ${attr}="${esc(x.url)}" data-st="${x.status==="paused"?"active":"paused"}">${x.status==="paused"?"вернуть":"на паузу"}</button></div></div>`;
+  const mine=a.accounts||[],ig=(d.donors||[]).filter(x=>x.platform==="instagram");
+  v.innerHTML=carTabs()+`
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Мои аккаунты Instagram · ${mine.filter(x=>x.status==="active").length}</h3><span class="sub">Лист АККАУНТЫ. Цифры нового аккаунта появятся после ближайшего сбора (раз в сутки, 07:00 МСК).</span></div>
+      <div class="car-form"><input id="car-a-url" class="cf-date" placeholder="instagram.com/имя или @имя"><input id="car-a-note" class="cf-date" placeholder="Заметка: для чего аккаунт"><button class="primary" id="car-a-add">Добавить</button></div>
+      <div class="sub" id="car-a-msg" style="margin-top:8px">${a.error?"⚠️ "+esc(a.error):"Каждый аккаунт стоит около $0,30 в месяц из бесплатных $5 Apify."}</div>
+      <div class="tr-donors" style="margin-top:12px">${mine.map(x=>card(x,"data-caracc")).join("")||`<div class="empty">Пока ни одного аккаунта.</div>`}</div>
+    </section>
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Доноры Instagram · ${ig.filter(x=>x.status==="active").length}</h3><span class="sub">Общий список с парсером трендов (лист ДОНОРЫ). Каждый донор удорожает прогон Apify.</span></div>
+      <div class="car-form"><input id="car-d-url" class="cf-date" placeholder="instagram.com/имя донора"><input id="car-d-note" class="cf-date" placeholder="Заметка: почему этот донор"><button class="primary" id="car-d-add">Добавить</button></div>
+      <div class="sub" id="car-d-msg" style="margin-top:8px">${d.error?"⚠️ "+esc(d.error):""}</div>
+      <div class="tr-donors" style="margin-top:12px">${ig.map(x=>card(x,"data-cardonor")).join("")}</div>
+    </section>`;
+  carBindTabs(v);
+  const post=async(url,body,msg)=>{msg.textContent="сохраняю…";const r=await api(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(r.error){msg.textContent="⚠️ "+r.error;return false;}CAR_SUM=null;CAR_SRC=null;viewCarouselAccounts(v);return true;};
+  const am=v.querySelector("#car-a-msg"),dm=v.querySelector("#car-d-msg");
+  v.querySelector("#car-a-add").onclick=()=>{const url=v.querySelector("#car-a-url").value.trim();if(!url){am.textContent="Вставьте ссылку или ник.";return;}
+    post("/api/content/carousel/accounts",{url,note:v.querySelector("#car-a-note").value.trim()},am);};
+  v.querySelector("#car-d-add").onclick=()=>{const url=v.querySelector("#car-d-url").value.trim();if(!url){dm.textContent="Вставьте ссылку на профиль.";return;}
+    post("/api/content/trends/donors",{url,platform:"instagram",note:v.querySelector("#car-d-note").value.trim()},dm);};
+  v.querySelectorAll("[data-caracc]").forEach(b=>b.onclick=()=>{b.disabled=true;post("/api/content/carousel/accounts/status",{url:b.dataset.caracc,status:b.dataset.st},am).then(ok=>{if(!ok)b.disabled=false;});});
+  v.querySelectorAll("[data-cardonor]").forEach(b=>b.onclick=()=>{b.disabled=true;post("/api/content/trends/donors/status",{url:b.dataset.cardonor,status:b.dataset.st},dm).then(ok=>{if(!ok)b.disabled=false;});});
+}
+
 async function viewContentVideo(v){
   if(VCF_TAB==="trends")return viewVideoTrends(v);
   if(VCF_TAB==="sources")return viewVideoSources(v);
@@ -10763,7 +10942,7 @@ async function viewBusinessMap(v){
 }
 
 // ----------------------------------------------------------------- router
-const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo};
+const VIEWS={inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo,"content-carousel":viewContentCarousel};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 

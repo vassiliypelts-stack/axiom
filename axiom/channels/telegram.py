@@ -28,7 +28,7 @@ from telethon.tl.functions.contacts import ImportContactsRequest, AddContactRequ
 from telethon.tl.types import InputPhoneContact, InputUser, PeerUser
 
 import config
-from agent.agent import generate_reply
+from agent.agent import generate_reply, owner_books_call
 from channels import antiban, deslop, voice_notes
 from db import database
 from integrations import meetings
@@ -1186,11 +1186,11 @@ async def _agent_reply(event, contact_id: int, username: str | None,
             # нему отчёт кампании показывает лидов (иначе после снятия hot_since
             # согласившийся человек исчезал из всех сводок).
             #
-            # В кампании со своим стуком время созвона ведёт сам агент, владельцу до
+            # В кампании с родных номеров (owner_books_call) созвон ведёт сам агент, владельцу до
             # звонка делать нечего. Метка «жду владельца» глушит бота на несколько часов
             # (listener._should_reply), и 09.10.2026 «Нет, я в выходные занят» сразу
             # после «договорились» осталось без ответа. Там метку не ставим.
-            stay = bool(camp and (camp["quiet_opener_template"] or "").strip())
+            stay = bool(camp and owner_books_call(camp["id"]))
             conn.execute(
                 "UPDATE contacts SET hot_since=CASE WHEN ? THEN NULL ELSE datetime('now') END, "
                 "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",

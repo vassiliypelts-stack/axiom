@@ -28,7 +28,8 @@ class Reply(BaseModel):
     reply_parts: list[str] = Field(
         description="1-3 сообщения, как в живой личке. Отправляются по очереди с паузами. "
         "Обычно: короткий отклик или кто ты / суть одним сообщением / один вопрос. Одну "
-        "мысль не дроби по предложению, абзацев внутри элемента не делай. Без тире «—», "
+        "мысль не дроби по предложению. Сообщение длиннее двух предложений разбей на "
+        "абзацы по 1-2 предложения через пустую строку, сплошное полотно не пиши. Без тире «—», "
         "без «ё», без эмодзи и без извинений.",
         min_length=1,
         # Раньше здесь стояло 4 — при описании поля «1-3». Живой диалог 13.08.2026
@@ -226,7 +227,13 @@ def generate_reply(
         import re
         reply.notes = re.split(r"""['"]\s*,\s*['"]?\w+['"]?\s*:""", reply.notes)[0].strip(" ',\"")
     reply.reply_parts = [_fix_price(x) for x in reply.reply_parts]
-    if reply.intent in ("positive", "agreed"):
+    owner_numbers = owner_books_call(campaign_id)
+    # Первый ответ на холодный стук («Вы в Крыму живёте?» → «Живу)») — это ответ на
+    # вопрос стука, а не интерес к проекту: человек о проекте ещё ничего не слышал.
+    # 12.10.2026 на «Живу)» модель поставила positive, и вместо знакомства ушла
+    # фиксированная передача «Спасибо за интерес!».
+    knock_answer = first_reply and _own_knock(campaign_id) and not owner_numbers
+    if reply.intent in ("positive", "agreed") and not knock_answer:
         # Фиксированная передача «свяжется участник проекта, пришлёт бизнес-план»
         # написана под Город Гениев. Раньше она подменяла ответ в ЛЮБОЙ кампании:
         # 25.09.2026 директору ремонтной компании на «интересно» ушёл крымский текст
@@ -238,7 +245,9 @@ def generate_reply(
         # Интерес должен сразу попасть представителю в личку через notify_hot(),
         # а не затеряться среди обычных событий пульта.
         reply.hot = True
-    if _own_knock(campaign_id):
+    if knock_answer:
+        reply.hot = False
+    if owner_numbers:
         # Кампания со своим стуком пишет знакомым Василия с его же номеров, и КЭВ здесь
         # — конкретное время созвона, которое бот назначает сам. «Горячий» лид глушит
         # бота (listener._should_reply), поэтому на «ну давай, интересно» он замолкал,
@@ -260,6 +269,25 @@ def _own_knock(campaign_id: int | None) -> bool:
         row = conn.execute("SELECT quiet_opener_template FROM campaigns WHERE id=?",
                            (campaign_id,)).fetchone()
     return bool(row and (row["quiet_opener_template"] or "").strip())
+
+
+def owner_books_call(campaign_id: int | None) -> bool:
+    """Кампания пишет знакомым Василия с его родных номеров: созвон назначает сам
+    агент, горячим лид становится только при согласованном времени.
+
+    Раньше признаком был один свой стук. Но свой стук есть и у холодных кампаний
+    (ГГКрым, Ремонт Сочи), и там «+» на передачу не ставил ни горячего лида, ни
+    уведомления владельцу: 13.10.2026 Владимир из 9407 поставил плюс, бот ответил
+    «с вами свяжется участник проекта», а Василий о лиде не узнал."""
+    if not _own_knock(campaign_id):
+        return False
+    from db import database
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM campaign_accounts ca JOIN accounts a ON a.id=ca.account_id "
+            "WHERE ca.campaign_id=? AND (COALESCE(a.protected,0)=1 OR a.acc_role='own') "
+            "LIMIT 1", (campaign_id,)).fetchone()
+    return row is not None
 
 
 # Конкретное время в нашей реплике: «в 12:00», «завтра», «в понедельник», «после обеда».

@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import config
-from agent.agent import generate_reply
+from agent.agent import generate_reply, owner_books_call
 from db import database
 from integrations import meetings
 # Переиспользуем чистые хелперы телеграм-канала (без Telethon-специфики):
@@ -414,7 +414,7 @@ def reply(req: ReplyReq) -> JSONResponse:
                                    (text_in or "").strip()[:160], level="good",
                                    contact_id=contact_id)
         if r.hot:
-            stay = bool(camp and (camp["quiet_opener_template"] or "").strip())
+            stay = bool(camp and owner_books_call(camp["id"]))
             conn.execute("UPDATE contacts SET "
                          "hot_since=CASE WHEN ? THEN NULL ELSE datetime('now') END, "
                          "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",

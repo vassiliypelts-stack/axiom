@@ -1,6 +1,7 @@
 """Доступ к книжке (SQLite). Инициализация схемы + базовые операции."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -1027,6 +1028,51 @@ def _migrate_org_agents(conn: sqlite3.Connection) -> None:
             )
 
 
+def log_activity(conn: sqlite3.Connection, account_id: int | None, kind: str, n: int = 1,
+                 detail: str | None = None, src: str | None = None) -> None:
+    """Записать действие аккаунта в журнал отчёта «Активность» (account_activity)."""
+    if not account_id or not n or n < 0:
+        return
+    conn.execute("INSERT INTO account_activity (account_id, kind, n, detail, src) VALUES (?,?,?,?,?)",
+                 (account_id, kind, int(n), (detail or None) and str(detail)[:300], src))
+
+
+# Тексты поштучного журнала прогрева (events.type='warm_action') → вид действия.
+# Нужно один раз: перенести историю, накопленную до появления account_activity.
+_WARM_ACTION_KINDS = [
+    (re.compile(r"^зашёл в Telegram онлайн"), "online"),
+    (re.compile(r"^вступил в канал\s*(\S*)"), "join_channel"),
+    (re.compile(r"^прочитал ленту:\s*(\d+)"), "read"),
+    (re.compile(r"^поставил реакции:\s*(\d+)"), "react"),
+    (re.compile(r"^посмотрел сторис:\s*(\d+)"), "story_view"),
+    (re.compile(r"^написал своему аккаунту\s*(\S*)"), "msg_own"),
+    (re.compile(r"^постучался"), "knock"),
+]
+
+
+def _backfill_activity(conn: sqlite3.Connection) -> None:
+    """Однократно переносит журнал прогрева из events в account_activity."""
+    if get_setting(conn, "activity_backfill_v1") == "done":
+        return
+    rows = conn.execute("SELECT account_id, text, ts FROM events WHERE type='warm_action' "
+                        "AND account_id IS NOT NULL").fetchall()
+    batch = []
+    for r in rows:
+        text = (r["text"] or "").strip()
+        for rx, kind in _WARM_ACTION_KINDS:
+            m = rx.match(text)
+            if not m:
+                continue
+            g = m.group(1) if m.groups() else ""
+            n = int(g) if g.isdigit() else 1
+            detail = g if (g and not g.isdigit()) else None
+            batch.append((r["account_id"], kind, n, detail, "backfill", r["ts"]))
+            break
+    conn.executemany("INSERT INTO account_activity (account_id, kind, n, detail, src, ts) "
+                     "VALUES (?,?,?,?,?,?)", batch)
+    set_setting(conn, "activity_backfill_v1", "done")
+
+
 def init_db() -> None:
     schema = Path(config.SCHEMA_PATH).read_text(encoding="utf-8")
     with get_conn() as conn:
@@ -1038,6 +1084,7 @@ def init_db() -> None:
         _migrate_deals(conn)
         _migrate_org_agents(conn)
         _backfill_account_geo(conn)
+        _backfill_activity(conn)
         # членство армии в чатах: подтягиваем уже вступленные (chats.joined_by) в
         # account_chats, чтобы отчёт покрытия сразу отражал реальность
         conn.execute(

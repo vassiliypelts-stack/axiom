@@ -409,12 +409,19 @@ async def _view_stories(client, n: int, account_id: int | None = None) -> int:
                 items = getattr(getattr(res, "stories", None), "stories", None) or []
                 if items:
                     await client(ReadStoriesRequest(peer=d.entity, max_id=max(s.id for s in items)))
+                    who = getattr(d, "name", None) or getattr(d.entity, "username", None) or "?"
+                    if account_id:
+                        with database.get_conn() as conn:
+                            database.log_activity(conn, account_id, "story_view", 1, who)
                     if random.random() < like_chance:
                         try:
                             await asyncio.sleep(random.uniform(1.5, 4.0))
                             await client(StoryReactionRequest(peer=d.entity, story_id=max(s.id for s in items),
                                                               reaction=ReactionEmoji(emoticon="❤")))
-                            print(f"  лайк сторис «{getattr(d, 'name', '?')}»")
+                            print(f"  лайк сторис «{who}»")
+                            if account_id:
+                                with database.get_conn() as conn:
+                                    database.log_activity(conn, account_id, "story_like", 1, who)
                         except Exception:  # noqa: BLE001 — реакции на сторис могут быть закрыты
                             pass
                     if account_id:
@@ -790,17 +797,20 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
                 "read": max(2, plan.get("read", 6) // 3)}
         ca_mix = knock = False
     me = await client.get_me()
-    def audit(text: str) -> None:
-        """Поштучный журнал для пульта: фактическое действие и его время."""
+    def audit(text: str, kind: str | None = None, n: int = 1, detail: str | None = None) -> None:
+        """Поштучный журнал для пульта: фактическое действие и его время. kind —
+        вид действия для отчёта «Активность» (account_activity)."""
         with database.get_conn() as conn:
             database.add_event(conn, "warm_action", f"🌱 {acc.get('label') or acc['id']}",
                                text, level="info", account_id=acc["id"])
+            if kind:
+                database.log_activity(conn, acc["id"], kind, n, detail, src="warmup")
     print(f"[#{acc['id']} @{me.username or me.id}] стадия {stage}: каналы {plan['channels']}, "
           f"ЛС {plan['msgs']}, лайки {plan.get('react', 0)}, чтение {plan.get('read', 0)}")
 
     # 1) заходим в онлайн (живой пользователь открыл приложение)
     await _go_online(client)
-    audit("зашёл в Telegram онлайн")
+    audit("зашёл в Telegram онлайн", "online")
     await asyncio.sleep(random.uniform(2, 6))
 
     # на старте — оформляем профиль (bio/аватар), если пусто
@@ -815,7 +825,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
         try:
             await client(JoinChannelRequest(ch))
             joined += 1
-            audit(f"вступил в канал @{ch}")
+            audit(f"вступил в канал @{ch}", "join_channel", detail=f"@{ch}")
             print(f"  вступил в @{ch}")
         except Exception as e:  # noqa: BLE001
             print(f"  [канал @{ch}] {e}")
@@ -839,12 +849,12 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
             print(f"  [исследование] пропущено: {type(exc).__name__}: {exc}")
     reads = await _read_feed(client, max(0, plan.get("read", 8) - (1 if research else 0)))
     if reads:
-        audit(f"прочитал ленту: {reads} чатов")
+        audit(f"прочитал ленту: {reads} чатов", "read", reads)
 
     # 4) лайкаем посты (реакции в каналах/группах)
     reacts = await _react_feed(client, plan.get("react", 0))
     if reacts:
-        audit(f"поставил реакции: {reacts} постов")
+        audit(f"поставил реакции: {reacts} постов", "react", reacts)
 
     # 4b) смотрим сторис из ленты (ещё живее)
     stories = await _view_stories(client, plan.get("react", 1), acc["id"])
@@ -868,7 +878,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
             continue
         s = await _send_chatter(client, ent, 1, label=peer)
         if s:
-            audit(f"написал своему аккаунту {peer}")
+            audit(f"написал своему аккаунту {peer}", "msg_own", s, detail=peer)
         left -= s
         sent_total += s
 
@@ -883,7 +893,7 @@ async def _warm_one_body(client, acc, anchors, peers, ca_mix: bool = False,
     if knock:
         try:
             if await _knock(client, acc):
-                audit("постучался в один контакт базы")
+                audit("постучался в один контакт базы", "knock")
         except Exception as e:  # noqa: BLE001
             print(f"  [стук] пропуск: {e}")
 
@@ -1081,6 +1091,10 @@ async def _upkeep_passive(acc: dict) -> None:
         reads = await _read_feed(client, random.randint(*UPKEEP_READ))
         reacts = await _react_feed(client, random.randint(*UPKEEP_REACT))
         stories = await _view_stories(client, random.randint(1, 2), acc["id"])
+        with database.get_conn() as conn:
+            database.log_activity(conn, acc["id"], "online", 1, src="upkeep")
+            database.log_activity(conn, acc["id"], "read", reads, src="upkeep")
+            database.log_activity(conn, acc["id"], "react", reacts, src="upkeep")
         suffix = (f", исследовал #{research['chat_id']} ({research['status']})"
                   if research else "")
         print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}{suffix}")

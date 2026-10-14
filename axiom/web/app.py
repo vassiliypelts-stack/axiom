@@ -9842,6 +9842,140 @@ def accounts_lifecycle(days: int | None = None) -> JSONResponse:
     return JSONResponse(data)
 
 
+# --------------------------- Активность команды (отчёт) --------------------------- #
+# Вид действия → подпись и группа графика. Порядок здесь = порядок колонок в пульте.
+# Источники разные (см. _ACTIVITY_SQL), но в отчёт они приходят одним списком
+# «день · аккаунт · вид · сколько» — пульт сам режет его фильтрами без запросов.
+_ACTIVITY_KINDS = [
+    ("join_channel", "Вступил в каналы", "join"),
+    ("join_chat", "Вступил в группы", "join"),
+    ("research", "Исследовал группы", "presence"),
+    ("online", "Заходы в онлайн", "presence"),
+    ("read", "Прочитал чатов", "presence"),
+    ("react", "Реакции в ленте", "react"),
+    ("boost_react", "Реакции в своих каналах", "react"),
+    ("story_view", "Сторис просмотрено", "story"),
+    ("story_like", "Сторис лайкнуто", "story"),
+    ("boost_comment", "Комментарии в каналах", "talk"),
+    ("msg_own", "Переписка между своими", "talk"),
+    ("knock", "Тихий стук в базу", "talk"),
+    ("msg_out", "Сообщения людям", "talk"),
+    ("msg_in", "Ответы от людей", "talk"),
+]
+_ACTIVITY_GROUPS = [
+    ("join", "Вступления"), ("react", "Реакции"), ("story", "Сторис"),
+    ("talk", "Сообщения и комментарии"), ("presence", "Онлайн, чтение, исследование"),
+]
+# Действия прогрева лежат в account_activity; остальное — в своих таблицах, где
+# оно и так записано поштучно. Дни считаем по Москве: в ней живёт владелец.
+_ACTIVITY_SQL = """
+SELECT date(ts,'+3 hours') d, account_id, kind, n FROM account_activity WHERE ts >= :t0
+UNION ALL
+SELECT date(done_at,'+3 hours'), account_id, 'boost_'||kind, 1 FROM boost_actions
+ WHERE status='done' AND done_at >= :t0
+UNION ALL
+SELECT date(ts,'+3 hours'), account_id, CASE direction WHEN 'out' THEN 'msg_out' ELSE 'msg_in' END, 1
+  FROM messages WHERE account_id IS NOT NULL AND ts >= :t0
+UNION ALL
+SELECT date(joined_at,'+3 hours'), account_id, 'join_chat', 1 FROM account_chats WHERE joined_at >= :t0
+UNION ALL
+SELECT date(COALESCE(finished_at,created_at),'+3 hours'), account_id, 'research', 1 FROM chat_research_runs
+ WHERE account_id IS NOT NULL AND status IN ('done','unavailable') AND COALESCE(finished_at,created_at) >= :t0
+"""
+
+
+def _activity_window(days: int) -> tuple[str, str, str]:
+    """(t0 для SQL, первый день прошлого периода, первый день текущего) — даты МСК."""
+    today = (_dtmod.datetime.utcnow() + _dtmod.timedelta(hours=3)).date()
+    start = today - _dtmod.timedelta(days=days - 1)
+    prev = start - _dtmod.timedelta(days=days)
+    return str(prev - _dtmod.timedelta(days=1)), str(prev), str(start)
+
+
+@app.get("/api/activity/report")
+def activity_report(days: int = 7) -> JSONResponse:
+    """Сводка действий команды: по дням, аккаунтам и видам действий за период и
+    такой же период до него (для сравнения «стало больше/меньше»). Read-only."""
+    days = max(1, min(int(days or 7), 90))
+    t0, prev, start = _activity_window(days)
+    database.init_db()
+    with database.get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT d, account_id, kind, SUM(n) n FROM ({_ACTIVITY_SQL}) "
+            "WHERE d >= :d0 AND account_id IS NOT NULL GROUP BY d, account_id, kind ORDER BY d",
+            {"t0": t0, "d0": prev}).fetchall()
+        active_ids = {r["account_id"] for r in rows}
+        accs = conn.execute(
+            "SELECT id, label, tg_name, phone, username, status, spam_status, "
+            "COALESCE(acc_role,'') acc_role, COALESCE(protected,0) protected, warm_stage, "
+            "session_state, session_alive, proxy_alive, country, "
+            "CASE WHEN COALESCE(tg_2fa,'')<>'' THEN 1 ELSE 0 END has_2fa, "
+            "CAST(julianday('now') - julianday(COALESCE(bought_at, created_at)) AS INTEGER) days_alive "
+            "FROM accounts ORDER BY id").fetchall()
+        last = {r["a"]: r["ts"] for r in conn.execute(
+            "SELECT a, MAX(ts) ts FROM ("
+            " SELECT account_id a, ts FROM account_activity"
+            " UNION ALL SELECT account_id, done_at FROM boost_actions WHERE status='done'"
+            " UNION ALL SELECT account_id, ts FROM messages WHERE account_id IS NOT NULL AND direction='out'"
+            ") GROUP BY a").fetchall()}
+    accounts = []
+    for a in accs:
+        d = dict(a)
+        if d["status"] == "archived" and d["id"] not in active_ids:
+            continue                       # мёртвые без действий в окне только шумят
+        d["last_ts"] = last.get(d["id"])
+        accounts.append(d)
+    return JSONResponse({
+        "days": days, "start": start, "prev_start": prev,
+        "kinds": [{"key": k, "label": lb, "group": g} for k, lb, g in _ACTIVITY_KINDS],
+        "groups": [{"key": k, "label": lb} for k, lb in _ACTIVITY_GROUPS],
+        "accounts": accounts,
+        "daily": [[r["d"], r["account_id"], r["kind"], r["n"]] for r in rows],
+    })
+
+
+@app.get("/api/activity/feed")
+def activity_feed(ids: str = "", days: int = 7, kind: str = "", limit: int = 200) -> JSONResponse:
+    """Лента действий с текстами: что именно сделал аккаунт (канал, комментарий,
+    сообщение, группа). ids — через запятую; пусто — вся команда."""
+    days = max(1, min(int(days or 7), 90))
+    limit = max(1, min(int(limit or 200), 500))
+    _, _, start = _activity_window(days)
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()][:500]
+    where, params = ["d >= ?"], [start]
+    if id_list:
+        where.append(f"account_id IN ({','.join('?' * len(id_list))})")
+        params += id_list
+    if kind:
+        where.append("kind = ?")
+        params.append(kind)
+    sql = f"""SELECT * FROM (
+      SELECT ts, date(ts,'+3 hours') d, account_id, kind, n, detail FROM account_activity
+      UNION ALL
+      SELECT done_at, date(done_at,'+3 hours'), account_id, 'boost_'||kind, 1,
+             '@'||channel||' · '||COALESCE(payload,'') FROM boost_actions WHERE status='done'
+      UNION ALL
+      SELECT m.ts, date(m.ts,'+3 hours'), m.account_id,
+             CASE m.direction WHEN 'out' THEN 'msg_out' ELSE 'msg_in' END, 1,
+             COALESCE(c.name, c.username, '') || ' · ' || substr(m.text, 1, 160)
+        FROM messages m LEFT JOIN contacts c ON c.id = m.contact_id WHERE m.account_id IS NOT NULL
+      UNION ALL
+      SELECT ac.joined_at, date(ac.joined_at,'+3 hours'), ac.account_id, 'join_chat', 1,
+             COALESCE(ch.title, ch.username, '#'||ac.chat_id)
+        FROM account_chats ac LEFT JOIN chats ch ON ch.id = ac.chat_id
+      UNION ALL
+      SELECT COALESCE(r.finished_at, r.created_at), date(COALESCE(r.finished_at, r.created_at),'+3 hours'),
+             r.account_id, 'research', 1, COALESCE(ch.title, ch.username, '#'||r.chat_id) || ' · ' || r.status
+        FROM chat_research_runs r LEFT JOIN chats ch ON ch.id = r.chat_id
+       WHERE r.account_id IS NOT NULL AND r.status IN ('done','unavailable')
+    ) WHERE {' AND '.join(where)} ORDER BY ts DESC LIMIT ?"""
+    params.append(limit)
+    database.init_db()
+    with database.get_conn() as conn:
+        items = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    return JSONResponse({"items": items})
+
+
 @app.get("/api/accounts/spare")
 def accounts_spare_status() -> JSONResponse:
     """Сколько аккаунтов застраховано запасной сессией, а сколько ходит без страховки."""

@@ -582,3 +582,20 @@ CREATE TABLE IF NOT EXISTS wa_outbox (
     sent_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wa_outbox_acc ON wa_outbox(account_id, status);
+
+-- Журнал действий аккаунтов для отчёта «Активность»: одно действие (или пачка
+-- одинаковых, n) — одна строка. Пишут прогрев, пассивная живость и сторис.
+-- Реакции/комментарии в своих каналах, сообщения, вступления и исследования
+-- групп сюда НЕ дублируются: отчёт берёт их из boost_actions, messages,
+-- account_chats и chat_research_runs.
+CREATE TABLE IF NOT EXISTS account_activity (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id  INTEGER NOT NULL,
+    kind        TEXT NOT NULL,           -- online|join_channel|read|react|story_view|story_like|msg_own|knock
+    n           INTEGER DEFAULT 1,
+    detail      TEXT,
+    src         TEXT,                    -- warmup|upkeep|backfill
+    ts          TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_account_activity_ts ON account_activity(ts);
+CREATE INDEX IF NOT EXISTS idx_account_activity_acc ON account_activity(account_id, ts);

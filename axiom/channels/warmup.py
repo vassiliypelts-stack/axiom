@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+import time
 from datetime import datetime
 
 from telethon import TelegramClient, functions
@@ -48,6 +49,13 @@ LIKE_EMOJIS = ["👍", "❤️", "🔥", "👌", "😁", "🙏"]
 # на каждый день: в STORY_LIKE_OFF_DAY дней лайков нет вовсе, в остальные — случайная
 # доля из STORY_LIKE_RANGE.
 STORY_LIKE_OFF_DAY = 0.2
+# Прогон обрывает планировщик (subprocess timeout: прогрев 1800 с, поддержка 3600 с).
+# Раньше обрыв приходился на хвост списка по id: 14.10.2026 тридцать новых номеров
+# ни разу не прогрелись, а прогон обрывался посреди сессии аккаунта. Теперь первыми
+# идут те, кого дольше не грели, а следующий аккаунт прогон не начинает, если до
+# обрыва осталось мало времени, — остаток берёт следующий заход.
+WARM_RUN_BUDGET_SEC = 1500
+UPKEEP_RUN_BUDGET_SEC = 3300
 STORY_LIKE_RANGE = (0.1, 0.75)
 
 
@@ -1187,7 +1195,12 @@ async def run_upkeep(only_id: int | None = None) -> None:
     if len(pool) % 2:
         silent.append(pool[-1])
 
+    t0 = time.monotonic()
+    over = lambda: only_id is None and time.monotonic() - t0 > UPKEEP_RUN_BUDGET_SEC  # noqa: E731
     for a, b in pairs:
+        if over():
+            print("время поддержки вышло — остаток возьмёт следующий заход")
+            break
         # Обе стороны сначала ведут себя как люди: полистали ленту, полайкали.
         await _upkeep_passive(a)
         await _upkeep_passive(b)
@@ -1198,6 +1211,9 @@ async def run_upkeep(only_id: int | None = None) -> None:
         await asyncio.sleep(random.uniform(60, 240))
 
     for acc in silent:
+        if over():
+            print("время поддержки вышло — остаток возьмёт следующий заход")
+            break
         await _upkeep_passive(acc)
         with database.get_conn() as conn:
             conn.execute("UPDATE accounts SET last_upkeep_at=datetime('now') WHERE id=?",
@@ -1238,7 +1254,12 @@ async def run(only_id: int | None = None) -> None:
         return
     print(f"прогреваю {len(accs)} аккаунт(ов); якорей-получателей: {len(anchors)}; "
           f"ЦА-микс: {'вкл' if ca_mix else 'выкл'}; тихий стук: {'вкл' if knock else 'выкл'}")
-    for acc in accs:
+    accs.sort(key=lambda a: a.get("last_warm_at") or "")
+    t0 = time.monotonic()
+    for i, acc in enumerate(accs):
+        if only_id is None and time.monotonic() - t0 > WARM_RUN_BUDGET_SEC:
+            print(f"время прогона вышло: осталось {len(accs) - i} — их возьмёт следующий заход")
+            break
         try:
             await _warm_one(acc, anchors, accs, ca_mix=ca_mix, knock=knock)
         except Exception as e:  # noqa: BLE001

@@ -11143,6 +11143,12 @@ function actRender(){
   // по персонам — сравнение «кто сколько делает на один аккаунт»
   const byP={};c.accs.forEach(a=>{const p=actPersona(a);const o=byP[p]=byP[p]||{n:0,acts:{__all:0},spam:0};o.n++;if(a.spam_status==="limited")o.spam++;
     const pa=c.per[a.id]||{};Object.entries(pa).forEach(([k,n])=>o.acts[k]=(o.acts[k]||0)+n);});
+  // Имена с одним аккаунтом (старые «Василий Кузнецов» и т.п.) сворачиваем в одну строку:
+  // двадцать строк по одному номеру топят сравнение команд друг с другом.
+  const fold=Object.entries(byP).filter(([,o])=>o.n<2);
+  if(fold.length>2){const o={n:0,acts:{__all:0},spam:0,other:true};
+    fold.forEach(([p,x])=>{delete byP[p];o.n+=x.n;o.spam+=x.spam;Object.entries(x.acts).forEach(([k,n])=>o.acts[k]=(o.acts[k]||0)+n);});
+    byP[`прочие имена (${fold.length})`]=o;}
   const cmpCols=["joins","reacts","story_like","comments","msg_out"].map(k=>ACT_TILES.find(t=>t.key===k));
   const silent=c.accs.filter(a=>!c.per[a.id]);
   const why=a=>a.session_alive===0||(a.session_state&&a.session_state!=="alive")?`сессия: ${a.session_state||"мертва"}`
@@ -11160,7 +11166,7 @@ function actRender(){
     <div class="act-2col">
       <div class="act-card"><h3>По персонам <span class="sub" style="font-weight:400">· клик — смотреть только её</span></h3>
         <div style="overflow-x:auto"><table class="act-tbl"><thead><tr><th>Персона</th><th>акк.</th><th>действий</th><th>на акк. в день</th>${cmpCols.map(t=>`<th>${esc(t.label)}</th>`).join("")}</tr></thead><tbody>
-        ${Object.entries(byP).sort((a,b)=>b[1].acts.__all-a[1].acts.__all).map(([p,o])=>`<tr class="clk" data-p="${esc(p)}"><td>${esc(p)}${o.spam?` <span class="badge b-stop" title="${SB_TIP}">🚫 ${o.spam}</span>`:""}</td><td>${o.n}</td><td>${actNum(o.acts.__all)}</td><td>${(o.acts.__all/o.n/D).toFixed(1)}</td>${cmpCols.map(t=>`<td>${actNum(c.sum(o.acts,t.kinds))}</td>`).join("")}</tr>`).join("")||'<tr><td colspan="9" class="sub">нет аккаунтов под фильтром</td></tr>'}
+        ${Object.entries(byP).sort((a,b)=>b[1].acts.__all-a[1].acts.__all).map(([p,o])=>`<tr class="${o.other?"":"clk"}" data-p="${esc(p)}"${o.other?' title="имена, у которых по одному аккаунту — выбери нужное в списке «все имена»"':""}><td>${esc(p)}${o.spam?` <span class="badge b-stop" title="${SB_TIP}">🚫 ${o.spam}</span>`:""}</td><td>${o.n}</td><td>${actNum(o.acts.__all)}</td><td>${(o.acts.__all/o.n/D).toFixed(1)}</td>${cmpCols.map(t=>`<td>${actNum(c.sum(o.acts,t.kinds))}</td>`).join("")}</tr>`).join("")||'<tr><td colspan="9" class="sub">нет аккаунтов под фильтром</td></tr>'}
         </tbody></table></div></div>
       <div class="act-card"><h3>Молчат ${periodWord} <span class="sub" style="font-weight:400">· ${silent.length} из ${nAcc}</span></h3>
         <div class="act-feed" style="max-height:260px">${silent.slice(0,80).map(a=>`<div class="act-fi"><span class="a" data-id="${a.id}">${esc(actName(a))}</span><span class="d">${sbBadge(a)} <span class="sub">${esc(why(a))}</span></span></div>`).join("")||'<div class="sub">все отработали 👍</div>'}</div></div>

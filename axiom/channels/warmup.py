@@ -42,9 +42,24 @@ CHATTER = ["привет)", "как дела?", "ты тут?", "норм всё
 CHANNELS = ["telegram", "durov", "tginfo", "telegram_tips", "trends"]
 # Эмодзи-реакции (лайки постов) — как живой пользователь.
 LIKE_EMOJIS = ["👍", "❤️", "🔥", "👌", "😁", "🙏"]
-# Доля просмотренных сторис, под которыми ставим «сердечко». Живой человек лайкает
-# не каждую историю: лайк на всём подряд выглядит как накрутка.
-STORY_LIKE_CHANCE = 0.4
+# Лайки сторис. Живой человек лайкает не каждую историю, и в разные дни по-разному:
+# сегодня под половиной, завтра ни одной. Ровные «40% каждый день у каждого» — такой
+# же почерк накрутки, как лайк подряд под всеми. Поэтому доля своя у каждого аккаунта
+# на каждый день: в STORY_LIKE_OFF_DAY дней лайков нет вовсе, в остальные — случайная
+# доля из STORY_LIKE_RANGE.
+STORY_LIKE_OFF_DAY = 0.2
+STORY_LIKE_RANGE = (0.1, 0.75)
+
+
+def _story_like_chance(account_id: int | None) -> float:
+    """Доля лайков под просмотренными сторис для аккаунта на сегодня (по МСК).
+
+    Зерно — аккаунт + дата: повторный прогрев в тот же день держит ту же долю, а
+    на следующий день она другая."""
+    rnd = random.Random(f"story-like:{account_id}:{_msk_now().date().isoformat()}")
+    if rnd.random() < STORY_LIKE_OFF_DAY:
+        return 0.0
+    return rnd.uniform(*STORY_LIKE_RANGE)
 
 # План прогрева на ~2 недели (один запуск = одна «ступень»/день). Плавно нарастает.
 # Первые дни — ТОЛЬКО пассив: вступил в канал, почитал ленту, лайкнул, был онлайн.
@@ -380,6 +395,7 @@ async def _view_stories(client, n: int, account_id: int | None = None) -> int:
     except Exception:  # noqa: BLE001
         return 0
     done = 0
+    like_chance = _story_like_chance(account_id)
     try:
         async for d in client.iter_dialogs(limit=25):
             if done >= n:
@@ -393,7 +409,7 @@ async def _view_stories(client, n: int, account_id: int | None = None) -> int:
                 items = getattr(getattr(res, "stories", None), "stories", None) or []
                 if items:
                     await client(ReadStoriesRequest(peer=d.entity, max_id=max(s.id for s in items)))
-                    if random.random() < STORY_LIKE_CHANCE:
+                    if random.random() < like_chance:
                         try:
                             await asyncio.sleep(random.uniform(1.5, 4.0))
                             await client(StoryReactionRequest(peer=d.entity, story_id=max(s.id for s in items),

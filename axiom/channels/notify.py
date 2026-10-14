@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import config
@@ -241,6 +242,48 @@ async def _send_to_owner(sender_id, target: str, text: str, what: str, contact_i
             pass
 
 
+# Сколько последних реплик показывать владельцу дословно под пересказом.
+BRIEF_TAIL = 4
+
+
+def _dialog_brief(contact_id: int, campaign_id: int | None) -> list[str]:
+    """Пересказ переписки для уведомления о лиде: суть в 2-4 строках и последние
+    реплики дословно.
+
+    14.10.2026 Василий: «когда приходит лид, нужно краткое содержание диалога: что
+    бот сказал и как ответил лид, чтобы я понимал суть и контекст». Раньше в
+    уведомлении была только последняя реплика человека, а «+» или «Жду конкретную
+    информацию» без контекста ни о чём не говорят: перед звонком приходилось
+    открывать пульт и читать всю переписку."""
+    with database.get_conn() as conn:
+        rows = database.get_history(conn, contact_id)
+    msgs = [(r["direction"], (r["text"] or "").strip()) for r in rows if (r["text"] or "").strip()]
+    if not msgs:
+        return []
+    who = {"in": "Лид", "out": "Мы"}
+    transcript = "\n".join(f"{who.get(d, d)}: {t[:600]}" for d, t in msgs[-30:])
+    out: list[str] = []
+    try:
+        from agent import llm
+        summary = llm.text(
+            config.agent_model(campaign_id),
+            "Ты помогаешь владельцу быстро понять переписку перед звонком лиду. «Мы» — "
+            "наш бот, «Лид» — человек. Перескажи суть в 2-4 коротких строках: что мы "
+            "предложили и рассказали, что человек ответил и спросил, на чем "
+            "остановились, что важно знать перед звонком (вопросы без ответа, "
+            "сомнения, что он выбрал). Только факты из переписки, без вступлений, "
+            "оценок и markdown.",
+            [{"role": "user", "content": transcript}], max_tokens=300, timeout=30)
+        if summary:
+            out.append("📝 Суть диалога:\n" + summary.strip()[:900])
+    except Exception as e:  # noqa: BLE001 — без пересказа уведомление всё равно уходит
+        print(f"[notify] пересказ диалога не получился (контакт #{contact_id}): {e}")
+    icon = {"in": "👤", "out": "🤖"}
+    tail = "\n".join(f"{icon.get(d, '•')} {t[:250]}" for d, t in msgs[-BRIEF_TAIL:])
+    out.append("💬 Последние реплики:\n" + tail)
+    return out
+
+
 async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | None,
                           zoom_link: str | None = None, campaign_id: int | None = None) -> None:
     """Лучшая попытка — сбой не должен ронять основной поток ответа агента, поэтому
@@ -257,6 +300,9 @@ async def notify_meeting(contact_id: int, meeting_at: str | None, notes: str | N
         if not row:
             return
         text = _build_text(row, meeting_at, notes, zoom_link)
+        brief = await asyncio.to_thread(_dialog_brief, contact_id, campaign_id)
+        if brief:
+            text += "\n\n" + "\n\n".join(brief)
         await _send_to_owner(sender_id, target, text, "договорились о встрече", contact_id)
     except Exception as e:  # noqa: BLE001 — вспомогательное уведомление, не должно ронять диалог
         print(f"[notify] сбой отправки владельцу: {e}")
@@ -739,7 +785,10 @@ async def notify_hot(contact_id: int, last_message: str | None, campaign_id: int
         phone_link = _phone_link(row["phone"])
         if phone_link:
             lines.append(f"Номер: {phone_link}")
-        if last_message and last_message.strip():
+        brief = await asyncio.to_thread(_dialog_brief, contact_id, campaign_id)
+        if brief:
+            lines.extend(brief)
+        elif last_message and last_message.strip():
             lines.append(f"Последнее сообщение: {last_message.strip()[:300]}")
         lines.append(_chat_link(row["id"]))
         lines.append(f"Связался — нажми «✅ связался» в пульте. Без отметки через "

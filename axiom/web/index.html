@@ -10999,7 +10999,7 @@ function actColumns(el,days,series,opts={}){
   const W=Math.max(320,el.clientWidth||700),H=opts.h||220,pl=44,pr=8,pt=10,pb=24;
   const tot=days.map(d=>series.reduce((s,x)=>s+(x.vals[d]||0),0));
   const raw=Math.max(1,...tot),mag=Math.pow(10,Math.floor(Math.log10(raw))),
-    step=[1,2,2.5,5,10].map(k=>k*mag/2).find(s=>raw/s<=4)||mag,top=Math.ceil(raw/step)*step;
+    step=Math.max(1,[1,2,2.5,5,10].map(k=>k*mag/2).find(s=>raw/s<=4)||mag),top=Math.ceil(raw/step)*step;
   const iw=W-pl-pr,ih=H-pt-pb,band=iw/days.length,bw=Math.min(24,Math.max(3,band*0.62));
   const y=v=>pt+ih-(v/top)*ih;
   let g="";
@@ -11152,7 +11152,7 @@ function actRender(){
   const cmpCols=["joins","reacts","story_like","comments","msg_out"].map(k=>ACT_TILES.find(t=>t.key===k));
   const silent=c.accs.filter(a=>!c.per[a.id]);
   const why=a=>a.session_alive===0||(a.session_state&&a.session_state!=="alive")?`сессия: ${a.session_state||"мертва"}`
-    :(a.proxy_alive===0?"прокси не отвечает":(a.status==="warming"?"на прогреве, ждёт своего часа":"нет действий"));
+    :(a.proxy_alive===0?"прокси не отвечает":(a.status==="warming"?"на прогреве, заходов за период не было":"нет действий"));
   $("#act-body").innerHTML=`
     <div class="act-hero"><div class="v">${actNum(total)}</div>
       <div><div style="font-size:15px;font-weight:600">действий ${periodWord} ${actDelta(total,totalPrev)} <span class="sub" style="font-weight:400">к ${prevWord} (${actNum(totalPrev)})</span></div>

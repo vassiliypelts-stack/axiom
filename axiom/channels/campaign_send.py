@@ -718,7 +718,9 @@ def _team(cid: int) -> list[dict]:
             # Пауза после PeerFlood закончилась меньше суток назад — номер «на
             # восстановлении», шлёт половину нормы (см. RECOVERY_HOURS).
             "CASE WHEN a.spam_pause_until > datetime('now', ?) THEN 1 ELSE 0 END "
-            "     AS recovering "
+            "     AS recovering, "
+            # Сколько раз номер ловил PeerFlood — с FLOOD_TRICKLE_AT он шлёт по одному.
+            "COALESCE(a.spam_flood_count,0) AS floods "
             "FROM accounts a JOIN campaign_accounts ca ON ca.account_id = a.id "
             "WHERE ca.campaign_id = ? AND a.status <> 'banned' "
             # Аккаунт на прогреве ещё не готов к холодным ЛС незнакомцам — ловит PeerFlood
@@ -796,6 +798,16 @@ BONUS_GAP_HOURS = 3
 # за который его и придержали. Первые RECOVERY_HOURS после снятия паузы номер
 # шлёт половину нормы (но не меньше одного) и без бонуса за чистый день.
 RECOVERY_HOURS = 24
+
+# НОМЕР С ПОВТОРНЫМИ PeerFlood ОСТАЁТСЯ В КОМАНДЕ, НО ШЛЁТ ПО ОДНОМУ.
+#
+# Раньше третий флуд выводил номер из команд всех кампаний. 12-13.10.2026 по 9407
+# так выпали все 32 взрослых номера, и кампания с планом 40 в день встала на ноль.
+# Решение владельца 14.10: номер не выкидываем, а держим на одной попытке в сутки
+# с суточной передышкой после каждого отказа. Неудачная попытка письма не доставляет,
+# а одно холодное ЛС в день — не тот почерк, за который Telegram банит.
+FLOOD_TRICKLE_AT = 3
+FLOOD_TRICKLE_PAUSE_HOURS = 24
 
 
 def _age_cap(days_alive, cap: int) -> tuple[int, str | None]:
@@ -1309,11 +1321,17 @@ async def run(cid: int, limit: int, test: bool = False,
                     print(f"[{label}] 🩹 после PeerFlood сутки на восстановлении — "
                           f"норма {half} вместо {acc_cap}")
                 acc_cap = half
+            trickle = not test and int(acc.get("floods") or 0) >= FLOOD_TRICKLE_AT
+            if trickle and acc_cap > 1:
+                print(f"[{label}] 💧 PeerFlood {acc['floods']}-й раз — норма 1 в сутки "
+                      f"вместо {acc_cap}")
+                acc_cap = 1
             # Бонус за чистый день (см. CLEAN_DAY_BONUS): норма выбрана, PeerFlood
             # сегодня не было, с прошлого письма прошло BONUS_GAP_HOURS — ещё одно.
             aid = int(acc["id"])
             sent_n = sent_today_by_account.get(aid, 0)
-            if (not test and not recovering and CLEAN_DAY_BONUS and sent_n >= acc_cap
+            if (not test and not recovering and not trickle and CLEAN_DAY_BONUS
+                    and sent_n >= acc_cap
                     and aid not in flooded_today
                     and last_sent_hours_ago.get(aid, 0) >= BONUS_GAP_HOURS):
                 acc_cap += CLEAN_DAY_BONUS
@@ -1784,23 +1802,12 @@ async def run(cid: int, limit: int, test: bool = False,
                         # то есть снова начать писать незнакомцам синхронно, тем же
                         # почерком, за который их и придержали. Добавляем каждому свой
                         # случайный сдвиг, чтобы номера выходили вразнобой.
+                        # С FLOOD_TRICKLE_AT-го флуда номер из команды НЕ выводим (так
+                        # 12-13.10 выпали все 32 номера 9407), а держим на одной попытке
+                        # в сутки: пауза ровно сутки плюс разброс, норма 1 (см. _team).
+                        if n >= FLOOD_TRICKLE_AT:
+                            pause_hours = FLOOD_TRICKLE_PAUSE_HOURS
                         pause_hours += random.randint(0, 6)
-                        # ТРЕТИЙ флуд — номер выводим из команды совсем. Пауза лечит
-                        # разовый всплеск, но номер, ловящий PeerFlood раз за разом,
-                        # уже помечен Telegram: каждый следующий заход приближает бан
-                        # и портит репутацию остальной команды. Раньше система его
-                        # только паузила и исправно возвращала в бой — так Василий4292
-                        # дошёл до трёх флудов, оставаясь в кампании 9407.
-                        if n >= 3:
-                            conn.execute("DELETE FROM campaign_accounts WHERE account_id=?",
-                                         (s["id"],))
-                            database.add_event(
-                                conn, "ban", f"⛔ Номер выведен: «{s['label']}»",
-                                f"{n}-й PeerFlood — номер убран из команд всех кампаний. "
-                                f"Дальше гонять его значит копить отказы и тянуть вниз "
-                                f"репутацию остальных. Сессия и сам аккаунт целы: можно "
-                                f"дать ему отлежаться пару недель и вернуть вручную.",
-                                level="warn", campaign_id=cid, account_id=s["id"])
                         conn.execute(
                             "UPDATE accounts SET spam_flood_count=?, "
                             "spam_pause_until=datetime('now', ?) WHERE id=?",
@@ -1808,8 +1815,9 @@ async def run(cid: int, limit: int, test: bool = False,
                         database.add_event(conn, "ban", f"⚠ PeerFlood: «{s['label']}»",
                                            f"слишком много ЛС незнакомцам подряд ({n}-й раз) — Telegram "
                                            f"придержал отправку. Автоматически выведен из холодной "
-                                           f"рассылки на {pause_hours} ч. Снимется само; чаще одного "
-                                           f"раза в неделю — стоит вывести номер из команды насовсем.",
+                                           f"рассылки на {pause_hours} ч. Снимется само"
+                                           + (f"; номер остаётся в команде с нормой 1 в сутки."
+                                              if n >= FLOOD_TRICKLE_AT else "."),
                                            level="warn", campaign_id=cid, account_id=s["id"])
                 else:
                     with database.get_conn() as conn:

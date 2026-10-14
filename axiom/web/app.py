@@ -4497,6 +4497,7 @@ def contact_mark_hot(contact_id: int) -> JSONResponse:
         conn.execute("UPDATE contacts SET hot_since=datetime('now'), "
                      "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",
                      (contact_id,))
+    import asyncio
     from channels import notify
     asyncio.run(notify.notify_hot(contact_id, last_in["text"] if last_in else None,
                                   camp["id"] if camp else None))

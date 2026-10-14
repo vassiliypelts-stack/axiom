@@ -221,9 +221,14 @@ async def content_text_write(body: dict = Body(...)) -> JSONResponse:
                             status_code=400)
 
     try:
-        # Разом, а не по очереди: один черновик агент пишет около минуты.
+        # Первый черновик пишется один: он кладёт правила (около 40 тыс. токенов)
+        # в кэш Claude, и остальные читают их в десять раз дешевле. Запусти все
+        # разом — каждый заплатил бы за запись кэша сам. Остальные — параллельно:
+        # один черновик агент пишет около минуты.
         # Сорвался один — остальные всё равно отдаём, ошибку показываем рядом.
-        done = await asyncio.gather(*jobs, return_exceptions=True)
+        done = await asyncio.gather(jobs[0], return_exceptions=True)
+        if len(jobs) > 1:
+            done += await asyncio.gather(*jobs[1:], return_exceptions=True)
         drafts = [d for d in done if not isinstance(d, BaseException)]
         failed = [str(d)[:200] for d in done if isinstance(d, BaseException)]
         if not drafts:

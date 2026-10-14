@@ -4479,6 +4479,30 @@ def set_status(contact_id: int, payload: dict = Body(...)) -> JSONResponse:
     return JSONResponse({"ok": True, "status": status})
 
 
+@app.post("/api/contact/{contact_id}/hot")
+def contact_mark_hot(contact_id: int) -> JSONResponse:
+    """Отметить контакт горячим лидом руками и отправить владельцу то же уведомление,
+    что шлёт агент (notify.notify_hot).
+
+    Нужно для лидов, которых агент упустил: 13.10.2026 «+» Владимира и просьба
+    Екатерины «пришлите подробности» в 9407 не дошли до Василия из-за ошибки в
+    признаке кампании со своим стуком (исправлено в 834c19e)."""
+    with database.get_conn() as conn:
+        if not conn.execute("SELECT 1 FROM contacts WHERE id=?", (contact_id,)).fetchone():
+            return JSONResponse({"error": "контакт не найден"}, status_code=404)
+        camp = database.get_contact_campaign(conn, contact_id)
+        last_in = conn.execute(
+            "SELECT text FROM messages WHERE contact_id=? AND direction='in' "
+            "ORDER BY id DESC LIMIT 1", (contact_id,)).fetchone()
+        conn.execute("UPDATE contacts SET hot_since=datetime('now'), "
+                     "lead_since=COALESCE(lead_since, datetime('now')) WHERE id=?",
+                     (contact_id,))
+    from channels import notify
+    asyncio.run(notify.notify_hot(contact_id, last_in["text"] if last_in else None,
+                                  camp["id"] if camp else None))
+    return JSONResponse({"ok": True, "campaign_id": camp["id"] if camp else None})
+
+
 # ---- Воронки (как в Битрикс) ---------------------------------------------- #
 @app.get("/api/pipelines")
 def pipelines_list() -> JSONResponse:

@@ -4507,7 +4507,7 @@ async function viewCarouselSources(v,cached){
   smartTable(mount,{tableKey:"car_sources",rows:list,searchKeys:["topic","author","angle"],emptyText:"По этим фильтрам залётов нет — ослабьте фильтры.",
     groupOptions:[{key:"author",label:"донор"},{key:"rating",label:"оценка"},{key:"month",label:"месяц"}],hiddenByDefault:["metric","pain","angle"],
     columns:[{key:"day",label:"Дата",cls:"mono sub"},{key:"author",label:"Донор"},{key:"image",label:"Обложка",render:p=>carThumb(p.image)},
-      {key:"topic",label:"Тема",render:p=>esc(p.topic||"—")},{key:"spike",label:"Всплеск",cls:"right",render:p=>`<span class="tag${p.spike>=5?" lime":""}">×${String(p.spike).replace(".",",")}</span>`},
+      {key:"topic",label:"Тема",render:p=>{const t=String(p.topic||"").trim(),first=t.split("\n")[0];return `<span title="${esc(t)}">${esc(first.length>140?first.slice(0,140)+"…":first||"—")}</span>`;}},{key:"spike",label:"Всплеск",cls:"right",render:p=>`<span class="tag${p.spike>=5?" lime":""}">×${String(p.spike).replace(".",",")}</span>`},
       {key:"likes",label:"Лайки",cls:"mono right"},{key:"comments",label:"Комм.",cls:"mono right"},{key:"metric",label:"Отклик",cls:"mono right"},
       {key:"norm",label:"Норма донора",cls:"mono right"},{key:"pain",label:"Боль",cls:"sub"},{key:"angle",label:"Наш угол",cls:"sub"},
       {key:"rating",label:"Оценка",render:rate,filterBucket:p=>p.rating||"без оценки"},{key:"link",label:"",cls:"right",render:p=>cfOpenIcon(p.link)}]});

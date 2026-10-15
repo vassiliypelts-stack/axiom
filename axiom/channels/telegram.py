@@ -816,23 +816,40 @@ def campaign_prompt_with_objections(conn, camp) -> str | None:
             "WHERE campaign_id=? AND COALESCE(enabled,1)=1 "
             "AND answer IS NOT NULL AND TRIM(answer)<>'' "
             "ORDER BY COALESCE(hits,0) DESC, id", (camp["id"],)).fetchall()
-        if objs:
-            lines = []
-            for o in objs:
-                head = (o["title"] or o["objection"] or "").strip()
-                said = (o["objection"] or "").strip()
-                body = (o["answer"] or "").strip()
-                if said and said != head:
-                    lines.append(f"— {head} (звучит как «{said}»):\n  {body}")
-                else:
-                    lines.append(f"— {head}:\n  {body}")
+        # Записи с названием «Вопрос: …» — база знаний: ответы владельца на типовые
+        # вопросы о проекте (что выращивают, где участки, документы). Без неё агент
+        # либо уходил от ответа («это к представителю»), либо выдумывал: 13.10.2026
+        # «Честно не знаю про ландшафт», 08.10 «да, я в США». Остальное — возражения.
+        questions, objections = [], []
+        for o in objs:
+            head = (o["title"] or o["objection"] or "").strip()
+            said = (o["objection"] or "").strip()
+            body = (o["answer"] or "").strip()
+            if head.lower().startswith("вопрос"):
+                q = head.split(":", 1)[1].strip() if ":" in head else head
+                variants = f" (спрашивают и так: «{said}»)" if said and said != q else ""
+                questions.append(f"— {q}{variants}:\n  {body}")
+            elif said and said != head:
+                objections.append(f"— {head} (звучит как «{said}»):\n  {body}")
+            else:
+                objections.append(f"— {head}:\n  {body}")
+        if questions:
+            campaign_prompt += (
+                "\n\nБАЗА ЗНАНИЙ — ОТВЕТЫ ВЛАДЕЛЬЦА НА ТИПОВЫЕ ВОПРОСЫ.\n"
+                "На такой вопрос СНАЧАЛА коротко ответь по существу (1-2 предложения)\n"
+                "этим ответом, своими словами, потом веди к ключевому шагу. Факты о\n"
+                "проекте бери только отсюда и из сценария, сам ничего не придумывай.\n"
+                "Ответа здесь нет: не пиши «не знаю», скажи, что эту деталь пришлёт\n"
+                "представитель, и дай выбор: презентация или короткий звонок.\n\n"
+                + "\n".join(questions))
+        if objections:
             campaign_prompt += (
                 "\n\nБАЗА ВОЗРАЖЕНИЙ — ГОТОВЫЕ ОТРАБОТКИ ВЛАДЕЛЬЦА.\n"
                 "Это проверенные ответы на то, что люди реально говорят. Если реплика\n"
                 "человека похожа на одно из возражений ниже — отрабатывай ИМЕННО так,\n"
                 "своими словами, не выдумывая свой вариант. Дальше действуй по общему\n"
                 "правилу: одна отработка, потом призыв и передача представителю.\n\n"
-                + "\n".join(lines))
+                + "\n".join(objections))
     return campaign_prompt
 
 

@@ -63,6 +63,22 @@ POLL_SEC = 5            # с какой дробностью проверять 
 # свободный адрес. Пускаем строго по одному (см. вызов в _try).
 _HEAL_LOCK = asyncio.Lock()
 
+# Соединение, оборванное бесплатным MTProto-прокси, у Telegram живёт ещё какое-то время:
+# прокси не передаёт ему закрытие. Если в это окно тот же ключ придёт снова (а у
+# публичного прокси выходных адресов несколько) или через ДРУГОЙ прокси — Telegram видит
+# ключ с двух IP и сжигает его (AuthKeyDuplicatedError). 18–20.10.2026 так сгорели
+# 16 аккаунтов: «отключён» → через 2–3 с снова «слушаю» → через минуту ключ мёртв; или
+# таймаут → heal подставил другой прокси → ещё таймаут → ещё замена → ключ мёртв.
+# Поэтому: после обрыва ждём RECONNECT_COOLDOWN_SEC, а IP меняем, только если аккаунт
+# не был на связи дольше SWAP_COOLDOWN_SEC. Входящие за паузу не теряются — _connect
+# догоняет их через catch_up().
+RECONNECT_COOLDOWN_SEC = 180
+SWAP_COOLDOWN_SEC = 15 * 60
+_DROPPED_AT: dict[int, float] = {}   # acc_id -> когда слушатель увидел обрыв
+_LIVE_AT: dict[int, float] = {}      # acc_id -> когда соединение последний раз было живо
+_STARTED_AT: float = 0.0             # старт слушателя: после OOM-рестарта старые соединения
+                                     # не закрыты штатно, и сменить IP сразу тоже нельзя
+
 
 async def _enabled() -> bool:
     """Тумблер «слушать/не слушать» из пульта. Живёт в settings, а не в памяти процесса:
@@ -922,18 +938,29 @@ async def _supervise() -> None:
             await _nap(RECHECK_SEC, on)
             continue
         want = {a["id"]: a for a in _listenable() if a["id"] not in leased}
-        # 1) отключаем выбывших / отвалившихся (переподключим на следующем круге)
+        now = _monotonic()
+        # 1) отключаем выбывших / отвалившихся (переподключим не раньше чем через
+        #    RECONNECT_COOLDOWN_SEC — см. комментарий у константы)
         for acc_id, client in list(CLIENTS.items()):
-            if acc_id not in want or not client.is_connected():
+            dropped = not client.is_connected()
+            if acc_id not in want or dropped:
                 try:
                     await client.disconnect()
                 except Exception:  # noqa: BLE001
                     pass
                 CLIENTS.pop(acc_id, None)
                 STATUS["accounts"].pop(acc_id, None)
-                _log(f"[#{acc_id}] отключён — переподключусь при след. проверке")
+                if dropped:
+                    _DROPPED_AT[acc_id] = now
+                    _log(f"[#{acc_id}] обрыв соединения — переподключусь не раньше чем "
+                         f"через {RECONNECT_COOLDOWN_SEC // 60} мин (тот же ключ сразу = риск двух IP)")
+                else:
+                    _log(f"[#{acc_id}] отключён — переподключусь при след. проверке")
+            else:
+                _LIVE_AT[acc_id] = now
         # 2) подключаем новых параллельно (у каждого свой таймаут)
-        to_add = [a for aid, a in want.items() if aid not in CLIENTS]
+        to_add = [a for aid, a in want.items() if aid not in CLIENTS
+                  and now - _DROPPED_AT.get(aid, -1e9) >= RECONNECT_COOLDOWN_SEC]
 
         CONNECTING.update(a["id"] for a in to_add)
         await _publish()
@@ -1023,6 +1050,16 @@ async def _supervise() -> None:
                     _log(f"[#{a['id']}] сессия мертва ({name}) — прокси не трогаю, "
                          f"нужен повторный вход в разделе «Аккаунты»")
                     return
+                # Таймаут не значит, что Telegram нас не видел: прокси мог довезти
+                # рукопожатие и держать его. Новый IP — только когда аккаунт давно не
+                # был на связи, иначе это и есть «ключ с двух адресов».
+                last = max(_LIVE_AT.get(a["id"], 0.0), _DROPPED_AT.get(a["id"], 0.0), _STARTED_AT)
+                quiet = _monotonic() - last
+                if quiet < SWAP_COOLDOWN_SEC:
+                    _log(f"[#{a['id']}] прокси не отвечает, но аккаунт был на связи "
+                         f"{int(quiet // 60)} мин назад — IP не меняю ещё "
+                         f"{int((SWAP_COOLDOWN_SEC - quiet) // 60) + 1} мин")
+                    return
                 try:
                     from channels.proxy_pool import heal
                     async with _HEAL_LOCK:
@@ -1063,7 +1100,14 @@ async def _supervise() -> None:
         await _nap(RECHECK_SEC, on)
 
 
+def _monotonic() -> float:
+    import time
+    return time.monotonic()
+
+
 async def run() -> None:
+    global _STARTED_AT
+    _STARTED_AT = _monotonic()
     database.init_db()
     _log("=== старт многоаккаунтного слушателя входящих ===")
     await _supervise()

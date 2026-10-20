@@ -23,7 +23,10 @@ from channels.telegram import _build_client, build_client
 from db import database
 
 # Маркеры «всё чисто» в ответе @SpamBot (он отвечает на языке аккаунта).
-_OK_MARKERS = ("no limits", "good news", "свободен", "нет ограничен", "ваш аккаунт свободен")
+# Узбекский: «Sizga xushxabarimiz bor! Hozirda hisobingizda hech qanday cheklov yoʻq» —
+# 20.10.2026 два чистых аккаунта ушли в «limited», потому что маркеров не было.
+_OK_MARKERS = ("no limits", "good news", "свободен", "нет ограничен", "ваш аккаунт свободен",
+               "xushxabar", "hech qanday cheklov")
 _BAN_MARKERS = ("banned", "deleted", "заблокирован", "удал")
 
 

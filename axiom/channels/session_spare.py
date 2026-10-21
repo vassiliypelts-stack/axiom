@@ -347,9 +347,9 @@ async def rekey_one(acc_id: int) -> tuple[bool, str]:
     slots.sort(key=lambda x: x[1] or "")      # старшая первой: её не сносят как «свежий вход»
     api_id = int(acc["api_id"]) if acc.get("api_id") else None
 
-    errors: list[str] = []
     if not slots:
-        return await _rekey_fresh(acc_id)
+        return False, "запаски нет — перевыпускать не на что"
+    errors: list[str] = []
     for spare_str, made_at in slots:
         try:
             client = build_client(StringSession(spare_str), acc.get("proxy"), api_id,
@@ -391,74 +391,12 @@ async def rekey_one(acc_id: int) -> tuple[bool, str]:
                 await client.disconnect()   # снимает бронь — слушатель берёт уже новый ключ
             except Exception:  # noqa: BLE001
                 pass
-    if all("мертва" in e for e in errors):
-        # Все запаски убиты, а основная жива: кто-то со вторым экземпляром основного ключа
-        # сбросил «другие сеансы» (наш код этого не делает при выпущенной запаске). Чистим
-        # мёртвые слоты и идём через свежий ключ.
-        with database.get_conn() as conn:
-            conn.execute("UPDATE accounts SET tg_session_spare=NULL, spare_made_at=NULL, "
-                         "tg_session_spare2=NULL, spare2_made_at=NULL, "
-                         "spare_note='запаски сброшены чужим входом' WHERE id=?", (acc_id,))
-        res_ok, res_msg = await _rekey_fresh(acc_id)
-        return res_ok, f"обе запаски были мертвы → {res_msg}"
     return False, "; ".join(errors) or "не получилось"
 
 
-async def _rekey_fresh(acc_id: int) -> tuple[bool, str]:
-    """Перевыпуск, когда живой запаски нет: выпустить свежую, проверить её и ВЫЙТИ из
-    старого основного ключа им самим (auth.logOut). Выход убивает этот ключ везде, где
-    лежит его копия. Свежая запаска сбросить чужие входы не может (сутки), а выход из
-    собственного ключа Telegram разрешает сразу.
-
-    Безопасный порядок: старый ключ гасим только после того, как свежая запаска ответила
-    «авторизована». Проверка запаски идёт без своей брони (lease=False): аккаунт уже
-    забронирован клиентом основной сессии в этом же процессе."""
-    from telethon.tl.functions.auth import LogOutRequest
-    with database.get_conn() as conn:
-        row = conn.execute(
-            "SELECT id, label, phone, tg_session, tg_session_spare, tg_session_spare2, "
-            "proxy, api_id, api_hash, tg_2fa FROM accounts WHERE id=?", (acc_id,)).fetchone()
-    acc = dict(row)
-    ok, msg = await _mint(acc, kick_others=False)
-    if not ok:
-        return False, f"свежая запаска не выпустилась: {msg}"
-    with database.get_conn() as conn:
-        spare_str = conn.execute("SELECT tg_session_spare FROM accounts WHERE id=?",
-                                 (acc_id,)).fetchone()["tg_session_spare"]
-    api_id = int(acc["api_id"]) if acc.get("api_id") else None
-    primary = build_client(StringSession(acc["tg_session"]), acc.get("proxy"), api_id, acc.get("api_hash"))
-    spare = build_client(StringSession(spare_str), acc.get("proxy"), api_id, acc.get("api_hash"),
-                         allow_shared_ip=True, lease=False)
-    try:
-        await asyncio.wait_for(primary.connect(), timeout=CONNECT_TIMEOUT)   # бронь аккаунта
-        await asyncio.wait_for(spare.connect(), timeout=CONNECT_TIMEOUT)
-        if not await spare.is_user_authorized():
-            return False, "свежая запаска не авторизована — старый ключ не трогаю"
-        me = await spare.get_me()
-        await primary(LogOutRequest())
-        with database.get_conn() as conn:
-            conn.execute(
-                "UPDATE accounts SET tg_session=?, tg_session_spare=NULL, spare_made_at=NULL, "
-                "tg_session_spare2=NULL, spare2_made_at=NULL, spare_used_at=datetime('now'), "
-                "spare_note='ключ перевыпущен через свежую запаску, старый ключ закрыт выходом', "
-                "session_alive=1, session_state='alive', "
-                "session_reason='ключ перевыпущен (старый общий ключ закрыт выходом)', "
-                "session_checked_at=datetime('now') WHERE id=?", (spare_str, acc_id))
-            database.add_event(
-                conn, "account_protected",
-                f"🔑 «{acc.get('label') or acc_id}»: ключ перевыпущен",
-                "Старый ключ (его копия была у кого-то ещё) закрыт выходом, основной стала "
-                "свежая авторизация. Новые запаски выпустит автозащита.",
-                level="good", account_id=acc_id)
-        return True, f"перевыпущен на свежий ключ (@{getattr(me, 'username', None) or me.id}), старый закрыт выходом"
-    except Exception as e:  # noqa: BLE001
-        return False, f"ошибка: {str(e)[:90]}"
-    finally:
-        for c in (spare, primary):
-            try:
-                await c.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
+# _rekey_fresh (свежая запаска + auth.logOut старого ключа) убран 21.10.2026: на первом
+# же аккаунте (9454) свежая запаска через минуту после выхода из старого ключа оказалась
+# разлогинена — аккаунт потерян. Не возвращать без понимания, кто сносит новые входы.
 
 
 async def count_authorizations(acc: dict) -> int | None:

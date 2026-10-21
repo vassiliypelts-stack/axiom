@@ -1210,18 +1210,18 @@ def accounts_bulk(payload: dict = Body(...)) -> JSONResponse:
             _spawn("channels.proxy_pool", "--refresh", "--ids", ",".join(str(i) for i in queued))
         return JSONResponse({"ok": True, "queued": len(queued), "skipped_protected": skipped})
     if action == "rekey":
-        # Живым аккаунтам с запаской: перейти на свой ключ и сбросить прочие входы
-        # (см. channels.session_spare.rekey_one). Один процесс на всю пачку — внутри
-        # строго по одному, с паузой.
+        # Живым аккаунтам: перейти на свой ключ и закрыть старый (см.
+        # channels.session_spare.rekey_one — живая запаска или свежая + выход из старого).
+        # Один процесс на всю пачку — внутри строго по одному, с паузой.
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "
-                                "AND COALESCE(protected,0)=0 "
-                                "AND COALESCE(tg_session_spare,'')<>''", ids).fetchall()
+                                "AND COALESCE(protected,0)=0 AND session_alive=1 "
+                                "AND COALESCE(tg_session,'')<>''", ids).fetchall()
         queued = [r["id"] for r in rows]
         if queued:
             _spawn("channels.session_spare", "--rekey", "--ids", ",".join(str(i) for i in queued))
         return JSONResponse({"ok": True, "queued": len(queued),
-                             "skipped_no_spare_or_protected": len(ids) - len(queued)})
+                             "skipped_dead_or_protected": len(ids) - len(queued)})
     if action == "onboard":
         with database.get_conn() as conn:
             rows = conn.execute(f"SELECT id FROM accounts WHERE id IN ({qm}) "

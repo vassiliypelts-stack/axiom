@@ -140,7 +140,7 @@ def _followup_text(step: dict, contact_row, streak: int) -> str:
     # {а|б} — синонимизация, как в опенере кампании (антиспам: одинаковый текст
     # веером Telegram вычисляет как рассылку). Раскрываем ДО format: иначе
     # «{кстати|и еще}» уронил бы format с KeyError.
-    return deslop.spin(tmpl).format(name=_name(contact_row), spec=spec)
+    return _put_name(deslop.spin(tmpl), _address(contact_row), spec=spec)
 NOSHOW_TEMPLATE = "{name}, не получилось созвониться( давай перенесём? когда удобно на этой неделе?"
 
 # НАПОМИНАНИЕ ПОСЛЕ СТУКА (идея Василия, 30.09.2026). На «Салют, Елена?» не ответили
@@ -260,27 +260,53 @@ def _name(row) -> str:
     return fio.address_soft((row["name"] or "").strip())
 
 
-def _reminder_text(row, time: str, link: str) -> str:
-    """Напоминание о созвоне с обращением по имени, только если имя настоящее.
+def _address(row) -> str:
+    """Обращение в сообщении человеку: «Имя Отчество» или одно «Имя», иначе пусто.
 
-    В карточках, заведённых списком номеров, в contacts.name лежит заглушка, и
-    10.10.2026 знакомому Василия ушло «lead, напоминаю про созвон сегодня в 12:00».
-    Берём имя из карточки, иначе из подписи в Telegram (contacts.tg_name: так человек
-    записан в книжке номера, по ней же обращается стук кампании). Имя не опознано —
-    пишем без обращения, это лучше любой заглушки."""
+    Правило Василия: «Имя Фамилия» в личке не пишет никто, это сразу выдаёт бота.
+    14.10.2026 знакомому ушло «Имя Фамилия, не получилось созвониться(»: _name
+    без отчества отдаёт строку как есть, а она бывает «Имя Фамилия». Поэтому без
+    отчества оставляем одно имя из карточки, иначе из подписи в Telegram
+    (contacts.tg_name: так человек записан в книжке номера). В карточках, заведённых
+    списком номеров, в name лежит заглушка («lead»), и 10.10.2026 ушло «lead,
+    напоминаю про созвон». Имя не опознано — пишем без обращения, это лучше заглушки."""
     from channels import fio
-    keys = row.keys()
+    keys = row.keys() if hasattr(row, "keys") else []
     name = _name(row)
-    if not fio.parse(name).patronymic:
-        # Без отчества оставляем одно имя: «Руслан», а не «Руслан Хисматуллин Ппмск».
-        tg_name = (row["tg_name"] if "tg_name" in keys else "") or ""
-        name = fio.first_in_label(name) or fio.first_in_label(tg_name)
-    text = REMINDER_TEMPLATE.format(name=name, time=time,
-                                    link=f"\n\nссылка: {link}" if link else "")
+    if fio.parse(name).patronymic:
+        return name
+    tg_name = (row["tg_name"] if "tg_name" in keys else "") or ""
+    return fio.first_in_label(name) or fio.first_in_label(tg_name)
+
+
+def _put_name(tmpl: str, name: str, **kw) -> str:
+    """Подставить обращение. Пустое — срезаем «, » в начале и поднимаем букву."""
+    text = tmpl.format(name=name, **kw)
     if not name:
         text = text.lstrip(" ,")
         text = text[:1].upper() + text[1:]
     return text
+
+
+def _reminder_text(row, time: str, link: str) -> str:
+    """Напоминание о созвоне с обращением по имени (см. _address)."""
+    return _put_name(REMINDER_TEMPLATE, _address(row), time=time,
+                     link=f"\n\nссылка: {link}" if link else "")
+
+
+def _owner_holds(conn, contact_id: int) -> bool:
+    """Владелец ведёт этот диалог сам («✋ Ручное»): от системы ему не пишем НИЧЕГО.
+
+    Правило Василия: увидел, что он написал человеку сам, — бот молчит. Пауза
+    ставилась (listener._owner_wrote), но учитывал её только дожим молчунов, а
+    напоминание о созвоне и «не дошёл» шли мимо. 14.10.2026 знакомому, с
+    которым Василий сам созвонился 12.10 по своей ссылке, пришло «не получилось
+    созвониться( давай перенесём?»: сделка так и стояла на «встреча назначена».
+    Вернуть систему в диалог — «🤖 Авто» в «Диалогах», это снимает паузу."""
+    camp = database.get_contact_campaign(conn, contact_id)
+    return bool(camp) and conn.execute(
+        "SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
+        (camp["id"], contact_id)).fetchone() is not None
 
 
 def _trailing_out_streak(history) -> tuple[int, str | None]:
@@ -338,7 +364,7 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
     ).fetchall()
     for d in deals:
         dt = _parse_dt(d["meeting_at"])
-        if not dt:
+        if not dt or _owner_holds(conn, d["contact_id"]):
             continue
         hours_left = (dt - now).total_seconds() / 3600
         if REMINDER_MIN_HOURS <= hours_left <= REMINDER_BEFORE_HOURS:
@@ -351,17 +377,19 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
 
     # --- НЕДОШЁЛ: встреча прошла, стадия не сдвинулась ---
     overdue = conn.execute(
-        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, c.name, c.tg_user_id "
+        "SELECT d.id AS deal_id, d.meeting_at, d.contact_id, c.name, c.person_name, "
+        "c.tg_name, c.tg_user_id "
         "FROM deals d JOIN contacts c ON c.id = d.contact_id "
         "WHERE d.stage = 'meeting_set' AND d.meeting_at IS NOT NULL "
         "AND (d.outcome IS NULL OR d.outcome = '')"
     ).fetchall()
     for d in overdue:
         dt = _parse_dt(d["meeting_at"])
-        if dt and (now - dt).total_seconds() / 3600 >= NOSHOW_AFTER_HOURS:
+        if dt and (now - dt).total_seconds() / 3600 >= NOSHOW_AFTER_HOURS \
+                and not _owner_holds(conn, d["contact_id"]):
             actions.append(Action(
                 "noshow", d["contact_id"], d["tg_user_id"], d["name"] or "",
-                NOSHOW_TEMPLATE.format(name=_name(d)), deal_id=d["deal_id"],
+                _put_name(NOSHOW_TEMPLATE, _address(d)), deal_id=d["deal_id"],
             ))
 
     # --- ДОЖИМ молчунов ---
@@ -545,6 +573,12 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
 
 def apply(conn, action: Action) -> None:
     """Отмечает результат в книжке после успешной отправки."""
+    # Напоминание и «не дошёл» тоже кладём в переписку: раньше их не было ни в
+    # «Диалогах», ни в истории для агента — «не получилось созвониться» знакомому
+    # 14.10.2026 нашлось только в самом Telegram.
+    if action.kind in ("reminder", "noshow") and action.tg_msg_ids:
+        database.add_message(conn, action.contact_id, "out", action.text, intent=None,
+                             account_id=action.account_id, tg_msg_ids=action.tg_msg_ids)
     if action.kind == "reminder" and action.deal_id:
         conn.execute("UPDATE deals SET reminder_sent = 1 WHERE id = ?", (action.deal_id,))
     elif action.kind == "noshow" and action.deal_id:

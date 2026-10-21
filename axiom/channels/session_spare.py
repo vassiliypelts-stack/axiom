@@ -317,6 +317,83 @@ async def promote_one(acc_id: int) -> tuple[bool, str]:
     return True, f"восстановлен: {who}. {left[:1].upper() + left[1:]}"
 
 
+async def rekey_one(acc_id: int) -> tuple[bool, str]:
+    """Живая основная → перейти на собственную запаску и выкинуть все остальные входы.
+
+    ЗАЧЕМ. tdata купленного аккаунта — это ключ с компьютера продавца. Если копия того же
+    ключа осталась у продавца (или ушла второму покупателю), Telegram при каждом их выходе
+    в сеть видит ключ с двух адресов и сжигает его. Партия 13.10.2026 сгорела так на 16 из
+    30 при тех же прокси и том же слушателе, на которых партии 01.10 и 10.10 (33 шт.) живы
+    все. Запаска — авторизация, которую выпустили мы сами (QR-механика), её ключа нет ни у
+    кого. Поднимаем её основной и с неё сбрасываем все прочие авторизации: старый общий
+    ключ умирает вместе с чужой копией.
+
+    Порядок. Клиент запаски бронирует аккаунт (session_lease знает и ключи запасок), так что
+    слушатель отпускает старый ключ ДО сброса. Базу переписываем, пока бронь ещё наша, —
+    слушатель после снятия брони подключится уже новым ключом. Сброс сносит и вторую
+    запаску: новые выпустит автозащита. Запаска моложе суток сбросить не даст (fresh-лок) —
+    тогда ничего не меняем."""
+    with database.get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, label, tg_session, tg_session_spare, spare_made_at, "
+            "tg_session_spare2, spare2_made_at, proxy, api_id, api_hash, session_alive "
+            "FROM accounts WHERE id=?", (acc_id,)).fetchone()
+    if not row:
+        return False, "аккаунт не найден"
+    acc = dict(row)
+    slots = [(s.strip(), at) for s, at in ((acc.get("tg_session_spare"), acc.get("spare_made_at")),
+                                            (acc.get("tg_session_spare2"), acc.get("spare2_made_at")))
+             if (s or "").strip()]
+    if not slots:
+        return False, "запаски нет — перевыпускать не на что"
+    slots.sort(key=lambda x: x[1] or "")      # старшая первой: её не сносят как «свежий вход»
+    api_id = int(acc["api_id"]) if acc.get("api_id") else None
+
+    errors: list[str] = []
+    for spare_str, made_at in slots:
+        try:
+            client = build_client(StringSession(spare_str), acc.get("proxy"), api_id,
+                                  acc.get("api_hash"))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"клиент не собрался: {str(e)[:60]}")
+            continue
+        try:
+            await asyncio.wait_for(client.connect(), timeout=CONNECT_TIMEOUT)
+            if not await client.is_user_authorized():
+                errors.append(f"запаска от {made_at} мертва")
+                continue
+            try:
+                await client(ResetAuthorizationsRequest())
+            except FreshResetAuthorisationForbiddenError:
+                return False, f"запаска от {made_at} моложе суток — Telegram не даёт сбросить чужие входы"
+            me = await client.get_me()
+            who = f"@{getattr(me, 'username', None) or me.id}"
+            with database.get_conn() as conn:
+                conn.execute(
+                    "UPDATE accounts SET tg_session=?, tg_session_spare=NULL, spare_made_at=NULL, "
+                    "tg_session_spare2=NULL, spare2_made_at=NULL, spare_used_at=datetime('now'), "
+                    "spare_note='ключ перевыпущен: основной стала наша запаска, прочие входы сброшены', "
+                    "session_alive=1, session_state='alive', "
+                    "session_reason='ключ перевыпущен (старый общий ключ отозван)', "
+                    "session_checked_at=datetime('now') WHERE id=?",
+                    (spare_str, acc_id))
+                database.add_event(
+                    conn, "account_protected",
+                    f"🔑 «{acc.get('label') or acc_id}»: ключ перевыпущен",
+                    "Основной сессией стала наша запаска, все остальные входы (включая копию "
+                    "ключа у продавца) сброшены. Новые запаски выпустит автозащита.",
+                    level="good", account_id=acc_id)
+            return True, f"перевыпущен на запаску от {made_at} ({who}), прочие входы сброшены"
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"ошибка: {str(e)[:80]}")
+        finally:
+            try:
+                await client.disconnect()   # снимает бронь — слушатель берёт уже новый ключ
+            except Exception:  # noqa: BLE001
+                pass
+    return False, "; ".join(errors) or "не получилось"
+
+
 async def count_authorizations(acc: dict) -> int | None:
     """Сколько всего активных устройств у аккаунта — для диагностики в пульте."""
     try:
@@ -335,8 +412,22 @@ async def count_authorizations(acc: dict) -> int | None:
             pass
 
 
-async def run(ids: list[int] | None, dry: bool, kick_others: bool, promote: int | None) -> None:
+async def run(ids: list[int] | None, dry: bool, kick_others: bool, promote: int | None,
+              rekey: bool = False) -> None:
     database.init_db()
+
+    if rekey:
+        # Строго по одному и с паузой: пачка одновременных сбросов сеансов с одного
+        # сервера выглядит для антифрода как захват серии аккаунтов.
+        done, failed = [], []
+        for i, aid in enumerate(ids or []):
+            ok, msg = await rekey_one(aid)
+            print(f"[#{aid}] {'🔑' if ok else '✗'} {msg}")
+            (done if ok else failed).append({"id": aid, "msg": msg})
+            if i < len(ids) - 1:
+                await asyncio.sleep(20)
+        print(json.dumps({"ok": True, "rekeyed": len(done), "failed": failed}, ensure_ascii=False))
+        return
 
     if promote:
         ok, msg = await promote_one(promote)
@@ -391,6 +482,8 @@ def main() -> None:
                    help="сначала сбросить чужие сессии (выкинуть продавца), потом выпустить запаску")
     p.add_argument("--promote", type=int, metavar="ID",
                    help="основная мертва: поднять запаску этого аккаунта как основную")
+    p.add_argument("--rekey", action="store_true",
+                   help="с --ids: живым аккаунтам перейти на свою запаску и сбросить прочие входы")
     args = p.parse_args()
     ids = [int(x) for x in args.ids.split(",") if x.strip()] if args.ids else None
 
@@ -399,7 +492,7 @@ def main() -> None:
     if not args.dry:
         paused = _pause_listener_if_running()
     try:
-        asyncio.run(run(ids, args.dry, args.kick_others, args.promote))
+        asyncio.run(run(ids, args.dry, args.kick_others, args.promote, args.rekey))
     finally:
         if paused:
             with database.get_conn() as conn:

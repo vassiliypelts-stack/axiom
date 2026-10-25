@@ -132,6 +132,14 @@ def verify_code(code: str) -> dict:
             _sessions.pop(sid, None)
 
     _codes.pop(code, None)
+    # Запоминаем, куда писать владельцу: tools/send_owner.py шлёт сюда сообщения
+    # «из любого проекта». Сессии живут только в памяти и умирают с рестартом.
+    try:
+        from db import database
+        with database.get_conn() as conn:
+            database.set_setting(conn, "owner_bot_chat_id", str(entry["chat_id"]))
+    except Exception:  # noqa: BLE001 — вход не должен падать из-за этого
+        pass
     cleanup()
     return {"ok": True, "session_id": session_id}
 

@@ -840,6 +840,19 @@ def settings_agent_model_set(payload: dict = Body(...)) -> JSONResponse:
             {"error": f"под «{model}» нет ключа — агент не сможет ответить. "
                       f"Добавь ключ в .env на сервере или выбери другую модель."},
             status_code=400)
+    # ДИАЛОГИ — ТОЛЬКО CLAUDE. С 13.10.2026 здесь две недели стоял deepseek:deepseek-chat,
+    # и всё это время лиды не доходили до лички: модель не ставила intent 'agreed'/'positive',
+    # а hot (и значит notify_hot) висит только на них. Сбой был полностью молчаливым —
+    # агент отвечал, диалоги шли, тревог не было. Поэтому переключение на чужого
+    # провайдера теперь требует явного подтверждения, а не делается одним кликом.
+    if model and not llm.is_anthropic(model) and not payload.get("i_know_it_breaks_leads"):
+        return JSONResponse(
+            {"error": f"«{model}» — не Claude, а для ЖИВЫХ ДИАЛОГОВ это уже ломало "
+                      f"лидогенерацию: 13-25.10.2026 на DeepSeek агент перестал отмечать "
+                      f"согласие, и 14 лидов не дошли до лички. Диалоги стоят ~1$/мес — "
+                      f"экономить тут нечего. Для массовых задач (обогащение, досье) "
+                      f"дешёвая модель задаётся отдельно, через AXIOM_MODEL."},
+            status_code=400)
     with database.get_conn() as conn:
         database.set_setting(conn, "agent_model", model)
         # Момент переключения: по нему /api/agent/why_silent отличает «агент молчит
@@ -3054,8 +3067,8 @@ def _meetings_scheduler() -> None:
         time.sleep(900)
         try:
             from channels import antiban, listener
-            from scheduler import (apply as sched_apply, check_listener_down,
-                                   check_stuck_replies, collect_due)
+            from scheduler import (apply as sched_apply, check_campaigns_stalled,
+                                   check_listener_down, check_stuck_replies, collect_due)
             # Сторож слушателя — ДО проверки рабочих часов и до всего остального.
             # Выключенный слушатель ломает не отправку, а приём: входящие не попадают
             # никуда. Ночью это так же верно, как днём, и ждать утра нельзя — иначе
@@ -3069,6 +3082,20 @@ def _meetings_scheduler() -> None:
                                 if v.get("ok"))
                 if check_listener_down(conn, listening, enabled):
                     print(f"[сторож] слушатель молчит: enabled={enabled} listening={listening}")
+            # Сторожа «не отвечено вовремя» и «кампания встала» — ЗДЕСЬ, до ночного
+            # выхода ниже: раньше check_stuck_replies стоял после `continue` для ночи и
+            # ночью не запускался вообще. Сами они ничего не шлют контактам (только
+            # тревога в колокольчик и в личку владельцу), поэтому ночное правило
+            # «живым людям не пишем» их не касается; внутри check_stuck_replies и так
+            # стоит свой гейт рабочих часов, а check_campaigns_stalled смотрит окно
+            # каждой кампании отдельно.
+            with database.get_conn() as conn:
+                stuck = check_stuck_replies(conn)
+                if stuck:
+                    print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")
+                stalled = check_campaigns_stalled(conn)
+                if stalled:
+                    print(f"[сторож] кампаний встало: {stalled}")
             # НОЧЬЮ живым людям не пишем — но СВОИ тест-номера это правило не касается:
             # проверять сценарий приходится тогда, когда до него дошли руки, и «приходи
             # в рабочее окно» здесь просто мешает. Риска нет: тестовый контакт — свой же
@@ -3086,9 +3113,6 @@ def _meetings_scheduler() -> None:
                     if not actions:
                         continue              # ночь и тестовых дел нет — ждём утра
                     print(f"[sched] ночь: веду только тест-контакты ({len(actions)})")
-                stuck = check_stuck_replies(conn)
-                if stuck:
-                    print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")
             # Потолок дожимов на ОДИН тик и на аккаунт. Без него накопившаяся очередь
             # (после простоя планировщика её было 22) уходит одной пачкой за секунды с
             # двух-трёх аккаунтов — ровно тот почерк, по которому Telegram узнаёт

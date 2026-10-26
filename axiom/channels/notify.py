@@ -963,6 +963,84 @@ async def notify_sending_resumed(campaign_id: int) -> None:
         print(f"[notify sending] {e}")
 
 
+CRITICAL_FLAG = "critical_notified"
+
+# Сколько держать «тихо» после уведомления об одной и той же беде. Сторожа тикают
+# каждые 15 минут, и без паузы «кампания встала» прилетало бы 96 раз в сутки —
+# после третьего сообщения такие уведомления перестают читать вообще.
+CRITICAL_MUTE_MIN = 180
+
+
+async def notify_critical(key: str, title: str, body: str = "",
+                          campaign_id: int | None = None,
+                          contact_id: int = 0) -> bool:
+    """Критическое событие — СРАЗУ в личку владельцу, а не только в колокольчик.
+
+    ЗАЧЕМ. Сторожа (scheduler.check_stuck_replies, кампания встала, слушатель упал)
+    умели писать только в ленту пульта. 12-25.10.2026 из-за этого две недели никто не
+    знал, что агент молчит живым лидам: 24 диалога висели неотвеченными, среди них
+    человек, прямо просивший прислать материалы, — тревоги исправно копились в
+    колокольчике, куда владелец в эти дни не заходил. Личка долетает: именно там
+    оператор и так весь день.
+
+    `key` — идентификатор БЕДЫ, не события: по нему держится пауза CRITICAL_MUTE_MIN,
+    поэтому он должен быть стабильным между тиками («stuck:18188», а не время).
+    Возвращает True, если уведомление действительно ушло.
+    """
+    try:
+        import time as _t
+        with database.get_conn() as conn:
+            sender_id, target = _owner_route(conn, campaign_id)
+            if not sender_id or not target:
+                return False
+            flag = f"{CRITICAL_FLAG}:{key}"
+            last = database.get_setting(conn, flag, "") or ""
+            if last:
+                try:
+                    if (_t.time() - float(last)) < CRITICAL_MUTE_MIN * 60:
+                        return False       # об этой же беде недавно сказали
+                except ValueError:
+                    pass                   # битое значение — считаем, что не говорили
+        lines = [title]
+        if body.strip():
+            lines.append(body.strip())
+        base = (config.PUBLIC_URL or "").rstrip("/")
+        if contact_id:
+            lines.append(_chat_link(contact_id))
+        elif base:
+            lines.append(base + "/")
+        await _send_to_owner(sender_id, target, "\n".join(lines),
+                             f"критическое: {key}", contact_id)
+        with database.get_conn() as conn:
+            database.set_setting(conn, flag, str(_t.time()))
+        return True
+    except Exception as e:  # noqa: BLE001 — уведомление не должно ронять сторожа
+        print(f"[notify critical] {e}")
+        return False
+
+
+def notify_critical_sync(key: str, title: str, body: str = "",
+                         campaign_id: int | None = None,
+                         contact_id: int = 0) -> bool:
+    """notify_critical из обычного (не async) кода: сторожа в scheduler.py — синхронные.
+
+    Своя обёртка, потому что asyncio.run падает, если цикл в этом потоке уже крутится;
+    у сторожей он не крутится, но полагаться на это в тревожном пути нельзя — молчащая
+    тревога ровно то, что мы здесь и починили."""
+    try:
+        return asyncio.run(notify_critical(key, title, body, campaign_id, contact_id))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                notify_critical(key, title, body, campaign_id, contact_id))
+        finally:
+            loop.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[notify critical] {e}")
+        return False
+
+
 def _date_key() -> str:
     """Сегодняшняя дата по Москве — один отчёт в сутки считаем по рабочему дню."""
     from channels.antiban import msk_now

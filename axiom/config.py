@@ -30,13 +30,21 @@ ANTHROPIC_API_KEYS = os.getenv("ANTHROPIC_API_KEYS", "")
 # Обогащение (массово, дёшево) — Haiku.
 # МУЛЬТИ-МОДЕЛЬНОСТЬ: можно указать «провайдер:модель» и платить копейки за массовые
 # задачи (agent/llm.py). Провайдер по умолчанию — anthropic, т.е. голое имя = Claude.
-#   AXIOM_MODEL=claude-haiku-4-5            → Claude Haiku (как сейчас)
+#   AXIOM_MODEL=claude-haiku-5-5            → Claude Haiku (как сейчас)
 #   AXIOM_MODEL=deepseek:deepseek-chat      → DeepSeek (нужен DEEPSEEK_API_KEY)
 #   AXIOM_MODEL=gemini:gemini-flash-latest  → Gemini (нужен GEMINI_API_KEY)
-MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-4-5")
-# Диалоги агента (где делаются деньги) — можно умнее/дороже: claude-opus-4-8 или
-# claude-sonnet-4-6. По умолчанию = MODEL (Haiku). Переключить через .env: AXIOM_AGENT_MODEL.
-AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", MODEL)
+# ЭТО — МАССОВЫЕ ЗАДАЧИ (обогащение, разметка, досье). Дешёвый провайдер здесь уместен.
+MODEL = os.getenv("AXIOM_MODEL", "claude-haiku-5-5")
+# Диалоги агента (где делаются деньги) — ТОЛЬКО Claude, и по умолчанию Sonnet, а не
+# MODEL: диалог стоит копейки (≈1000 сообщений в месяц), а ошибка в нём стоит лида.
+#
+# НЕ СТАВИТЬ СЮДА ДЕШЁВЫЙ ПРОВАЙДЕР. 13-25.10.2026 диалоги стояли на
+# deepseek:deepseek-chat (переключили, экономя на Sonnet) — и две недели ни один лид
+# не доходил до лички: модель не отмечала согласие, intent 'agreed'/'positive' просто
+# перестал появляться, а hot ставится только по ним (agent/agent.py). Экономия вышла
+# ≈1$ в месяц против 14 потерянных лидов, один из которых прямо просил прислать
+# материалы. Массовые задачи — MODEL выше, диалоги — здесь.
+AGENT_MODEL = os.getenv("AXIOM_AGENT_MODEL", "claude-sonnet-5-5")
 
 
 def agent_model(campaign_id: int | None = None) -> str:

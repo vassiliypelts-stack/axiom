@@ -643,13 +643,31 @@ def check_stuck_replies(conn, now: datetime | None = None) -> int:
         if already:
             continue  # по ЭТОМУ входящему уже сообщили, не дублируем каждые 15 минут
         mins = int((now - last_dt).total_seconds() // 60)
+        who = c["name"] or ("#" + str(c["id"]))
         database.add_event(
-            conn, "stuck_reply", f"⏳ Не отвечено вовремя: {c['name'] or ('#' + str(c['id']))}",
+            conn, "stuck_reply", f"⏳ Не отвечено вовремя: {who}",
             f"Написал(а) {mins} мин назад, ответа от агента до сих пор нет. Причина может "
             f"быть любая (слушатель отвалился, ошибка модели, ещё не найденный баг) — "
             f"открой карточку и посмотри диалог.",
             level="bad", contact_id=c["id"],
         )
+        # В ЛИЧКУ ТОЖЕ. Колокольчик эту тревогу показывал и раньше, но 12-25.10.2026
+        # в него две недели никто не заглядывал: 24 диалога провисели без ответа, среди
+        # них лид, прямо просивший прислать материалы. Молчание агента — это потерянные
+        # деньги, поэтому оно должно догонять владельца там, где он есть.
+        last_txt = (history[-1]["text"] or "").strip()   # get_history → sqlite3.Row, без .get()
+        try:
+            from channels import notify
+            notify.notify_critical_sync(
+                f"stuck:{c['id']}",
+                f"🔴 Агент не ответил: {who}",
+                f"Человек написал {mins} мин назад, ответа от агента нет.\n"
+                + (f"Его последнее сообщение: {last_txt[:200]}\n" if last_txt else "")
+                + "Причина может быть любая (слушатель, ошибка модели, новый баг) — "
+                  "посмотри диалог и ответь руками, если лид живой.",
+                contact_id=c["id"])
+        except Exception as e:  # noqa: BLE001 — тревога не должна ронять сторожа
+            print(f"[stuck] личка не ушла (contact {c['id']}): {e}")
         fired += 1
     return fired
 
@@ -659,6 +677,81 @@ def check_stuck_replies(conn, now: datetime | None = None) -> int:
 # и поднимают обратно (см. web/app._listener_released, channels/session_spare).
 LISTENER_DOWN_MIN = 20
 _LISTENER_ALERT_KEY = "listener_down_alert_ts"
+
+
+# Сколько кампания может стоять в 'running', ничего не отправляя В РАБОЧИЕ ЧАСЫ,
+# прежде чем это станет тревогой. Два часа: дневной объём распределён на окно 09-21,
+# и обычная пауза между заходами — 15-60 минут.
+CAMPAIGN_STALLED_HOURS = 2
+_CAMPAIGN_ALERT_KEY = "campaign_stalled_alert"
+
+
+def check_campaigns_stalled(conn, now: datetime | None = None) -> int:
+    """Сторож: кампания в статусе 'running', окно открыто, а отправок нет.
+
+    ЗАЧЕМ. 'running' значит «идёт», но по факту рассылка встаёт молча: все номера в
+    автопаузах, упёрлись в дневной лимит, кончилась очередь, сдох планировщик. 17-19.09
+    по 9407 кампания так простояла трое суток, и владелец заметил это, только открыв
+    пульт. notify_sending_resumed сообщает, когда отправки ПОШЛИ; обратный случай —
+    когда они встали — не сообщал никто.
+
+    Бьём только в рабочее окно САМОЙ кампании: ночью и в воскресенье тишина штатная
+    (database.outreach_allowed), и тревожить ею бессмысленно.
+
+    Возвращает число кампаний, по которым подняли тревогу.
+    """
+    now = now or _utcnow()
+    fired = 0
+    rows = conn.execute(
+        "SELECT * FROM campaigns WHERE status='running' AND COALESCE(archived,0)=0"
+    ).fetchall()
+    for camp in rows:
+        if not database.outreach_open_anywhere(conn, camp):
+            continue                 # вне окна кампании — тишина по расписанию
+        last = conn.execute(
+            "SELECT MAX(sent_at) t FROM campaign_contacts WHERE campaign_id=?",
+            (camp["id"],)).fetchone()["t"]
+        last_dt = _parse_dt(last) if last else None
+        if last_dt and (now - last_dt).total_seconds() / 3600 < CAMPAIGN_STALLED_HOURS:
+            continue                 # недавно отправляла — всё в порядке
+        left = conn.execute(
+            "SELECT COUNT(*) c FROM campaign_contacts cc JOIN contacts c ON c.id=cc.contact_id "
+            "WHERE cc.campaign_id=? AND c.status='new'", (camp["id"],)).fetchone()["c"]
+        if not left:
+            continue                 # очередь выбрана — это не поломка, а конец аудитории
+        key = f"{_CAMPAIGN_ALERT_KEY}:{camp['id']}"
+        today = _msk_date_key()
+        if (database.get_setting(conn, key, "") or "") == today:
+            continue                 # за сегодня по этой кампании уже сообщили
+        since = (f"с {last_dt.strftime('%d.%m %H:%M')} UTC" if last_dt
+                 else "ни одной отправки вообще")
+        database.add_event(
+            conn, "campaign_stalled", f"🛑 Кампания встала: «{camp['name']}»",
+            f"Статус running, окно открыто, в очереди ещё {left} человек, "
+            f"а отправок нет {since}. Причина обычно одна из: все номера в автопаузах, "
+            f"упёрлись в дневной лимит, нет живых аккаунтов на кампании.",
+            level="bad", campaign_id=camp["id"])
+        try:
+            from channels import notify
+            notify.notify_critical_sync(
+                f"campaign_stalled:{camp['id']}",
+                f"🛑 Кампания встала: «{camp['name']}»",
+                f"Статус running, рабочее окно открыто, в очереди ещё {left} человек, "
+                f"а отправок нет {since}.\n"
+                "Обычно это автопаузы номеров, дневной лимит "
+                f"или нет живых аккаунтов на кампании.",
+                campaign_id=camp["id"])
+        except Exception as e:  # noqa: BLE001
+            print(f"[campaign stalled] личка не ушла (camp {camp['id']}): {e}")
+        database.set_setting(conn, key, today)
+        fired += 1
+    return fired
+
+
+def _msk_date_key() -> str:
+    """Сегодняшняя дата по Москве — «один раз за сутки» считаем по рабочему дню."""
+    from channels.antiban import msk_now
+    return msk_now().strftime("%Y-%m-%d")
 
 
 def check_listener_down(conn, listening: int, enabled: bool, now: datetime | None = None) -> bool:
@@ -705,6 +798,19 @@ def check_listener_down(conn, listening: int, enabled: bool, now: datetime | Non
         f"ни агенту, а дожим и напоминания о созвоне НЕ отправляются (планировщик шлёт "
         f"только через слушателя). Проверь тумблер «Слушатель» и статус аккаунтов.",
         level="bad")
+    # Глухая система — худшее из критических состояний: ломается приём ответов, агент,
+    # дожим и напоминания сразу. В личку, не только в колокольчик.
+    try:
+        from channels import notify
+        notify.notify_critical_sync(
+            "listener_down",
+            "🔇 Слушатель входящих молчит",
+            f"Уже {mins} мин: {why}.\n"
+            "Пока так — ответы клиентов не попадают ни в "
+            f"«Диалоги», ни агенту, а дожим и напоминания НЕ уходят. "
+            f"Проверь тумблер «Слушатель» в пульте.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[listener down] личка не ушла: {e}")
     database.set_setting(conn, _LISTENER_ALERT_KEY, f"fired:{now.isoformat()}")
     return True
 

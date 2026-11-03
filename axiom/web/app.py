@@ -3076,11 +3076,12 @@ def _meetings_scheduler() -> None:
             # он молчал 3.5 часа, и никто не узнал). Тревога в колокольчик человеку
             # ничего не шлёт, поэтому ночное правило «живым людям не пишем» её не
             # касается.
+            alarms: list = []
             with database.get_conn() as conn:
                 enabled = database.get_setting(conn, "listener_enabled", "on") != "off"
                 listening = sum(1 for v in listener.STATUS.get("accounts", {}).values()
                                 if v.get("ok"))
-                if check_listener_down(conn, listening, enabled):
+                if check_listener_down(conn, listening, enabled, alarms=alarms):
                     print(f"[сторож] слушатель молчит: enabled={enabled} listening={listening}")
             # Сторожа «не отвечено вовремя» и «кампания встала» — ЗДЕСЬ, до ночного
             # выхода ниже: раньше check_stuck_replies стоял после `continue` для ночи и
@@ -3090,12 +3091,22 @@ def _meetings_scheduler() -> None:
             # стоит свой гейт рабочих часов, а check_campaigns_stalled смотрит окно
             # каждой кампании отдельно.
             with database.get_conn() as conn:
-                stuck = check_stuck_replies(conn)
+                stuck = check_stuck_replies(conn, alarms=alarms)
                 if stuck:
                     print(f"[сторож] новых тревог «не отвечено вовремя»: {stuck}")
-                stalled = check_campaigns_stalled(conn)
+                stalled = check_campaigns_stalled(conn, alarms=alarms)
                 if stalled:
                     print(f"[сторож] кампаний встало: {stalled}")
+            # Личка — ТОЛЬКО после закрытия conn: notify пишет флаг «уже сообщили»
+            # своим соединением, и внутри открытой записи это «database is locked».
+            for key, title, body, contact_id, campaign_id in alarms:
+                try:
+                    from channels import notify
+                    notify.notify_critical_sync(key, title, body,
+                                                campaign_id=campaign_id,
+                                                contact_id=contact_id)
+                except Exception as e:  # noqa: BLE001 — тревога не роняет тик
+                    print(f"[сторож] личка не ушла ({key}): {e}")
             # НОЧЬЮ живым людям не пишем — но СВОИ тест-номера это правило не касается:
             # проверять сценарий приходится тогда, когда до него дошли руки, и «приходи
             # в рабочее окно» здесь просто мешает. Риска нет: тестовый контакт — свой же

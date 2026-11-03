@@ -602,7 +602,8 @@ def apply(conn, action: Action) -> None:
                      "WHERE contact_id=? AND knock_at IS NOT NULL", (action.contact_id,))
 
 
-def check_stuck_replies(conn, now: datetime | None = None) -> int:
+def check_stuck_replies(conn, now: datetime | None = None,
+                        alarms: list | None = None) -> int:
     """Сторож: контакту пришло входящее, а мы не ответили дольше STUCK_REPLY_HOURS.
 
     ЗАЧЕМ. 12-13.08.2026 агент дважды промолчал живым тестовым лидам подряд — один
@@ -625,6 +626,8 @@ def check_stuck_replies(conn, now: datetime | None = None) -> int:
         return 0
     now = now or _utcnow()
     fired = 0
+    # Копим уведомления, а шлём их ПОСЛЕ закрытия conn: см. ниже про lock.
+    alarms = [] if alarms is None else alarms
     contacts = conn.execute(
         f"SELECT id, name FROM contacts WHERE status IN {ACTIVE_STATUSES}"
     ).fetchall()
@@ -651,23 +654,20 @@ def check_stuck_replies(conn, now: datetime | None = None) -> int:
             f"открой карточку и посмотри диалог.",
             level="bad", contact_id=c["id"],
         )
-        # В ЛИЧКУ ТОЖЕ. Колокольчик эту тревогу показывал и раньше, но 12-25.10.2026
-        # в него две недели никто не заглядывал: 24 диалога провисели без ответа, среди
-        # них лид, прямо просивший прислать материалы. Молчание агента — это потерянные
-        # деньги, поэтому оно должно догонять владельца там, где он есть.
-        last_txt = (history[-1]["text"] or "").strip()   # get_history → sqlite3.Row, без .get()
-        try:
-            from channels import notify
-            notify.notify_critical_sync(
-                f"stuck:{c['id']}",
-                f"🔴 Агент не ответил: {who}",
-                f"Человек написал {mins} мин назад, ответа от агента нет.\n"
-                + (f"Его последнее сообщение: {last_txt[:200]}\n" if last_txt else "")
-                + "Причина может быть любая (слушатель, ошибка модели, новый баг) — "
-                  "посмотри диалог и ответь руками, если лид живой.",
-                contact_id=c["id"])
-        except Exception as e:  # noqa: BLE001 — тревога не должна ронять сторожа
-            print(f"[stuck] личка не ушла (contact {c['id']}): {e}")
+        # В ЛИЧКУ ТОЖЕ, но ПОСЛЕ цикла. notify открывает СВОЁ соединение, а здесь
+        # уже идёт запись (add_event выше): второй писатель по тому же файлу ждёт
+        # busy_timeout и падает с «database is locked». 30.10-03.11.2026 из-за этого
+        # молча не ушло НИ ОДНО уведомление, хотя тревоги в колокольчик встали
+        # исправно — ровно та же немота, которую этот сторож и должен был лечить.
+        last_txt = (history[-1]["text"] or "").strip()   # get_history → Row, без .get()
+        alarms.append((
+            f"stuck:{c['id']}",
+            f"🔴 Агент не ответил: {who}",
+            f"Человек написал {mins} мин назад, ответа от агента нет.\n"
+            + (f"Его последнее сообщение: {last_txt[:200]}\n" if last_txt else "")
+            + "Причина может быть любая (слушатель, ошибка модели, новый баг) — "
+              "посмотри диалог и ответь руками, если лид живой.",
+            c["id"], None))
         fired += 1
     return fired
 
@@ -686,7 +686,8 @@ CAMPAIGN_STALLED_HOURS = 2
 _CAMPAIGN_ALERT_KEY = "campaign_stalled_alert"
 
 
-def check_campaigns_stalled(conn, now: datetime | None = None) -> int:
+def check_campaigns_stalled(conn, now: datetime | None = None,
+                            alarms: list | None = None) -> int:
     """Сторож: кампания в статусе 'running', окно открыто, а отправок нет.
 
     ЗАЧЕМ. 'running' значит «идёт», но по факту рассылка встаёт молча: все номера в
@@ -702,6 +703,7 @@ def check_campaigns_stalled(conn, now: datetime | None = None) -> int:
     """
     now = now or _utcnow()
     fired = 0
+    alarms = [] if alarms is None else alarms
     rows = conn.execute(
         "SELECT * FROM campaigns WHERE status='running' AND COALESCE(archived,0)=0"
     ).fetchall()
@@ -731,18 +733,14 @@ def check_campaigns_stalled(conn, now: datetime | None = None) -> int:
             f"а отправок нет {since}. Причина обычно одна из: все номера в автопаузах, "
             f"упёрлись в дневной лимит, нет живых аккаунтов на кампании.",
             level="bad", campaign_id=camp["id"])
-        try:
-            from channels import notify
-            notify.notify_critical_sync(
-                f"campaign_stalled:{camp['id']}",
-                f"🛑 Кампания встала: «{camp['name']}»",
-                f"Статус running, рабочее окно открыто, в очереди ещё {left} человек, "
-                f"а отправок нет {since}.\n"
-                "Обычно это автопаузы номеров, дневной лимит "
-                f"или нет живых аккаунтов на кампании.",
-                campaign_id=camp["id"])
-        except Exception as e:  # noqa: BLE001
-            print(f"[campaign stalled] личка не ушла (camp {camp['id']}): {e}")
+        # Личку кладём в alarms — шлёт вызывающий, после закрытия conn (lock).
+        alarms.append((
+            f"campaign_stalled:{camp['id']}",
+            f"🛑 Кампания встала: «{camp['name']}»",
+            f"Статус running, рабочее окно открыто, в очереди ещё {left} человек, "
+            f"а отправок нет {since}.\n"
+            "Обычно это автопаузы номеров, дневной лимит или нет живых аккаунтов.",
+            0, camp["id"]))
         database.set_setting(conn, key, today)
         fired += 1
     return fired
@@ -754,7 +752,9 @@ def _msk_date_key() -> str:
     return msk_now().strftime("%Y-%m-%d")
 
 
-def check_listener_down(conn, listening: int, enabled: bool, now: datetime | None = None) -> bool:
+def check_listener_down(conn, listening: int, enabled: bool,
+                        now: datetime | None = None,
+                        alarms: list | None = None) -> bool:
     """Сторож: слушатель входящих не держит НИ ОДНОГО аккаунта дольше LISTENER_DOWN_MIN.
 
     ЗАЧЕМ. 26.08.2026 слушателя выключили тумблером в пульте в 17:01 и не включили
@@ -776,6 +776,7 @@ def check_listener_down(conn, listening: int, enabled: bool, now: datetime | Non
     Возвращает True, если тревога записана.
     """
     now = now or _utcnow()
+    alarms = [] if alarms is None else alarms
     if listening > 0 and enabled:
         database.set_setting(conn, _LISTENER_ALERT_KEY, "")   # ожил — забываем
         return False
@@ -798,19 +799,16 @@ def check_listener_down(conn, listening: int, enabled: bool, now: datetime | Non
         f"ни агенту, а дожим и напоминания о созвоне НЕ отправляются (планировщик шлёт "
         f"только через слушателя). Проверь тумблер «Слушатель» и статус аккаунтов.",
         level="bad")
-    # Глухая система — худшее из критических состояний: ломается приём ответов, агент,
-    # дожим и напоминания сразу. В личку, не только в колокольчик.
-    try:
-        from channels import notify
-        notify.notify_critical_sync(
-            "listener_down",
-            "🔇 Слушатель входящих молчит",
-            f"Уже {mins} мин: {why}.\n"
-            "Пока так — ответы клиентов не попадают ни в "
-            f"«Диалоги», ни агенту, а дожим и напоминания НЕ уходят. "
-            f"Проверь тумблер «Слушатель» в пульте.")
-    except Exception as e:  # noqa: BLE001
-        print(f"[listener down] личка не ушла: {e}")
+    # Глухая система — худшее из критических состояний: ломается приём ответов,
+    # агент, дожим и напоминания сразу. Личку шлёт вызывающий, после закрытия conn:
+    # notify пишет свой флаг отдельным соединением и внутри записи ловит lock.
+    alarms.append((
+        "listener_down",
+        "🔇 Слушатель входящих молчит",
+        f"Уже {mins} мин: {why}.\n"
+        "Пока так — ответы клиентов не попадают ни в «Диалоги», ни агенту, "
+        "а дожим и напоминания НЕ уходят. Проверь тумблер «Слушатель» в пульте.",
+        0, None))
     database.set_setting(conn, _LISTENER_ALERT_KEY, f"fired:{now.isoformat()}")
     return True
 

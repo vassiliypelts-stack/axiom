@@ -8304,6 +8304,14 @@ async def import_2gis(file: UploadFile = File(...), tag: str = Form("Агент�
 
 
 # ---- Чаты ----------------------------------------------------------------- #
+# Короче этого наша реплика — ещё стук или эмодзи-пинок, длиннее — питч с оффером.
+# По нему отличаем «да» на предложение от «да» на вопрос-знакомство: ответ на стук
+# («живу в Крыму») — не согласие с офертой, человек о проекте ещё не слышал.
+# Замерено на 9407: стуки 110-126 знаков, питчи >200 (между 141 и 200 — 48 реплик из
+# 1387, это дожимы-напоминания, их тоже не считаем оффером).
+OFFER_MIN_LEN = 200
+
+
 @app.get("/api/chats")
 def chats() -> JSONResponse:
     """Список диалогов + аккаунт, с которого ведётся каждый.
@@ -8339,7 +8347,17 @@ def chats() -> JSONResponse:
                       WHERE cc.contact_id=c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_id,
                    (SELECT camp.name FROM campaign_contacts cc
                       JOIN campaigns camp ON camp.id=cc.campaign_id
-                      WHERE cc.contact_id=c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_name
+                      WHERE cc.contact_id=c.id ORDER BY cc.sent_at DESC LIMIT 1) AS campaign_name,
+                   -- Сказал «да» УЖЕ ПОСЛЕ оффера: положительный интент, перед которым
+                   -- была наша длинная реплика с питчем. Ответ на стук («живу в Крыму»)
+                   -- сюда не попадает — человек о проекте ещё не слышал. Это тот самый
+                   -- признак, по которому оператор ищет реально тёплых: статусы его не
+                   -- дают, они все про факт переписки, а не про этап воронки.
+                   EXISTS (SELECT 1 FROM messages m WHERE m.contact_id=c.id
+                             AND m.direction='in' AND m.intent IN ('agreed','positive')
+                             AND EXISTS (SELECT 1 FROM messages o WHERE o.contact_id=c.id
+                                         AND o.direction='out' AND o.id<m.id
+                                         AND LENGTH(o.text)>=""" + str(OFFER_MIN_LEN) + """)) AS qualified
             FROM contacts c
             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = c.id)
             ORDER BY last_ts DESC
@@ -10675,7 +10693,10 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             # Лид виден прямо в списке рассылки: кто ответил и кто уже горячий. Раньше
             # эти люди ничем не отличались от неотвеченных — оператор искал их в
             # «Диалогах» отдельно, хотя решение «кому писать дальше» принимается здесь.
-            f"lead_since, hot_since, owner_contacted_at, outreach_account_id, outreach_channel "
+            f"lead_since, hot_since, owner_contacted_at, outreach_account_id, outreach_channel, "
+            # is_test нужен, чтобы «Аудитория» считалась по той же базе, что и шаги
+            # воронки: они тестовые исключают, а total раньше считал всех подряд.
+            f"COALESCE(is_test,0) AS is_test "
             f"FROM contacts WHERE {where} "
             # Те, КОМУ УЖЕ ПИСАЛИ, идут первыми — иначе их не видно вовсе.
             #
@@ -10736,9 +10757,34 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
             " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS read, "
             "(SELECT COUNT(DISTINCT contact_id) FROM messages WHERE direction='in' "
             " AND contact_id IN "
-            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS replied",
-            (cid, cid, cid, cid, cid)).fetchone()
-        funnel = {k: int(f_row[k] or 0) for k in ("sent", "knocked", "delivered", "read", "replied")}
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS replied, "
+            # КВАЛИФИЦИРОВАНЫ — согласие, прозвучавшее ПОСЛЕ оффера, а не на стук.
+            # «Ответили» считает любое входящее, «Лиды» — тех, кого агент передал
+            # представителю, и туда попадали ответы на стук («живу в Крыму»): человек
+            # о проекте ещё не слышал. Здесь берём только тех, у кого положительный
+            # интент пришёл ПОЗЖЕ нашей реплики с оффером — это и есть конверсия
+            # кампании. Оффер узнаём по длине: стук короткий, питч с проектом длинный.
+            "(SELECT COUNT(DISTINCT m.contact_id) FROM messages m WHERE m.direction='in' "
+            " AND m.intent IN ('agreed','positive') "
+            " AND EXISTS (SELECT 1 FROM messages o WHERE o.contact_id=m.contact_id "
+            "             AND o.direction='out' AND o.id<m.id AND LENGTH(o.text)>=" + str(OFFER_MIN_LEN) + ") "
+            " AND m.contact_id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=? AND contact_id NOT IN (SELECT id FROM contacts WHERE COALESCE(is_test,0)=1))) AS qualified, "
+            # ЛИДЫ и СВЯЗАЛСЯ — тоже по всей кампании. Раньше их считали в Python по
+            # items, а items урезан лимитом (1000): у 9407 аудитория ровно 1000, то
+            # есть счётчики уже стояли на грани занижения. Тесты исключаем, как везде
+            # в этом запросе. «Горячие» остаются в Python: это lead_heat() от текущего
+            # времени, в SQL её не повторить без дублирования порогов.
+            "(SELECT COUNT(*) FROM contacts WHERE lead_since IS NOT NULL "
+            " AND COALESCE(is_test,0)=0 AND id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS leads, "
+            "(SELECT COUNT(*) FROM contacts WHERE lead_since IS NOT NULL "
+            " AND owner_contacted_at IS NOT NULL AND COALESCE(is_test,0)=0 AND id IN "
+            " (SELECT contact_id FROM campaign_contacts WHERE campaign_id=?)) AS contacted",
+            (cid, cid, cid, cid, cid, cid, cid, cid)).fetchone()
+        funnel = {k: int(f_row[k] or 0)
+                  for k in ("sent", "knocked", "delivered", "read", "replied",
+                            "qualified", "leads", "contacted")}
         read_rows = {r["contact_id"]: r for r in conn.execute(
             "SELECT contact_id, MAX(delivered_at) AS delivered_at, MAX(read_at) AS read_at "
             "FROM messages WHERE direction='out' AND contact_id IN "
@@ -10802,7 +10848,9 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         items.append(d)
     return JSONResponse({
         "campaign": camp.get("name"), "tag": tag, "channel": camp.get("channel"),
-        "total": len(items),
+        # Аудитория без тестовых: все шаги воронки их исключают, и если оставить их
+        # здесь, первый же переход «Аудитория → Отправлено» считается от другой базы.
+        "total": sum(1 for i in items if not i.get("is_test")),
         "in_queue": sum(1 for i in items if i["in_queue"]),
         # Воронка целиком, а не только «сколько осталось»: отправлено → ответили →
         # лиды → горячие. Оператор видит не факт работы рассылки, а её результат.
@@ -10811,13 +10859,15 @@ def campaign_audience(cid: int, limit: int = 1000) -> JSONResponse:
         # сторону — ровно та ошибка, из-за которой список показывал «отправлено 0»
         # при реально ушедших письмах.
         **funnel,
-        # Результат кампании прямо в шапке списка: сколько ответили и сколько горячих.
-        "leads": sum(1 for i in items if i["is_lead"]),
-        "hot": sum(1 for i in items if i["is_hot"]),
+        # leads и contacted приходят из funnel (по всей кампании, см. запрос выше).
+        # Горячие — это лиды, которым ещё не позвонили: берём общее число лидов минус
+        # те, с кем связались, чтобы цифра не зависела от урезанного лимитом items.
+        # Разбивка 🟢/🟡/🔴 остаётся по странице: это подсказка «кому звонить первым»,
+        # и её считает lead_heat() от текущего времени.
+        "hot": max(0, funnel["leads"] - funnel["contacted"]),
         "hot_green": sum(1 for i in items if i["heat"] == "green"),
         "hot_yellow": sum(1 for i in items if i["heat"] == "yellow"),
         "hot_red": sum(1 for i in items if i["heat"] == "red"),
-        "contacted": sum(1 for i in items if i["heat"] == "done"),
         "reasons": reasons,          # почему остальные не пойдут, с количеством
         "sources": sources,          # источник → сколько контактов из него в этой аудитории
         # Сколько ещё не проверено: пока номер не пробит, рассылка резолвит его прямо

@@ -1568,7 +1568,8 @@ async function openAudience(cid){
           <span class="badge" title="Telegram принял сообщение и положил его в диалог собеседника. Отдельного статуса доставки, как в WhatsApp, у Telegram нет: если сообщение ушло — оно доставлено.">✓ доставлено: <b>${d.delivered||0}</b></span>
           <span class="badge" title="человек открыл диалог и дочитал до нашего сообщения (галочки Telegram). Прочитал и молчит — не цепляет текст; не прочитал — письмо не доходит до глаз, вопрос к аккаунту">👁 прочитано: <b>${d.read||0}</b>${(d.sent&&d.read)?` <span class="hint">(${Math.round(d.read*100/d.sent)}%)</span>`:""}</span>
           <span class="badge ${d.replied?"b-active":""}" title="сколько человек ответили хоть раз">↩️ ответили: <b>${d.replied||0}</b>${(d.sent&&d.replied)?` <span class="hint">(${Math.round(d.replied*100/d.sent)}%)</span>`:""}</span>
-          ${d.leads?`<span class="badge b-new" title="ответили на рассылку и стали лидами. Процент — конверсия из отправленного в лида">💬 лидов: <b>${d.leads}</b>${d.sent?` <span class="hint">(${Math.round(d.leads*100/d.sent)}%)</span>`:""}</span> `:""}
+          ${d.qualified?`<span class="badge b-new" title="сказали «да» УЖЕ ПОСЛЕ оффера — настоящая конверсия кампании. Ответ на стук сюда не попадает">🎯 квалифицированы: <b>${d.qualified}</b>${d.sent?` <span class="hint">(${Math.round(d.qualified*100/d.sent)}%)</span>`:""}</span> `:""}
+          ${d.leads?`<span class="badge b-new" title="кого агент передал представителю. Может быть больше «квалифицированных»: часть передана по ответу на стук">💬 лидов: <b>${d.leads}</b>${d.sent?` <span class="hint">(${Math.round(d.leads*100/d.sent)}%)</span>`:""}</span> `:""}
           ${d.hot?`<span class="badge b-active" title="согласились, а ты ещё не связался. 🟢 до 12 ч с отклика, 🟡 12-24 ч, 🔴 больше суток">🔥 ждут звонка: <b>${d.hot}</b> ${d.hot_green?`🟢${d.hot_green} `:""}${d.hot_yellow?`🟡${d.hot_yellow} `:""}${d.hot_red?`🔴${d.hot_red}`:""}</span>`:""}
           ${d.contacted?`<span class="badge" title="лиды, с которыми ты уже связался">✅ связался: <b>${d.contacted}</b></span>`:""}
           <button type="button" id="aud-funnel-btn" class="badge" style="cursor:pointer;border-style:dashed" title="расширенная статистика: вся воронка с конверсией на каждом шаге">👁 конверсия</button>
@@ -1711,7 +1712,8 @@ async function openAudience(cid){
           ["Доставлено",d.delivered||0,sent,"Telegram принял и положил в диалог"],
           ["Прочитано",d.read||0,sent,"человек открыл диалог и увидел сообщение"],
           ["Ответили",d.replied||0,sent,"ответил хоть раз — это и есть отклик на текст"],
-          ["Лиды",d.leads||0,sent,"ответили и попали в работу"],
+          ["Квалифицированы",d.qualified||0,sent,"сказали «да» УЖЕ ПОСЛЕ оффера — это и есть конверсия кампании. Ответ на стук («живу в Крыму») сюда не попадает: человек о проекте ещё не слышал"],
+          ["Лиды",d.leads||0,sent,"кого агент передал представителю. Может быть больше «квалифицированных»: часть передана по ответу на стук"],
           ["Горячие",d.hot||0,sent,"готовы действовать, нужен личный контакт"],
         ];
         const pct=(a,b)=>b?Math.round(a*1000/b)/10:0;
@@ -9120,16 +9122,24 @@ async function viewChats(v){
   v.innerHTML=`<div class="chat-page" id="chat-page"><div class="card" id="ch-listen" style="background:var(--panel2);padding:8px 10px;margin-bottom:10px;font-size:12px">загружаю приём ответов…</div>
     <div class="chat-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       <input id="ch-q" placeholder="🔍 поиск: имя / @ник / текст" style="flex:1;min-width:180px">
-      <select id="ch-status">
-        <option value="">все статусы</option>
-        <option value="replied">💬 ответившие</option>
-        <option value="in_dialog">в диалоге</option>
-        <option value="messaged">написано, ждём</option>
-        <option value="meeting_set">встреча</option>
-        <option value="won">сделка</option>
-        <option value="nurture">прогрев</option>
-        <option value="lost">потеряны</option>
-      </select>
+      <select id="ch-status">${(()=>{
+        // Пункты, под которыми нет ни одного диалога, не показываем: «встреча»,
+        // «сделка» и «потеряны» читают contacts.status, а эти стадии живут в сделках
+        // (deals.stage), поэтому они всегда давали ноль и фильтр выглядел сломанным.
+        const base=CHATS_ALL.filter(c=>!c.is_test);
+        const n=k=>base.filter(c=>c.status===k).length;
+        const opts=[["","все статусы",base.length],
+                    ["qualified","🎯 сказал ДА после оффера",base.filter(c=>c.qualified).length],
+                    ["replied","💬 ответившие",base.filter(c=>(c.in_cnt||0)>0).length],
+                    ["in_dialog","в диалоге",n("in_dialog")],
+                    ["messaged","написано, ждём",n("messaged")],
+                    ["nurture","прогрев",n("nurture")],
+                    ["meeting_set","встреча",n("meeting_set")],
+                    ["won","сделка",n("won")],
+                    ["lost","потеряны",n("lost")]];
+        return opts.filter(([v,,cnt])=>v===""||cnt>0)
+                   .map(([v,l,cnt])=>`<option value="${v}">${esc(l)}${v?` (${cnt})`:""}</option>`).join("");
+      })()}</select>
       <select id="ch-acc"><option value="">любой аккаунт</option>${accs.map(([id,lbl])=>`<option value="${id}">${esc(lbl)}</option>`).join("")}</select>
       <select id="ch-camp" title="фильтр по кампании, откуда пришёл диалог"><option value="">любая кампания</option>${camps.map(([id,lbl])=>`<option value="${id}">${esc(lbl)}</option>`).join("")}</select>
       <select id="ch-sort"><option value="recent">свежие сверху</option><option value="unread">сначала ответившие</option><option value="msgs">больше сообщений</option></select>
@@ -9147,6 +9157,9 @@ async function viewChats(v){
     const base=$("#ch-tests").checked?CHATS_ALL:CHATS_ALL.filter(c=>!c.is_test);
     let rows=base.slice();
     if(st==="replied")rows=rows.filter(c=>(c.in_cnt||0)>0);
+    // Квалифицирован = сказал «да» уже ПОСЛЕ оффера (считает бэк, /api/chats).
+    // Это не статус контакта: статусы все про факт переписки, а не про этап воронки.
+    else if(st==="qualified")rows=rows.filter(c=>c.qualified);
     else if(st)rows=rows.filter(c=>c.status===st);
     if(acc)rows=rows.filter(c=>String(c.account_id)===acc);
     if(camp)rows=rows.filter(c=>String(c.campaign_id)===camp);

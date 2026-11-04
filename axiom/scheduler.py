@@ -118,6 +118,20 @@ FOLLOWUP_STEPS = [
 FOLLOWUP_TEMPLATES = [st["variants"][0] for st in FOLLOWUP_STEPS]
 
 
+def _is_emoji_ping(text: str) -> bool:
+    """Наш короткий пинг-смайлик («🙂» или «Виктория 🙂»), а не полноценный дожим.
+
+    Нужна, чтобы шаг «дополнение после эмодзи» узнавал свой предыдущий шаг теперь,
+    когда пинг подписан именем. Опираемся на форму, а не на наличие букв: пинг
+    короткий и ОКАНЧИВАЕТСЯ смайликом, дожим — это предложения с точками."""
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    # Последний символ — не буква, не цифра и не знак препинания: считаем смайликом.
+    last = t[-1]
+    return not (last.isalnum() or last in ".!?,;:)(")
+
+
 def _followup_text(step: dict, contact_row, streak: int) -> str:
     """Текст пинга для шага: со специализацией, если она известна, иначе без неё.
     Вариант выбирается по contact_id — стабильно (при повторном расчёте тот же текст)
@@ -159,7 +173,10 @@ KNOCK_NUDGE_EMOJI = ("👀", "😉", "😇", "🙂", "😊", "👋")
 FOLLOWUP_EMOJI_AFTER_HOURS = 3
 FOLLOWUP_FINAL_AFTER_HOURS = 9
 FOLLOWUP_STOP_HOURS = 24
-FOLLOWUP_EMOJI = ("🙂", "😊", "👀", "😉", "👋")
+# С ИМЕНЕМ: голый смайлик в личке читается как случайное касание бота — непонятно,
+# кто и зачем ткнул в чат. «Виктория 🙂» выглядит как человек, который вспомнил про
+# разговор. {name} подставляет _put_name; имя не опознано — остаётся один смайлик.
+FOLLOWUP_EMOJI = ("{name} 🙂", "{name} 😊", "{name} 👀", "{name} 😉", "{name} 👋")
 # Наше последнее сообщение старше стольких дней и ответа нет — один финальный дожим.
 FOLLOWUP_STALE_DAYS = 7
 
@@ -518,10 +535,16 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if step.get("require_read") and not database.last_out_read(conn, c["id"]):
             continue
         if step.get("after_emoji"):
-            # Дополнение идёт только следом за нашим эмодзи. Если последнее наше —
-            # текст, значит человек живёт по старой лесенке и дополнение уже получил:
-            # повторять его нельзя.
-            if re.search(r"[A-Za-zА-Яа-яЁё]", history[-1]["text"] or ""):
+            # Дополнение идёт только следом за нашим пингом-смайликом. Если последнее
+            # наше — обычный текст, значит человек живёт по старой лесенке и дополнение
+            # уже получил: повторять его нельзя.
+            #
+            # Раньше проверяли «есть ли в сообщении буквы»: пинг был голым смайликом.
+            # Теперь он с именем («Виктория 🙂»), буквы в нём есть всегда, и такая
+            # проверка отрезала бы дополнение НАВСЕГДА. Считаем пингом короткое
+            # сообщение, которое заканчивается смайликом: имя плюс эмодзи — это
+            # по-прежнему пара слов, а настоящий дожим — несколько предложений.
+            if not _is_emoji_ping(history[-1]["text"] or ""):
                 continue
         if step.get("stop_after_day"):
             # Сутки с предложения прошли (ночь или пауза сдвинули шаги) — уже не пишем.
@@ -546,7 +569,8 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
     # выбор аккаунта по последнему исходящему такого человека не находил.
     fmt = "%Y-%m-%d %H:%M:%S"
     knocked = conn.execute(
-        "SELECT cc.campaign_id, cc.contact_id, cc.account_id, c.name, c.tg_user_id, c.work_tz "
+        "SELECT cc.campaign_id, cc.contact_id, cc.account_id, c.name, c.person_name, "
+        "c.tg_name, c.tg_user_id, c.work_tz "
         "FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id "
         "WHERE cc.knock_at IS NOT NULL AND cc.sent_at IS NULL AND cc.knock_nudge_at IS NULL "
         "AND cc.knock_at <= ? AND cc.knock_at >= ? AND cc.account_id IS NOT NULL "
@@ -563,9 +587,17 @@ def collect_due(conn, now: datetime | None = None) -> list[Action]:
         if conn.execute("SELECT 1 FROM campaign_paused_contacts WHERE campaign_id=? AND contact_id=?",
                         (k["campaign_id"], k["contact_id"])).fetchone():
             continue
+        # С ИМЕНЕМ, а не голым смайликом. Одно «👀» в личке выглядит как случайное
+        # касание бота: человек не понимает, кто и зачем ткнул в чат. «Виктория 👀»
+        # читается как живой человек, который вспомнил про разговор. Имя берём тем же
+        # _address, что и остальные сообщения: «Имя» или «Имя Отчество», без фамилии
+        # (правило Василия) и без заглушек вроде «lead» — не опознали, шлём один
+        # смайлик, как раньше.
+        emo = KNOCK_NUDGE_EMOJI[k["contact_id"] % len(KNOCK_NUDGE_EMOJI)]
+        who = _address(k)
         actions.append(Action(
             "knock_nudge", k["contact_id"], k["tg_user_id"], k["name"] or "",
-            KNOCK_NUDGE_EMOJI[k["contact_id"] % len(KNOCK_NUDGE_EMOJI)],
+            f"{who} {emo}" if who else emo,
             account_id=k["account_id"],
         ))
     return actions

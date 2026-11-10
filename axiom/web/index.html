@@ -3060,6 +3060,7 @@ function showLoginDialog(accId,phone,label){
       <div class="field"><label>Код из Telegram</label><input id="lg-code" inputmode="numeric" placeholder="12345" style="width:100%;letter-spacing:4px;font-size:18px;text-align:center"></div>
       <div class="field" id="lg-pwd-box" style="display:none"><label>Пароль 2FA (облачный пароль)</label><input id="lg-pwd" type="password" placeholder="если включён вход по паролю" style="width:100%"></div>
       <button class="primary" id="lg-confirm" style="width:100%;padding:10px">Войти</button>
+      <button id="lg-sms" style="width:100%;padding:8px;margin-top:8px;display:none">Код не пришёл — прислать по SMS</button>
     </div>
     <div id="lg-msg" style="margin-top:12px;font-size:13px"></div>
   </div>`;
@@ -3071,8 +3072,22 @@ function showLoginDialog(accId,phone,label){
   $m("#lg-send").onclick=async()=>{
     const b=$m("#lg-send");b.disabled=true;b.textContent="запрашиваю…";msg("");
     const r=await api(`/api/account/${accId}/login/start`,{method:"POST"});
-    if(r.ok){$m("#lg-step1").style.display="none";$m("#lg-step2").style.display="block";msg("Код отправлен в Telegram — введи его.");$m("#lg-code").focus();}
+    if(r.ok){
+      $m("#lg-step1").style.display="none";$m("#lg-step2").style.display="block";
+      // Куда именно ушёл код — важно: «в приложение» у аккаунта со сгоревшей
+      // сессией значит «никуда», ждать нечего, нужна кнопка SMS.
+      msg("Код отправлен "+(r.sent_to||"в Telegram")+" — введи его.");
+      if(r.can_sms)$m("#lg-sms").style.display="block";
+      $m("#lg-code").focus();
+    }
     else{b.disabled=false;b.textContent="Запросить код";msg(r.error||"ошибка",true);}
+  };
+  $m("#lg-sms").onclick=async()=>{
+    const b=$m("#lg-sms");b.disabled=true;b.textContent="прошу SMS…";
+    const r=await api(`/api/account/${accId}/login/sms`,{method:"POST"});
+    if(r.ok){msg("Код отправлен "+(r.sent_to||"SMS-кой")+" — введи его.");b.textContent="SMS отправлена";
+      if(!r.can_sms)b.style.display="none";else b.disabled=false;}
+    else{b.disabled=false;b.textContent="Код не пришёл — прислать по SMS";msg(r.error||"ошибка",true);}
   };
   $m("#lg-confirm").onclick=async()=>{
     const code=$m("#lg-code").value.trim();if(!code){msg("введи код",true);return;}

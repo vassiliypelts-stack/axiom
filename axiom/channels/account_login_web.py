@@ -8,6 +8,19 @@
 Состояние между двумя HTTP-запросами держим в _PENDING (память процесса). Этого
 достаточно для single-process uvicorn. Сессия (полный доступ) ложится в БД —
 секрет, БД не публикуй.
+
+КУДА УХОДИТ КОД (10.11.2026, по следам #5 Василий988). Telegram сам выбирает
+способ доставки и возвращает его в sent.type. По умолчанию это `app` — код
+летит в САМО приложение Telegram, на другое активное устройство аккаунта. Если
+единственная сессия сгорела (AuthKeyDuplicated), активных устройств нет,
+доставлять некуда — код уходит в никуда, а пульт раньше рапортовал «ok» и
+человек ждал SMS, которой не будет.
+
+Поэтому: start_login возвращает `sent_to` (куда ушёл) и `can_sms` (можно ли
+попросить SMS), а resend_sms() повторяет запрос с force_sms=True. force_sms
+работает ТОЛЬКО как повторная отправка — поверх уже выданного phone_code_hash,
+на свежей сессии Telegram ответит SendCodeUnavailableError. Поэтому resend
+переиспользует сессию и хэш из _PENDING, а не поднимает новых.
 """
 from __future__ import annotations
 
@@ -24,6 +37,28 @@ from db import database
 
 # acc_id -> {"session": str, "hash": str, "phone": str, "proxy": str|None}
 _PENDING: dict[int, dict] = {}
+
+
+def _describe_sent(sent) -> tuple[str, bool]:
+    """По ответу Telegram понять, КУДА ушёл код и можно ли попросить SMS.
+
+    Возвращает (человеческое описание, можно_ли_sms). Класс типа смотрим по
+    имени, а не через isinstance: набор SentCodeType* разнится по версиям
+    Telethon, и неизвестный тип не должен ронять логин."""
+    name = type(getattr(sent, "type", None)).__name__
+    nxt = type(getattr(sent, "next_type", None)).__name__
+    can_sms = "Sms" in nxt
+    if "App" in name:
+        return ("в приложение Telegram (на другое устройство этого аккаунта)", can_sms)
+    if "Sms" in name:
+        return ("SMS-кой на номер", False)
+    if "Call" in name or "Flash" in name:
+        return ("звонком на номер", can_sms)
+    if "Email" in name:
+        return ("на привязанную почту", can_sms)
+    if "Missed" in name:
+        return ("звонком-сбросом (код — последние цифры номера)", can_sms)
+    return (f"способом {name or 'неизвестно'}", can_sms)
 
 
 async def start_login(acc_id: int) -> dict:
@@ -48,9 +83,36 @@ async def start_login(acc_id: int) -> dict:
             "phone": phone,
             "proxy": acc["proxy"],
         }
-        return {"ok": True, "phone": phone}
+        sent_to, can_sms = _describe_sent(sent)
+        return {"ok": True, "phone": phone, "sent_to": sent_to, "can_sms": can_sms}
     except Exception as e:  # noqa: BLE001
         return {"error": f"не удалось отправить код: {e}"}
+    finally:
+        await client.disconnect()
+
+
+async def resend_sms(acc_id: int) -> dict:
+    """Повторная отправка кода — «Прислать по SMS».
+
+    Нужна, когда первый код ушёл в приложение Telegram, а живых устройств у
+    аккаунта нет (сгоревшая сессия): ждать там нечего. Telegram разрешает
+    пересылку только поверх выданного phone_code_hash, поэтому работаем на
+    сохранённой сессии из _PENDING — новый клиент получил бы отказ."""
+    st = _PENDING.get(acc_id)
+    if not st:
+        return {"error": "сначала запроси код (шаг 1)"}
+    client = build_client(StringSession(st["session"]), st["proxy"], allow_shared_ip=True)
+    try:
+        await client.connect()
+        sent = await client.send_code_request(st["phone"], force_sms=True)
+        # хэш после пересылки меняется — иначе следующий sign_in отдаст
+        # PhoneCodeInvalid на верный код из SMS
+        st["hash"] = sent.phone_code_hash
+        st["session"] = client.session.save()
+        sent_to, can_sms = _describe_sent(sent)
+        return {"ok": True, "phone": st["phone"], "sent_to": sent_to, "can_sms": can_sms}
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"не удалось отправить SMS: {e}"}
     finally:
         await client.disconnect()
 

@@ -1795,6 +1795,17 @@ async def account_login_start(acc_id: int) -> JSONResponse:
     return JSONResponse(res, status_code=200 if res.get("ok") else 400)
 
 
+@app.post("/api/account/{acc_id}/login/sms")
+async def account_login_sms(acc_id: int) -> JSONResponse:
+    """Шаг 1б: переслать код по SMS, если он ушёл в приложение Telegram.
+
+    У аккаунта со сгоревшей сессией нет ни одного активного устройства, и код
+    «в приложение» доставить некуда — без этой кнопки вход невозможен."""
+    from channels.account_login_web import resend_sms
+    res = await resend_sms(acc_id)
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
 @app.post("/api/account/{acc_id}/login/code")
 async def account_login_code(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
     """Шаг 2 веб-логина: ввести код (+ пароль 2FA при необходимости)."""
@@ -2479,11 +2490,21 @@ LOG_DIR = config.DB_PATH.parent / "logs"
 
 def _log_run(name: str, result) -> None:
     """Пишет вывод фонового запуска в файл-лог (data/logs/<name>.log) — чтобы
-    не гадать по немой консоли, что реально произошло на автомате."""
+    не гадать по немой консоли, что реально произошло на автомате.
+
+    Размер файла ограничен: у логов не было потолка, и proxy_heal.log дорос до 20 МБ,
+    а listener.log — до 173 МБ при 3.5 ГБ свободного диска. Кончающееся место на
+    диске SQLite отдаёт как «database is locked», а это у нас уже оплачено
+    аккаунтами (см. _rotate_if_big в channels/listener.py)."""
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         out = (result.stdout or "") + (result.stderr or "")
+        try:
+            from channels.listener import _rotate_if_big
+            _rotate_if_big(LOG_DIR / f"{name}.log")
+        except Exception:  # noqa: BLE001 — ротация не должна мешать самой записи
+            pass
         with open(LOG_DIR / f"{name}.log", "a", encoding="utf-8") as f:
             f.write(f"\n===== {ts} (код выхода {result.returncode}) =====\n{out}\n")
     except Exception as e:  # noqa: BLE001

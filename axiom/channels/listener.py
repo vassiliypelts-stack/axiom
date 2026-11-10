@@ -158,9 +158,50 @@ def _log(msg: str) -> None:
     print(line)
     try:
         _LOG.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_if_big(_LOG)
         with open(_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:  # noqa: BLE001
+        pass
+
+
+# Слушатель пишет строку «итог: слушаю N из M» каждые 36 секунд круглосуточно, и у
+# файла не было НИКАКОГО предела: к 10.11.2026 listener.log разросся до 173 МБ при
+# 3.5 ГБ свободного места на диске. Для SQLite кончающееся место — это «database is
+# locked», а для нас это уже оплачено потерей аккаунтов: 28.10 база не отвечала с
+# 09:00:49 до 09:03:30, слушатель в это время не смог прочитать журнал брони
+# (session_leases), пошёл подключаться вслепую — и 11 аккаунтов легли одной секундой
+# в 09:04:46 с AuthKeyDuplicatedError. Поэтому лог обязан иметь потолок.
+_LOG_MAX_BYTES = 20 * 1024 * 1024     # потолок одного файла
+_LOG_KEEP_BYTES = 4 * 1024 * 1024     # сколько хвоста оставляем при обрезке
+
+
+def _rotate_if_big(path, max_bytes: int = _LOG_MAX_BYTES,
+                   keep_bytes: int = _LOG_KEEP_BYTES) -> None:
+    """Обрезать лог, оставив последний хвост, если файл перерос потолок.
+
+    Пишем НА МЕСТЕ (открываем 'r+' и переписываем начало), а не через новый файл с
+    переименованием: лог открыт на запись этим же процессом, и подмена inode увела бы
+    дальнейшие строки в удалённый файл. Хвост важнее головы — разбор поломки всегда
+    идёт от последних строк."""
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+    except OSError:
+        return
+    try:
+        with open(path, "r+b") as f:
+            f.seek(-keep_bytes, 2)
+            tail = f.read()
+            # Отрезаем первую (вероятно обрубленную на середине) строку.
+            nl = tail.find(b"\n")
+            if nl != -1:
+                tail = tail[nl + 1:]
+            f.seek(0)
+            f.write(b"--- older lines trimmed (log size cap) ---\n")
+            f.write(tail)
+            f.truncate()
+    except OSError:
         pass
 
 

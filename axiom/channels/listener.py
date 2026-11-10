@@ -76,6 +76,18 @@ RECONNECT_COOLDOWN_SEC = 180
 SWAP_COOLDOWN_SEC = 15 * 60
 _DROPPED_AT: dict[int, float] = {}   # acc_id -> когда слушатель увидел обрыв
 _LIVE_AT: dict[int, float] = {}      # acc_id -> когда соединение последний раз было живо
+_FAILS: dict[int, int] = {}          # acc_id -> неудач подряд, когда и замены прокси не нашлось
+RETRY_MAX_SEC = 30 * 60              # потолок паузы между такими попытками
+
+
+def _retry_delay(fails: int) -> int:
+    """Пауза перед следующей попыткой: 3, 6, 12, 24, 30, 30… минут.
+
+    Аккаунт, которому не нашлось живого прокси, бесполезно дёргать каждые
+    RECHECK_SEC: за 45 секунд бесплатные списки не обновятся. Растущая пауза
+    экономит и лог, и попытки, а потолок держит аккаунт в обойме — как только
+    прокси появится, он вернётся сам, без ручного вмешательства."""
+    return min(RECONNECT_COOLDOWN_SEC * (2 ** max(0, fails - 1)), RETRY_MAX_SEC)
 _STARTED_AT: float = 0.0             # старт слушателя: после OOM-рестарта старые соединения
                                      # не закрыты штатно, и сменить IP сразу тоже нельзя
 
@@ -1000,8 +1012,11 @@ async def _supervise() -> None:
             else:
                 _LIVE_AT[acc_id] = now
         # 2) подключаем новых параллельно (у каждого свой таймаут)
+        # Пауза — RECONNECT_COOLDOWN_SEC, а для тех, кому не нашлось живого прокси,
+        # растущая (_retry_delay): иначе они стучатся каждый круг впустую.
         to_add = [a for aid, a in want.items() if aid not in CLIENTS
-                  and now - _DROPPED_AT.get(aid, -1e9) >= RECONNECT_COOLDOWN_SEC]
+                  and now - _DROPPED_AT.get(aid, -1e9)
+                  >= max(RECONNECT_COOLDOWN_SEC, _retry_delay(_FAILS.get(aid, 0)))]
 
         CONNECTING.update(a["id"] for a in to_add)
         await _publish()
@@ -1017,6 +1032,7 @@ async def _supervise() -> None:
                     return
                 CLIENTS[a["id"]] = await _connect(a)
                 STATUS["accounts"][a["id"]] = {"label": a.get("label"), "ok": True}
+                _FAILS.pop(a["id"], None)   # подключился — растущая пауза больше не нужна
                 _log(f"[#{a['id']}] {a.get('label') or ''} — слушаю ✓")
                 CONNECTING.discard(a["id"])
                 await _publish()
@@ -1094,8 +1110,21 @@ async def _supervise() -> None:
                 # Таймаут не значит, что Telegram нас не видел: прокси мог довезти
                 # рукопожатие и держать его. Новый IP — только когда аккаунт давно не
                 # был на связи, иначе это и есть «ключ с двух адресов».
-                last = max(_LIVE_AT.get(a["id"], 0.0), _DROPPED_AT.get(a["id"], 0.0), _STARTED_AT)
-                quiet = _monotonic() - last
+                # _STARTED_AT держит паузу только пока она осмысленна — первые
+                # SWAP_COOLDOWN_SEC после запуска, пока могли уцелеть соединения
+                # прошлого процесса. Дальше он из расчёта уходит, иначе аккаунт,
+                # который с этого старта НИ РАЗУ не подключился, запирается навсегда:
+                # у него нет ни _LIVE_AT, ни _DROPPED_AT, остаётся только _STARTED_AT,
+                # и каждая новая попытка показывает «был на связи 0 мин назад».
+                # Так #3 (Василий702) простучал с 08.11 по 10.11 каждые 45 секунд с
+                # прокси, умершим ещё в августе: фейловер, написанный ровно для этого
+                # случая, не срабатывал ни разу. 39 тысяч строк в логе.
+                now_ = _monotonic()
+                marks = [_LIVE_AT.get(a["id"], 0.0), _DROPPED_AT.get(a["id"], 0.0)]
+                if now_ - _STARTED_AT < SWAP_COOLDOWN_SEC:
+                    marks.append(_STARTED_AT)
+                last = max(marks)
+                quiet = now_ - last
                 if quiet < SWAP_COOLDOWN_SEC:
                     _log(f"[#{a['id']}] прокси не отвечает, но аккаунт был на связи "
                          f"{int(quiet // 60)} мин назад — IP не меняю ещё "
@@ -1106,7 +1135,18 @@ async def _supervise() -> None:
                     async with _HEAL_LOCK:
                         res = await heal(ids=[a["id"]], warming_only=False)
                     if res.get("healed"):
+                        _FAILS.pop(a["id"], None)
                         _log(f"[#{a['id']}] прокси заменён на живой — переподключусь через {RECHECK_SEC} сек")
+                    else:
+                        # Замены не нашлось (пул пуст или всё дохлое). Без паузы
+                        # следующий круг через RECHECK_SEC повторит всё заново —
+                        # это и есть долбёжка. Ждём до следующей попытки тем дольше,
+                        # чем дольше не выходит, но не больше RETRY_MAX_SEC.
+                        _DROPPED_AT[a["id"]] = _monotonic()
+                        n = _FAILS.get(a["id"], 0) + 1
+                        _FAILS[a["id"]] = n
+                        _log(f"[#{a['id']}] живого прокси не нашлось (попытка {n}) — "
+                             f"пауза {_retry_delay(n) // 60} мин")
                 except Exception:  # noqa: BLE001
                     pass
 

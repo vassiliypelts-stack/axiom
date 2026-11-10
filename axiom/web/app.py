@@ -1806,6 +1806,33 @@ async def account_login_sms(acc_id: int) -> JSONResponse:
     return JSONResponse(res, status_code=200 if res.get("ok") else 400)
 
 
+@app.post("/api/account/{acc_id}/login/qr")
+async def account_login_qr(acc_id: int) -> JSONResponse:
+    """Вход по QR — когда код подтверждения получить нельзя.
+
+    Telegram иногда шлёт код только «в приложение» и SMS не предлагает
+    (next_type=None). Если до активного устройства не добраться, остаётся QR."""
+    from channels.account_login_web import qr_start
+    res = await qr_start(acc_id)
+    return JSONResponse(res, status_code=200 if res.get("ok") else 400)
+
+
+@app.post("/api/account/{acc_id}/login/qr_wait")
+async def account_login_qr_wait(acc_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    """Ждать скан QR. Ответ `expired` — ссылка протухла, в ней же новая."""
+    from channels.account_login_web import qr_wait
+    res = await qr_wait(acc_id, payload.get("password") or "")
+    ok = res.get("ok") or res.get("need_password") or res.get("expired")
+    return JSONResponse(res, status_code=200 if ok else 400)
+
+
+@app.post("/api/account/{acc_id}/login/qr_cancel")
+async def account_login_qr_cancel(acc_id: int) -> JSONResponse:
+    """Закрыть временный клиент QR-входа (окно закрыли, не досканировав)."""
+    from channels.account_login_web import qr_cancel
+    return JSONResponse(await qr_cancel(acc_id))
+
+
 @app.post("/api/account/{acc_id}/login/code")
 async def account_login_code(acc_id: int, payload: dict = Body(...)) -> JSONResponse:
     """Шаг 2 веб-логина: ввести код (+ пароль 2FA при необходимости)."""

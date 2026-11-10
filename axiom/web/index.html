@@ -3046,6 +3046,92 @@ async function viewAgents(v){
   $("#ab-status-go").onclick=()=>{const s=$("#ab-status").value;if(!s){$("#ab-msg").textContent="выбери статус";return;}bulk({action:"status",status:s},r=>`статус «${ACC_ST[r.status]||r.status}» у ${r.updated}`);};
 }
 
+// --- QR без библиотек -------------------------------------------------------
+// Пульт работает в закрытом контуре и внешние CDN не грузит, а в venv на сервере
+// нет ни qrcode, ни segno. Ссылка tg://login?token=… короткая (~90 байт), поэтому
+// хватает версии 6 (41×41) с коррекцией L — её генератор умещается здесь целиком.
+function qrEncode(text){
+  const EC_L=1, bytes=new TextEncoder().encode(text);
+  // версия 6, уровень L: 136 кодовых слов данных, 18 проверочных (блок один)
+  const VER=6, SIZE=17+VER*4, TOTAL=136, ECC=18;
+  if(bytes.length+2>TOTAL)throw new Error("ссылка слишком длинная для QR v6");
+  // 1) битовый поток: режим 0100 (байты) + длина (8 бит) + данные
+  const bits=[];
+  const push=(val,len)=>{for(let i=len-1;i>=0;i--)bits.push((val>>i)&1);};
+  push(4,4);push(bytes.length,8);
+  for(const b of bytes)push(b,8);
+  push(0,Math.min(4,TOTAL*8-bits.length));
+  while(bits.length%8)bits.push(0);
+  const data=[];
+  for(let i=0;i<bits.length;i+=8){let v=0;for(let j=0;j<8;j++)v=(v<<1)|bits[i+j];data.push(v);}
+  const PAD=[0xEC,0x11];let p=0;
+  while(data.length<TOTAL)data.push(PAD[p++%2]);
+  // 2) Рид—Соломон в GF(256)
+  const EXP=new Array(512),LOG=new Array(256);
+  for(let i=0,x=1;i<255;i++){EXP[i]=x;LOG[x]=i;x<<=1;if(x&0x100)x^=0x11D;}
+  for(let i=255;i<512;i++)EXP[i]=EXP[i-255];
+  const mul=(a,b)=>(a&&b)?EXP[LOG[a]+LOG[b]]:0;
+  let gen=[1];
+  for(let i=0;i<ECC;i++){const ng=new Array(gen.length+1).fill(0);
+    for(let j=0;j<gen.length;j++){ng[j]^=mul(gen[j],EXP[i]);ng[j+1]^=gen[j];}gen=ng;}
+  const ec=new Array(ECC).fill(0);
+  for(const d of data){const f=d^ec[0];ec.shift();ec.push(0);
+    for(let j=0;j<ECC;j++)ec[j]^=mul(gen[j+1],f);}
+  const all=data.concat(ec);
+  // 3) матрица: функциональные узоры
+  const m=Array.from({length:SIZE},()=>new Array(SIZE).fill(null));
+  const setF=(r,c,v)=>{if(r>=0&&r<SIZE&&c>=0&&c<SIZE)m[r][c]=v;};
+  const finder=(r,c)=>{for(let i=-1;i<8;i++)for(let j=-1;j<8;j++){
+    const v=(i>=0&&i<7&&j>=0&&j<7)&&(i===0||i===6||j===0||j===6||(i>=2&&i<=4&&j>=2&&j<=4));
+    setF(r+i,c+j,v?1:0);}};
+  finder(0,0);finder(0,SIZE-7);finder(SIZE-7,0);
+  for(let i=8;i<SIZE-8;i++){m[6][i]=m[i][6]=(i%2===0)?1:0;}      // тайминг
+  for(let i=-2;i<=2;i++)for(let j=-2;j<=2;j++)                    // выравнивание (v6: 34,34)
+    setF(34+i,34+j,(Math.abs(i)===2||Math.abs(j)===2||(i===0&&j===0))?1:0);
+  m[SIZE-8][8]=1;                                                 // тёмный модуль
+  const resv=[];                                                  // места под формат
+  for(let i=0;i<9;i++){if(m[8][i]===null)resv.push([8,i]);if(m[i][8]===null)resv.push([i,8]);}
+  for(let i=0;i<8;i++){if(m[8][SIZE-1-i]===null)resv.push([8,SIZE-1-i]);
+    if(m[SIZE-1-i][8]===null)resv.push([SIZE-1-i,8]);}
+  resv.forEach(([r,c])=>{m[r][c]=0;});
+  // 4) укладка данных змейкой снизу вверх + маска 0
+  let bi=0,up=true;
+  const bitAt=i=>(i>>3)<all.length?((all[i>>3]>>(7-(i&7)))&1):0;
+  for(let col=SIZE-1;col>0;col-=2){
+    if(col===6)col--;
+    for(let k=0;k<SIZE;k++){
+      const row=up?SIZE-1-k:k;
+      for(const c of [col,col-1]){
+        if(m[row][c]!==null)continue;
+        let v=bitAt(bi++);
+        if((row+c)%2===0)v^=1;                                     // маска 0
+        m[row][c]=v;
+      }
+    }
+    up=!up;
+  }
+  // 5) строка формата (EC=L, маска 0) — 15 бит с BCH
+  let fmt=(EC_L<<3)|0, rem=fmt<<10;
+  for(let i=4;i>=0;i--)if(rem&(1<<(i+10)))rem^=0x537<<i;
+  const fbits=((fmt<<10)|rem)^0x5412;
+  const getF=i=>(fbits>>i)&1;
+  for(let i=0;i<=5;i++)m[8][i]=getF(i);
+  m[8][7]=getF(6);m[8][8]=getF(7);m[7][8]=getF(8);
+  for(let i=9;i<15;i++)m[14-i][8]=getF(i);
+  for(let i=0;i<8;i++)m[SIZE-1-i][8]=getF(i);
+  for(let i=8;i<15;i++)m[8][SIZE-15+i]=getF(i);
+  return m;
+}
+function qrSvg(text,px){
+  const m=qrEncode(text),n=m.length,q=4,tot=n+q*2,s=(px||260)/tot;
+  let r=`<svg xmlns="http://www.w3.org/2000/svg" width="${px||260}" height="${px||260}" `+
+        `viewBox="0 0 ${tot} ${tot}" shape-rendering="crispEdges">`+
+        `<rect width="${tot}" height="${tot}" fill="#fff"/>`;
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(m[y][x])
+    r+=`<rect x="${x+q}" y="${y+q}" width="1" height="1" fill="#000"/>`;
+  return r+"</svg>";
+}
+
 function showLoginDialog(accId,phone,label){
   const modal=document.createElement("div");
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999";
@@ -3062,11 +3148,22 @@ function showLoginDialog(accId,phone,label){
       <button class="primary" id="lg-confirm" style="width:100%;padding:10px">Войти</button>
       <button id="lg-sms" style="width:100%;padding:8px;margin-top:8px;display:none">Код не пришёл — прислать по SMS</button>
     </div>
+    <div style="margin-top:10px;text-align:center">
+      <button id="lg-qr" style="padding:8px 12px;font-size:13px">📱 Войти по QR-коду</button>
+    </div>
+    <div id="lg-qr-box" style="display:none;margin-top:14px;text-align:center">
+      <div id="lg-qr-img" style="background:#fff;padding:12px;border-radius:10px;display:inline-block"></div>
+      <div class="sub" style="margin-top:10px;text-align:left;line-height:1.5">
+        Telegram на телефоне → <b>Настройки</b> → <b>Устройства</b> →
+        <b>Подключить устройство</b> → наведи камеру на этот код.
+      </div>
+    </div>
     <div id="lg-msg" style="margin-top:12px;font-size:13px"></div>
   </div>`;
   document.body.appendChild(modal);
   const $m=s=>modal.querySelector(s);
-  const close=()=>modal.remove();
+  let close=()=>modal.remove();   // let: QR-ветка оборачивает закрытие, чтобы
+                                  // погасить временный клиент на сервере
   $m(".lg-close").onclick=close;modal.onclick=e=>{if(e.target===modal)close();};
   const msg=(t,err)=>{$m("#lg-msg").innerHTML=`<span style="color:${err?'#c0392b':'var(--green)'}">${esc(t)}</span>`;};
   $m("#lg-send").onclick=async()=>{
@@ -3082,6 +3179,42 @@ function showLoginDialog(accId,phone,label){
     }
     else{b.disabled=false;b.textContent="Запросить код";msg(r.error||"ошибка",true);}
   };
+  // Вход по QR: Telegram не всегда даёт SMS (next_type=None) — тогда это
+  // единственный путь. Токен живёт ~30 с, сервер сам выдаёт новый по «expired»,
+  // и мы просто перерисовываем картинку, пока человек не отсканирует.
+  let qrStop=false;
+  const qrLoop=async()=>{
+    while(!qrStop){
+      const w=await api(`/api/account/${accId}/login/qr_wait`,{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({password:$m("#lg-pwd").value||""})});
+      if(w.ok){msg(`✅ Подключено: @${w.username||"—"}. Аккаунт пойдёт в прогрев.`);
+        qrStop=true;setTimeout(()=>{close();route();},1500);return;}
+      if(w.need_password){$m("#lg-pwd-box").style.display="block";
+        msg("Включён 2FA — введи облачный пароль, и я продолжу ждать скан.",true);
+        await new Promise(r=>setTimeout(r,2500));continue;}
+      if(w.expired){$m("#lg-qr-img").innerHTML=qrSvg(w.url,240);continue;}
+      msg(w.error||"QR не сработал",true);qrStop=true;return;
+    }
+  };
+  $m("#lg-qr").onclick=async()=>{
+    const b=$m("#lg-qr");b.disabled=true;b.textContent="готовлю QR…";msg("");
+    const r=await api(`/api/account/${accId}/login/qr`,{method:"POST"});
+    if(!r.ok){b.disabled=false;b.textContent="📱 Войти по QR-коду";msg(r.error||"ошибка",true);return;}
+    try{$m("#lg-qr-img").innerHTML=qrSvg(r.url,240);}
+    catch(e){msg("не смог нарисовать QR: "+e.message,true);b.disabled=false;return;}
+    $m("#lg-step1").style.display="none";$m("#lg-qr-box").style.display="block";
+    b.style.display="none";msg("Отсканируй код в Telegram на телефоне.");
+    qrLoop();
+  };
+  // Уходим со страницы — закрываем временный клиент на сервере, иначе он
+  // останется висеть подключением к Telegram.
+  const closeQr=close;
+  close=()=>{qrStop=true;
+    if($m("#lg-qr-box").style.display==="block")
+      api(`/api/account/${accId}/login/qr_cancel`,{method:"POST"}).catch(()=>{});
+    closeQr();};
+  $m(".lg-close").onclick=close;modal.onclick=e=>{if(e.target===modal)close();};
   $m("#lg-sms").onclick=async()=>{
     const b=$m("#lg-sms");b.disabled=true;b.textContent="прошу SMS…";
     const r=await api(`/api/account/${accId}/login/sms`,{method:"POST"});

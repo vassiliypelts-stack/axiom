@@ -1090,6 +1090,7 @@ const NAV_GROUPS=[
     {id:"content-text",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="1.5"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="9.5" x2="14" y2="9.5"/><line x1="6" y1="13" x2="11" y2="13"/></svg>',label:"Текстовой контент завод"},
     {id:"content-video",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="12" height="12" rx="1.5"/><path d="M14 8l4-2.5v9L14 12"/></svg>',label:"Видео контент завод"},
     {id:"content-carousel",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="3" width="10" height="13" rx="1.5"/><path d="M2 5v9M18 5v9"/><circle cx="8.5" cy="18" r=".8" fill="currentColor"/><circle cx="11.5" cy="18" r=".8" fill="currentColor"/></svg>',label:"Карусели контент завод"},
+    {id:"content-stories",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="8" height="16" rx="2"/><circle cx="10" cy="10" r="7.5" stroke-dasharray="3 2.5"/></svg>',label:"Сторис контент завод"},
   ]},
   {title:"Ресурсы",collapsible:true,items:[
     {id:"chatcat",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5l3 3M12 8l3 3M9 11l3 3M6 14l3 3"/><path d="M3 17a14 14 0 0114-14"/><circle cx="16" cy="16" r="2" fill="currentColor"/></svg>',label:"Чаты (каталог)"},
@@ -4533,6 +4534,43 @@ async function trDonors(v,shell){
     msg.textContent="сохраняю…";const r=await api("/api/content/trends/donors",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,platform:v.querySelector("#tr-d-plat").value,note:v.querySelector("#tr-d-note").value.trim()})});
     if(r.error)msg.textContent="⚠️ "+r.error;else trRender(v);};
   v.querySelectorAll("[data-trdonor]").forEach(b=>b.onclick=async()=>{b.disabled=true;const r=await api("/api/content/trends/donors/status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:b.dataset.trdonor,status:b.dataset.trst})});if(r.error){msg.textContent="⚠️ "+r.error;b.disabled=false;}else trRender(v);});
+}
+// ---------------------------------------------------- сторис контент завод
+// Лист СТОРИС: строку пишет пульт @vassiliycontent_bot по кнопке «Отправить»,
+// просмотры и реакции дописывает autopost/stories.py каждые 2 часа первые
+// 30 часов (Instagram отдаёт статистику сторис только сутки). Здесь витрина.
+let ST_DAYS=(()=>{try{return +(localStorage.getItem("axiom_stories_days")||30);}catch(e){return 30;}})();
+async function viewContentStories(v){
+  v.innerHTML=`<div class="empty">Читаю лист СТОРИС…</div>`;
+  let d;try{d=await api("/api/content/stories/summary");}catch(e){d={error:e.message};}
+  if(d.error){v.innerHTML=`<div class="empty">⚠️ ${esc(d.error)}</div>`;return;}
+  const list=d.stories.filter(s=>!ST_DAYS||carAge(s.date)<=ST_DAYS);
+  const sum=k=>list.reduce((a,s)=>a+(s[k]||0),0);
+  const byNet=[["vk","ВК"],["tg","ТГ"],["ig","Инстаграм"],["fb","Фейсбук"]].map(([k,l])=>[l,list.reduce((a,s)=>a+s.per[k].views,0),list.reduce((a,s)=>a+s.per[k].reactions,0)]).filter(x=>x[1]||x[2]);
+  const best=[...list].sort((a,b)=>b.views-a.views)[0];
+  const byTarget={};list.forEach(s=>{const t=s.target||"—";byTarget[t]=byTarget[t]||[0,0];byTarget[t][0]++;byTarget[t][1]+=s.clicks;});
+  const chip=(n,l)=>`<button class="cf-chip${ST_DAYS===n?" on":""}" data-std="${n}">${l}</button>`;
+  const cell=(p)=>p.views||p.reactions?`${carNum(p.views)}<span class="sub"> · ${carNum(p.reactions)}</span>`:`<span class="sub">—</span>`;
+  v.innerHTML=`
+    <section class="dash-glass tr-filters"><div class="tr-fg"><span>Период</span>${chip(7,"7 дн")}${chip(30,"30 дн")}${chip(90,"90 дн")}${chip(0,"всё время")}</div></section>
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Сводка</h3><span class="sub">обновлено ${esc(d.updated||"—")} · цифры снимаются каждые 2 часа первые сутки</span></div>
+      <div class="dash-tiles">
+        ${cfTile(list.length,"сторис")}${cfTile(carNum(sum("views")),"просмотров","accent")}
+        ${cfTile(carNum(sum("reactions")),"реакций")}${cfTile(carNum(sum("clicks")),"переходов из ВК")}
+        ${cfTile(carNum(sum("replies")),"ответов")}${cfTile(list.length?carNum(Math.round(sum("views")/list.length)):0,"в среднем на сторис")}
+      </div>
+      ${best&&best.views?`<div class="cf-best">🏆 Лучшая: «${esc(best.hook)}» · ${carNum(best.views)} просмотров · ${esc(best.date)}</div>`:""}
+      ${byNet.length?`<div class="sub" style="margin-top:8px">По сетям: ${byNet.map(([l,v,r])=>`${l} ${carNum(v)} просм. · ${carNum(r)} реакц.`).join(" &nbsp;|&nbsp; ")}</div>`:""}
+      ${Object.keys(byTarget).length?`<div class="sub" style="margin-top:4px">Куда вели: ${Object.entries(byTarget).map(([t,[n,c]])=>`${esc(t)} · ${n} сторис${c?`, ${c} переходов из ВК`:""}`).join(" &nbsp;|&nbsp; ")}</div>`:""}
+      <div class="sub" style="margin-top:8px">WhatsApp и Макс ставятся вручную, их цифр здесь нет. Переходы по ссылке отдаёт только ВК. Instagram через Upload-Post может не отдать цифры сторис: тогда там прочерк.</div>
+    </section>
+    <section class="dash-glass dash-card car-sec"><div class="dash-chh"><h3>Все сторис</h3><span class="sub">в ячейке: просмотры · реакции</span></div>
+      ${list.length?`<div style="overflow-x:auto"><table class="cf-table"><thead><tr><th>Дата</th><th>Хук</th><th>Куда вели</th><th>Сети</th><th>ВК</th><th>ТГ</th><th>Инстаграм</th><th>Фейсбук</th><th>Всего</th><th>Переходы ВК</th></tr></thead><tbody>
+        ${list.map(s=>`<tr><td>${esc(s.date)}</td><td>${esc(s.hook)}</td><td>${esc(s.target||"—")}</td><td class="sub">${esc(s.nets)}</td><td>${cell(s.per.vk)}</td><td>${cell(s.per.tg)}</td><td>${cell(s.per.ig)}</td><td>${cell(s.per.fb)}</td><td><b>${carNum(s.views)}</b></td><td>${s.clicks?carNum(s.clicks):"—"}</td></tr>`).join("")}
+      </tbody></table></div>`:`<div class="empty">${d.stories.length?"За этот период сторис нет.":"Сторис ещё не было. Их отправляют из бота @vassiliycontent_bot кнопкой «📱 Сторис»."}</div>`}
+    </section>`;
+  v.querySelectorAll("[data-std]").forEach(b=>b.onclick=()=>{ST_DAYS=+b.dataset.std;try{localStorage.setItem("axiom_stories_days",ST_DAYS);}catch(e){}viewContentStories(v);});
 }
 // ---------------------------------------------------- карусели контент завод
 // Свои аккаунты Instagram и карусели доноров. Данные готовит контент-завод:
@@ -11411,7 +11449,7 @@ async function actFeed(c,force){
   box.querySelectorAll(".act-fi .a").forEach(el=>el.onclick=()=>actSelect(+el.dataset.id));
 }
 
-const VIEWS={activity:viewActivity,inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo,"content-carousel":viewContentCarousel};
+const VIEWS={activity:viewActivity,inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo,"content-carousel":viewContentCarousel,"content-stories":viewContentStories};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 

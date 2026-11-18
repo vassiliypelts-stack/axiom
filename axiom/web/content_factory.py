@@ -33,6 +33,7 @@ from starlette.concurrency import run_in_threadpool
 from integrations import content_sheet, content_writer, speech
 from integrations import content_trends as content_trends_mod
 from integrations import content_carousels
+from integrations import content_stories
 from agent import llm
 
 router = APIRouter()
@@ -149,6 +150,16 @@ def content_trends_thumb(u: str = "") -> Response:
     if not data:
         return Response(status_code=404)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+
+# ---------- Сторис контент завод: лист СТОРИС (пишет пульт, цифры — autopost/stories.py) ----------
+
+@router.get("/api/content/stories/summary")
+def content_stories_summary() -> JSONResponse:
+    try:
+        return JSONResponse(content_stories.summary())
+    except Exception as e:  # noqa: BLE001
+        return _fail(e, 502)
 
 
 # ---------- Карусели контент завод: листы АККАУНТЫ + ИНСТАГРАМ, карусели доноров из ТРЕНДЫ ----------

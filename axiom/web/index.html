@@ -4550,7 +4550,7 @@ async function viewContentResources(v){
   const card=r=>`<div class="res-item" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#e5e7eb)">
       <div style="flex:1;min-width:0"><div><b>${esc(r.title)}</b>${r.note?` <span class="sub">· ${esc(r.note)}</span>`:""}</div>
         <div class="sub" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.url.replace(/^https?:\/\//,""))}</div></div>
-      <a class="primary" style="text-decoration:none;padding:6px 12px;border-radius:8px" href="${esc(r.url)}" target="_blank" rel="noopener">Открыть</a>
+      <button class="primary" data-resopen="${esc(r.url)}">Открыть</button>
       <button class="ghost" data-resdel="${esc(r.url)}" title="Убрать из списка">✕</button></div>`;
   v.innerHTML=`
     <section class="dash-glass dash-card car-sec">
@@ -4572,6 +4572,8 @@ async function viewContentResources(v){
   v.querySelector("#res-add").onclick=()=>{const url=v.querySelector("#res-url").value.trim();
     if(!url){msg.textContent="Вставьте ссылку.";return;}
     post("/api/content/resources",{url,title:v.querySelector("#res-title").value.trim(),note:v.querySelector("#res-note").value.trim()});};
+  // Кнопка, а не ссылка: блокировщики рекламы прячут <a href> на dzen.ru и похожие сайты.
+  v.querySelectorAll("[data-resopen]").forEach(b=>b.onclick=()=>window.open(b.dataset.resopen,"_blank","noopener"));
   v.querySelectorAll("[data-resdel]").forEach(b=>b.onclick=()=>{b.disabled=true;post("/api/content/resources/remove",{url:b.dataset.resdel});});
 }
 // ---------------------------------------------------- сторис контент завод

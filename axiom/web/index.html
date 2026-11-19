@@ -1087,6 +1087,7 @@ const NAV_GROUPS=[
     {id:"companies",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="8" width="6" height="10"/><rect x="12" y="4" width="6" height="14"/><line x1="4" y1="11" x2="6" y2="11"/><line x1="4" y1="14" x2="6" y2="14"/><line x1="14" y1="7" x2="16" y2="7"/><line x1="14" y1="10" x2="16" y2="10"/><line x1="14" y1="13" x2="16" y2="13"/><line x1="14" y1="16" x2="16" y2="16"/></svg>',label:"Компании"},
   ]},
   {title:"Контент завод",collapsible:true,items:[
+    {id:"content-resources",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8.5 11.5a3.5 3.5 0 005 0l2.5-2.5a3.5 3.5 0 00-5-5l-1 1"/><path d="M11.5 8.5a3.5 3.5 0 00-5 0L4 11a3.5 3.5 0 005 5l1-1"/></svg>',label:"Мои ресурсы"},
     {id:"content-text",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="2" width="14" height="16" rx="1.5"/><line x1="6" y1="6" x2="14" y2="6"/><line x1="6" y1="9.5" x2="14" y2="9.5"/><line x1="6" y1="13" x2="11" y2="13"/></svg>',label:"Текстовой контент завод"},
     {id:"content-video",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="12" height="12" rx="1.5"/><path d="M14 8l4-2.5v9L14 12"/></svg>',label:"Видео контент завод"},
     {id:"content-carousel",ic:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="3" width="10" height="13" rx="1.5"/><path d="M2 5v9M18 5v9"/><circle cx="8.5" cy="18" r=".8" fill="currentColor"/><circle cx="11.5" cy="18" r=".8" fill="currentColor"/></svg>',label:"Карусели контент завод"},
@@ -4534,6 +4535,44 @@ async function trDonors(v,shell){
     msg.textContent="сохраняю…";const r=await api("/api/content/trends/donors",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url,platform:v.querySelector("#tr-d-plat").value,note:v.querySelector("#tr-d-note").value.trim()})});
     if(r.error)msg.textContent="⚠️ "+r.error;else trRender(v);};
   v.querySelectorAll("[data-trdonor]").forEach(b=>b.onclick=async()=>{b.disabled=true;const r=await api("/api/content/trends/donors/status",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:b.dataset.trdonor,status:b.dataset.trst})});if(r.error){msg.textContent="⚠️ "+r.error;b.disabled=false;}else trRender(v);});
+}
+// ---------------------------------------------------- мои ресурсы
+// Ссылки на все страницы Василия: лист РЕСУРСЫ в таблице контент-завода.
+// Площадка определяется по адресу, добавить и убрать можно отсюда.
+const RES_NAMES={threads:"Threads",instagram:"Instagram",vk:"ВКонтакте",telegram:"Telegram",dzen:"Дзен",youtube:"YouTube",max:"Макс",whatsapp:"WhatsApp",facebook:"Facebook",tiktok:"TikTok",tenchat:"TenChat",vc:"vc.ru","другое":"Другое"};
+const RES_ORDER=["threads","telegram","vk","instagram","dzen","youtube","max","whatsapp","facebook","tiktok","tenchat","vc","другое"];
+async function viewContentResources(v){
+  v.innerHTML=`<div class="empty">Читаю лист РЕСУРСЫ…</div>`;
+  let d;try{d=await api("/api/content/resources");}catch(e){d={error:e.message};}
+  if(d.error){v.innerHTML=`<div class="empty">⚠️ ${esc(d.error)}</div>`;return;}
+  const groups={};(d.resources||[]).forEach(r=>{(groups[r.platform]=groups[r.platform]||[]).push(r);});
+  const keys=Object.keys(groups).sort((a,b)=>(RES_ORDER.indexOf(a)+1||99)-(RES_ORDER.indexOf(b)+1||99));
+  const card=r=>`<div class="res-item" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#e5e7eb)">
+      <div style="flex:1;min-width:0"><div><b>${esc(r.title)}</b>${r.note?` <span class="sub">· ${esc(r.note)}</span>`:""}</div>
+        <div class="sub" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.url.replace(/^https?:\/\//,""))}</div></div>
+      <a class="primary" style="text-decoration:none;padding:6px 12px;border-radius:8px" href="${esc(r.url)}" target="_blank" rel="noopener">Открыть</a>
+      <button class="ghost" data-resdel="${esc(r.url)}" title="Убрать из списка">✕</button></div>`;
+  v.innerHTML=`
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Мои ресурсы</h3><span class="sub">все ваши страницы в одном месте · ${(d.resources||[]).length} ссылок</span></div>
+      ${keys.length?keys.map(k=>`<div style="margin-top:12px"><div class="sub" style="text-transform:uppercase;letter-spacing:.05em">${esc(RES_NAMES[k]||k)}</div>${groups[k].map(card).join("")}</div>`).join(""):`<div class="empty">Ссылок пока нет. Добавьте первую ниже.</div>`}
+    </section>
+    <section class="dash-glass dash-card car-sec">
+      <div class="dash-chh"><h3>Добавить ссылку</h3><span class="sub">площадка определится по адресу</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <input id="res-url" placeholder="https://… ссылка" style="flex:2;min-width:220px">
+        <input id="res-title" placeholder="Название, например «YouTube канал»" style="flex:1;min-width:180px">
+        <input id="res-note" placeholder="Заметка (необязательно)" style="flex:1;min-width:160px">
+        <button class="primary" id="res-add">Добавить</button></div>
+      <div class="sub" id="res-msg" style="margin-top:6px"></div>
+    </section>`;
+  const msg=v.querySelector("#res-msg");
+  const post=async(url,body)=>{try{const r=await api(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(r.error){msg.textContent="⚠️ "+r.error;return;}viewContentResources(v);}catch(e){msg.textContent="⚠️ "+e.message;}};
+  v.querySelector("#res-add").onclick=()=>{const url=v.querySelector("#res-url").value.trim();
+    if(!url){msg.textContent="Вставьте ссылку.";return;}
+    post("/api/content/resources",{url,title:v.querySelector("#res-title").value.trim(),note:v.querySelector("#res-note").value.trim()});};
+  v.querySelectorAll("[data-resdel]").forEach(b=>b.onclick=()=>{b.disabled=true;post("/api/content/resources/remove",{url:b.dataset.resdel});});
 }
 // ---------------------------------------------------- сторис контент завод
 // Лист СТОРИС: строку пишет пульт @vassiliycontent_bot по кнопке «Отправить»,
@@ -11449,7 +11488,7 @@ async function actFeed(c,force){
   box.querySelectorAll(".act-fi .a").forEach(el=>el.onclick=()=>actSelect(+el.dataset.id));
 }
 
-const VIEWS={activity:viewActivity,inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo,"content-carousel":viewContentCarousel,"content-stories":viewContentStories};
+const VIEWS={activity:viewActivity,inviting:viewInviting,dashboard:viewDashboard,projects:viewProjects,agents:viewAgents,orgchart:viewOrgChart,calendar:viewCalendar,businessmap:viewBusinessMap,leads:viewLeads,deals:viewDeals,companies:viewCompanies,contacts:viewContacts,campaigns:viewCampaigns,parser:viewParser,chatcat:viewChatCatalog,hits:viewLeadHits,proxy:viewProxy,chats:viewChats,dossier:viewDossier,connectors:viewConnectors,lifecycle:viewLifecycle,"content-text":viewContentText,"content-video":viewContentVideo,"content-carousel":viewContentCarousel,"content-stories":viewContentStories,"content-resources":viewContentResources};
 // #aiagents → редирект на «Структуру» (раздел слит), чтобы старые ссылки/закладки не падали.
 if(location.hash==="#aiagents")location.hash="orgchart";
 

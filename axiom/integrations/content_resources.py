@@ -21,7 +21,7 @@ HEADER = ["площадка", "название", "ссылка", "заметк�
 # Площадка по адресу: чтобы не выбирать её руками при добавлении.
 HOSTS = [("threads.", "threads"), ("instagram.", "instagram"), ("vk.com", "vk"), ("vk.ru", "vk"),
          ("t.me", "telegram"), ("telegram.", "telegram"), ("dzen.ru", "dzen"),
-         ("youtube.", "youtube"), ("youtu.be", "youtube"), ("max.ru", "max"),
+         ("youtube.", "youtube"), ("youtu.be", "youtube"), ("rutube.ru", "rutube"), ("max.ru", "max"),
          ("wa.me", "whatsapp"), ("whatsapp.", "whatsapp"), ("facebook.", "facebook"),
          ("tiktok.", "tiktok"), ("tenchat.", "tenchat"), ("vc.ru", "vc")]
 

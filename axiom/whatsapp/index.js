@@ -21,6 +21,7 @@
 import baileys, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
+import { onGroupBatch } from "./group_archive.mjs";
 
 const makeWASocket = baileys.default || baileys;
 
@@ -508,7 +509,9 @@ async function start() {
     }
   });
 
+  sock.ev.on("messaging-history.set", ({ messages }) => { onGroupBatch(sock, messages).catch(() => {}); });
   sock.ev.on("messages.upsert", async (ev) => {
+    onGroupBatch(sock, ev.messages).catch(() => {});
     if (ev.type !== "notify") return;
     for (const m of ev.messages) {
       try {

@@ -3928,6 +3928,57 @@ def _boost_scheduler() -> None:
         time.sleep(60)
 
 
+def _group_post_scheduler() -> None:
+    """Раз в минуту: кампании «посты в группы» (channels/group_post) — публикация по
+    одному посту с интервалом, счёт вступлений по ссылкам, проверка, жив ли пост.
+    Ходит через клиентов слушателя, своих сессий не поднимает."""
+    import time
+    time.sleep(120)   # дать слушателю подключить аккаунты
+    while True:
+        try:
+            from channels import group_post
+            group_post.tick()
+        except Exception as e:  # noqa: BLE001 — фоновый тик не должен ронять пульт
+            print(f"[group_post] {e}")
+        time.sleep(60)
+
+
+@app.get("/api/group_posts")
+def group_posts_list() -> JSONResponse:
+    from channels import group_post
+    return JSONResponse(group_post.overview())
+
+
+@app.post("/api/group_posts/{cid}/status")
+def group_posts_status(cid: int, body: dict = Body(...)) -> JSONResponse:
+    from channels import group_post
+    st = body.get("status")
+    if st not in ("running", "paused", "draft"):
+        raise HTTPException(400, "status: running | paused | draft")
+    group_post.set_status(cid, st)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/group_posts/{cid}/inspect")
+def group_posts_inspect(cid: int) -> JSONResponse:
+    from channels import group_post
+    group_post.ensure_links(cid)
+    return JSONResponse({"ok": True, "targets": group_post.inspect_all(cid)})
+
+
+@app.post("/api/group_posts/{cid}/post_now")
+def group_posts_post_now(cid: int) -> JSONResponse:
+    from channels import group_post
+    return JSONResponse({"ok": True, "result": group_post.post_one(cid, force=True)})
+
+
+@app.post("/api/group_posts/target/{tid}")
+def group_posts_target(tid: int, body: dict = Body(...)) -> JSONResponse:
+    from channels import group_post
+    group_post.set_target(tid, **body)
+    return JSONResponse({"ok": True})
+
+
 @app.on_event("startup")
 def _start_scheduler() -> None:
     import threading
@@ -3945,6 +3996,7 @@ def _start_scheduler() -> None:
     threading.Thread(target=_listener_watchdog, daemon=True).start()
     threading.Thread(target=_read_status_scheduler, daemon=True).start()
     threading.Thread(target=_boost_scheduler, daemon=True).start()
+    threading.Thread(target=_group_post_scheduler, daemon=True).start()
     threading.Thread(target=_wa_supervisor, daemon=True).start()
     # многоаккаунтный слушатель входящих: держит подключёнными все боевые/прогреваемые
     # аккаунты и пишет ответы клиентов в «Диалоги» (авто-ответ — только с активных).

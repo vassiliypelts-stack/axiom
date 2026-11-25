@@ -8123,6 +8123,7 @@ async function viewCampaigns(v){
       <button id="c-date-reset">✕ сбросить фильтр даты</button>
       <label style="display:inline-flex;align-items:center;gap:6px;margin-left:6px"><input type="checkbox" id="c-show-arch"> показать архив</label>
       <span class="hint" id="c-filt-cnt"></span></div>
+    <div id="gp-block"></div>
     <div id="c-form-anchor"></div>
     <div id="c-form" class="card" style="display:none;margin-bottom:16px" data-edit="">
       <div style="font-weight:700;font-size:15px;margin-bottom:14px" id="c-form-title">Новая кампания</div>
@@ -8727,6 +8728,7 @@ async function viewCampaigns(v){
   };
   ["#c-sort","#c-date-from","#c-date-to","#c-show-arch"].forEach(s=>$(s).onchange=applyCampFilters);
   $("#c-date-reset").onclick=()=>{$("#c-date-from").value="";$("#c-date-to").value="";applyCampFilters();};
+  gpRender($("#gp-block"));
   applyCampFilters();
 }
 // Диалог теста: выбрать, С КАКОГО аккаунта уйдёт тестовая рассылка и НА КАКИЕ свои
@@ -8936,6 +8938,65 @@ async function showTestDialog(id){
       go.disabled=false;go.textContent="Запустить ещё раз";
     }catch(e){msg.innerHTML='<span style="color:#c0392b">ошибка запуска теста</span>';back();}
   };
+}
+
+// 📣 Посты в группы (channels/group_post): своя пригласительная ссылка на каждую группу,
+// таблица «группа → пост → вступили» — видно, какие группы реально приводят людей.
+async function gpRender(mount){
+  if(!mount)return;
+  let camps=[];
+  try{camps=await api("/api/group_posts");}catch(e){mount.innerHTML="";return;}
+  if(!Array.isArray(camps)||!camps.length){mount.innerHTML="";return;}
+  const stTxt={draft:"черновик",running:"▶ идёт",paused:"⏸ пауза",done:"✅ пройдено"};
+  const tStatus=t=>t.status==="posted"
+      ?(t.alive===0?"🗑 удалён модераторами":t.alive===1?"✅ опубликован, на месте":"✅ опубликован")
+      :t.status==="error"?`⛔ ${esc(t.error||"ошибка")}`:t.status==="skipped"?"пропуск":"в очереди";
+  const post=(u,b)=>api(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});
+  mount.innerHTML=camps.map(c=>`
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b style="font-size:15px">📣 ${esc(c.name)}</b>
+          <span class="badge">${stTxt[c.status]||esc(c.status)}</span>
+          <div class="hint">Посты в группы → ${esc(c.community_link||"")} · опубликовано ${c.posted} из ${c.targets.length} ·
+            <b>вступили по ссылкам: ${c.total_joins}</b> · 1 пост в ~${c.interval_min} мин, ${c.work_start}:00–${c.work_end}:00 (${esc(c.tz)})</div></div>
+        <div class="ttoolbar" style="margin:0">
+          ${c.status==="running"?`<button data-gp-st="paused" data-c="${c.id}">⏸ Пауза</button>`
+            :`<button class="primary" data-gp-st="running" data-c="${c.id}">▶ Запустить</button>`}
+          <button data-gp-insp="${c.id}" title="Создать недостающие ссылки и проверить каждую группу: можно ли писать, форум, медленный режим">🔍 Проверить группы</button>
+          <button data-gp-now="${c.id}" title="Опубликовать следующий пост прямо сейчас, без ожидания интервала">📤 Следующий пост сейчас</button>
+        </div></div>
+      <div id="gp-msg-${c.id}" class="hint" style="margin:6px 0"></div>
+      <div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:13px">
+        <thead><tr><th>Группа</th><th>Участников</th><th>Текст</th><th>Ссылка</th><th>Проверка</th><th>Пост</th><th>Вступили</th><th></th></tr></thead>
+        <tbody>${c.targets.map(t=>`<tr>
+          <td>${t.username?`<a href="https://t.me/${esc(t.username)}" target="_blank">${esc(t.title)}</a>`:esc(t.title)}</td>
+          <td>${t.members||"—"}</td>
+          <td>№${(t.variant||0)+1}</td>
+          <td style="font-size:11px">${t.invite_link?esc(t.invite_link):"—"}</td>
+          <td style="font-size:12px">${esc(t.check_note||"—")}</td>
+          <td style="font-size:12px">${tStatus(t)}${t.posted_at?`<div class="hint">${esc(t.posted_at)}</div>`:""}</td>
+          <td><b>${t.joins||0}</b></td>
+          <td>${t.status==="pending"?`<button data-gp-skip="${t.id}" title="Не публиковать в эту группу">пропустить</button>`
+              :t.status==="skipped"||t.status==="error"?`<button data-gp-back="${t.id}" title="Вернуть в очередь">в очередь</button>`:""}</td>
+        </tr>`).join("")}</tbody></table></div>
+      <details style="margin-top:8px"><summary class="hint">Тексты постов (${c.texts.length})</summary>
+        ${c.texts.map((x,i)=>`<div class="card" style="background:var(--panel2);white-space:pre-wrap;font-size:13px;margin-top:6px"><b>№${i+1}</b>\n${esc(x)}</div>`).join("")}
+      </details>
+    </div>`).join("");
+  mount.querySelectorAll("[data-gp-st]").forEach(b=>b.onclick=async()=>{
+    await post(`/api/group_posts/${b.dataset.c}/status`,{status:b.dataset.gpSt});gpRender(mount);});
+  mount.querySelectorAll("[data-gp-insp]").forEach(b=>b.onclick=async()=>{
+    const m=$(`#gp-msg-${b.dataset.gpInsp}`);m.textContent="Проверяю группы… (до минуты)";b.disabled=true;
+    try{await post(`/api/group_posts/${b.dataset.gpInsp}/inspect`);}catch(e){m.textContent="Ошибка проверки: "+e;}
+    gpRender(mount);});
+  mount.querySelectorAll("[data-gp-now]").forEach(b=>b.onclick=async()=>{
+    const m=$(`#gp-msg-${b.dataset.gpNow}`);m.textContent="Публикую…";b.disabled=true;
+    const r=await post(`/api/group_posts/${b.dataset.gpNow}/post_now`);
+    m.textContent=r.result||"";setTimeout(()=>gpRender(mount),1500);});
+  mount.querySelectorAll("[data-gp-skip]").forEach(b=>b.onclick=async()=>{
+    await post(`/api/group_posts/target/${b.dataset.gpSkip}`,{status:"skipped"});gpRender(mount);});
+  mount.querySelectorAll("[data-gp-back]").forEach(b=>b.onclick=async()=>{
+    await post(`/api/group_posts/target/${b.dataset.gpBack}`,{status:"pending"});gpRender(mount);});
 }
 
 function renderCampList(mount,camps){

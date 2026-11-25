@@ -8972,7 +8972,7 @@ async function gpRender(mount){
           <td>${t.username?`<a href="https://t.me/${esc(t.username)}" target="_blank">${esc(t.title)}</a>`:esc(t.title)}</td>
           <td>${t.members||"—"}</td>
           <td>№${(t.variant||0)+1}</td>
-          <td style="font-size:11px">${t.invite_link?esc(t.invite_link):"—"}</td>
+          <td style="font-size:11px">${t.invite_link?esc(t.invite_link):"—"}${t.code?`<div>слово боту: <b>${esc(t.code)}</b> · запросили: ${t.bot_requests||0}</div>`:""}</td>
           <td style="font-size:12px">${esc(t.check_note||"—")}</td>
           <td style="font-size:12px">${tStatus(t)}${t.posted_at?`<div class="hint">${esc(t.posted_at)}</div>`:""}</td>
           <td><b>${t.joins||0}</b></td>
@@ -8981,6 +8981,7 @@ async function gpRender(mount){
         </tr>`).join("")}</tbody></table></div>
       <details style="margin-top:8px"><summary class="hint">Тексты постов (${c.texts.length})</summary>
         ${c.texts.map((x,i)=>`<div class="card" style="background:var(--panel2);white-space:pre-wrap;font-size:13px;margin-top:6px"><b>№${i+1}</b>\n${esc(x)}</div>`).join("")}
+        ${(c.texts_nolink||[]).map((x,i)=>`<div class="card" style="background:var(--panel2);white-space:pre-wrap;font-size:13px;margin-top:6px"><b>№${i+1} — для групп, где ссылки запрещены</b>\n${esc(x)}</div>`).join("")}
       </details>
     </div>`).join("");
   mount.querySelectorAll("[data-gp-st]").forEach(b=>b.onclick=async()=>{

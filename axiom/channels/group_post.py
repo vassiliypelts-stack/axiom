@@ -78,9 +78,44 @@ SCHEMA = [
 ALIVE_CHECK_AFTER = 40 * 60
 
 
+# Колонки, добавленные после первой версии: кодовое слово для групп, где ссылки
+# запрещены правами («напишите боту слово „Москва“» → бот присылает ссылку этой группы).
+_EXTRA = [("gp_targets", "code", "TEXT"), ("gp_targets", "bot_requests", "INTEGER DEFAULT 0"),
+          ("gp_campaigns", "texts_nolink_json", "TEXT"), ("gp_campaigns", "codes_path", "TEXT"),
+          ("gp_campaigns", "code_hits_path", "TEXT")]
+
+
 def ensure(conn) -> None:
     for s in SCHEMA:
         conn.execute(s)
+    for table, col, typ in _EXTRA:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+
+def _nolink(t) -> bool:
+    return "ссылки запрещены" in (t["check_note"] or "")
+
+
+def write_codes(conn, c) -> None:
+    """Кодовые слова → ссылки, файл для бота сообщества (он отвечает ссылкой на слово)."""
+    if not c["codes_path"]:
+        return
+    codes = {(t["code"] or "").strip().lower(): t["invite_link"] for t in conn.execute(
+        "SELECT code, invite_link FROM gp_targets WHERE campaign_id=? AND COALESCE(code,'')<>'' "
+        "AND COALESCE(invite_link,'')<>''", (c["id"],))}
+    path = os.path.expanduser(c["codes_path"])
+    old = {}
+    if os.path.exists(path):
+        try:
+            old = json.load(open(path, encoding="utf-8"))
+        except ValueError:
+            old = {}
+    old.update(codes)
+    tmp = path + ".tmp"
+    json.dump(old, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def _log(s: str) -> None:
@@ -175,9 +210,20 @@ def refresh_joins(conn, c) -> None:
                 by_link.setdefault(r["link"], set()).add(r.get("user_id"))
             if r.get("link_name"):
                 by_name.setdefault(r["link_name"], set()).add(r.get("user_id"))
-    for t in conn.execute("SELECT id, invite_link, link_name FROM gp_targets WHERE campaign_id=?", (c["id"],)):
+    hits: dict[str, set] = {}
+    hp = os.path.expanduser(c["code_hits_path"] or "")
+    if hp and os.path.exists(hp):
+        with open(hp, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                hits.setdefault((r.get("code") or "").lower(), set()).add(r.get("user_id"))
+    for t in conn.execute("SELECT id, invite_link, link_name, code FROM gp_targets WHERE campaign_id=?", (c["id"],)):
         users = by_link.get(t["invite_link"] or "", set()) | by_name.get(t["link_name"] or "", set())
-        conn.execute("UPDATE gp_targets SET joins=? WHERE id=?", (len(users), t["id"]))
+        req = len(hits.get((t["code"] or "").lower(), set())) if t["code"] else 0
+        conn.execute("UPDATE gp_targets SET joins=?, bot_requests=? WHERE id=?", (len(users), req, t["id"]))
 
 
 # ------------------------------------------------------------------ Telegram -----
@@ -297,8 +343,17 @@ def post_one(cid: int, force: bool = False) -> str:
         ensure_links(cid)
         with database.get_conn() as conn:
             t = conn.execute("SELECT * FROM gp_targets WHERE id=?", (t["id"],)).fetchone()
-    texts = json.loads(c["texts_json"])
-    text = texts[t["variant"] % len(texts)].replace("{link}", t["invite_link"])
+    if _nolink(t):
+        texts = json.loads(c["texts_nolink_json"] or "[]")
+        if not texts or not t["code"]:
+            with database.get_conn() as conn:
+                conn.execute("UPDATE gp_targets SET status='error', error=? WHERE id=?",
+                             ("в группе запрещены ссылки, а кодового слова/текста без ссылки нет", t["id"]))
+            return "ошибка: нет текста без ссылки"
+        text = texts[t["variant"] % len(texts)].replace("{code}", t["code"])
+    else:
+        texts = json.loads(c["texts_json"])
+        text = texts[t["variant"] % len(texts)].replace("{link}", t["invite_link"])
     acc = t["account_id"] or c["account_id"]
     client = _client(acc)
     if client is None:
@@ -357,6 +412,7 @@ def tick() -> None:
         camps = conn.execute("SELECT * FROM gp_campaigns WHERE status IN ('running','paused','done')").fetchall()
         for c in camps:
             refresh_joins(conn, c)
+            write_codes(conn, c)
     for c in camps:
         if c["status"] == "running":
             res = post_one(c["id"])
@@ -375,6 +431,7 @@ def overview() -> list[dict]:
                 "SELECT * FROM gp_targets WHERE campaign_id=? ORDER BY joins DESC, sort", (c["id"],))]
             d = dict(c)
             d["texts"] = json.loads(d.pop("texts_json"))
+            d["texts_nolink"] = json.loads(d.pop("texts_nolink_json") or "[]")
             d.pop("bot_token_path", None)
             d["targets"] = ts
             d["total_joins"] = sum(t["joins"] or 0 for t in ts)
@@ -390,7 +447,7 @@ def set_status(cid: int, status: str) -> None:
 
 
 def set_target(tid: int, **fields) -> None:
-    allowed = {"status", "topic_id", "account_id", "variant"}
+    allowed = {"status", "topic_id", "account_id", "variant", "code"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return

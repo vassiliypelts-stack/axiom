@@ -20,6 +20,10 @@ from telethon.tl.functions.channels import JoinChannelRequest
 # и ту же «Ссылку».
 _PLACEHOLDER_USERNAMES = {"ссылка", "ссылки", "username", "канал", "чат", "link", "url"}
 
+# Сколько сбоев «retry» подряд терпим на одной группе, прежде чем снять её из
+# очереди. Без потолка битая группа с малым id вечно первая в _claim.
+RETRY_LIMIT = 3
+
 
 def _rating(verdict: str | None, activity: str | None) -> tuple[int, str]:
     """Единая шкала ТЗ для уже доступной и просканированной группы.
@@ -150,10 +154,28 @@ async def run_one(client, account_id: int) -> dict | None:
         # Повторять её на следующем аккаунте бессмысленно: это битая ссылка/заголовок,
         # а не временный сетевой сбой.
             unavailable = type(exc).__name__ in {"UsernameInvalidError", "UsernameNotOccupiedError", "ValueError"}
+            dead_reason = "ссылка не существует или больше не актуальна"
+            # Ссылка ведёт на человека/бота, а не на группу: JoinChannelRequest
+            # падает «Cannot cast InputPeerUser to any kind of InputChannel».
+            # Раньше это считалось временным сбоем (retry), строка вставала в
+            # начало очереди, и за 3 дня до 25.11 одну #5913 брали 55 раз —
+            # каждый аккаунт сжигал на ней свою попытку вступления.
+            if type(exc).__name__ == "TypeError" and "InputChannel" in str(exc):
+                unavailable, dead_reason = True, "ссылка ведёт на человека или бота, а не на группу"
             # Закрытая группа существует, но Telegram принял заявку и ждёт
             # одобрения админа. Это не сбой и не повод отправлять туда другие
             # аккаунты: фиксируем её как требующую ручного наблюдения.
             join_pending = type(exc).__name__ == "InviteRequestSentError"
+            if not unavailable and not join_pending:
+                # Потолок повторов: третий подряд сбой на одной группе — это уже
+                # не сеть, а сама группа. Снимаем её, иначе она вечно первая в очереди.
+                with database.get_conn() as conn:
+                    tries = conn.execute(
+                        "SELECT COUNT(*) n FROM chat_research_runs WHERE chat_id=? AND status='retry'",
+                        (task["id"],)).fetchone()["n"]
+                if tries >= RETRY_LIMIT - 1:
+                    unavailable = True
+                    dead_reason = f"не удалось вступить {RETRY_LIMIT} раза подряд"
             state = "unavailable" if unavailable else "review_needed" if join_pending else "retry"
             with database.get_conn() as conn:
                 if unavailable:
@@ -163,10 +185,10 @@ async def run_one(client, account_id: int) -> dict | None:
                     conn.execute(
                         "UPDATE chats SET research_status='unavailable', research_error=?, "
                         "research_finished_at=datetime('now'), research_rating=5, "
-                        "research_rating_reason='ссылка не существует или больше не актуальна', "
+                        "research_rating_reason=?, "
                         "verdict='мёртвый', verdict_src='скан', verdict_at=datetime('now'), "
                         "scan_error=?, status='skip' WHERE id=?",
-                        (reason, reason, task["id"]),
+                        (reason, dead_reason, reason, task["id"]),
                     )
                 elif join_pending:
                     conn.execute(

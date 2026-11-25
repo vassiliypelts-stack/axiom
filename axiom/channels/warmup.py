@@ -1076,15 +1076,27 @@ def _upkeep_due_now(acc: dict) -> bool:
     return now.hour >= my_hour            # его час настал (и позже — догоняем)
 
 
-async def _upkeep_passive(acc: dict) -> None:
-    """Пассивная живость номера: онлайн, чтение ленты, лайки, сторис. Без ЛС."""
+async def _upkeep_passive(acc: dict) -> bool:
+    """Пассивная живость номера: онлайн, чтение ленты, лайки, сторис. Без ЛС.
+
+    Возвращает True, если номер реально побывал в сети. По False вызывающий не
+    ждёт «человеческую» паузу: за неудачным подключением ждать нечего, а эти
+    паузы на мёртвых номерах съедали час прогона."""
     from channels.telegram import build_client
     from telethon.sessions import StringSession
     client = build_client(StringSession(acc["tg_session"]), acc["proxy"],
                           acc.get("api_id"), acc.get("api_hash"))
     who = acc.get("label") or f"#{acc['id']}"
     try:
-        await client.start()
+        # НЕ client.start(): на слетевшей сессии он спрашивает номер в консоли
+        # («Please enter your phone… EOF»). connect + проверка авторизации.
+        await client.connect()
+        if not await client.is_user_authorized():
+            print(f"  [{who}] пассив: сессия не авторизована — пропускаю")
+            with database.get_conn() as conn:
+                conn.execute("UPDATE accounts SET session_alive=0, session_checked_at=datetime('now'), "
+                             "session_reason='upkeep: не авторизован' WHERE id=?", (acc["id"],))
+            return False
         await _go_online(client)
         # Исследование не заканчивается вместе с 14-й ступенью прогрева: аккаунт
         # остаётся в уже взятых группах и дальше спокойно пополняет свою долю
@@ -1106,8 +1118,10 @@ async def _upkeep_passive(acc: dict) -> None:
         suffix = (f", исследовал #{research['chat_id']} ({research['status']})"
                   if research else "")
         print(f"  [{who}] прочитано {reads}, лайков {reacts}, сторис {stories}{suffix}")
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"  [{who}] пассив: {e}")
+        return False
     finally:
         try:
             await client.disconnect()
@@ -1214,11 +1228,12 @@ async def run_upkeep(only_id: int | None = None) -> None:
         if over():
             print("время поддержки вышло — остаток возьмёт следующий заход")
             break
-        await _upkeep_passive(acc)
+        ok = await _upkeep_passive(acc)
         with database.get_conn() as conn:
             conn.execute("UPDATE accounts SET last_upkeep_at=datetime('now') WHERE id=?",
                          (acc["id"],))
-        await asyncio.sleep(random.uniform(30, 120))
+        if ok:   # пауза нужна только между живыми заходами в сеть
+            await asyncio.sleep(random.uniform(30, 120))
 
     print(f"поддержка закончена: диалогов {len(pairs)}, "
           f"только пассив {len(silent)}")

@@ -1501,7 +1501,11 @@ def upkeep_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "SELECT * FROM accounts WHERE status='active' "
         "AND tg_session IS NOT NULL AND tg_session<>'' "
         "AND COALESCE(protected,0)=0 AND COALESCE(acc_role,'') <> 'service' "
-        "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0"
+        "AND proxy IS NOT NULL AND proxy<>'' AND COALESCE(proxy_alive,1)<>0 "
+        # Мёртвую сессию (session_alive=0) не берём: 25.11 таких было 42 из 104,
+        # каждая висела на таймаутах прокси или «enter your phone» и съедала до
+        # 40% часового бюджета прогона. NULL = «не проверяли» — берём.
+        "AND COALESCE(session_alive,1)<>0"
     ).fetchall()
 
 
